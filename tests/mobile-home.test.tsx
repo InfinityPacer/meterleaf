@@ -30,16 +30,17 @@ function renderHome(values: (number | null)[]) {
       onAccount={() => {}}
       onRequests={() => {}}
       onAllAccounts={() => {}}
-      onPeriod={() => {}}
     />,
   );
 }
 
-test("home trend preserves zero and distinguishes unknown from known bars", () => {
+test("home trend defaults to a line and preserves unknown values", () => {
   const html = renderHome([0, 100, null]);
-  expect(html).toContain('style="height:0%"');
-  expect(html).toContain('style="height:100%"');
-  expect(html).toContain('class="mobile-home-trend-bar is-unknown"');
+  expect(html).toContain('data-variant="line"');
+  expect(html).toContain('data-show-scale="true"');
+  expect(html).toContain("Tokens 趋势</strong>");
+  expect(html).toContain("0 Tokens");
+  expect(html).toContain("100 Tokens");
   expect(html).toContain("无已知值");
   expect(html).toContain('role="group" aria-label="近 30 天 Tokens 趋势"');
 });

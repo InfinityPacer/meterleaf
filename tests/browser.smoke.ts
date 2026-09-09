@@ -1,4 +1,10 @@
-import { chromium, expect, type Locator, type Request } from "@playwright/test";
+import {
+  chromium,
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+} from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 import type { LedgerSnapshot } from "../src/shared/report";
 import { createDemoLedger } from "../src/web/demo/ledger";
@@ -118,17 +124,47 @@ if (!endpoint)
     "METERLEAF_CDP_URL must point to an existing managed browser",
   );
 const browser = await chromium.connectOverCDP(endpoint);
-const page = browser
+const taskPage = browser
   .contexts()
   .flatMap((context) => context.pages())
   .find((candidate) => candidate.url().startsWith(baseUrl));
-if (!page)
+if (!taskPage)
   throw new Error(
     "Open the task page with the browser manager before running this check",
   );
+const page: Page = taskPage;
 page.setDefaultTimeout(10_000);
 const errors: string[] = [];
 const ledgerRequests: string[] = [];
+const mainLedgerRequests: string[] = [];
+const homeTrendRequests: string[] = [];
+const accountTrendRequests: string[] = [];
+
+function isAccountTrendRequest(url: URL) {
+  const query = url.searchParams;
+  return (
+    query.get("days") === "7" &&
+    query.get("granularity") === "hour" &&
+    query.get("pageSize") === "1" &&
+    query.get("account") !== null &&
+    query.get("account") !== "all"
+  );
+}
+
+function isHomeTrendRequest(url: URL) {
+  const query = url.searchParams;
+  return (
+    query.get("days") === "30" &&
+    query.get("granularity") === "day" &&
+    query.get("pageSize") === "1" &&
+    query.get("account") === "all"
+  );
+}
+
+function isMainLedgerRequest(url: URL) {
+  return !isAccountTrendRequest(url) && !isHomeTrendRequest(url);
+}
+
 // 交互断言与截图通道独立；截图被禁用时必须在验证结果中明示。
 const capture = (options: Parameters<typeof page.screenshot>[0]) =>
   process.env.METERLEAF_SKIP_SCREENSHOTS === "true"
@@ -152,6 +188,26 @@ async function expectWithinViewport(locator: Locator) {
     )
     .toBeLessThanOrEqual(1);
 }
+
+async function openAboutPage(currentPage: Page) {
+  const desktopLink = currentPage.getByRole("button", {
+    name: "关于 Meterleaf 0.1.0",
+    exact: true,
+  });
+  if (await desktopLink.isVisible()) {
+    await desktopLink.click();
+    return;
+  }
+  const bottomAbout = currentPage
+    .getByRole("navigation", { name: "底部导航", exact: true })
+    .getByRole("button", { name: "关于", exact: true });
+  if (await bottomAbout.isVisible()) {
+    await bottomAbout.click();
+    return;
+  }
+  await currentPage.goto(`${baseUrl}#settings`);
+}
+
 await mkdir("test-results", { recursive: true });
 
 function createLiveUnknownSnapshot(
@@ -257,6 +313,9 @@ try {
   await page.route("**/api/view**", async (route) => {
     const url = new URL(route.request().url());
     ledgerRequests.push(url.toString());
+    if (isAccountTrendRequest(url)) accountTrendRequests.push(url.toString());
+    else if (isHomeTrendRequest(url)) homeTrendRequests.push(url.toString());
+    else mainLedgerRequests.push(url.toString());
     if (
       holdDateResponse &&
       url.searchParams.get("from") === "2026-09-02" &&
@@ -292,10 +351,56 @@ try {
   await expect(
     page.getByRole("heading", { name: "用量总览", exact: true }),
   ).toBeVisible();
-  expect(ledgerRequests[0]).not.toContain("usdBasis=");
+  expect(mainLedgerRequests[0]).not.toContain("usdBasis=");
   await expect(
-    page.getByRole("button", { name: "标准 API", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
+    page.getByRole("region", { name: "历史累计", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "账户额度摘要", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".overview-history-trend canvas")).toBeVisible();
+  await expect(page.getByRole("region", { name: "用量摘要" })).toHaveCount(0);
+  await expect(page.locator(".filterbar")).toHaveCount(0);
+  await expect.poll(() => accountTrendRequests.length).toBeGreaterThan(0);
+  expect(
+    accountTrendRequests.every((request) => {
+      const url = new URL(request);
+      return (
+        url.searchParams.get("days") === "7" &&
+        url.searchParams.get("granularity") === "hour" &&
+        url.searchParams.get("pageSize") === "1" &&
+        url.searchParams.get("account") !== "all"
+      );
+    }),
+  ).toBe(true);
+  expect(
+    accountTrendRequests.map((request) =>
+      new URL(request).searchParams.get("account"),
+    ),
+  ).toContain("api");
+  expect(
+    homeTrendRequests.every((request) => {
+      const url = new URL(request);
+      return (
+        url.searchParams.get("days") === "30" &&
+        url.searchParams.get("granularity") === "day" &&
+        url.searchParams.get("pageSize") === "1" &&
+        url.searchParams.get("account") === "all"
+      );
+    }),
+  ).toBe(true);
+  await expect(
+    page.getByRole("button", {
+      name: "查看 Development 请求用量",
+      exact: true,
+    }),
+  ).toContainText("时间段用量 Tokens");
+  await openAboutPage(page);
+  await expect(page).toHaveURL(`${baseUrl}#settings`);
+  await expect(page.locator(".about-page")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.goto(`${baseUrl}#overview`);
+  await expect(page).toHaveURL(`${baseUrl}#overview`);
   const themeTrigger = page.getByRole("button", {
     name: "主题设置",
     exact: true,
@@ -336,6 +441,11 @@ try {
   await page.keyboard.press("Escape");
   await expect(page.locator("html")).toHaveAttribute("data-palette", "default");
   await page.emulateMedia({ colorScheme: null });
+  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
+  await expect(page).toHaveURL(`${baseUrl}#period`);
+  await expect(
+    page.getByRole("button", { name: "标准 API", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   const modelSelect = page.getByRole("combobox", {
     name: "模型筛选",
     exact: true,
@@ -372,6 +482,8 @@ try {
   await page.keyboard.press("Escape");
   await expect(modelSelect).toBeFocused();
   await expect(page.getByRole("listbox")).toHaveCount(0);
+  await page.getByRole("button", { name: "累计总览", exact: true }).click();
+  await expect(page).toHaveURL(`${baseUrl}#overview`);
   await page
     .getByRole("button", { name: "查看 Development 请求用量", exact: true })
     .click();
@@ -383,17 +495,13 @@ try {
   await expect(page.locator("tbody tr").first()).toContainText("Development");
   await page.getByRole("button", { name: "清除筛选", exact: true }).click();
   await page.getByRole("button", { name: "用量总览", exact: true }).click();
+  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
   await page.setViewportSize({ width: 320, height: 256 });
   for (const [name, selector, control] of [
     [
       "日期范围",
       ".date-range-popup",
       page.getByLabel("结束日期", { exact: true }),
-    ],
-    [
-      "主题设置",
-      ".theme-control-popup",
-      page.getByRole("combobox", { name: "配色", exact: true }),
     ],
   ] as const) {
     await page.getByRole("button", { name, exact: true }).click();
@@ -403,38 +511,51 @@ try {
     await page.keyboard.press("Escape");
     await expect(page.locator(selector)).toHaveCount(0);
   }
+  await openAboutPage(page);
+  await expect(page).toHaveURL(`${baseUrl}#settings`);
+  const compactAbout = page.locator(".about-page");
+  await expect(compactAbout).toBeVisible();
+  const compactTheme = compactAbout.getByRole("button", {
+    name: "浅色",
+    exact: true,
+  });
+  await compactTheme.focus();
+  await expectWithinViewport(compactTheme);
+  await compactTheme.click();
+  await page.goto(`${baseUrl}#overview`);
+  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
   await page.setViewportSize({ width: 1440, height: 1000 });
-  const overviewMetrics = page.locator('[aria-label="用量摘要"] .metric');
-  const apiUsd = await overviewMetrics
+  const periodMetrics = page.locator('[aria-label="用量摘要"] .metric');
+  const apiUsd = await periodMetrics
     .nth(0)
     .locator(".metric-value")
     .innerText();
-  const apiCredits = await overviewMetrics
+  const apiCredits = await periodMetrics
     .nth(1)
     .locator(".metric-value")
     .innerText();
-  const apiRequests = await overviewMetrics
+  const apiRequests = await periodMetrics
     .nth(2)
     .locator(".metric-value")
     .innerText();
-  const beforeBasisSwitch = ledgerRequests.length;
+  const beforeBasisSwitch = mainLedgerRequests.length;
   await page.getByRole("button", { name: "订阅等价", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "订阅等价", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect
-    .poll(() => overviewMetrics.nth(0).locator(".metric-value").innerText())
+    .poll(() => periodMetrics.nth(0).locator(".metric-value").innerText())
     .not.toBe(apiUsd);
-  expect(
-    await overviewMetrics.nth(1).locator(".metric-value").innerText(),
-  ).toBe(apiCredits);
-  expect(
-    await overviewMetrics.nth(2).locator(".metric-value").innerText(),
-  ).toBe(apiRequests);
-  expect(ledgerRequests.some((request) => request.includes("usdBasis="))).toBe(
-    false,
+  expect(await periodMetrics.nth(1).locator(".metric-value").innerText()).toBe(
+    apiCredits,
   );
-  expect(ledgerRequests.length).toBe(beforeBasisSwitch);
+  expect(await periodMetrics.nth(2).locator(".metric-value").innerText()).toBe(
+    apiRequests,
+  );
+  expect(
+    mainLedgerRequests.some((request) => request.includes("usdBasis=")),
+  ).toBe(false);
+  expect(mainLedgerRequests.length).toBe(beforeBasisSwitch);
   await expect(page.locator(".trend-panel canvas")).toBeVisible();
   await expect(page.locator(".overview-donut canvas")).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
@@ -495,13 +616,13 @@ try {
   );
   await expect(page.locator("tbody tr")).toHaveCount(0);
   await expect(page.locator(".metric").nth(2)).not.toContainText("900");
-  const requestsBeforeUnitSwitch = ledgerRequests.length;
+  const requestsBeforeUnitSwitch = mainLedgerRequests.length;
   await page.getByRole("button", { name: "Tokens", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Tokens", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   await page.waitForTimeout(100);
-  expect(ledgerRequests.length).toBe(requestsBeforeUnitSwitch);
+  expect(mainLedgerRequests.length).toBe(requestsBeforeUnitSwitch);
   await page.getByRole("button", { name: "周", exact: true }).click();
   await expect(
     page.getByText("自然周，周一起始", { exact: true }),
@@ -556,7 +677,7 @@ try {
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  const requestsBeforeTyping = ledgerRequests.length;
+  const requestsBeforeTyping = mainLedgerRequests.length;
   const searchInput = page.getByRole("textbox", { name: "搜索请求" });
   await searchInput.pressSequentially("not-a-real-request");
   await expect(searchInput).toHaveValue("not-a-real-request");
@@ -564,7 +685,7 @@ try {
     page.getByRole("heading", { name: "没有匹配的请求" }),
   ).toBeVisible();
   expect(
-    ledgerRequests
+    mainLedgerRequests
       .slice(requestsBeforeTyping)
       .map((url) => new URL(url).searchParams.get("search"))
       .filter(Boolean),
@@ -577,7 +698,7 @@ try {
   );
   await page.getByRole("button", { name: /^Personal Pro/ }).click();
   await expect(
-    page.getByRole("dialog").getByText("未提供", { exact: true }).first(),
+    page.getByRole("dialog").getByText("N/A", { exact: true }).first(),
   ).toBeVisible();
   await page.getByRole("button", { name: "查看账户请求" }).click();
   await expect(page.getByRole("combobox", { name: "账户筛选" })).toContainText(
@@ -668,7 +789,12 @@ try {
     (await page.locator("main h2").allTextContents()).map((text) =>
       text.trim(),
     ),
-  ).toEqual(["历史累计", "账户额度", "时间段用量", "消耗趋势", "模型分布"]);
+  ).toEqual(["历史累计", "账户额度", "Tokens 趋势"]);
+  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
+  await expect(page).toHaveURL(`${baseUrl}#period`);
+  await expect(
+    page.getByRole("heading", { name: "消耗趋势", exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "USD", exact: true }).click();
   await page.getByRole("button", { name: "天", exact: true }).click();
   await page.getByRole("button", { name: "主题设置" }).click();
@@ -710,12 +836,27 @@ try {
     fullPage: false,
   });
   await page.getByRole("button", { name: "柱状图", exact: true }).click();
-  await page.getByRole("button", { name: "打开导航" }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "账户额度", exact: true })
-    .click();
+  const mobileMenu = page.getByRole("button", {
+    name: "打开导航",
+    exact: true,
+  });
+  if (await mobileMenu.isVisible()) {
+    await mobileMenu.click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "账户额度", exact: true })
+      .click();
+  } else {
+    const mobileNavigation = page.getByRole("navigation", {
+      name: "底部导航",
+      exact: true,
+    });
+    await expect(mobileNavigation).toBeVisible();
+    await mobileNavigation
+      .getByRole("button", { name: "账户", exact: true })
+      .click();
+  }
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "账户额度", exact: true }).first(),
@@ -727,6 +868,7 @@ try {
 
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("button", { name: "用量总览", exact: true }).click();
+  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
   await page.getByRole("button", { name: "日期范围", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "应用", exact: true }),
@@ -775,9 +917,6 @@ try {
     releaseDateResponse?.();
   }
   await customResponse;
-  await expect(quotaWindows).toHaveText(quotasBeforeDate);
-  await expect(periodAccount).not.toHaveText(periodBeforeDate!);
-  await expect(lifetime).toHaveText(lifetimeBeforeDate!);
   await capture({
     path: "test-results/date-range-desktop.png",
     fullPage: false,
@@ -792,6 +931,13 @@ try {
     fullPage: false,
   });
   await page.getByRole("button", { name: "关闭日期选择" }).click();
+  await page.getByRole("button", { name: "累计总览", exact: true }).click();
+  await expect(page).toHaveURL(`${baseUrl}#overview`);
+  await expect(quotaWindows).toHaveText(quotasBeforeDate);
+  await expect(periodAccount).not.toHaveText(periodBeforeDate!);
+  await expect(lifetime).toHaveText(lifetimeBeforeDate!);
+  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
+  await expect(page).toHaveURL(`${baseUrl}#period`);
   const customRows = filterRecords(
     createDemoLedger().records,
     {
@@ -815,6 +961,7 @@ try {
   );
   await page.getByRole("radio", { name: "近 7 天", exact: true }).click();
   await expect(page.locator(".metric").nth(2)).toContainText("900");
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
   await page.unroute("**/api/view**");
   await page.route("**/api/view**", async (route) => {
@@ -852,6 +999,8 @@ try {
   await page.evaluate(() => localStorage.removeItem("meterleaf-usd-basis"));
   await page.goto(`${baseUrl}#overview`);
   await page.reload();
+  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
+  await expect(page).toHaveURL(`${baseUrl}#period`);
   await expect(page.getByText("实时数据", { exact: true })).toHaveCount(0);
   await expect(
     page
@@ -865,11 +1014,7 @@ try {
   await expect(
     page.getByRole("button", { name: "标准 API", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
-  await page.getByRole("button", { name: "打开导航" }).click();
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "请求明细", exact: true })
-    .click();
+  await page.getByRole("button", { name: "请求明细", exact: true }).click();
   await page
     .getByRole("button", { name: /查看 live-source:unknown-1/ })
     .click();
@@ -989,7 +1134,7 @@ try {
   // 开发态 StrictMode 会取消首次挂载的读取；刷新协议以真正完成的请求为准。
   const recordRefresh = (request: Request) => {
     const url = new URL(request.url());
-    if (url.pathname === "/api/view")
+    if (url.pathname === "/api/view" && isMainLedgerRequest(url))
       refreshRequests.push(url.searchParams.get("refresh") !== "false");
   };
   page.on("requestfinished", recordRefresh);
@@ -1029,7 +1174,7 @@ try {
   });
   await page.evaluate(
     (url) => history.replaceState(null, "", url),
-    `${baseUrl}#overview`,
+    `${baseUrl}#period`,
   );
   await page.reload();
   await expect(page.locator(".metric").nth(2)).toContainText("901");
@@ -1092,7 +1237,8 @@ try {
   await page.unroute("**/api/view**");
   let expiryReads = 0;
   await page.route("**/api/view**", async (route) => {
-    expiryReads++;
+    const url = new URL(route.request().url());
+    if (isMainLedgerRequest(url)) expiryReads++;
     const snapshot = createDemoLedger();
     snapshot.mode = "live";
     const account = snapshot.accounts[0]!;
@@ -1118,9 +1264,7 @@ try {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(
-        fixtureView(snapshot, new URL(route.request().url())),
-      ),
+      body: JSON.stringify(fixtureView(snapshot, url)),
     });
   });
   await page.evaluate(

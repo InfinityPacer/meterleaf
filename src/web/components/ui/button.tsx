@@ -52,6 +52,7 @@ function Button({
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
+      data-ui-button="true"
     />
   );
 }

@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { Popover } from "@base-ui/react/popover";
-import { Moon, Palette, Sun } from "lucide-react";
+import {
+  Check,
+  Monitor,
+  Moon,
+  Palette,
+  PanelLeft,
+  Smartphone,
+  Sun,
+} from "lucide-react";
 import { FilterSelect } from "./FilterSelect";
 import "./controls.css";
 
@@ -167,7 +175,93 @@ export function ThemeControl({
     </>
   );
   if (hidden) return null;
-  if (inline) return <div className="theme-control-inline">{fields}</div>;
+  if (inline)
+    return (
+      <div className="theme-control-inline theme-preferences">
+        <div className="theme-preferences-section">
+          <h3>外观</h3>
+          <div
+            className="theme-appearance-options"
+            role="group"
+            aria-label="外观"
+          >
+            {themeModeOptions.map((option) => {
+              const Icon =
+                option.value === "light"
+                  ? Sun
+                  : option.value === "dark"
+                    ? Moon
+                    : Monitor;
+              return (
+                <button
+                  key={option.value}
+                  aria-pressed={mode === option.value}
+                  onClick={() => changeMode(option.value)}
+                >
+                  <span
+                    className={`theme-appearance-preview theme-preview-${option.value}`}
+                    aria-hidden="true"
+                  >
+                    <span />
+                    <span>
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                  </span>
+                  <span className="theme-option-caption">
+                    <Icon size={15} />
+                    {option.label}
+                    {mode === option.value && <Check size={14} />}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="theme-preferences-row">
+          <span>配色</span>
+          <div className="theme-palette-options" role="group" aria-label="配色">
+            {themePaletteOptions.map((option) => (
+              <button
+                key={option.value}
+                aria-pressed={palette === option.value}
+                onClick={() => changePalette(option.value)}
+              >
+                <i data-palette={option.value} aria-hidden="true" />
+                {option.label}
+                {palette === option.value && <Check size={13} />}
+              </button>
+            ))}
+          </div>
+        </div>
+        {onMobileLayoutChange && (
+          <div className="theme-preferences-row">
+            <span>手机导航</span>
+            <div
+              className="theme-navigation-options"
+              role="group"
+              aria-label="手机导航"
+            >
+              <button
+                aria-pressed={mobileLayout === "app"}
+                onClick={() => onMobileLayoutChange("app")}
+              >
+                <Smartphone size={15} />
+                App 模式
+              </button>
+              <button
+                aria-pressed={mobileLayout === "sidebar"}
+                onClick={() => onMobileLayoutChange("sidebar")}
+              >
+                <PanelLeft size={15} />
+                侧栏模式
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   return (
     <div className="theme-control">
       <Popover.Root>

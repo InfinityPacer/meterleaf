@@ -78,6 +78,7 @@ export function useScopedPreference<T>(
 }
 
 export const preferenceSchemas = {
+  homeChart: z.enum(["line", "area", "bar"]),
   mobileLayout: z.enum(["sidebar", "app"]),
   accountOrder: z.array(z.string().min(1).max(512)).max(10000),
   accountArchiveView: z.enum(["active", "archived", "all"]),

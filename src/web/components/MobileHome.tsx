@@ -8,6 +8,9 @@ import type {
 import { quotaLabel, quotaPercent, quotaState } from "../lib/quota-display";
 import { amount, compact, numericAmount } from "../lib/report";
 import "./mobile-home.css";
+import { MiniTrend } from "./AccountTrend";
+import { ChartStyleControl } from "./ChartStyleControl";
+import type { ChartStyle } from "./UsageChart";
 
 const TIME_ZONE = "Asia/Shanghai";
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -44,8 +47,9 @@ export interface MobileHomeProps {
   onAccount: (account: LedgerAccount) => void;
   onRequests: (account: LedgerAccount) => void;
   onAllAccounts: () => void;
-  onPeriod: () => void;
   trendPoints?: LedgerView["view"]["points"];
+  chartStyle?: "line" | "area" | "bar";
+  onChartStyleChange?: (style: ChartStyle) => void;
 }
 
 type QuotaSelection = {
@@ -241,14 +245,14 @@ function UsageSummary({
 function TrendStrip({
   points,
   asOf,
+  chartStyle,
+  onChartStyleChange,
 }: {
   points: LedgerView["view"]["points"];
   asOf: string;
+  chartStyle: "line" | "area" | "bar";
+  onChartStyleChange?: (style: ChartStyle) => void;
 }) {
-  const knownValues = points.flatMap((point) =>
-    point.value !== null && Number.isFinite(point.value) ? [point.value] : [],
-  );
-  const maximum = Math.max(...knownValues, 0);
   const axisIndexes =
     points.length <= 3
       ? points.map((_, index) => index)
@@ -268,30 +272,29 @@ function TrendStrip({
       role="group"
       aria-label="近 30 天 Tokens 趋势"
     >
+      <div className="mobile-home-trend-heading">
+        <div>
+          <strong>Tokens 趋势</strong>
+          <span>近 30 天 · 按天汇总</span>
+        </div>
+        {onChartStyleChange && (
+          <ChartStyleControl
+            value={chartStyle}
+            onChange={onChartStyleChange}
+            allowPie={false}
+          />
+        )}
+      </div>
       {points.length ? (
         <>
-          <div
-            className="mobile-home-trend-bars"
-            style={{
-              gridTemplateColumns: `repeat(${points.length}, minmax(0, 1fr))`,
-            }}
-            aria-hidden="true"
-          >
-            {points.map((point) => {
-              const value = point.value;
-              const height =
-                value !== null && maximum > 0
-                  ? `${(Math.max(value, 0) / maximum) * 100}%`
-                  : undefined;
-              return (
-                <span
-                  className={`mobile-home-trend-bar${value === null ? " is-unknown" : ""}`}
-                  key={point.at}
-                  style={height ? { height } : undefined}
-                />
-              );
-            })}
-          </div>
+          <MiniTrend
+            points={points}
+            metric="tokens"
+            variant={chartStyle}
+            label="近30天 Tokens"
+            hideCaption
+            showScale
+          />
           <div className="mobile-home-trend-axis" aria-hidden="true">
             {axisLabels.map(({ index, label }) => (
               <span key={`${index}-${label}`}>{label}</span>
@@ -326,9 +329,13 @@ function TrendStrip({
 function LifetimeSummary({
   snapshot,
   trendPoints,
+  chartStyle,
+  onChartStyleChange,
 }: {
   snapshot: LedgerView;
   trendPoints: LedgerView["view"]["points"];
+  chartStyle: "line" | "area" | "bar";
+  onChartStyleChange?: (style: ChartStyle) => void;
 }) {
   const lifetime = snapshot.lifetimeTotals;
   const source = lifetime
@@ -362,7 +369,12 @@ function LifetimeSummary({
           <strong>{formatRequests(lifetime?.count)}</strong>
         </span>
       </div>
-      <TrendStrip points={trendPoints} asOf={snapshot.asOf} />
+      <TrendStrip
+        points={trendPoints}
+        asOf={snapshot.asOf}
+        chartStyle={chartStyle}
+        onChartStyleChange={onChartStyleChange}
+      />
     </section>
   );
 }
@@ -374,25 +386,28 @@ export function MobileHome({
   onAccount,
   onRequests,
   onAllAccounts,
-  onPeriod,
   trendPoints,
+  chartStyle = "line",
+  onChartStyleChange,
 }: MobileHomeProps) {
   const points = trendPoints ?? snapshot.view.units.tokens.points;
 
   return (
     <div className="mobile-home">
       <header className="mobile-home-header">
-        <h1 id="mobile-home-title">用量总览</h1>
-        <p>实时洞察，掌控 AI 成本</p>
         <div className="mobile-home-as-of">
-          <span>{TIME_ZONE}</span>
           <time dateTime={snapshot.asOf}>
             更新于 {formatAsOf(snapshot.asOf)}
           </time>
         </div>
       </header>
 
-      <LifetimeSummary snapshot={snapshot} trendPoints={points} />
+      <LifetimeSummary
+        snapshot={snapshot}
+        trendPoints={points}
+        chartStyle={chartStyle}
+        onChartStyleChange={onChartStyleChange}
+      />
 
       <section
         className="mobile-home-accounts"
@@ -452,18 +467,6 @@ export function MobileHome({
           {!accounts.length && <li className="mobile-home-empty">暂无账户</li>}
         </ul>
       </section>
-
-      <button
-        type="button"
-        className="mobile-home-period-link"
-        onClick={onPeriod}
-      >
-        <span>
-          <strong>时间段用量</strong>
-          <small>趋势与关键指标</small>
-        </span>
-        <ChevronRight size={18} aria-hidden="true" />
-      </button>
     </div>
   );
 }

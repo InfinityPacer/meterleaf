@@ -4,23 +4,40 @@
   display: none;
 }
 
-.app-profile-button {
-  border-radius: 50%;
-}
-.profile-monogram {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: var(--teal);
-  color: var(--surface);
-  font-size: 18px;
-  font-weight: 500;
-}
 @media (max-width: 900px) {
   .sidebar-art {
     display: none;
+  }
+  .topbar-subtitle {
+    display: none;
+  }
+  .topbar {
+    min-height: 60px;
+  }
+  .topbar-title {
+    min-width: 0;
+  }
+  .topbar-actions {
+    margin-left: auto;
+  }
+  .overview-tabs {
+    margin-bottom: 12px;
+  }
+  .account-lifetime {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .account-metric-icon {
+    display: none;
+  }
+  .account-no-quota {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .account-no-quota > .mini-trend {
+    margin-top: 6px;
+  }
+  .account-no-quota .account-lifetime {
+    width: 100%;
   }
 }
 
@@ -48,7 +65,7 @@
       position: sticky;
       top: 0;
       z-index: 35;
-      min-height: 64px;
+      min-height: 56px;
       height: auto;
       padding: calc(8px + env(safe-area-inset-top)) 16px 8px;
       gap: 8px;
@@ -64,15 +81,13 @@
       min-width: 0;
     }
     .topbar-title h1 {
-      position: absolute;
-      left: 64px;
-      right: 64px;
+      position: static;
       width: auto;
       height: auto;
       clip-path: none;
       overflow: visible;
-      text-align: center;
-      font-size: 16px;
+      text-align: left;
+      font-size: 20px;
       line-height: 1.4;
       white-space: normal;
       pointer-events: none;
@@ -111,39 +126,10 @@
       padding: 1px 4px;
       white-space: nowrap;
     }
-    .app-profile-button {
-      border-radius: 50%;
-      background: var(--soft);
-      color: var(--blue);
-    }
-    .topbar:not(.app-home-topbar) .app-profile-button {
-      background: transparent;
-    }
     main {
       padding: 12px max(20px, env(safe-area-inset-right))
         calc(var(--mobile-bar-height) + env(safe-area-inset-bottom) + 24px)
         max(20px, env(safe-area-inset-left));
-    }
-    .term-glossary summary {
-      min-height: 44px;
-      padding-block: 10px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .term-glossary dl {
-      max-width: 40em;
-      max-width: 40ic;
-      margin: 0;
-      line-height: 1.8;
-      text-align: start;
-    }
-    .term-glossary dt {
-      margin-top: 16px;
-      font-weight: 600;
-    }
-    .term-glossary dd {
-      margin: 4px 0 0;
-      color: var(--muted);
     }
     .dark .app-shell .account-avatar {
       color: var(--blue);
@@ -393,24 +379,29 @@
       grid-area: empty;
     }
     .account-lifetime {
-      grid-template-columns: minmax(0, 1fr);
-      gap: 16px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
     }
     .account-lifetime > span {
-      gap: 2px;
+      min-width: 0;
+      gap: 5px;
+      text-align: left;
     }
     .account-lifetime small {
-      font-size: 13px;
+      font-size: 11px;
     }
     .account-lifetime strong {
-      font-size: 17px;
+      font-size: 15px;
     }
     .account-menu-trigger {
       right: 10px;
       top: 12px;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 0;
     }
     .account-list-item[data-manageable] .app-account-status {
-      margin-right: 22px;
+      margin-right: 24px;
     }
     .app-period {
       display: flex;
@@ -429,7 +420,7 @@
     }
     .app-period .trend-panel {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: auto minmax(0, 1fr);
       gap: 8px;
       background: var(--surface);
       border-radius: var(--app-card-radius);
@@ -446,13 +437,21 @@
       grid-column: 1 / -1;
       order: 0;
     }
-    .app-period .trend-panel .section-heading > .segmented {
+    .app-period .trend-panel .section-heading > .filter-select {
       order: 2;
       margin: 0;
-      min-height: 38px;
+      align-self: center;
     }
-    .app-period .trend-panel .section-heading > .segmented button {
-      min-height: 32px;
+    .app-period
+      .trend-panel
+      .section-heading
+      > .filter-select
+      .filter-select-trigger {
+      min-height: 36px;
+      padding-inline: 8px;
+      width: 92px;
+      background: var(--soft);
+      border: 0;
     }
     .app-period .trend-panel .chart-toolbar {
       display: contents;
@@ -464,10 +463,6 @@
       order: 3;
     }
     .app-period .chart-controls > .segmented {
-      display: none;
-    }
-    .app-period .chart-style-control button[aria-label="柱状图"],
-    .app-period .chart-style-control button[aria-label="饼图"] {
       display: none;
     }
     .app-period .usage-chart {
@@ -489,6 +484,8 @@
       padding: 0;
     }
     .app-period .metric {
+      position: relative;
+      overflow: hidden;
       border: 0;
       padding: 12px 14px;
       background: var(--surface);
@@ -519,15 +516,16 @@
       min-height: 18px;
     }
     .app-period .chart-controls {
-      gap: 8px;
+      gap: 4px;
+      justify-content: flex-end;
     }
     .app-period .chart-style-control {
       margin-left: auto;
     }
     .app-period .chart-style-control button {
-      min-width: 36px;
+      min-width: 32px;
       min-height: 36px;
-      width: 36px;
+      width: 32px;
       height: 36px;
     }
     .request-section {
@@ -544,58 +542,6 @@
       height: 1px;
       overflow: hidden;
       clip-path: inset(50%);
-    }
-    .app-settings {
-      display: grid;
-      gap: 16px;
-    }
-    .app-settings-brand {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 14px 0 24px;
-    }
-    .app-settings-brand h2 {
-      font-size: 24px;
-    }
-    .app-settings-brand span {
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .theme-control-inline {
-      padding: 18px;
-      background: var(--surface);
-      border-radius: var(--app-card-radius);
-    }
-    .theme-control-inline .theme-control-fields {
-      margin-top: 0;
-      gap: 16px;
-    }
-    .theme-control-inline .theme-control-field {
-      grid-template-columns: 1fr minmax(130px, 1fr);
-      align-items: center;
-    }
-    .app-settings-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 8px;
-      min-height: 56px;
-      padding: 16px 18px;
-      border: 0;
-      background: var(--surface);
-      border-radius: var(--app-card-radius);
-      font-size: 14px;
-    }
-    .app-settings-row strong {
-      color: var(--muted);
-      font-weight: 400;
-    }
-    .app-settings-row > span:last-child {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
     }
     .detail-sheet[data-slot="sheet-content"] {
       inset: auto 0 0;
@@ -697,37 +643,44 @@
     overscroll-behavior: contain;
     border: 0;
     border-radius: 20px 20px 0 0;
-    padding: 8px 20px calc(20px + env(safe-area-inset-bottom));
-    gap: 16px;
+    padding: 8px 18px calc(16px + env(safe-area-inset-bottom));
+    gap: 12px;
   }
   .mobile-filter-sheet [data-slot="sheet-header"] {
     padding: 12px 40px 0 0;
   }
   .mobile-filter-sheet [data-slot="sheet-title"] {
-    font-size: 20px;
+    font-size: 17px;
   }
   .mobile-filter-fields {
     display: flex;
     flex-wrap: wrap;
-    gap: 12px;
+    gap: 8px;
   }
   .mobile-filter-fields > .filter-select,
   .mobile-filter-fields > .segmented {
     width: 100%;
   }
-  .mobile-filter-fields .filter-select-trigger {
+  .mobile-filter-sheet .mobile-filter-fields .filter-select-trigger {
     width: 100%;
     max-width: none;
-    min-height: 48px;
-    font-size: 16px;
+    min-height: 40px;
+    font-size: 13px;
   }
-  .mobile-filter-fields .segmented button {
+  .mobile-filter-sheet .mobile-filter-fields .segmented button {
     flex: 1;
-    font-size: 15px;
+    min-height: 36px;
+    font-size: 13px;
   }
   .mobile-filter-done {
     width: 100%;
-    min-height: 48px;
+    min-height: 40px;
+  }
+  .mobile-filter-sheet .mobile-filter-fields > .segmented {
+    min-height: 40px;
+  }
+  .mobile-filter-sheet [data-slot="sheet-description"] {
+    font-size: 12px;
   }
 }
 @media (max-width: 360px) {

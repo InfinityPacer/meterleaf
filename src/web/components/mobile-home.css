@@ -16,7 +16,7 @@
 .mobile-home-header {
   display: grid;
   gap: 4px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .mobile-home-header h1 {
@@ -35,7 +35,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px 10px;
-  margin-top: 8px;
+  margin-top: 0;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
@@ -147,31 +147,36 @@
   min-width: 0;
   margin-top: 12px;
 }
-
-.mobile-home-trend-bars {
+.mobile-home-trend-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.mobile-home-trend-heading > div:first-child {
   display: grid;
-  align-items: end;
   gap: 3px;
-  height: 52px;
-  padding: 0 1px 1px;
-  border-bottom: 1px solid var(--line);
+  min-width: 0;
 }
-
-.mobile-home-trend-bar {
-  display: block;
-  min-width: 2px;
-  min-height: 0;
-  border-radius: 3px 3px 0 0;
-  background: #08a776;
-  width: 3px;
-  max-width: 100%;
-  justify-self: center;
+.mobile-home-trend-heading strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
 }
-
-.mobile-home-trend-bar.is-unknown {
-  height: 34%;
-  border: 1px dashed var(--line);
-  background: transparent;
+.mobile-home-trend-heading .chart-style-control {
+  gap: 3px;
+}
+.mobile-home-trend-heading .chart-style-control button {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+}
+.mobile-home-trend > .mini-trend {
+  --mini-trend-height: 120px;
 }
 
 .mobile-home-trend-axis {
@@ -179,6 +184,7 @@
   justify-content: space-between;
   gap: 8px;
   margin-top: 6px;
+  padding-left: 26px;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.3;
