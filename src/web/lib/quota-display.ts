@@ -1,8 +1,32 @@
 import type { AccountWindow, LedgerAccount } from "../../shared/report";
+import { amount, numericAmount } from "./report";
+
+/** 各入口只展示当前周期可用的预估，缺值和过期金额不补零。 */
+export function estimateAmount(
+  window: AccountWindow | null,
+  unit: "usd" | "credits",
+  asOf: string,
+) {
+  if (!window || quotaState(window, asOf) === "expired") return "N/A";
+  const estimate = window.estimate;
+  if (!estimate || estimate.reason !== "eligible") return "N/A";
+  return amount(
+    numericAmount(unit === "usd" ? estimate.usd : estimate.credits),
+    unit,
+  );
+}
+
+/** 已耗尽的周额度没有剩余用量可预估；未知或过期周期不展示预测。 */
+export function showQuotaEstimate(window: AccountWindow | null, asOf: string) {
+  const percent = quotaPercent(window, asOf);
+  return (
+    quotaState(window, asOf) === "active" && percent !== null && percent < 100
+  );
+}
 
 export interface VisibleQuotaWindow {
   key: "fiveHour" | "sevenDay";
-  label: "5 小时" | "7 天";
+  label: "5h" | "7d";
   window: AccountWindow;
 }
 
@@ -13,8 +37,8 @@ export function visibleQuotaWindows(
 ): VisibleQuotaWindow[] {
   const windows: VisibleQuotaWindow[] = [];
   for (const [key, label] of [
-    ["fiveHour", "5 小时"],
-    ["sevenDay", "7 天"],
+    ["fiveHour", "5h"],
+    ["sevenDay", "7d"],
   ] as const) {
     const window = account[key];
     if (

@@ -1,12 +1,27 @@
 import { expect, test } from "bun:test";
+import type { AccountWindow } from "../src/shared/report";
 import {
+  estimateAmount,
   quotaLabel,
   quotaPercent,
   quotaState,
   nextQuotaRefreshDelay,
+  showQuotaEstimate,
   visibleQuotaWindows,
   accountQuotaExhausted,
 } from "../src/web/lib/quota-display";
+
+type QuotaEstimate = NonNullable<AccountWindow["estimate"]>;
+
+function quotaEstimate(overrides: Partial<QuotaEstimate> = {}): QuotaEstimate {
+  return {
+    usd: "1481.58",
+    credits: "37039.57",
+    deltaPercent: null,
+    reason: "eligible",
+    ...overrides,
+  };
+}
 
 const now = "2026-09-08T12:00:00Z";
 const window = {
@@ -31,6 +46,55 @@ test("old sample keeps concise usage without claiming synchronization failure", 
   expect(quotaLabel({ ...window, stale: false }, now)).toBe(
     quotaLabel(window, now),
   );
+});
+
+test("formats an eligible estimate in the requested unit", () => {
+  const quota = { ...window, estimate: quotaEstimate() };
+
+  expect(estimateAmount(quota, "usd", now)).toBe("$1,481.58");
+  expect(estimateAmount(quota, "credits", now)).toBe("37,039.6");
+});
+
+test("missing, ineligible, and expired estimates display N/A", () => {
+  expect(estimateAmount(window, "usd", now)).toBe("N/A");
+  expect(
+    estimateAmount(
+      { ...window, estimate: quotaEstimate({ reason: "unpriced" }) },
+      "usd",
+      now,
+    ),
+  ).toBe("N/A");
+  expect(
+    estimateAmount(
+      { ...window, resetsAt: now, estimate: quotaEstimate() },
+      "usd",
+      now,
+    ),
+  ).toBe("N/A");
+});
+
+test("shows estimates only for active quota windows below 100%", () => {
+  expect(showQuotaEstimate({ ...window, percent: 99 }, now)).toBe(true);
+  expect(showQuotaEstimate(window, now)).toBe(false);
+  expect(showQuotaEstimate({ ...window, percent: 101 }, now)).toBe(false);
+  expect(
+    showQuotaEstimate({ ...window, percent: null, state: "unknown" }, now),
+  ).toBe(false);
+  expect(showQuotaEstimate({ ...window, resetsAt: now }, now)).toBe(false);
+  expect(showQuotaEstimate(null, now)).toBe(false);
+});
+
+test("formats a large eligible estimate with grouped currency", () => {
+  expect(
+    estimateAmount(
+      {
+        ...window,
+        estimate: quotaEstimate({ usd: "9876543210.126" }),
+      },
+      "usd",
+      now,
+    ),
+  ).toBe("$9,876,543,210.13");
 });
 
 test("weekly exhaustion hides five-hour quota across all account entry points", () => {

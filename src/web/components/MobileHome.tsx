@@ -2,8 +2,10 @@ import { ChevronRight, Wallet } from "lucide-react";
 import type { LedgerView } from "../../shared/ledger-view";
 import type { AccountLifetime, LedgerAccount } from "../../shared/report";
 import {
+  estimateAmount,
   quotaLabel,
   quotaPercent,
+  showQuotaEstimate,
   type VisibleQuotaWindow,
   visibleQuotaWindows,
 } from "../lib/quota-display";
@@ -119,11 +121,13 @@ function QuotaSummary({
   selection: VisibleQuotaWindow;
   asOf: string;
 }) {
-  const { label, window } = selection;
+  const { key, label, window } = selection;
   const percent = quotaPercent(window, asOf);
   const usable = percent !== null;
   const reset = formatResetTime(window.resetsAt, asOf);
   const amountValue = usable ? formatUsd(window.periodUsd) : "N/A";
+  const showEstimate = key === "sevenDay" && showQuotaEstimate(window, asOf);
+  const estimated = showEstimate ? estimateAmount(window, "usd", asOf) : null;
   const tokens = usable ? formatTokens(window.periodTokens) : "N/A";
   const requests = usable ? formatRequests(window.periodRequests) : "N/A";
 
@@ -152,9 +156,25 @@ function QuotaSummary({
       >
         <span style={usable ? { width: `${percent}%` } : undefined} />
       </div>
-      <div className="mobile-home-quota-foot">
-        <strong>{amountValue}</strong>
-        <span>
+      <div className="mobile-home-quota-foot" data-with-estimate={showEstimate}>
+        <span className="quota-cost-pair">
+          <strong>{amountValue}</strong>
+          {showEstimate && (
+            <>
+              <span className="quota-cost-separator" aria-hidden="true">
+                ·
+              </span>
+              <em
+                className="mobile-home-quota-estimate quota-cost-estimate"
+                title="7d 预估"
+                aria-label={`7d 预估 ${estimated}`}
+              >
+                {estimated}
+              </em>
+            </>
+          )}
+        </span>
+        <span className="quota-cost-volume">
           {tokens} Tokens <i aria-hidden="true">·</i> {requests} 次
         </span>
       </div>

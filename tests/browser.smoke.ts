@@ -694,7 +694,7 @@ try {
   await page.getByRole("button", { name: "清除搜索" }).click();
   await page.getByRole("button", { name: "账户额度", exact: true }).click();
   await expect(page.locator(".account-capacity").first()).toContainText(
-    "7 天预估",
+    "7d 预估",
   );
   await page.getByRole("button", { name: /^Personal Pro/ }).click();
   await expect(
@@ -744,7 +744,10 @@ try {
   await expect(
     page.getByRole("heading", { name: "请求明细", exact: true }),
   ).toHaveCount(0);
-  await page.getByRole("group", { name: "汇总维度", exact: true }).getByRole("button", { name: "模型", exact: true }).click();
+  await page
+    .getByRole("group", { name: "汇总维度", exact: true })
+    .getByRole("button", { name: "模型", exact: true })
+    .click();
   await expect(page.locator(".report-section tbody tr")).toHaveCount(4);
   await expect(page.getByRole("button", { name: "导出 CSV" })).toHaveCount(0);
   await page.getByRole("button", { name: "账户", exact: true }).click();
@@ -1272,13 +1275,13 @@ try {
     `${baseUrl}#accounts`,
   );
   await page.reload();
-  const expiryAmount = page.locator('.account-row [aria-label="7 天费用"]');
+  const expiryAmount = page.locator('.account-row [aria-label="7d费用"]');
   await expect(expiryAmount).toHaveText("$12.34");
   const readsBeforeExpiry = expiryReads;
   await page.locator(".account-row").first().click();
   await expect(page.getByRole("dialog")).toContainText("$12.34");
   await expect(
-    page.getByRole("dialog").getByRole("progressbar", { name: "7 天窗口" }),
+    page.getByRole("dialog").getByRole("progressbar", { name: "7d窗口" }),
   ).not.toHaveAttribute("aria-valuenow", /.+/);
   await expect(page.getByRole("dialog")).not.toContainText("$12.34");
   await expect(page.getByRole("dialog")).not.toContainText("$16.45");

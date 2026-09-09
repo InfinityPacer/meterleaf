@@ -1956,6 +1956,35 @@ button[data-size="icon-sm"],
 .quota-period-volume > span {
   white-space: nowrap;
 }
+.quota-cost-pair {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.quota-cost-pair strong {
+  color: var(--ink);
+}
+.quota-cost-pair .quota-cost-separator {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+.quota-cost-pair .quota-cost-estimate {
+  color: var(--teal);
+  font-size: 15px;
+  font-weight: 500;
+  font-style: italic;
+}
+[data-with-estimate="true"] > .quota-cost-pair,
+[data-with-estimate="true"] > .quota-cost-volume {
+  flex-basis: 100%;
+}
+[data-with-estimate="true"] > .quota-cost-volume {
+  text-align: right;
+}
 .quota-period-reset {
   color: var(--muted);
   font-size: 13px;

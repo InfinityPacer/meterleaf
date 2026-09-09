@@ -181,8 +181,9 @@ try {
             "aria-valuenow",
             "100",
           );
-          await expect(pro).not.toContainText("5 小时");
-          await expect(plus).not.toContainText("5 小时");
+          await expect(pro).not.toContainText("5h");
+          await expect(plus).not.toContainText("5h");
+          await expect(pro).toContainText("7d");
           await expect(plus).not.toContainText("已用尽");
           await expect(plus).not.toContainText("使用中");
           const fill = plus.getByRole("progressbar").locator(":scope > span");
@@ -202,8 +203,41 @@ try {
               () => document.documentElement.scrollWidth <= innerWidth,
             ),
           ).toBe(true);
-          if (route === "overview" && !mobileHome) {
-            for (const card of [pro, plus]) {
+          await expect(
+            plus.locator(
+              ".quota-cost-estimate, .quota-preview-estimate, .account-capacity",
+            ),
+          ).toHaveCount(0);
+          if (width <= 900) {
+            const pair = pro.locator(".quota-cost-pair").first();
+            const estimate = pair.locator(".quota-cost-estimate");
+            await expect(estimate).toBeVisible();
+            await expect(estimate).toHaveText("$1,481.58");
+            await expect(pair.locator(".quota-cost-separator")).toHaveText("·");
+            const currentBox = (await pair.locator("strong").boundingBox())!;
+            const estimateBox = (await estimate.boundingBox())!;
+            expect(estimateBox.x).toBeGreaterThan(
+              currentBox.x + currentBox.width,
+            );
+            expect(Math.abs(estimateBox.y - currentBox.y)).toBeLessThan(4);
+            expect(
+              await pair.evaluate((el) => el.scrollWidth <= el.clientWidth),
+            ).toBe(true);
+            expect(
+              await estimate.evaluate((el) => getComputedStyle(el).fontStyle),
+            ).toBe("italic");
+            if (route === "accounts") {
+              const title = (await pro
+                .locator(".quota-bar > div:first-child > span:first-child")
+                .boundingBox())!;
+              const status = (await pro
+                .locator(".quota-bar .tabular")
+                .boundingBox())!;
+              expect(Math.abs(title.y - status.y)).toBeLessThan(3);
+            }
+          }
+          if (route === "overview" && width > 900) {
+            for (const card of [pro]) {
               const heading = (await card
                 .locator(".quota-preview-heading")
                 .boundingBox())!;
@@ -236,7 +270,7 @@ try {
           await pro.click();
           const dialog = page.getByRole("dialog");
           await expect(dialog).toBeVisible();
-          await expect(dialog).not.toContainText("5 小时");
+          await expect(dialog).not.toContainText("5h");
           await expect(dialog.getByRole("progressbar")).toHaveCount(1);
           await page.keyboard.press("Escape");
           states++;

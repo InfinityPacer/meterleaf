@@ -39,6 +39,30 @@
   .account-no-quota .account-lifetime {
     width: 100%;
   }
+  :root[data-mobile-layout="sidebar"] .account-row[data-has-quota="true"] {
+    grid-template-areas: "identity identity" "five five" "seven seven";
+  }
+  :root[data-mobile-layout="sidebar"] .account-row[data-quota-count="1"],
+  :root[data-mobile-layout="sidebar"]
+    .account-row[data-has-quota="true"][data-quota-count="0"] {
+    grid-template-areas: "identity identity" "single single";
+  }
+  .quota-preview {
+    min-height: 0;
+  }
+  .quota-preview .quota-bar > div:first-child > span:first-child {
+    flex-basis: auto;
+  }
+  .account-row .quota-bar > div:first-child > span:first-child {
+    flex-basis: auto;
+    font-weight: 650;
+  }
+  .account-row .quota-bar > div:first-child > span:first-child::after {
+    content: "·";
+    margin-left: 7px;
+    color: var(--muted);
+    font-weight: 400;
+  }
 }
 
 /* App 视图采用独立布局，模式切换不改变计价或筛选契约。 */
@@ -349,9 +373,6 @@
       width: 24px;
       height: 24px;
     }
-    .account-row .account-capacity {
-      display: none;
-    }
     .account-row .quota-period {
       gap: 9px;
     }
@@ -363,10 +384,10 @@
       margin-bottom: 7px;
     }
     .account-row .quota-bar > div:first-child > span:first-child {
-      flex-basis: 100%;
+      flex-basis: auto;
     }
     .account-row .quota-bar .tabular {
-      font-size: 14px;
+      font-size: 13px;
       color: var(--muted);
       font-weight: 400;
     }

@@ -8,6 +8,18 @@ import { quotaLabel } from "../src/web/lib/quota-display";
 
 const asOf = "2026-09-08T16:00:00+08:00";
 
+type QuotaEstimate = NonNullable<AccountWindow["estimate"]>;
+
+function quotaEstimate(overrides: Partial<QuotaEstimate> = {}): QuotaEstimate {
+  return {
+    usd: "1481.58",
+    credits: "37039.57",
+    deltaPercent: null,
+    reason: "eligible",
+    ...overrides,
+  };
+}
+
 function quotaWindow(overrides: Partial<AccountWindow> = {}): AccountWindow {
   return {
     percent: 32,
@@ -17,6 +29,7 @@ function quotaWindow(overrides: Partial<AccountWindow> = {}): AccountWindow {
     periodUsd: "31.85",
     periodTokens: 22_980_000,
     periodRequests: 193,
+    estimate: quotaEstimate(),
     ...overrides,
   };
 }
@@ -72,6 +85,14 @@ function accountCard(html: string) {
   );
 }
 
+function estimateMarkup(html: string) {
+  return (
+    html.match(
+      /<([a-z]+)\b[^>]*mobile-home-quota-estimate[^>]*>[\s\S]*?<\/\1>/,
+    )?.[0] ?? ""
+  );
+}
+
 test("home trend defaults to a line and preserves unknown values", () => {
   const html = renderHome([0, 100, null]);
   expect(html).toContain('data-variant="line"');
@@ -90,32 +111,53 @@ test("home without cumulative facts does not substitute filtered totals", () => 
   expect(html).not.toContain("$0.00");
 });
 
-test("home prioritizes an exhausted seven-day window without adding a prompt", () => {
+test("home hides the seven-day estimate when the quota is exhausted", () => {
   const account = accountFixture({
     fiveHour: quotaWindow({ percent: 40 }),
-    sevenDay: quotaWindow({ percent: 100 }),
+    sevenDay: quotaWindow({
+      percent: 100,
+      periodUsd: "844.5",
+      estimate: quotaEstimate({ usd: "1481.58" }),
+    }),
   });
   const html = renderHome([], [account]);
 
-  expect(html).toContain("7 天");
-  expect(html).not.toContain("5 小时");
+  expect(html).toContain("7d");
+  expect(html).not.toContain("5h");
   expect(html).toContain(quotaLabel(account.sevenDay, asOf));
-  expect(html).not.toContain("7 天已用尽");
+  expect(html).not.toContain("7d已用尽");
   expect(html).toContain('data-exhausted="true"');
   expect(html).toContain('data-quota-count="1"');
+  expect((html.match(/mobile-home-quota-estimate/g) ?? []).length).toBe(0);
+  expect(html).toContain("$844.50");
+  expect(html).not.toContain("$1,481.58");
+  expect(html).not.toContain('title="7d 预估"');
+  expect(html).not.toContain("quota-cost-separator");
 });
 
 test("home renders both valid quota windows with explicit period labels", () => {
   const account = accountFixture({
     fiveHour: quotaWindow({ percent: 7 }),
-    sevenDay: quotaWindow({ percent: 32 }),
+    sevenDay: quotaWindow({
+      percent: 32,
+      periodUsd: "844.5",
+      estimate: quotaEstimate({ usd: "1481.58" }),
+    }),
   });
   const html = renderHome([], [account]);
 
   expect((html.match(/class="mobile-home-quota"/g) ?? []).length).toBe(2);
-  expect(html).toContain("5 小时");
-  expect(html).toContain("7 天");
+  expect(html).toContain("5h");
+  expect(html).toContain("7d");
   expect(html).toContain('data-count="2"');
+  expect((html.match(/mobile-home-quota-estimate/g) ?? []).length).toBe(1);
+  expect(html).toContain("$844.50");
+  expect(html).toContain("$1,481.58");
+
+  const estimate = estimateMarkup(html);
+  expect(estimate).toContain('title="7d 预估"');
+  expect(estimate).toContain('aria-label="7d 预估');
+  expect(estimate.replace(/<[^>]+>/g, "")).toBe("$1,481.58");
 });
 
 test("home hides an unavailable five-hour window instead of rendering an N/A placeholder", () => {
@@ -127,9 +169,45 @@ test("home hides an unavailable five-hour window instead of rendering an N/A pla
   const card = accountCard(html);
 
   expect((card.match(/class="mobile-home-quota"/g) ?? []).length).toBe(1);
-  expect(card).toContain("7 天");
-  expect(card).not.toContain("5 小时");
+  expect(card).toContain("7d");
+  expect(card).not.toContain("5h");
   expect(card).not.toContain("N/A");
+});
+
+test("home shows N/A when a valid seven-day quota has no estimate", () => {
+  const account = accountFixture({
+    sevenDay: quotaWindow({ estimate: undefined }),
+  });
+  const card = accountCard(renderHome([], [account]));
+
+  expect(card).toContain("mobile-home-quota-estimate");
+  expect(card).toContain('title="7d 预估"');
+  expect(card).toContain('aria-label="7d 预估');
+  expect(card).toContain("N/A");
+});
+
+test("home omits the estimate group without a valid seven-day quota", () => {
+  const fiveHourOnly = accountFixture({
+    id: "five-hour",
+    fiveHour: quotaWindow(),
+    sevenDay: null,
+  });
+  const expiredSevenDay = accountFixture({
+    id: "expired-seven-day",
+    fiveHour: null,
+    sevenDay: quotaWindow({
+      resetsAt: "2026-09-08T15:59:59+08:00",
+    }),
+  });
+  const api = accountFixture({
+    id: "api",
+    name: "API",
+    plan: "API",
+    kind: "api",
+  });
+  const html = renderHome([], [fiveHourOnly, expiredSevenDay, api]);
+
+  expect(html).not.toContain("mobile-home-quota-estimate");
 });
 
 test("home keeps unavailable subscription windows as N/A and preserves account entry", () => {

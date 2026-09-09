@@ -69,9 +69,11 @@ import {
 } from "./components/ThemeControl";
 import {
   accountQuotaExhausted,
+  estimateAmount,
   quotaLabel,
   quotaPercent,
   quotaState,
+  showQuotaEstimate,
   visibleQuotaWindows,
 } from "./lib/quota-display";
 import { useQuotaClock } from "./lib/use-quota-clock";
@@ -249,19 +251,6 @@ function windowAmount(
     : formatCredits(window.periodCredits ?? null);
 }
 
-function estimateAmount(
-  window: AccountWindow | null,
-  unit: "usd" | "credits",
-  asOf: string,
-) {
-  if (!window || quotaState(window, asOf) === "expired") return "N/A";
-  const estimate = window.estimate;
-  if (!estimate) return "N/A";
-  const value = unit === "usd" ? estimate.usd : estimate.credits;
-  if (estimate.reason !== "eligible") return "N/A";
-  return unit === "usd" ? formatUsd(value) : formatCredits(value);
-}
-
 function readPage(): Page {
   const id = location.hash.slice(1);
   return pages.some((p) => p.id === id)
@@ -315,17 +304,22 @@ function QuotaPeriod({
   window,
   label,
   asOf,
+  compactEstimate = false,
 }: {
   window: AccountWindow | null;
   label: string;
   asOf: string;
+  compactEstimate?: boolean;
 }) {
+  const showEstimate =
+    compactEstimate && label === "7d" && showQuotaEstimate(window, asOf);
+  const estimated = showEstimate ? estimateAmount(window, "usd", asOf) : null;
   const available =
     window && quotaPercent(window, asOf) !== null && window.state !== "unknown";
   const reset =
     available && window.resetsAt ? (
       <span className="quota-period-reset" aria-label={`${label}重置时间`}>
-        {label === "5 小时"
+        {label === "5h"
           ? new Intl.DateTimeFormat("zh-CN", {
               timeZone: "Asia/Shanghai",
               hour: "2-digit",
@@ -345,11 +339,30 @@ function QuotaPeriod({
       <QuotaBar window={window} label={label} asOf={asOf} reset={reset} />
       {available && (
         <>
-          <span className="quota-period-usage">
-            <strong aria-label={`${label}费用`}>
-              {windowAmount(window, "usd", asOf)}
-            </strong>
-            <span className="quota-period-volume">
+          <span
+            className="quota-period-usage"
+            data-with-estimate={showEstimate}
+          >
+            <span className="quota-cost-pair">
+              <strong aria-label={`${label}费用`}>
+                {windowAmount(window, "usd", asOf)}
+              </strong>
+              {showEstimate && (
+                <>
+                  <span className="quota-cost-separator" aria-hidden="true">
+                    ·
+                  </span>
+                  <em
+                    className="quota-cost-estimate"
+                    title="7d 预估"
+                    aria-label={`7d 预估 ${estimated}`}
+                  >
+                    {estimated}
+                  </em>
+                </>
+              )}
+            </span>
+            <span className="quota-period-volume quota-cost-volume">
               <span>{compact(window.periodTokens ?? null)} Tokens</span>
               <span aria-hidden="true">·</span>
               <span>
@@ -403,6 +416,7 @@ function AccountRow({
       data-has-quota={hasQuota}
       data-quota-count={windows.length}
       data-quota-exhausted={exhausted}
+      data-has-estimate={showQuotaEstimate(account.sevenDay, asOf)}
       onClick={onOpen}
     >
       <span className="account-identity">
@@ -444,7 +458,12 @@ function AccountRow({
               key={key}
               className={`account-window ${key === "fiveHour" ? "account-five-hour" : "account-seven-day"}`}
             >
-              <QuotaPeriod window={window} label={label} asOf={asOf} />
+              <QuotaPeriod
+                window={window}
+                label={label}
+                asOf={asOf}
+                compactEstimate={compactUsage}
+              />
             </span>
           ))}
           {!windows.length && (
@@ -452,11 +471,13 @@ function AccountRow({
               额度 N/A
             </span>
           )}
-          <span className="account-capacity">
-            <small>7 天预估费用</small>
-            <AccountTrend accountId={account.id} load={readAccountTrend} />
-            <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
-          </span>
+          {!compactUsage && showQuotaEstimate(account.sevenDay, asOf) && (
+            <span className="account-capacity">
+              <small>7d 预估</small>
+              <AccountTrend accountId={account.id} load={readAccountTrend} />
+              <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
+            </span>
+          )}
         </>
       ) : (
         <span className="account-no-quota">
@@ -524,6 +545,7 @@ function OverviewQuotas({
   onRequests,
   accountUsage,
   usdBasis,
+  compactUsage = false,
 }: {
   accounts: LedgerAccount[];
   asOf: string;
@@ -532,6 +554,7 @@ function OverviewQuotas({
   onRequests: (account: LedgerAccount) => void;
   accountUsage?: Record<string, AccountLifetime>;
   usdBasis: UsdBasis;
+  compactUsage?: boolean;
 }) {
   return (
     <section
@@ -564,6 +587,7 @@ function OverviewQuotas({
               data-has-quota={hasQuota}
               data-quota-count={windows.length}
               data-quota-exhausted={accountQuotaExhausted(account, asOf)}
+              data-has-estimate={showQuotaEstimate(account.sevenDay, asOf)}
               key={account.id}
               onClick={() => (hasQuota ? onOpen(account) : onRequests(account))}
               aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
@@ -595,15 +619,19 @@ function OverviewQuotas({
                       window={window}
                       label={label}
                       asOf={asOf}
+                      compactEstimate={compactUsage}
                     />
                   ))}
                   {!windows.length && <span className="muted">额度 N/A</span>}
-                  <span className="quota-preview-estimate">
-                    <span>7 天预估</span>
-                    <strong>
-                      {estimateAmount(account.sevenDay, "usd", asOf)}
-                    </strong>
-                  </span>
+                  {!compactUsage &&
+                    showQuotaEstimate(account.sevenDay, asOf) && (
+                      <span className="quota-preview-estimate">
+                        <span>7d 预估</span>
+                        <strong>
+                          {estimateAmount(account.sevenDay, "usd", asOf)}
+                        </strong>
+                      </span>
+                    )}
                 </>
               ) : (
                 <span className="quota-preview-usage">
@@ -1256,6 +1284,7 @@ export function App() {
                 )}
                 asOf={quotaAsOf}
                 accountUsage={snapshot?.view.accountUsage}
+                compactUsage={smallScreen}
                 usdBasis={usdBasis}
                 onOpen={setSelectedAccount}
                 onAll={() => navigate("accounts")}
@@ -1876,9 +1905,9 @@ export function App() {
                   </div>
                   <div className="account-list-heading" aria-hidden="true">
                     <span>账户</span>
-                    <span>5 小时</span>
-                    <span>7 天</span>
-                    <span>7 天预估</span>
+                    <span>5h</span>
+                    <span>7d</span>
+                    <span>7d 预估</span>
                     <span />
                   </div>
                   <div>
@@ -2363,7 +2392,7 @@ export function App() {
                         hour12: false,
                       })}
                     </dd>
-                    <dt>七天重置</dt>
+                    <dt>7d 重置</dt>
                     <dd>
                       {!selectedAccount.sevenDay
                         ? "N/A"
@@ -2382,7 +2411,7 @@ export function App() {
                       ({ key }) => key === "fiveHour",
                     ) && (
                       <>
-                        <dt>5 小时周期费用</dt>
+                        <dt>5h 周期费用</dt>
                         <dd>
                           {windowAmount(
                             selectedAccount.fiveHour,
@@ -2390,7 +2419,7 @@ export function App() {
                             quotaAsOf,
                           )}
                         </dd>
-                        <dt>5 小时周期 Credits</dt>
+                        <dt>5h 周期 Credits</dt>
                         <dd>
                           {windowAmount(
                             selectedAccount.fiveHour,
@@ -2400,11 +2429,11 @@ export function App() {
                         </dd>
                       </>
                     )}
-                    <dt>7 天周期费用</dt>
+                    <dt>7d 周期费用</dt>
                     <dd>
                       {windowAmount(selectedAccount.sevenDay, "usd", quotaAsOf)}
                     </dd>
-                    <dt>7 天周期 Credits</dt>
+                    <dt>7d 周期 Credits</dt>
                     <dd>
                       {windowAmount(
                         selectedAccount.sevenDay,
@@ -2412,22 +2441,26 @@ export function App() {
                         quotaAsOf,
                       )}
                     </dd>
-                    <dt>预计每周额度（美元）</dt>
-                    <dd>
-                      {estimateAmount(
-                        selectedAccount.sevenDay,
-                        "usd",
-                        quotaAsOf,
-                      )}
-                    </dd>
-                    <dt>预计每周额度（点数）</dt>
-                    <dd>
-                      {estimateAmount(
-                        selectedAccount.sevenDay,
-                        "credits",
-                        quotaAsOf,
-                      )}
-                    </dd>
+                    {showQuotaEstimate(selectedAccount.sevenDay, quotaAsOf) && (
+                      <>
+                        <dt>7d 预估费用</dt>
+                        <dd>
+                          {estimateAmount(
+                            selectedAccount.sevenDay,
+                            "usd",
+                            quotaAsOf,
+                          )}
+                        </dd>
+                        <dt>7d 预估 Credits</dt>
+                        <dd>
+                          {estimateAmount(
+                            selectedAccount.sevenDay,
+                            "credits",
+                            quotaAsOf,
+                          )}
+                        </dd>
+                      </>
+                    )}
                   </dl>
                 </>
               ) : (

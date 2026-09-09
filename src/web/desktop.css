@@ -1869,6 +1869,10 @@
   .app-shell .account-row[data-quota-count="1"] .account-capacity .mini-trend {
     --mini-trend-height: 76px;
   }
+  .app-shell .account-row[data-quota-count="1"][data-has-estimate="false"] {
+    grid-template-columns: minmax(160px, 0.7fr) minmax(0, 2.1fr) 32px;
+    grid-template-areas: "identity single arrow";
+  }
 }
 @media (min-width: 901px) and (max-width: 1000px) {
   .app-shell .account-row[data-quota-count="1"],
@@ -1878,6 +1882,9 @@
   .app-shell .account-row[data-quota-count="1"] .account-window,
   .app-shell .account-row .account-window-unavailable {
     grid-area: single;
+  }
+  .app-shell .account-row[data-quota-count="1"][data-has-estimate="false"] {
+    grid-template-areas: "identity identity" "single single";
   }
 }
 
