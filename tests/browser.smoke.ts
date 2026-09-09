@@ -651,9 +651,9 @@ try {
   await expect(
     page.getByRole("button", { name: "第 75 页", exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: /USD 估值/ }).click();
+  await page.getByRole("button", { name: "费用", exact: true }).click();
   await expect(
-    page.getByRole("columnheader", { name: /USD 估值/ }),
+    page.getByRole("columnheader", { name: "费用", exact: true }),
   ).toHaveAttribute("aria-sort", /ascending|descending/);
   await expect(
     page.getByRole("columnheader", { name: /时间/ }),
@@ -744,7 +744,7 @@ try {
   await expect(
     page.getByRole("heading", { name: "请求明细", exact: true }),
   ).toHaveCount(0);
-  await page.getByRole("button", { name: "模型", exact: true }).click();
+  await page.getByRole("group", { name: "汇总维度", exact: true }).getByRole("button", { name: "模型", exact: true }).click();
   await expect(page.locator(".report-section tbody tr")).toHaveCount(4);
   await expect(page.getByRole("button", { name: "导出 CSV" })).toHaveCount(0);
   await page.getByRole("button", { name: "账户", exact: true }).click();
@@ -766,7 +766,7 @@ try {
   await expect(
     page
       .locator(".report-section")
-      .getByRole("columnheader", { name: /USD 估值/ }),
+      .getByRole("columnheader", { name: "费用", exact: true }),
   ).toBeAttached();
   await capture({
     path: "test-results/reports-mobile.png",
@@ -1005,7 +1005,7 @@ try {
   await expect(
     page
       .getByRole("region", { name: "用量摘要", exact: true })
-      .getByText("估算费用", { exact: true }),
+      .getByText("费用", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("已计价费用", { exact: true })).toHaveCount(0);
   await expect(page.getByText("1 条未计价", { exact: true })).toHaveCount(0);
@@ -1272,7 +1272,7 @@ try {
     `${baseUrl}#accounts`,
   );
   await page.reload();
-  const expiryAmount = page.locator('.account-row [aria-label="7 天估算费用"]');
+  const expiryAmount = page.locator('.account-row [aria-label="7 天费用"]');
   await expect(expiryAmount).toHaveText("$12.34");
   const readsBeforeExpiry = expiryReads;
   await page.locator(".account-row").first().click();

@@ -23,7 +23,7 @@ import {
   Check,
   SlidersHorizontal,
 } from "lucide-react";
-import type { LedgerAccount, UsdBasis } from "../../shared/report";
+import type { LedgerAccount } from "../../shared/report";
 import {
   aggregateReport,
   amount,
@@ -52,8 +52,8 @@ const reportSortOptions = [
   { value: "cacheWrite", label: "缓存写入" },
   { value: "output", label: "输出" },
   { value: "requests", label: "请求数" },
-  { value: "usd", label: "USD 估值" },
-  { value: "credits", label: "Credits 估值" },
+  { value: "usd", label: "费用" },
+  { value: "credits", label: "Credits" },
 ] as const;
 const features = tableFeatures({
   rowSortingFeature,
@@ -87,14 +87,12 @@ export function ReportTable({
   accounts,
   dimension,
   onDimension,
-  usdBasis,
 }: {
   data: Row[];
   count: number;
   accounts: LedgerAccount[];
   dimension: ReportDimension;
   onDimension: (dimension: ReportDimension) => void;
-  usdBasis: UsdBasis;
 }) {
   const [sorting, setSorting] = usePreference<SortingState>(
     "report-sort",
@@ -146,7 +144,7 @@ export function ReportTable({
     {
       id: "usd",
       accessorFn: (row) => numericAmount(row.usd),
-      header: `USD 估值 · ${usdBasis === "subscription" ? "订阅等价" : "标准 API"}`,
+      header: "费用",
       cell: (info) => (
         <strong>{amount(info.getValue<number | null>(), "usd")}</strong>
       ),
@@ -154,7 +152,7 @@ export function ReportTable({
     {
       id: "credits",
       accessorFn: (row) => numericAmount(row.credits),
-      header: "Credits 估值",
+      header: "Credits",
       cell: (info) => amount(info.getValue<number | null>(), "credits"),
     },
   ];
@@ -174,7 +172,7 @@ export function ReportTable({
     { id: "key", label },
     { id: "requests", label: "请求数" },
     { id: "tokens", label: "Tokens" },
-    { id: "usd", label: "USD 估值" },
+    { id: "usd", label: "费用" },
   ] as const;
   return (
     <section
@@ -387,7 +385,7 @@ export function ReportTable({
                   {compact(item.tokens)}
                 </span>
                 <span className="mobile-report-usd">
-                  <span className="sr-only">USD 估值 </span>
+                  <span className="sr-only">费用 </span>
                   <strong>{amount(numericAmount(item.usd), "usd")}</strong>
                 </span>
               </summary>
@@ -421,16 +419,13 @@ export function ReportTable({
                   <dd>{item.requests.toLocaleString()}</dd>
                 </div>
                 <div>
-                  <dt>
-                    USD 估值 ·{" "}
-                    {usdBasis === "subscription" ? "订阅等价" : "标准 API"}
-                  </dt>
+                  <dt>费用</dt>
                   <dd>
                     <strong>{amount(numericAmount(item.usd), "usd")}</strong>
                   </dd>
                 </div>
                 <div>
-                  <dt>Credits 估值</dt>
+                  <dt>Credits</dt>
                   <dd>{amount(numericAmount(item.credits), "credits")}</dd>
                 </div>
               </dl>

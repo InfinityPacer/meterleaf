@@ -14,7 +14,6 @@ function renderReport() {
       accounts={snapshot.accounts}
       dimension="model"
       onDimension={() => {}}
-      usdBasis="subscription"
     />,
   );
 }
@@ -28,7 +27,10 @@ test("mobile report headers expose the four sortable summary fields", () => {
   expect(headers).toContain("模型");
   expect(headers).toContain("请求数");
   expect(headers).toContain("Tokens");
-  expect(headers).toContain("USD 估值");
+  expect(headers).toContain("费用");
+  expect(headers).not.toContain("USD 估值");
+  expect(headers).not.toContain("订阅等价");
+  expect(headers).not.toContain("标准 API");
   expect(headers.match(/data-sort-direction=/g) ?? []).toHaveLength(4);
   expect(headers).toContain('data-sort-direction="asc"');
   expect(headers.match(/<svg/g) ?? []).toHaveLength(4);
@@ -45,9 +47,13 @@ test("report menu keeps every supported sorting field", () => {
     "缓存写入",
     "输出",
     "请求数",
-    "USD 估值",
-    "Credits 估值",
+    "费用",
+    "Credits",
   ]) {
     expect(html).toContain(label);
   }
+  expect(html).not.toContain("USD 估值");
+  expect(html).not.toContain("Credits 估值");
+  expect(html).not.toContain("订阅等价");
+  expect(html).not.toContain("标准 API");
 });

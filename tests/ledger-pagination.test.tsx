@@ -70,13 +70,16 @@ test("ledger pagination exposes mobile and desktop text plus one current page", 
       onSelect={() => {}}
       search=""
       onSearch={() => {}}
-      usdBasis="api"
     />,
   );
   const pageMarkup =
     html.match(/<nav class="ledger-page-numbers"[\s\S]*?<\/nav>/)?.[0] ?? "";
 
   expect(html).toContain('class="ledger-page-summary mobile-only"');
+  expect(html).toContain("费用");
+  expect(html).not.toContain("USD 估值");
+  expect(html).not.toContain("订阅等价");
+  expect(html).not.toContain("标准 API");
   expect(html).toContain("第 10 / 20 页");
   expect(html).toContain('class="ledger-page-total desktop-only"');
   expect(html).toContain("每页 12 条，共 240 条记录");
@@ -100,7 +103,6 @@ test("an out-of-range empty page retains navigation to the last valid page", () 
       onSelect={() => {}}
       search=""
       onSearch={() => {}}
-      usdBasis="api"
     />,
   );
   expect(html).toContain("第 3 / 3 页");
@@ -146,7 +148,6 @@ test.each([
         onSelect={() => {}}
         search=""
         onSearch={() => {}}
-        usdBasis="api"
       />,
     );
     const mobile =

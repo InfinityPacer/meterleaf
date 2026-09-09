@@ -1,14 +1,7 @@
 import { version as appVersion } from "../../../package.json";
-import {
-  ArrowUpRight,
-  BookOpen,
-  Database,
-  Globe2,
-  Scale,
-  Terminal,
-} from "lucide-react";
+import { ArrowUpRight, Database, Globe2, Scale, Terminal } from "lucide-react";
 import type { ComponentProps } from "react";
-import type { LedgerSnapshot, UsdBasis } from "../../shared/report";
+import type { LedgerSnapshot } from "../../shared/report";
 import { ThemeControl } from "./ThemeControl";
 import "./about-page.css";
 
@@ -21,8 +14,6 @@ export interface AboutPageProps extends Pick<
 > {
   /** 当前账本使用的数据来源模式；首个快照尚未到达时可以缺省。 */
   mode?: LedgerSnapshot["mode"];
-  /** 当前页面使用的 USD 估算口径。 */
-  usdBasis: UsdBasis;
 }
 
 export function AboutPage({
@@ -30,11 +21,9 @@ export function AboutPage({
   mobileLayout,
   onMobileLayoutChange,
   mode,
-  usdBasis,
 }: AboutPageProps) {
   const modeLabel =
     mode === "live" ? "实时 API" : mode === "demo" ? "本地演示" : "尚未读取";
-  const usdBasisLabel = usdBasis === "subscription" ? "订阅等价" : "标准 API";
 
   return (
     <section className="about-page" aria-labelledby="about-page-title">
@@ -90,13 +79,6 @@ export function AboutPage({
             </div>
             <div>
               <dt>
-                <BookOpen size={15} />
-                USD 估算口径
-              </dt>
-              <dd>{usdBasisLabel}</dd>
-            </div>
-            <div>
-              <dt>
                 <Scale size={15} />
                 许可证
               </dt>
@@ -134,14 +116,6 @@ export function AboutPage({
               <dd>Asia/Shanghai</dd>
             </div>
           </dl>
-
-          <div className="about-page-pricing">
-            <h4>计价说明</h4>
-            <p>
-              订阅等价不加收长上下文费用，标准 API
-              按公开费率估算，七天额度按本周期消费与已用比例预估。
-            </p>
-          </div>
         </section>
       </div>
     </section>

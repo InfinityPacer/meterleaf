@@ -22,7 +22,7 @@ const distributionSortOptions = [
   { id: "model", label: "模型" },
   { id: "requests", label: "请求数" },
   { id: "tokens", label: "Tokens" },
-  { id: "usd", label: "USD 估值" },
+  { id: "usd", label: "费用" },
   { id: "share", label: "占比" },
 ] as const;
 type DistributionSort = {
@@ -196,7 +196,7 @@ export function ModelDistribution({
             )}
             {total > 0 && (
               <div className="model-donut-total" aria-hidden="true">
-                <span>{unit === "usd" ? "估算费用" : "总 Tokens"}</span>
+                <span>{unit === "usd" ? "费用" : "总 Tokens"}</span>
                 <strong>{amount(total, unit)}</strong>
               </div>
             )}
@@ -209,7 +209,7 @@ export function ModelDistribution({
           >
             <table>
               <caption className="sr-only">
-                模型请求数、Tokens、独立美元估值与
+                模型请求数、Tokens、费用与
                 {unit === "usd" ? "费用" : "Tokens"}占比
               </caption>
               <thead>

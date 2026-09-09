@@ -83,13 +83,17 @@ test("report table keeps values while removing incomplete and partial-value note
       accounts: [],
       dimension: "model",
       onDimension: () => {},
-      usdBasis: "subscription",
     }),
   );
 
   expect(html).toContain("N/A");
   expect(html).toContain("$1.25");
   expect(html).toContain("1.25");
+  expect(html).toContain("费用");
+  expect(html).not.toContain("USD 估值");
+  expect(html).not.toContain("Credits 估值");
+  expect(html).not.toContain("订阅等价");
+  expect(html).not.toContain("标准 API");
   expect(html).not.toContain("无已知值");
   expect(html).not.toContain("已计价小计");
   expect(html).not.toContain("字段不完整");

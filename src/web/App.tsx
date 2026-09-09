@@ -15,7 +15,6 @@ import {
 } from "@tanstack/react-query";
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Menu as ActionMenu } from "@base-ui/react/menu";
-import type { Charge } from "../domain/pricing";
 import {
   Activity,
   ArrowDownLeft,
@@ -232,16 +231,6 @@ function formatCredits(value: string | null) {
   return numeric === null ? "N/A" : amount(numeric, "credits");
 }
 
-function chargeBasisLabel(charge: Charge | undefined) {
-  if (!charge) return "N/A";
-  if (charge.basis === "upstream") return "上游金额";
-  if (charge.basis === "estimated")
-    return charge.assumedStandard
-      ? "独立费率估值 · 档位按 Standard"
-      : "独立费率估值";
-  return "N/A";
-}
-
 function windowAmount(
   window: AccountWindow | null,
   unit: "usd" | "credits",
@@ -352,7 +341,7 @@ function QuotaPeriod({
       {available && (
         <>
           <span className="quota-period-usage">
-            <strong aria-label={`${label}估算费用`}>
+            <strong aria-label={`${label}费用`}>
               {windowAmount(window, "usd", asOf)}
             </strong>
             <span className="quota-period-volume">
@@ -489,7 +478,7 @@ function AccountRow({
               </span>
               <span>
                 <Coins className="account-metric-icon" aria-hidden="true" />
-                <small>估算费用</small>
+                <small>费用</small>
                 <strong>{formatUsd(accountUsage.usd)}</strong>
                 {!compactUsage && (
                   <AccountTrend
@@ -624,7 +613,7 @@ function OverviewQuotas({
                   </span>
                   <span>
                     <span>
-                      <Coins size={16} aria-hidden="true" /> 估算费用
+                      <Coins size={16} aria-hidden="true" /> 费用
                     </span>
                     <strong>{usage ? formatUsd(usage.usd) : "N/A"}</strong>
                   </span>
@@ -1206,7 +1195,6 @@ export function App() {
           {page === "settings" && (
             <AboutPage
               mode={snapshot?.mode}
-              usdBasis={usdBasis}
               onResolvedChange={setDark}
               mobileLayout={mobileLayout}
               onMobileLayoutChange={setMobileLayout}
@@ -1235,7 +1223,7 @@ export function App() {
                       </dd>
                     </div>
                     <div>
-                      <dt>估算费用</dt>
+                      <dt>费用</dt>
                       <dd>{formatUsd(quotaSnapshot.lifetimeTotals.usd)}</dd>
                     </div>
                     <div>
@@ -1383,7 +1371,6 @@ export function App() {
                     account.id ===
                     (page === "accounts" ? accountFilter : filter.account),
                 )?.name ?? "全部账户",
-                usdBasis === "subscription" ? "订阅等价" : "标准 API",
                 page === "accounts"
                   ? { active: "使用中", archived: "已归档", all: "全部状态" }[
                       archiveView
@@ -1449,7 +1436,7 @@ export function App() {
                 />
               )}
               <Segmented
-                label="USD 估算口径"
+                label="计价口径"
                 value={usdBasis}
                 onChange={(basis) => {
                   setUsdBasisOverride(basis);
@@ -1543,7 +1530,7 @@ export function App() {
                       <span className="metric-symbol" aria-hidden="true">
                         <Leaf />
                       </span>
-                      <div className="metric-label">估算费用</div>
+                      <div className="metric-label">费用</div>
                       <div className="metric-value">
                         {amount(
                           usdSummary.hasKnown ? usdSummary.value : null,
@@ -1577,7 +1564,7 @@ export function App() {
                         points={view?.units.usd.points ?? []}
                         metric="usd"
                         tone="teal"
-                        label="所选时段估算费用趋势"
+                        label="所选时段费用趋势"
                         hideCaption
                       />
                     </div>
@@ -1703,9 +1690,9 @@ export function App() {
                         <span>
                           <i className={`chart-series-symbol ${chartStyle}`} />
                           {unit === "usd"
-                            ? `USD 估算 · ${usdBasis === "subscription" ? "订阅等价" : "标准 API"}`
+                            ? "费用"
                             : unit === "credits"
-                              ? "Credits 独立估值"
+                              ? "Credits"
                               : "总 tokens"}
                         </span>
                         <div className="chart-controls">
@@ -1779,7 +1766,7 @@ export function App() {
                             {unit === "tokens"
                               ? "总 Tokens"
                               : unit === "usd"
-                                ? "估算费用"
+                                ? "费用"
                                 : "Credits"}
                           </span>
                           <strong>
@@ -2049,7 +2036,6 @@ export function App() {
                     accounts={snapshot.accounts}
                     dimension={reportDimension}
                     onDimension={setReportDimension}
-                    usdBasis={usdBasis}
                   />
                 </>
               )}
@@ -2070,7 +2056,6 @@ export function App() {
                   search={filter.search}
                   onSearch={(search) => patchFilter({ search })}
                   onSelect={selectRecord}
-                  usdBasis={usdBasis}
                 />
               )}
             </>
@@ -2169,17 +2154,14 @@ export function App() {
               {selected ? modelLabel(selected.model) : "请求"}
             </SheetTitle>
             <SheetDescription className="sr-only">
-              请求用量与估算费用
+              请求用量与费用
             </SheetDescription>
           </SheetHeader>
           {selected && (
             <div className="detail-body">
               <div className="detail-amount">
                 {formatUsd(selected.usd)}
-                <span>
-                  USD 估算 ·{" "}
-                  {usdBasis === "subscription" ? "订阅等价" : "标准 API"}
-                </span>
+                <span>费用</span>
               </div>
               <dl className="details-list">
                 <dt>时间</dt>
@@ -2257,24 +2239,6 @@ export function App() {
                         ? "Flex"
                         : "Standard"}
                 </dd>
-                <dt>USD 估值依据</dt>
-                <dd>{chargeBasisLabel(selected.valuation?.usd)}</dd>
-                <dt>另一套 USD 参考</dt>
-                <dd>
-                  {formatUsd(
-                    (usdBasis === "api"
-                      ? selected.valuation?.subscriptionUsd
-                      : selected.valuation?.apiUsd
-                    )?.amount ?? null,
-                  )}
-                  <span className="inline-badge">
-                    {usdBasis === "api" ? "订阅等价" : "标准 API"}
-                  </span>
-                </dd>
-                <dt>Credits 估值依据</dt>
-                <dd>{chargeBasisLabel(selected.valuation?.credits)}</dd>
-                <dt>费率版本</dt>
-                <dd>{selected.priceVersion}</dd>
                 <dt>来源 ID</dt>
                 <dd>{selected.sourceId || "N/A"}</dd>
                 <dt>源记录 ID</dt>
@@ -2321,7 +2285,7 @@ export function App() {
               </dl>
               <div className="detail-credit">
                 <Coins size={18} />
-                <span>Credits 独立估值</span>
+                <span>Credits</span>
                 <strong>{formatCredits(selected.credits)}</strong>
               </div>
               {snapshot?.mode === "demo" && (
@@ -2397,7 +2361,7 @@ export function App() {
                               })
                             : "N/A"}
                     </dd>
-                    <dt>5 小时周期 USD</dt>
+                    <dt>5 小时周期费用</dt>
                     <dd>
                       {windowAmount(selectedAccount.fiveHour, "usd", quotaAsOf)}
                     </dd>
@@ -2409,7 +2373,7 @@ export function App() {
                         quotaAsOf,
                       )}
                     </dd>
-                    <dt>7 天周期 USD</dt>
+                    <dt>7 天周期费用</dt>
                     <dd>
                       {windowAmount(selectedAccount.sevenDay, "usd", quotaAsOf)}
                     </dd>

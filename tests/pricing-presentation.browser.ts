@@ -78,6 +78,7 @@ try {
       await expect(page.locator("main")).not.toContainText(
         /已计价|已知小计|条不完整|字段不完整|未计价|未知/,
       );
+      await expect(page.locator("main")).not.toContainText(/估算费用|USD 估值|独立估值/);
       const toggle =
         width! > 900 || layout === "sidebar"
           ? distribution.getByRole("button", { name: "按 Tokens", exact: true })
@@ -107,6 +108,23 @@ try {
       await distribution.screenshot({
         path: `test-results/pricing-presentation/${layout}-${width}.png`,
       });
+      await page.goto(`${base}#ledger`);
+      await page.locator("[data-request-id]:visible").first().click();
+      const detail = page.locator(".detail-sheet");
+      await expect(detail).toBeVisible();
+      await expect(detail).toContainText("费用");
+      await expect(detail).toContainText("网关成本");
+      await expect(detail).toContainText("网关计费");
+      await expect(detail).not.toContainText(/估值|估算|另一套|费率版本|订阅等价|标准 API/);
+      await detail.screenshot({ path: `test-results/pricing-presentation/detail-${layout}-${width}.png` });
+      await page.keyboard.press("Escape");
+      await expect(detail).toHaveCount(0);
+      await page.goto(`${base}#settings`);
+      const about = page.locator(".about-page");
+      await expect(about).toBeVisible();
+      await expect(about).not.toContainText(/估算|计价|订阅等价|标准 API/);
+      await expect(about).toContainText("许可证");
+      await about.screenshot({ path: `test-results/pricing-presentation/about-${layout}-${width}.png` });
     }
   }
   expect(errors).toEqual([]);
@@ -116,6 +134,8 @@ try {
       unitSwitch: true,
       matchingChartAndList: true,
       noIncompleteBadges: true,
+      conciseCostLabels: true,
+      detailsAndAbout: true,
       noOverflow: true,
       canvasPixels: true,
     }),

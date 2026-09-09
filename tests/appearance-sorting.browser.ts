@@ -82,7 +82,7 @@ try {
     await page
       .getByRole("button", { name: "模型排名排序", exact: true })
       .click();
-    await page.getByRole("menuitem", { name: "USD 估值", exact: true }).click();
+    await page.getByRole("menuitem", { name: "费用", exact: true }).click();
     await page
       .getByRole("button", { name: "模型排名排序", exact: true })
       .click();
@@ -154,7 +154,7 @@ try {
         (control) => control.getAttribute("aria-label"),
       ),
     );
-  expect(labels).toEqual(["账户筛选", "归档状态", "USD 估算口径"]);
+  expect(labels).toEqual(["账户筛选", "归档状态", "计价口径"]);
   await page.goto(`${base}#reports`);
   await expect(
     page.locator(".model-distribution-scroll thead button"),

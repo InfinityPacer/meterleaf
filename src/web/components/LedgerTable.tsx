@@ -20,11 +20,7 @@ import {
   Search,
   Check,
 } from "lucide-react";
-import type {
-  LedgerAccount,
-  LedgerRecord,
-  UsdBasis,
-} from "../../shared/report";
+import type { LedgerAccount, LedgerRecord } from "../../shared/report";
 import {
   amount,
   compact,
@@ -48,7 +44,6 @@ interface Props {
   onSelect: (row: LedgerRecord) => void;
   search: string;
   onSearch: (value: string) => void;
-  usdBasis: UsdBasis;
   compactView?: boolean;
 }
 
@@ -65,7 +60,7 @@ const ledgerSortOptions = [
   { value: "input", label: "输入 Tokens" },
   { value: "cacheRead", label: "缓存读取" },
   { value: "output", label: "输出 Tokens" },
-  { value: "usd", label: "USD 估值" },
+  { value: "usd", label: "费用" },
 ] as const;
 
 /** 输入展示包含三个输入桶；缺少任一桶时保留未知，不用部分值冒充总输入。 */
@@ -139,7 +134,6 @@ export function LedgerTable({
   onSelect,
   search,
   onSearch,
-  usdBasis,
   compactView = false,
 }: Props) {
   const [searchOpen, setSearchOpen] = useState(false);
@@ -216,7 +210,7 @@ export function LedgerTable({
     {
       id: "usd",
       accessorFn: (row) => numericAmount(row.usd),
-      header: `USD 估值 · ${usdBasis === "subscription" ? "订阅等价" : "标准 API"}`,
+      header: "费用",
       cell: (info) => (
         <strong>{amount(info.getValue<number | null>(), "usd")}</strong>
       ),

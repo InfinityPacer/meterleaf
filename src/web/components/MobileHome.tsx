@@ -226,7 +226,7 @@ function UsageSummary({
           <strong>{formatRequests(usage?.count)}</strong>
         </span>
         <span>
-          <small>估算费用</small>
+          <small>费用</small>
           <strong>{formatUsd(usage?.usd)}</strong>
         </span>
       </div>
@@ -358,7 +358,7 @@ function LifetimeSummary({
           <strong>{formatTokens(lifetime?.tokens.total)}</strong>
         </span>
         <span>
-          <small>估算费用</small>
+          <small>费用</small>
           <strong>{formatUsd(lifetime?.usd)}</strong>
         </span>
         <span>

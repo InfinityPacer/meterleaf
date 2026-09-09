@@ -87,6 +87,10 @@ test("distribution omits unavailable shares but retains the model in other units
   );
   expect(html).toContain("28.6%");
   expect(html).toContain("71.4%");
+  expect(html).toContain("费用");
+  expect(html).not.toContain("USD 估值");
+  expect(html).not.toContain("估算费用");
+  expect(html).not.toContain("独立美元估值");
   expect(html).not.toMatch(/已计价|已知小计|不完整|未知/);
   expect(html).not.toContain('aria-label="查看 c 请求"');
 });

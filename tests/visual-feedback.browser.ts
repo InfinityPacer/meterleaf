@@ -367,12 +367,10 @@ async function assertAboutContent() {
     "Meterleaf",
     "独立 AI 用量账本",
     "数据模式",
-    "USD 估算口径",
     "许可证",
     "GitHub",
     "运行时",
     "时区",
-    "计价说明",
   ])
     await expect(about.getByText(label, { exact: true })).toBeVisible();
   await expect(
@@ -382,6 +380,7 @@ async function assertAboutContent() {
   await expect(about.getByText("Bun", { exact: true })).toBeVisible();
   await expect(about.getByText("Asia/Shanghai", { exact: true })).toBeVisible();
   await expect(about.getByText("常用术语", { exact: true })).toHaveCount(0);
+  await expect(about).not.toContainText(/估算口径|计价说明|订阅等价|标准 API/);
   await expect(
     about.locator(".profile-monogram, .app-profile-button, .account-avatar"),
   ).toHaveCount(0);
