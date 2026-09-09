@@ -76,6 +76,15 @@ function requestInputTokens(record: LedgerRecord) {
     : null;
 }
 
+/** 有效强度优先；缺少有效值时保留请求值，不推断默认档位。 */
+function requestReasoningEffort(record: LedgerRecord) {
+  return (
+    record.details?.reasoningEffort?.trim() ||
+    record.details?.requestedReasoningEffort?.trim() ||
+    null
+  );
+}
+
 export type LedgerPageItem =
   | { type: "page"; pageIndex: number }
   | { type: "ellipsis"; position: "start" | "end" };
@@ -173,11 +182,7 @@ export function LedgerTable({
     {
       id: "reasoningEffort",
       header: "推理强度",
-      // 有效强度优先；上游未记录有效值时保留请求值，不推断默认档位。
-      accessorFn: (row) =>
-        row.details?.reasoningEffort ??
-        row.details?.requestedReasoningEffort ??
-        null,
+      accessorFn: requestReasoningEffort,
       cell: (info) => info.getValue<string | null>() ?? "N/A",
       enableSorting: false,
     },
@@ -420,6 +425,7 @@ export function LedgerTable({
       >
         {table.getRowModel().rows.map((row) => {
           const record = row.original;
+          const effort = requestReasoningEffort(record);
           const account =
             accounts.find((item) => item.id === record.accountId)?.name ??
             record.accountId;
@@ -438,7 +444,18 @@ export function LedgerTable({
                     style={{ background: modelColor(record.model) }}
                     aria-hidden="true"
                   />
-                  <span>{modelLabel(record.model)}</span>
+                  <span className="mobile-request-identity">
+                    <span>{modelLabel(record.model)}</span>
+                    {effort && (
+                      <span
+                        className="mobile-request-effort"
+                        title="推理强度"
+                        aria-label={`推理强度：${effort}`}
+                      >
+                        {effort}
+                      </span>
+                    )}
+                  </span>
                 </span>
                 <strong>{amount(numericAmount(record.usd), "usd")}</strong>
                 <OpenIcon size={14} aria-hidden="true" />
@@ -451,9 +468,11 @@ export function LedgerTable({
                     hour12: false,
                   })}
                 </time>
-                <span className="mobile-request-account">
-                  <span>账户</span>
-                  <span>{account || "N/A"}</span>
+                <span
+                  className="mobile-request-account"
+                  title={account || "N/A"}
+                >
+                  {account || "N/A"}
                 </span>
               </span>
             </button>

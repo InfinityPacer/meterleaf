@@ -153,7 +153,7 @@
   :root[data-mobile-layout="app"] .mobile-request-heading {
     display: grid;
     grid-template-columns: minmax(0, 1fr) max-content 14px;
-    align-items: center;
+    align-items: start;
     gap: 10px;
     min-width: 0;
     font-size: 14px;
@@ -165,6 +165,9 @@
   }
   :root[data-mobile-layout="app"] .mobile-request-heading strong {
     font-weight: 600;
+  }
+  :root[data-mobile-layout="app"] .mobile-request-heading > svg {
+    margin-top: 3px;
   }
   :root[data-mobile-layout="app"] .mobile-request-model,
   :root[data-mobile-layout="app"] .mobile-model-name,
@@ -184,6 +187,23 @@
     height: 7px;
     border-radius: 50%;
   }
+  :root[data-mobile-layout="app"] .mobile-request-model {
+    align-items: baseline;
+  }
+  :root[data-mobile-layout="app"] .mobile-request-identity {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 8px;
+    min-width: 0;
+  }
+  :root[data-mobile-layout="app"] .mobile-request-effort {
+    min-width: 0;
+    max-width: 100%;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
   :root[data-mobile-layout="app"] .mobile-request-meta {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
@@ -200,17 +220,6 @@
     font-variant-numeric: tabular-nums;
   }
   :root[data-mobile-layout="app"] .mobile-request-account {
-    display: flex;
-    justify-content: flex-end;
-    align-items: baseline;
-    gap: 5px;
-    min-width: 0;
-  }
-  :root[data-mobile-layout="app"] .mobile-request-account > :first-child {
-    flex-shrink: 0;
-    font-size: 11px;
-  }
-  :root[data-mobile-layout="app"] .mobile-request-account > :last-child {
     min-width: 0;
     text-align: right;
   }

@@ -34,13 +34,11 @@ try {
       await page.reload();
       const item = page.locator(".mobile-request-item").first();
       await expect(item).toBeVisible();
-      await expect(item.locator(".mobile-request-heading")).not.toContainText(
-        "N/A",
-      );
+      await expect(item.locator(".mobile-request-effort")).toHaveCount(0);
       await expect(item.locator(".mobile-request-meta")).not.toContainText(
         "N/A",
       );
-      await expect(item.locator(".mobile-request-account")).toContainText(
+      await expect(item.locator(".mobile-request-account")).not.toContainText(
         "账户",
       );
       const geometry = await item.evaluate((element) => {
@@ -68,6 +66,42 @@ try {
       await page.screenshot({
         path: `test-results/mobile-request-layout/${width}-${theme}.png`,
       });
+      // 拉长可见文本只验证 CSS 边界；effort 取值优先级由组件测试覆盖。
+      await item.evaluate((element) => {
+        element.querySelector(".mobile-request-identity > span")!.textContent =
+          "GPT 6 Astra Long Context Preview";
+        const effort = document.createElement("span");
+        effort.className = "mobile-request-effort";
+        effort.textContent = "xhigh";
+        element.querySelector(".mobile-request-identity")!.append(effort);
+        element.querySelector(".mobile-request-account")!.textContent =
+          "Development Production Team";
+      });
+      const longText = await item.evaluate((element) => {
+        const rect = (selector: string) =>
+          element.querySelector(selector)!.getBoundingClientRect();
+        const model = rect(".mobile-request-model");
+        const effort = rect(".mobile-request-effort");
+        const price = rect("strong");
+        const meta = rect(".mobile-request-meta");
+        return {
+          noOverflow:
+            document.documentElement.scrollWidth <= innerWidth &&
+            element.scrollWidth <= element.clientWidth,
+          effortWithinModel: effort.right <= model.right + 1,
+          priceClear: price.left >= model.right,
+          metaBelow: meta.top >= effort.bottom,
+        };
+      });
+      expect(longText).toEqual({
+        noOverflow: true,
+        effortWithinModel: true,
+        priceClear: true,
+        metaBelow: true,
+      });
+      await page.screenshot({
+        path: `test-results/mobile-request-layout/${width}-${theme}-long-text.png`,
+      });
       await item.click();
       const dialog = page.getByRole("dialog");
       await expect(dialog).toBeVisible();
@@ -84,7 +118,7 @@ try {
       status: "passed",
       states: 6,
       checks:
-        "request hierarchy, labeled account, no placeholder metadata, detail and pagination",
+        "request hierarchy, effort, unprefixed account, long text, detail and pagination",
     }),
   );
 } finally {
