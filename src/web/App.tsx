@@ -2212,12 +2212,12 @@ export function App() {
                 {selected.details && (
                   <>
                     <dt>请求模型</dt>
-                    <dd>{selected.details.requestedModel ?? "未提供"}</dd>
+                    <dd>{selected.details.requestedModel ?? "N/A"}</dd>
                     {selected.details.sentModel !==
                       selected.details.requestedModel && (
                       <>
                         <dt>发送模型</dt>
-                        <dd>{selected.details.sentModel ?? "未提供"}</dd>
+                        <dd>{selected.details.sentModel ?? "N/A"}</dd>
                       </>
                     )}
                     {selected.details.responseModel && (
@@ -2230,7 +2230,7 @@ export function App() {
                     <dd>
                       {selected.details.requestedReasoningEffort ??
                         selected.details.reasoningEffort ??
-                        "未提供"}
+                        "N/A"}
                     </dd>
                     {selected.details.requestedReasoningEffort &&
                       selected.details.reasoningEffort &&
@@ -2294,9 +2294,9 @@ export function App() {
                 <dt>费率版本</dt>
                 <dd>{selected.priceVersion}</dd>
                 <dt>来源 ID</dt>
-                <dd>{selected.sourceId ?? "未提供"}</dd>
+                <dd>{selected.sourceId || "N/A"}</dd>
                 <dt>源记录 ID</dt>
-                <dd>{selected.sourceRecordId ?? "未提供"}</dd>
+                <dd>{selected.sourceRecordId || "N/A"}</dd>
                 <dt>网关成本</dt>
                 <dd>{formatUsd(selected.gatewayCost ?? null)}</dd>
                 <dt>网关计费</dt>

@@ -109,3 +109,34 @@ test("an out-of-range empty page retains navigation to the last valid page", () 
   expect(html).toContain('aria-label="下一页"');
   expect(html).not.toContain("第 10 / 3 页");
 });
+
+test("mobile requests group model and price above time and a labeled account", () => {
+  const record = createDemoLedger("api").records[0]!;
+  const html = renderToStaticMarkup(
+    <LedgerTable
+      records={[{ ...record, sourceId: undefined, details: undefined }]}
+      total={1}
+      pageIndex={0}
+      onPage={() => {}}
+      sorting={{ id: "occurredAt", desc: true }}
+      onSorting={() => {}}
+      accounts={[]}
+      onSelect={() => {}}
+      search=""
+      onSearch={() => {}}
+      usdBasis="api"
+    />,
+  );
+  const mobile =
+    html.match(
+      /<button[^>]*class="mobile-request-item"[\s\S]*?<\/button>/,
+    )?.[0] ?? "";
+  expect(mobile).toContain('class="mobile-request-model"');
+  expect(mobile).toContain('class="mobile-request-account"><span>账户</span>');
+  expect(mobile).toContain(`<span>${record.accountId}</span>`);
+  expect(mobile.indexOf("<strong>")).toBeLessThan(mobile.indexOf("<time"));
+  expect(mobile).not.toContain("N/A");
+  expect(mobile).not.toContain('title="推理强度"');
+  expect(mobile).not.toContain('title="来源"');
+  expect(html).toContain("推理强度");
+});

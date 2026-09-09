@@ -433,13 +433,6 @@ export function LedgerTable({
               onClick={() => onSelect(record)}
             >
               <span className="mobile-request-heading">
-                <time dateTime={record.occurredAt}>
-                  {localTime(record.occurredAt, {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    hour12: false,
-                  })}
-                </time>
                 <span className="mobile-request-model">
                   <i
                     style={{ background: modelColor(record.model) }}
@@ -451,13 +444,17 @@ export function LedgerTable({
                 <OpenIcon size={14} aria-hidden="true" />
               </span>
               <span className="mobile-request-meta">
-                <span title="来源">{record.sourceId || "N/A"}</span>
-                <span title="推理强度">
-                  {record.details?.reasoningEffort ??
-                    record.details?.requestedReasoningEffort ??
-                    "N/A"}
+                <time dateTime={record.occurredAt}>
+                  {localTime(record.occurredAt, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hour12: false,
+                  })}
+                </time>
+                <span className="mobile-request-account">
+                  <span>账户</span>
+                  <span>{account || "N/A"}</span>
                 </span>
-                <span title="账户">{account || "N/A"}</span>
               </span>
             </button>
           );
