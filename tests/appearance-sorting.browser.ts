@@ -168,6 +168,86 @@ try {
   await page.screenshot({
     path: "test-results/appearance-sorting/desktop.png",
   });
+  for (const width of [320, 390, 901, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const layout of ["app", "sidebar"]) {
+      for (const theme of ["light", "dark"]) {
+        await page.evaluate(
+          ({ layout, theme }) => {
+            localStorage.setItem(
+              "meterleaf-pref-mobile-layout",
+              JSON.stringify(layout),
+            );
+            localStorage.setItem("meterleaf-theme", theme);
+          },
+          { layout, theme },
+        );
+        await page.goto(`${base}#reports`);
+        await page.reload();
+        await expect(page.locator(".model-donut canvas")).toBeVisible();
+        for (const [view, trigger] of [
+          ["reports", "模型排名排序"],
+          ["reports", "汇总选项"],
+          ["ledger", "请求排序"],
+        ]) {
+          if (view === "ledger") await page.goto(`${base}#ledger`);
+          const button = page.getByRole("button", {
+            name: trigger,
+            exact: true,
+          });
+          if (trigger !== "模型排名排序" && (width > 900 || layout !== "app"))
+            continue;
+          await button.click();
+          const menu = page.getByRole("menu");
+          await expect(menu).toBeVisible();
+          await expect(menu).not.toHaveCSS(
+            "background-color",
+            "rgba(0, 0, 0, 0)",
+          );
+          await expect(menu).toHaveCSS("border-radius", "8px");
+          await expect(menu.getByRole("menuitem").first()).toHaveCSS(
+            "display",
+            "flex",
+          );
+          const geometry = await menu.evaluate((element) => {
+            const box = element.getBoundingClientRect();
+            const rows = [...element.querySelectorAll('[role="menuitem"]')].map(
+              (row) => row.getBoundingClientRect(),
+            );
+            return {
+              inViewport:
+                box.left >= 0 &&
+                box.right <= innerWidth &&
+                box.top >= 0 &&
+                box.bottom <= innerHeight,
+              width: box.width,
+              rowsDoNotOverlap: rows.every(
+                (row, index) => !index || row.top >= rows[index - 1]!.bottom,
+              ),
+              onTop: element.contains(
+                document.elementFromPoint(
+                  box.left + box.width / 2,
+                  box.top + 20,
+                ),
+              ),
+            };
+          });
+          expect(geometry).toMatchObject({
+            inViewport: true,
+            width: 240,
+            rowsDoNotOverlap: true,
+            onTop: true,
+          });
+          await page.screenshot({
+            path: `test-results/appearance-sorting/menu-${width}-${layout}-${theme}-${view}-${trigger}.png`,
+          });
+          await page.keyboard.press("Escape");
+          await expect(menu).toBeHidden();
+          await expect(button).toBeFocused();
+        }
+      }
+    }
+  }
   console.log(
     JSON.stringify({
       status: "passed",

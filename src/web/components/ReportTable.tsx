@@ -226,8 +226,12 @@ export function ReportTable({
               <SlidersHorizontal size={18} />
             </ActionMenu.Trigger>
             <ActionMenu.Portal>
-              <ActionMenu.Positioner sideOffset={6} align="end">
-                <ActionMenu.Popup className="mobile-data-menu">
+              <ActionMenu.Positioner
+                className="data-menu-positioner"
+                sideOffset={6}
+                align="end"
+              >
+                <ActionMenu.Popup className="data-menu">
                   <ActionMenu.Group>
                     <ActionMenu.GroupLabel>汇总维度</ActionMenu.GroupLabel>
                     {dimensions.map((item) => (

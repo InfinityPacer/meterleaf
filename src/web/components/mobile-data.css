@@ -11,6 +11,55 @@
   display: contents;
 }
 
+/* Portal 菜单不依赖导航布局或视口宽度。 */
+.data-menu-positioner {
+  z-index: 80;
+}
+.data-menu {
+  position: relative;
+  width: min(240px, calc(100vw - 24px));
+  max-height: min(560px, var(--available-height, calc(100dvh - 24px)));
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 8px 24px #00000018;
+  font:
+    14px/1.5 system-ui,
+    sans-serif;
+  letter-spacing: 0;
+}
+.data-menu [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.data-menu [role="menuitem"] svg {
+  flex-shrink: 0;
+}
+.data-menu [data-highlighted] {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+  background: var(--soft);
+}
+.data-menu [role="separator"] {
+  height: 1px;
+  margin: 6px;
+  background: var(--line);
+}
+.data-menu [role="group"] > :first-child {
+  padding: 6px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 @media (max-width: 900px) {
   :root[data-mobile-layout="app"] .request-table-scroll,
   :root[data-mobile-layout="app"] .report-table-scroll,
@@ -73,51 +122,6 @@
     width: 100%;
     margin-bottom: 8px;
     background: var(--surface);
-  }
-  :root[data-mobile-layout="app"] .mobile-data-menu {
-    position: relative;
-    z-index: 80;
-    width: min(240px, calc(100vw - 24px));
-    max-height: min(560px, var(--available-height));
-    overflow-y: auto;
-    padding: 6px;
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    background: var(--surface);
-    color: var(--ink);
-    box-shadow: 0 8px 24px #00000018;
-    font:
-      14px/1.5 system-ui,
-      sans-serif;
-    letter-spacing: 0;
-  }
-  :root[data-mobile-layout="app"] .mobile-data-menu [role="menuitem"] {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    min-height: 44px;
-    padding: 8px 10px;
-    border-radius: 8px;
-    cursor: pointer;
-  }
-  :root[data-mobile-layout="app"] .mobile-data-menu [data-highlighted] {
-    outline: 2px solid var(--blue);
-    outline-offset: -2px;
-    background: var(--soft);
-  }
-  :root[data-mobile-layout="app"] .mobile-data-menu [role="separator"] {
-    height: 1px;
-    margin: 6px;
-    background: var(--line);
-  }
-  :root[data-mobile-layout="app"]
-    .mobile-data-menu
-    [role="group"]
-    > :first-child {
-    padding: 6px 10px;
-    color: var(--muted);
-    font-size: 12px;
   }
   :root[data-mobile-layout="app"] .mobile-request-list {
     display: block;

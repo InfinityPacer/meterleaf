@@ -273,8 +273,12 @@ export function LedgerTable({
               <ArrowUpDown size={18} />
             </ActionMenu.Trigger>
             <ActionMenu.Portal>
-              <ActionMenu.Positioner sideOffset={6} align="end">
-                <ActionMenu.Popup className="mobile-data-menu">
+              <ActionMenu.Positioner
+                className="data-menu-positioner"
+                sideOffset={6}
+                align="end"
+              >
+                <ActionMenu.Popup className="data-menu">
                   {ledgerSortOptions.map((option) => (
                     <ActionMenu.Item
                       key={option.value}

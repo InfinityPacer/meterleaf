@@ -134,8 +134,12 @@ export function ModelDistribution({
                 <ArrowUpDown size={17} />
               </ActionMenu.Trigger>
               <ActionMenu.Portal>
-                <ActionMenu.Positioner sideOffset={6} align="end">
-                  <ActionMenu.Popup className="mobile-data-menu">
+                <ActionMenu.Positioner
+                  className="data-menu-positioner"
+                  sideOffset={6}
+                  align="end"
+                >
+                  <ActionMenu.Popup className="data-menu">
                     {distributionSortOptions.map((option) => (
                       <ActionMenu.Item
                         key={option.id}
