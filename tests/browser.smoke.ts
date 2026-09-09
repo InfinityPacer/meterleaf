@@ -6,6 +6,7 @@ import {
   type Request,
 } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
+import { version } from "../package.json";
 import type { LedgerSnapshot } from "../src/shared/report";
 import { createDemoLedger } from "../src/web/demo/ledger";
 import { aggregateReport, filterRecords } from "../src/web/lib/report";
@@ -191,7 +192,7 @@ async function expectWithinViewport(locator: Locator) {
 
 async function openAboutPage(currentPage: Page) {
   const desktopLink = currentPage.getByRole("button", {
-    name: "关于 Meterleaf 0.1.0",
+    name: `关于 Meterleaf ${version}`,
     exact: true,
   });
   if (await desktopLink.isVisible()) {
