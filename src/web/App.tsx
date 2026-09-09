@@ -416,7 +416,9 @@ function AccountRow({
       data-has-quota={hasQuota}
       data-quota-count={windows.length}
       data-quota-exhausted={exhausted}
-      data-has-estimate={showQuotaEstimate(account.sevenDay, asOf)}
+      data-has-estimate={
+        !compactUsage || showQuotaEstimate(account.sevenDay, asOf)
+      }
       onClick={onOpen}
     >
       <span className="account-identity">
@@ -473,13 +475,9 @@ function AccountRow({
           )}
           {!compactUsage && (
             <span className="account-capacity">
-              {showQuotaEstimate(account.sevenDay, asOf) && (
-                <small>7d 预估</small>
-              )}
+              <small>7d 预估</small>
               <AccountTrend accountId={account.id} load={readAccountTrend} />
-              {showQuotaEstimate(account.sevenDay, asOf) && (
-                <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
-              )}
+              <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
             </span>
           )}
         </>
@@ -591,7 +589,9 @@ function OverviewQuotas({
               data-has-quota={hasQuota}
               data-quota-count={windows.length}
               data-quota-exhausted={accountQuotaExhausted(account, asOf)}
-              data-has-estimate={showQuotaEstimate(account.sevenDay, asOf)}
+              data-has-estimate={
+                !compactUsage || showQuotaEstimate(account.sevenDay, asOf)
+              }
               key={account.id}
               onClick={() => (hasQuota ? onOpen(account) : onRequests(account))}
               aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
@@ -627,15 +627,14 @@ function OverviewQuotas({
                     />
                   ))}
                   {!windows.length && <span className="muted">额度 N/A</span>}
-                  {!compactUsage &&
-                    showQuotaEstimate(account.sevenDay, asOf) && (
-                      <span className="quota-preview-estimate">
-                        <span>7d 预估</span>
-                        <strong>
-                          {estimateAmount(account.sevenDay, "usd", asOf)}
-                        </strong>
-                      </span>
-                    )}
+                  {!compactUsage && (
+                    <span className="quota-preview-estimate">
+                      <span>7d 预估</span>
+                      <strong>
+                        {estimateAmount(account.sevenDay, "usd", asOf)}
+                      </strong>
+                    </span>
+                  )}
                 </>
               ) : (
                 <span className="quota-preview-usage">
@@ -2452,7 +2451,11 @@ export function App() {
                         quotaAsOf,
                       )}
                     </dd>
-                    {showQuotaEstimate(selectedAccount.sevenDay, quotaAsOf) && (
+                    {(!smallScreen ||
+                      showQuotaEstimate(
+                        selectedAccount.sevenDay,
+                        quotaAsOf,
+                      )) && (
                       <>
                         <dt>7d 预估费用</dt>
                         <dd>

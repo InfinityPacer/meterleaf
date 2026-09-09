@@ -16,7 +16,7 @@ export function estimateAmount(
   );
 }
 
-/** 已耗尽的周额度没有剩余用量可预估；未知或过期周期不展示预测。 */
+/** 移动端紧凑金额行隐藏已耗尽、未知或过期周期的预估；Web 始终保留预估栏。 */
 export function showQuotaEstimate(window: AccountWindow | null, asOf: string) {
   const percent = quotaPercent(window, asOf);
   return (
