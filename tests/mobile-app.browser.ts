@@ -609,7 +609,7 @@ try {
   await expect(
     page.getByRole("button", { name: "返回总览", exact: true }),
   ).toHaveCount(0);
-  await chooseSetting("手机导航", "侧栏模式");
+  await chooseSetting("页面布局", "侧栏模式");
   await expect(page.getByRole("navigation", { name: "底部导航" })).toBeHidden();
   await page.getByRole("button", { name: "打开导航" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
@@ -621,7 +621,7 @@ try {
   await page.screenshot({ path: "test-results/mobile-sidebar.png" });
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "打开导航" })).toBeFocused();
-  await chooseSetting("手机导航", "App 模式");
+  await chooseSetting("页面布局", "App 模式");
   await page.reload();
   await ready();
   await expect(page.locator("html")).toHaveAttribute(

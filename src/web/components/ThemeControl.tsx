@@ -108,6 +108,9 @@ export function ThemeControl({
       const nextDark = resolveThemeDark(mode, media?.matches ?? false);
       root.classList.toggle("dark", nextDark);
       root.dataset.palette = palette;
+      document
+        .querySelector('meta[name="theme-color"]')
+        ?.setAttribute("content", nextDark ? "#171b20" : "#f7f8fa");
       setDark(nextDark);
       onResolvedChange(nextDark);
     };
@@ -138,9 +141,9 @@ export function ThemeControl({
       <div className="theme-control-fields">
         {onMobileLayoutChange && (
           <div className="theme-control-field">
-            <span className="theme-control-label">手机导航</span>
+            <span className="theme-control-label">页面布局</span>
             <FilterSelect
-              label="手机导航"
+              label="页面布局"
               value={mobileLayout ?? "app"}
               onChange={(value) => {
                 if (value === "app" || value === "sidebar")
@@ -237,11 +240,11 @@ export function ThemeControl({
         </div>
         {onMobileLayoutChange && (
           <div className="theme-preferences-row">
-            <span>手机导航</span>
+            <span>页面布局</span>
             <div
               className="theme-navigation-options"
               role="group"
-              aria-label="手机导航"
+              aria-label="页面布局"
             >
               <button
                 aria-pressed={mobileLayout === "app"}

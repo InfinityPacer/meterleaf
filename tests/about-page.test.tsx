@@ -16,7 +16,7 @@ test("about combines product information with graphical preferences without a pr
   expect(html).toContain("标准 API");
   expect(html).toContain("Apache-2.0");
   expect(html).toContain("InfinityPacer/meterleaf");
-  expect(html).toContain('role="group" aria-label="手机导航"');
+  expect(html).toContain('role="group" aria-label="页面布局"');
   expect(html).toContain('role="group" aria-label="外观"');
   expect(html).toContain('role="group" aria-label="配色"');
   expect(html).not.toContain("常用术语");

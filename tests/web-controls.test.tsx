@@ -79,6 +79,13 @@ test("ThemeControl keeps appearance and palette contracts independent", () => {
   expect(resolveThemeDark("dark", false)).toBe(true);
 });
 
+test("fresh and invalid appearance preferences follow the system", () => {
+  expect(readStoredThemeMode(null)).toBe("system");
+  expect(readStoredThemeMode({ getItem: () => "invalid" })).toBe("system");
+  expect(resolveThemeDark(readStoredThemeMode(null), true)).toBe(true);
+  expect(resolveThemeDark(readStoredThemeMode(null), false)).toBe(false);
+});
+
 test("ThemeControl and SyncControl expose accessible Base UI triggers", () => {
   const client = new QueryClient();
   const theme = renderToStaticMarkup(

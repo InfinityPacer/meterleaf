@@ -4,6 +4,39 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f7f8fa" />
+    <style>
+      :root {
+        background: #f7f8fa;
+        color-scheme: light;
+      }
+      :root.dark {
+        background: #171b20;
+        color-scheme: dark;
+      }
+    </style>
+    <script id="theme-bootstrap">
+      // 在样式和应用模块加载前恢复外观，避免刷新时先绘制浅色页面。
+      (() => {
+        let mode = "system";
+        let palette = "default";
+        try {
+          mode = localStorage.getItem("meterleaf-theme") || "system";
+          palette =
+            localStorage.getItem("meterleaf-palette") === "natural"
+              ? "natural"
+              : "default";
+        } catch {}
+        const dark =
+          mode === "dark" ||
+          (mode !== "light" &&
+            matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.dataset.palette = palette;
+        document.querySelector('meta[name="theme-color"]').content = dark
+          ? "#171b20"
+          : "#f7f8fa";
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/meterleaf-192.png" />
