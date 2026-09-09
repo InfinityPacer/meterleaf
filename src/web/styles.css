@@ -36,6 +36,7 @@
   --teal: #087d6d;
   --blue: #2878db;
   --danger: #d94065;
+  --quota-alert: #d94e69;
   --control-line: #dce4ed;
   --tint: #eaf3ef;
   --radius: 6px;
@@ -868,7 +869,7 @@ h3 {
   background: var(--teal);
 }
 .progress-track > span.high {
-  background: #c84c61;
+  background: var(--quota-alert);
 }
 .account-reset {
   display: flex;
@@ -1972,6 +1973,12 @@ button[data-size="icon-sm"],
 }
 .quota-preview-estimate {
   margin-top: auto;
+}
+.quota-preview[data-quota-count="1"] > .quota-period {
+  margin-block: auto;
+}
+.quota-preview[data-quota-count="1"] > .quota-preview-estimate {
+  margin-top: 0;
 }
 .quota-preview-usage {
   display: grid;

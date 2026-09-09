@@ -512,7 +512,7 @@
   }
 
   .app-shell .quota-preview .progress-track > span.high {
-    background: #d94e69;
+    background: var(--quota-alert);
   }
 
   .app-shell .quota-preview .quota-period-usage strong {
@@ -864,7 +864,7 @@
   }
 
   .app-shell .account-row .progress-track > span.high {
-    background: #d94e69;
+    background: var(--quota-alert);
   }
 
   .app-shell .account-row .quota-period-usage {

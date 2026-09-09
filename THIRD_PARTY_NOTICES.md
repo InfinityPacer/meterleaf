@@ -2,7 +2,7 @@
 
 ## Lucide
 
-应用内的操作与导航图标使用 `lucide-react`，保留以下许可证原文。Meterleaf 品牌 Logo 不属于 Lucide 图标。
+应用内的操作与导航图标使用 `lucide-react`，保留以下许可证原文。
 
 ISC License
 

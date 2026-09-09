@@ -188,6 +188,9 @@ try {
           const fill = plus.getByRole("progressbar").locator(":scope > span");
           expect(
             await fill.evaluate((el) => getComputedStyle(el).backgroundColor),
+          ).toBe("rgb(217, 78, 105)");
+          expect(
+            await fill.evaluate((el) => getComputedStyle(el).backgroundColor),
           ).not.toBe(
             await pro
               .getByRole("progressbar")
@@ -199,6 +202,22 @@ try {
               () => document.documentElement.scrollWidth <= innerWidth,
             ),
           ).toBe(true);
+          if (route === "overview" && !mobileHome) {
+            for (const card of [pro, plus]) {
+              const heading = (await card
+                .locator(".quota-preview-heading")
+                .boundingBox())!;
+              const period = (await card
+                .locator(".quota-period")
+                .boundingBox())!;
+              const estimate = (await card
+                .locator(".quota-preview-estimate")
+                .boundingBox())!;
+              const above = period.y - heading.y - heading.height;
+              const below = estimate.y - period.y - period.height;
+              expect(Math.abs(above - below)).toBeLessThan(2);
+            }
+          }
           if (width >= 1200 && route === "accounts") {
             const capacity = (await pro
               .locator(".account-capacity")
