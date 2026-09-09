@@ -263,7 +263,11 @@ function TrendStrip({
   }));
 
   return (
-    <div className="mobile-home-trend" aria-label="近 30 天 Tokens 趋势">
+    <div
+      className="mobile-home-trend"
+      role="group"
+      aria-label="近 30 天 Tokens 趋势"
+    >
       {points.length ? (
         <>
           <div

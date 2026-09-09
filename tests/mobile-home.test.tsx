@@ -41,7 +41,7 @@ test("home trend preserves zero and distinguishes unknown from known bars", () =
   expect(html).toContain('style="height:100%"');
   expect(html).toContain('class="mobile-home-trend-bar is-unknown"');
   expect(html).toContain("无已知值");
-  expect(html).toContain("近 30 天 Tokens 趋势");
+  expect(html).toContain('role="group" aria-label="近 30 天 Tokens 趋势"');
 });
 
 test("home without cumulative facts does not substitute filtered totals", () => {
