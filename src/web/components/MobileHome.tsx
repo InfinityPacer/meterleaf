@@ -102,7 +102,7 @@ function formatTokens(value: number | null | undefined) {
 function formatRequests(value: number | null | undefined) {
   return value !== null && value !== undefined && Number.isFinite(value)
     ? value.toLocaleString("en-US")
-    : "—";
+    : "N/A";
 }
 
 function planLabel(account: LedgerAccount) {
@@ -157,9 +157,9 @@ function QuotaSummary({
   const percent = quotaPercent(window, asOf);
   const usable = state === "active" && percent !== null;
   const reset = formatResetTime(window.resetsAt, asOf);
-  const amountValue = usable ? formatUsd(window.periodUsd) : "—";
-  const tokens = usable ? formatTokens(window.periodTokens) : "—";
-  const requests = usable ? formatRequests(window.periodRequests) : "—";
+  const amountValue = usable ? formatUsd(window.periodUsd) : "N/A";
+  const tokens = usable ? formatTokens(window.periodTokens) : "N/A";
+  const requests = usable ? formatRequests(window.periodRequests) : "N/A";
 
   return (
     <div
@@ -185,7 +185,7 @@ function QuotaSummary({
         aria-valuenow={usable ? percent : undefined}
         aria-valuetext={usable ? quotaLabel(window, asOf) : "未知"}
       >
-        <span style={{ width: `${usable ? percent : 0}%` }} />
+        <span style={usable ? { width: `${percent}%` } : undefined} />
       </div>
       <div className="mobile-home-quota-foot">
         <strong>{amountValue}</strong>
@@ -308,13 +308,10 @@ function TrendStrip({
               <li key={`${point.at}-${index}`}>
                 {formatTrendLabel(point.at, asOf, index === points.length - 1)}
                 ：
-                {point.value === null
-                  ? "无已知值"
+                {point.value === null || !Number.isFinite(point.value)
+                  ? "N/A"
                   : `${compact(point.value)} Tokens`}
                 ，{point.count.toLocaleString("en-US")} 次请求
-                {point.incomplete
-                  ? `，${point.incomplete} 条记录字段不完整`
-                  : ""}
               </li>
             ))}
           </ol>

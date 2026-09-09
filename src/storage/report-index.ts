@@ -1038,9 +1038,10 @@ export class ReportIndex {
     return {
       count: aggregate.count,
       tokens: aggregate.tokenIncompleteRows === 0 ? aggregate.tokenValue : null,
-      usd: usd.knownRows === aggregate.count ? usd.value.toString() : null,
+      // 与明细路径一致：缺价记录不抹除同一周期内已经计价的金额。
+      usd: usd.knownRows > 0 ? usd.value.toString() : null,
       credits:
-        aggregate.credits.knownRows === aggregate.count
+        aggregate.credits.knownRows > 0
           ? aggregate.credits.value.toString()
           : null,
     };

@@ -233,18 +233,13 @@ function formatCredits(value: string | null) {
 }
 
 function chargeBasisLabel(charge: Charge | undefined) {
-  if (!charge) return "未提供";
+  if (!charge) return "N/A";
   if (charge.basis === "upstream") return "上游金额";
   if (charge.basis === "estimated")
     return charge.assumedStandard
       ? "独立费率估值 · 档位按 Standard"
       : "独立费率估值";
-  return "未计价";
-}
-
-function chargeReasonLabel(charge: Charge | undefined) {
-  if (!charge || charge.amount !== null) return "";
-  return charge.reason ? `未计价原因：${charge.reason}` : "未计价原因未提供";
+  return "N/A";
 }
 
 function windowAmount(
@@ -1599,9 +1594,7 @@ export function App() {
                           "credits",
                         )}
                       </div>
-                      <div className="metric-foot">
-                        {creditsSummary.incompleteRows ? "已计价点数" : ""}
-                      </div>
+                      <div className="metric-foot" />
                       <MiniTrend
                         points={view?.units.credits.points ?? []}
                         metric="credits"
@@ -1626,9 +1619,6 @@ export function App() {
                         <span>
                           {(view?.count ?? 0).toLocaleString()} 次请求
                         </span>
-                        {tokenSummary.incompleteRows > 0 && (
-                          <span>{tokenSummary.incompleteRows} 条不完整</span>
-                        )}
                       </div>
                       <MiniTrend
                         points={view?.units.tokens.points ?? []}
@@ -1646,21 +1636,16 @@ export function App() {
                         缓存命中率 <Zap size={14} />
                       </div>
                       <div className="metric-value">
-                        {cacheRate === null
-                          ? "无完整样本"
-                          : cacheRate.toFixed(1)}
+                        {cacheRate === null ? "N/A" : cacheRate.toFixed(1)}
                         {cacheRate !== null && <small>%</small>}
                       </div>
                       <div className="metric-foot">
                         <span className="cache-text">
                           {cacheSummary.hasKnown
                             ? compact(cacheSummary.value)
-                            : "无已知值"}
+                            : "N/A"}
                         </span>
                         <span>缓存读取 tokens</span>
-                        {cacheSummary.incompleteRows > 0 && (
-                          <span>{cacheSummary.incompleteRows} 条缺值</span>
-                        )}
                       </div>
                       {cacheRate !== null && (
                         <div className="cache-rate-track" aria-hidden="true">
@@ -1804,7 +1789,13 @@ export function App() {
                       </div>
                       <div className="model-breakdown">
                         {breakdown
-                          .filter((item) => item.count > 0)
+                          .filter(
+                            (item) =>
+                              item.count > 0 &&
+                              item.summary.hasKnown &&
+                              Number.isFinite(item.summary.value) &&
+                              item.summary.value > 0,
+                          )
                           .map((item) => (
                             <button
                               key={item.model}
@@ -1840,10 +1831,7 @@ export function App() {
                                   {item.count.toLocaleString()} 次请求
                                 </span>
                                 <span>
-                                  {totalSummary.hasKnown &&
-                                  item.summary.hasKnown
-                                    ? `${((item.summary.value / total) * 100).toFixed(1)}%`
-                                    : "无占比"}
+                                  {`${((item.summary.value / total) * 100).toFixed(1)}%`}
                                 </span>
                               </div>
                             </button>
@@ -2262,7 +2250,7 @@ export function App() {
                 <dt>速度档</dt>
                 <dd>
                   {selected.tier === "unknown"
-                    ? "未知"
+                    ? "N/A"
                     : selected.tier === "priority"
                       ? "Priority"
                       : selected.tier === "flex"
@@ -2271,12 +2259,6 @@ export function App() {
                 </dd>
                 <dt>USD 估值依据</dt>
                 <dd>{chargeBasisLabel(selected.valuation?.usd)}</dd>
-                {selected.valuation?.usd.amount === null && (
-                  <>
-                    <dt>USD 未计价原因</dt>
-                    <dd>{chargeReasonLabel(selected.valuation.usd)}</dd>
-                  </>
-                )}
                 <dt>另一套 USD 参考</dt>
                 <dd>
                   {formatUsd(
@@ -2307,33 +2289,33 @@ export function App() {
                 <dt>普通输入</dt>
                 <dd>
                   {selected.input === null
-                    ? "未采集"
+                    ? "N/A"
                     : selected.input.toLocaleString()}
                 </dd>
                 <dt>缓存读取</dt>
                 <dd className="cache-text">
                   {selected.cacheRead === null
-                    ? "未采集"
+                    ? "N/A"
                     : selected.cacheRead.toLocaleString()}
                 </dd>
                 <dt>缓存写入</dt>
                 <dd>
                   {selected.cacheWrite === null
-                    ? "未采集"
+                    ? "N/A"
                     : selected.cacheWrite.toLocaleString()}
                 </dd>
                 <dt>输出</dt>
                 <dd>
                   {selected.output === null
-                    ? "未采集"
+                    ? "N/A"
                     : selected.output.toLocaleString()}
                 </dd>
                 <dt>总计</dt>
                 <dd>
                   <strong>
                     {selectedTokenSummary?.hasKnown
-                      ? `${compact(selectedTokenSummary.value)}${selectedTokenSummary.incompleteRows ? "（已知小计，字段不完整）" : ""}`
-                      : "无已知小计"}
+                      ? compact(selectedTokenSummary.value)
+                      : "N/A"}
                   </strong>
                 </dd>
               </dl>

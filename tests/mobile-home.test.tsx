@@ -41,7 +41,7 @@ test("home trend defaults to a line and preserves unknown values", () => {
   expect(html).toContain("Tokens 趋势</strong>");
   expect(html).toContain("0 Tokens");
   expect(html).toContain("100 Tokens");
-  expect(html).toContain("无已知值");
+  expect(html).toContain("N/A");
   expect(html).toContain('role="group" aria-label="近 30 天 Tokens 趋势"');
 });
 

@@ -112,19 +112,7 @@ export function ReportTable({
     {
       accessorKey: "tokens",
       header: "总 Tokens",
-      cell: (info) => {
-        const row = info.row.original;
-        return (
-          <span>
-            {row.tokens === null ? "无已知值" : compact(row.tokens)}
-            {row.incompleteTokens > 0 && (
-              <small className="table-note">
-                {row.incompleteTokens} 条不完整
-              </small>
-            )}
-          </span>
-        );
-      },
+      cell: (info) => compact(info.getValue<number | null>()),
     },
     {
       accessorKey: "input",
@@ -159,33 +147,15 @@ export function ReportTable({
       id: "usd",
       accessorFn: (row) => numericAmount(row.usd),
       header: `USD 估值 · ${usdBasis === "subscription" ? "订阅等价" : "标准 API"}`,
-      cell: (info) => {
-        const row = info.row.original;
-        return (
-          <span>
-            <strong>{amount(info.getValue<number | null>(), "usd")}</strong>
-            {row.unpricedUsd > 0 && (
-              <small className="table-note">已计价小计</small>
-            )}
-          </span>
-        );
-      },
+      cell: (info) => (
+        <strong>{amount(info.getValue<number | null>(), "usd")}</strong>
+      ),
     },
     {
       id: "credits",
       accessorFn: (row) => numericAmount(row.credits),
       header: "Credits 估值",
-      cell: (info) => {
-        const row = info.row.original;
-        return (
-          <span>
-            {amount(info.getValue<number | null>(), "credits")}
-            {row.unpricedCredits > 0 && (
-              <small className="table-note">已计价小计</small>
-            )}
-          </span>
-        );
-      },
+      cell: (info) => amount(info.getValue<number | null>(), "credits"),
     },
   ];
   const table = useTable({
@@ -414,17 +384,11 @@ export function ReportTable({
                 </span>
                 <span>
                   <span className="sr-only">Tokens </span>
-                  {item.tokens === null ? "无已知值" : compact(item.tokens)}
-                  {item.incompleteTokens > 0 && (
-                    <small className="table-note">不完整</small>
-                  )}
+                  {compact(item.tokens)}
                 </span>
                 <span className="mobile-report-usd">
                   <span className="sr-only">USD 估值 </span>
                   <strong>{amount(numericAmount(item.usd), "usd")}</strong>
-                  {item.unpricedUsd > 0 && (
-                    <small className="table-note">已计价小计</small>
-                  )}
                 </span>
               </summary>
               <dl className="mobile-report-details">
@@ -434,14 +398,7 @@ export function ReportTable({
                 </div>
                 <div>
                   <dt>总 Tokens</dt>
-                  <dd>
-                    {item.tokens === null ? "无已知值" : compact(item.tokens)}
-                    {item.incompleteTokens > 0 && (
-                      <small className="table-note">
-                        {item.incompleteTokens} 条不完整
-                      </small>
-                    )}
-                  </dd>
+                  <dd>{compact(item.tokens)}</dd>
                 </div>
                 <div>
                   <dt>输入</dt>
@@ -470,19 +427,11 @@ export function ReportTable({
                   </dt>
                   <dd>
                     <strong>{amount(numericAmount(item.usd), "usd")}</strong>
-                    {item.unpricedUsd > 0 && (
-                      <small className="table-note">已计价小计</small>
-                    )}
                   </dd>
                 </div>
                 <div>
                   <dt>Credits 估值</dt>
-                  <dd>
-                    {amount(numericAmount(item.credits), "credits")}
-                    {item.unpricedCredits > 0 && (
-                      <small className="table-note">已计价小计</small>
-                    )}
-                  </dd>
+                  <dd>{amount(numericAmount(item.credits), "credits")}</dd>
                 </div>
               </dl>
             </details>

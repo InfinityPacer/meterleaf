@@ -125,7 +125,7 @@ export function selectAccountTrendPoints(
 }
 
 function formatMetricValue(value: number | null, metric: MiniTrendMetric) {
-  if (value === null || !Number.isFinite(value)) return "无已知值";
+  if (value === null || !Number.isFinite(value)) return "N/A";
   if (metric === "usd")
     return new Intl.NumberFormat("en-US", {
       style: "currency",
