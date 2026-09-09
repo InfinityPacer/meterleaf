@@ -16,28 +16,43 @@ Meterleaf 只读采集一个 Sub2API PostgreSQL 实例，将用量保存到本�
 
 ## 界面预览
 
-### 用量总览
+### Web
 
-![历史累计、账户额度与消耗趋势](docs/images/overview.jpg)
+![Web 用量总览：历史累计、账户额度与消耗趋势](docs/images/web-overview.png)
 
 <details>
 <summary>账户额度</summary>
 
-![账户周期用量、重置时间与七天预估](docs/images/accounts.jpg)
+![Web 账户额度：周期用量、重置时间与预估趋势](docs/images/web-accounts.png)
 
 </details>
 
 <details>
 <summary>统计报表</summary>
 
-![模型分布与分组汇总](docs/images/reports.jpg)
+![Web 统计报表：模型分布与分组汇总](docs/images/web-reports.png)
 
 </details>
 
 <details>
 <summary>请求明细</summary>
 
-![请求来源、模型、推理强度与用量](docs/images/requests.jpg)
+![Web 请求明细：模型、推理强度与用量](docs/images/web-requests.png)
+
+</details>
+
+### 移动端
+
+| 用量总览                                                                       | 账户额度                                                                       |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| <img src="docs/images/mobile-overview.png" alt="移动端用量总览" width="300" /> | <img src="docs/images/mobile-accounts.png" alt="移动端账户额度" width="300" /> |
+
+<details>
+<summary>统计报表与请求明细</summary>
+
+| 统计报表                                                                      | 请求明细                                                                       |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| <img src="docs/images/mobile-reports.png" alt="移动端统计报表" width="300" /> | <img src="docs/images/mobile-requests.png" alt="移动端请求明细" width="300" /> |
 
 </details>
 
