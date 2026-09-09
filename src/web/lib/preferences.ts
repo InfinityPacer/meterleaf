@@ -93,6 +93,10 @@ export const preferenceSchemas = {
   ]),
   unit: z.enum(["usd", "credits", "tokens"]),
   distributionUnit: z.enum(["usd", "tokens"]),
+  distributionSort: z.object({
+    id: z.enum(["model", "requests", "tokens", "usd", "share"]),
+    desc: z.boolean(),
+  }),
   granularity: z.enum(["hour", "day", "week"]),
   dimension: z.enum(["hour", "day", "week", "model", "account"]),
   chart: z.enum(["bar", "line", "area", "pie"]),

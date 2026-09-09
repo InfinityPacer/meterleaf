@@ -1,7 +1,15 @@
 import { lazy, Suspense } from "react";
+import { Menu as ActionMenu } from "@base-ui/react/menu";
 import { Segmented } from "./Segmented";
 import { preferenceSchemas, usePreference } from "../lib/preferences";
-import { ChevronRight } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Check,
+  ChevronRight,
+} from "lucide-react";
+import { Button } from "./ui/button";
 import type { LedgerView } from "../../shared/ledger-view";
 import { amount, compact, modelColor, modelLabel } from "../lib/report";
 import "./mobile-data.css";
@@ -9,6 +17,57 @@ import "./mobile-data.css";
 const UsageChart = lazy(() =>
   import("./UsageChart").then((m) => ({ default: m.UsageChart })),
 );
+
+const distributionSortOptions = [
+  { id: "model", label: "模型" },
+  { id: "requests", label: "请求数" },
+  { id: "tokens", label: "Tokens" },
+  { id: "usd", label: "USD 估值" },
+  { id: "share", label: "占比" },
+] as const;
+type DistributionSort = {
+  id: (typeof distributionSortOptions)[number]["id"];
+  desc: boolean;
+};
+
+/** 排名使用完整聚合；未知值始终置后，不以零参与排序，也不改动环图顺序。 */
+export function sortedDistributionRows(
+  view: LedgerView["view"],
+  unit: "usd" | "tokens",
+  sorting: DistributionSort,
+) {
+  const values = new Map(
+    view.units[
+      sorting.id === "usd" || sorting.id === "tokens" ? sorting.id : unit
+    ].breakdown.map((row) => [
+      row.model,
+      row.summary.hasKnown ? row.summary.value : null,
+    ]),
+  );
+  const valueOf = (row: LedgerView["view"]["breakdown"][number]) =>
+    sorting.id === "model"
+      ? modelLabel(row.model)
+      : sorting.id === "requests"
+        ? row.count
+        : (values.get(row.model) ?? null);
+  return view.units[unit].breakdown
+    .filter((row) => row.count > 0)
+    .sort((left, right) => {
+      const a = valueOf(left);
+      const b = valueOf(right);
+      if (a === null && b !== null) return 1;
+      if (a !== null && b === null) return -1;
+      const compared =
+        a === b
+          ? 0
+          : typeof a === "number" && typeof b === "number"
+            ? a - b
+            : String(a).localeCompare(String(b));
+      return compared
+        ? compared * (sorting.desc ? -1 : 1)
+        : left.model.localeCompare(right.model);
+    });
+}
 
 /** 同一查询的多单位聚合按模型键关联，不从当前明细页推算模型总量。 */
 export function ModelDistribution({
@@ -25,6 +84,17 @@ export function ModelDistribution({
     preferenceSchemas.distributionUnit,
     "usd",
   );
+  const [sorting, setSorting] = usePreference<DistributionSort>(
+    "distribution-sort",
+    preferenceSchemas.distributionSort,
+    { id: "share", desc: true },
+  );
+  const rankedRows = sortedDistributionRows(view, unit, sorting);
+  const sortBy = (id: DistributionSort["id"]) =>
+    setSorting({
+      id,
+      desc: sorting.id === id ? !sorting.desc : id !== "model",
+    });
   const usd = new Map(
     view.units.usd.breakdown.map((row) => [row.model, row.summary]),
   );
@@ -54,6 +124,43 @@ export function ModelDistribution({
               { value: "usd", label: "按费用" },
             ]}
           />
+          <div className="model-sort-control">
+            <ActionMenu.Root>
+              <ActionMenu.Trigger
+                render={<Button variant="ghost" size="icon-sm" />}
+                aria-label="模型排名排序"
+                title={`模型排名排序：${distributionSortOptions.find((option) => option.id === sorting.id)?.label} · ${sorting.desc ? "降序" : "升序"}`}
+              >
+                <ArrowUpDown size={17} />
+              </ActionMenu.Trigger>
+              <ActionMenu.Portal>
+                <ActionMenu.Positioner sideOffset={6} align="end">
+                  <ActionMenu.Popup className="mobile-data-menu">
+                    {distributionSortOptions.map((option) => (
+                      <ActionMenu.Item
+                        key={option.id}
+                        onClick={() => sortBy(option.id)}
+                      >
+                        {option.label}
+                        {sorting.id === option.id && (
+                          <Check size={15} aria-hidden="true" />
+                        )}
+                      </ActionMenu.Item>
+                    ))}
+                    <ActionMenu.Separator />
+                    <ActionMenu.Item onClick={() => sortBy(sorting.id)}>
+                      切换为{sorting.desc ? "升序" : "降序"}
+                      {sorting.desc ? (
+                        <ArrowUp size={15} />
+                      ) : (
+                        <ArrowDown size={15} />
+                      )}
+                    </ActionMenu.Item>
+                  </ActionMenu.Popup>
+                </ActionMenu.Positioner>
+              </ActionMenu.Portal>
+            </ActionMenu.Root>
+          </div>
         </div>
         <div className="model-distribution-layout">
           <div className="model-donut">
@@ -93,15 +200,36 @@ export function ModelDistribution({
               </caption>
               <thead>
                 <tr>
-                  <th scope="col">模型</th>
-                  <th scope="col">请求数</th>
-                  <th scope="col">Tokens</th>
-                  <th scope="col">USD 估值</th>
-                  <th scope="col">占比</th>
+                  {distributionSortOptions.map((option) => (
+                    <th
+                      key={option.id}
+                      scope="col"
+                      aria-sort={
+                        sorting.id === option.id
+                          ? sorting.desc
+                            ? "descending"
+                            : "ascending"
+                          : "none"
+                      }
+                    >
+                      <button onClick={() => sortBy(option.id)}>
+                        {option.label}
+                        {sorting.id === option.id ? (
+                          sorting.desc ? (
+                            <ArrowDown size={12} />
+                          ) : (
+                            <ArrowUp size={12} />
+                          )
+                        ) : (
+                          <ArrowUpDown size={12} />
+                        )}
+                      </button>
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => {
+                {rankedRows.map((row) => {
                   const dollars = usd.get(row.model);
                   const count = tokens.get(row.model);
                   return (
@@ -142,7 +270,7 @@ export function ModelDistribution({
             {!rows.length && <p className="muted">所选范围内暂无请求</p>}
           </div>
           <ol className="mobile-model-list" aria-label="模型排名" tabIndex={0}>
-            {rows.map((row) => {
+            {rankedRows.map((row) => {
               const dollars = usd.get(row.model);
               const count = tokens.get(row.model);
               const percentage =

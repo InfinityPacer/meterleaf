@@ -2233,6 +2233,12 @@ button[data-size="icon-sm"],
 .overview-history-trend {
   padding: 20px 0 0;
 }
+.model-sort-control {
+  flex: 0 0 auto;
+}
+.model-chart-tool > .section-heading h2 {
+  margin-right: auto;
+}
 @media (max-width: 900px) {
   .overview-history-trend > .section-heading {
     display: grid;

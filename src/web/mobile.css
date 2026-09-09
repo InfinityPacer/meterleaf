@@ -47,11 +47,17 @@
     --app-card-radius: 16px;
     --app-shadow: 0 6px 24px #23374a06;
     --canvas: #f5f8fa;
-    --mobile-bar-height: 76px;
+    --mobile-bar-height: 56px;
+    /* 安全区由浏览器决定；固定背景高度，只随动态工具栏移动位置。 */
+    --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
+    --mobile-safe-bottom-max: env(
+      safe-area-max-inset-bottom,
+      var(--mobile-safe-bottom)
+    );
     background: var(--canvas);
     scroll-padding-top: 76px;
     scroll-padding-bottom: calc(
-      var(--mobile-bar-height) + env(safe-area-inset-bottom) + 16px
+      var(--mobile-bar-height) + var(--mobile-safe-bottom) + 16px
     );
     &.dark {
       --canvas: #151b20;
@@ -128,7 +134,7 @@
     }
     main {
       padding: 12px max(20px, env(safe-area-inset-right))
-        calc(var(--mobile-bar-height) + env(safe-area-inset-bottom) + 24px)
+        calc(var(--mobile-bar-height) + var(--mobile-safe-bottom) + 24px)
         max(20px, env(safe-area-inset-left));
     }
     .dark .app-shell .account-avatar {
@@ -148,17 +154,20 @@
     .mobile-tabbar {
       position: fixed;
       inset: auto 0 0;
+      bottom: calc(
+        env(safe-area-inset-bottom, 0px) - var(--mobile-safe-bottom-max)
+      );
       z-index: 40;
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 2px;
-      min-height: var(--mobile-bar-height);
-      padding: 6px max(8px, env(safe-area-inset-right))
-        calc(8px + env(safe-area-inset-bottom))
+      height: calc(var(--mobile-bar-height) + var(--mobile-safe-bottom-max));
+      padding: 3px max(8px, env(safe-area-inset-right))
+        calc(4px + var(--mobile-safe-bottom-max))
         max(8px, env(safe-area-inset-left));
-      border: 1px solid var(--line);
-      border-bottom: 0;
-      border-radius: 24px 24px 0 0;
+      border: 0;
+      border-top: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+      border-radius: 0;
       background: color-mix(in srgb, var(--surface) 96%, transparent);
       backdrop-filter: blur(24px);
       box-shadow: 0 -4px 24px #23374a05;
@@ -167,28 +176,22 @@
       display: flex;
       flex-direction: column;
       justify-content: center;
-      gap: 4px;
-      height: 54px;
+      gap: 3px;
+      height: 48px;
       padding: 4px 2px;
       font-size: 11px;
       line-height: 1.3;
       text-align: center;
+      color: var(--muted);
       border-radius: 8px;
     }
     .mobile-tabbar button.active {
       color: var(--teal);
       background: transparent;
+      font-weight: 600;
     }
     .mobile-tabbar button.active svg {
-      fill: var(--teal);
-      color: var(--surface);
-      stroke-width: 1.7;
-      border-radius: 5px;
-      background: var(--teal);
-      padding: 2px;
-      box-sizing: content-box;
-      width: 18px;
-      height: 18px;
+      stroke-width: 2.2;
     }
     button {
       touch-action: manipulation;

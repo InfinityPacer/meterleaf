@@ -307,8 +307,8 @@
   :root[data-mobile-layout="app"] .mobile-report-list {
     display: grid;
     grid-template-columns:
-      minmax(0, 1.35fr) minmax(0, 0.75fr) minmax(0, 0.8fr)
-      max-content;
+      minmax(0, 1.25fr) minmax(48px, 0.75fr) minmax(48px, 0.8fr)
+      minmax(68px, max-content);
     min-width: 0;
     color: var(--ink);
     font:
@@ -332,6 +332,47 @@
     border-radius: 8px 8px 0 0;
     background: var(--soft);
     color: var(--muted);
+  }
+  :root[data-mobile-layout="app"] .mobile-report-columns > button {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 2px;
+    width: 100%;
+    min-width: 0;
+    min-height: 34px;
+    padding: 4px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    line-height: 1.25;
+    text-align: left;
+  }
+  :root[data-mobile-layout="app"] .mobile-report-columns > button > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  :root[data-mobile-layout="app"]
+    .mobile-report-columns
+    > button:not(:first-child) {
+    justify-content: flex-end;
+    text-align: right;
+  }
+  :root[data-mobile-layout="app"] .mobile-report-columns > button svg {
+    flex: 0 0 auto;
+    color: var(--muted);
+  }
+  :root[data-mobile-layout="app"]
+    .mobile-report-columns
+    > button[data-sort-direction="asc"]
+    svg,
+  :root[data-mobile-layout="app"]
+    .mobile-report-columns
+    > button[data-sort-direction="desc"]
+    svg {
+    color: var(--teal);
   }
   :root[data-mobile-layout="app"] .mobile-report-item {
     border-bottom: 1px solid var(--line);

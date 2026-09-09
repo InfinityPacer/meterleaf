@@ -19,7 +19,6 @@ import {
   ChevronRight as OpenIcon,
   Search,
   Check,
-  SlidersHorizontal,
 } from "lucide-react";
 import type {
   LedgerAccount,
@@ -271,7 +270,7 @@ export function LedgerTable({
               aria-label="请求排序"
               title="请求排序"
             >
-              <SlidersHorizontal size={18} />
+              <ArrowUpDown size={18} />
             </ActionMenu.Trigger>
             <ActionMenu.Portal>
               <ActionMenu.Positioner sideOffset={6} align="end">

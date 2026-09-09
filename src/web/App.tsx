@@ -1439,18 +1439,6 @@ export function App() {
                   })) ?? []),
                 ]}
               />
-              <Segmented
-                label="USD 估算口径"
-                value={usdBasis}
-                onChange={(basis) => {
-                  setUsdBasisOverride(basis);
-                  localStorage.setItem("meterleaf-usd-basis", basis);
-                }}
-                options={[
-                  { value: "subscription", label: "订阅等价" },
-                  { value: "api", label: "标准 API" },
-                ]}
-              />
               {page === "accounts" && (
                 <FilterSelect
                   label="归档状态"
@@ -1465,6 +1453,18 @@ export function App() {
                   ]}
                 />
               )}
+              <Segmented
+                label="USD 估算口径"
+                value={usdBasis}
+                onChange={(basis) => {
+                  setUsdBasisOverride(basis);
+                  localStorage.setItem("meterleaf-usd-basis", basis);
+                }}
+                options={[
+                  { value: "subscription", label: "订阅等价" },
+                  { value: "api", label: "标准 API" },
+                ]}
+              />
               {mobile && page === "period" && (
                 <>
                   <Segmented

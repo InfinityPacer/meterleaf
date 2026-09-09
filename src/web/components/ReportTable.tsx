@@ -200,6 +200,12 @@ export function ReportTable({
     table.setPageIndex(0);
   }, [data]);
   const activeSorting = sorting[0] ?? { id: "key", desc: false };
+  const mobileReportHeaders = [
+    { id: "key", label },
+    { id: "requests", label: "请求数" },
+    { id: "tokens", label: "Tokens" },
+    { id: "usd", label: "USD 估值" },
+  ] as const;
   return (
     <section
       className="ledger-section report-section"
@@ -352,11 +358,36 @@ export function ReportTable({
         aria-label="汇总列表"
         tabIndex={0}
       >
-        <div className="mobile-report-columns" aria-hidden="true">
-          <span>{label}</span>
-          <span>请求数</span>
-          <span>Tokens</span>
-          <span>USD 估值</span>
+        <div className="mobile-report-columns">
+          {mobileReportHeaders.map((header) => {
+            const column = table.getColumn(header.id);
+            if (!column) return null;
+            const direction = column.getIsSorted();
+            const directionLabel =
+              direction === "asc"
+                ? "升序"
+                : direction === "desc"
+                  ? "降序"
+                  : "未排序";
+            return (
+              <button
+                key={header.id}
+                type="button"
+                data-sort-direction={direction || "none"}
+                aria-label={`按${header.label}排序，当前${directionLabel}`}
+                onClick={column.getToggleSortingHandler()}
+              >
+                <span>{header.label}</span>
+                {direction === "asc" ? (
+                  <ArrowUp size={12} aria-hidden="true" />
+                ) : direction === "desc" ? (
+                  <ArrowDown size={12} aria-hidden="true" />
+                ) : (
+                  <ArrowUpDown size={12} aria-hidden="true" />
+                )}
+              </button>
+            );
+          })}
         </div>
         {table.getRowModel().rows.map((row) => {
           const item = row.original;
