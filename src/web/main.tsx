@@ -5,6 +5,11 @@ import { MotionConfig } from "motion/react";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { App } from "./App";
 import "./styles.css";
+import "./mobile.css";
+import "./desktop.css";
+import { registerPwa } from "./pwa";
+
+void registerPwa().catch(() => undefined);
 
 const queryClient = new QueryClient({
   defaultOptions: {

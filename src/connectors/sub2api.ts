@@ -9,6 +9,7 @@ import type {
   UsageFact,
   UsagePage,
 } from "../domain/connector";
+import { normalizeSub2ApiImageUsage } from "./sub2api-usage";
 
 type Row = Record<string, unknown>;
 
@@ -497,15 +498,21 @@ function usageMetadata(
   return metadata;
 }
 
-function usageTokens(row: Row): TokenUsage {
+function usageTokens(
+  row: Row,
+  metadata: Record<string, string | number | boolean | null>,
+): TokenUsage {
+  const cacheRead = tokenCount(row.cache_read_tokens);
+  const image = normalizeSub2ApiImageUsage(metadata);
   return {
     input: tokenCount(row.input_tokens),
     output: tokenCount(row.output_tokens),
-    cacheRead: tokenCount(row.cache_read_tokens),
+    cacheRead,
     cacheWrite: tokenCount(row.cache_creation_tokens),
     cacheWrite5m: tokenCount(row.cache_creation_5m_tokens),
     cacheWrite1h: tokenCount(row.cache_creation_1h_tokens),
     reasoning: null,
+    ...(image === undefined ? {} : { image }),
   };
 }
 
@@ -516,6 +523,7 @@ function mapUsageRow(row: Row, sourceId: string): UsageFact {
   const upstreamModel = optionalText(row.upstream_model);
   // 响应模型作为审计证据保留；未明确其计费语义时，不用响应别名覆盖发送模型。
   const effectiveModel = upstreamModel ?? storedModel;
+  const metadata = usageMetadata(row, storedModel, effectiveModel);
 
   return {
     sourceId,
@@ -525,12 +533,12 @@ function mapUsageRow(row: Row, sourceId: string): UsageFact {
     model: effectiveModel,
     upstreamModel,
     tier: optionalText(row.service_tier),
-    tokens: usageTokens(row),
+    tokens: usageTokens(row, metadata),
     gatewayCost: decimalText(row.total_cost),
     gatewayBilled: decimalText(row.actual_cost),
     upstreamUsd: null,
     upstreamCredits: null,
-    metadata: usageMetadata(row, storedModel, effectiveModel),
+    metadata,
   };
 }
 

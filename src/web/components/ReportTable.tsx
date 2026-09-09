@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { Menu as ActionMenu } from "@base-ui/react/menu";
 import { preferenceSchemas, usePreference } from "../lib/preferences";
 import {
   flexRender,
@@ -19,18 +20,22 @@ import {
   ArrowUpDown,
   ChevronLeft,
   ChevronRight,
+  Check,
+  SlidersHorizontal,
 } from "lucide-react";
-import type { LedgerAccount, UsdBasis } from "../../shared/report";
+import type { LedgerAccount } from "../../shared/report";
 import {
   aggregateReport,
   amount,
   compact,
   localTime,
   modelLabel,
+  modelColor,
   numericAmount,
   type ReportDimension,
 } from "../lib/report";
 import { Button } from "./ui/button";
+import "./mobile-data.css";
 
 const dimensions = [
   { value: "hour", label: "小时" },
@@ -38,6 +43,17 @@ const dimensions = [
   { value: "week", label: "自然周" },
   { value: "model", label: "模型" },
   { value: "account", label: "账户" },
+] as const;
+const reportSortOptions = [
+  { value: "key", label: "分组" },
+  { value: "tokens", label: "总 Tokens" },
+  { value: "input", label: "输入" },
+  { value: "cacheRead", label: "缓存读取" },
+  { value: "cacheWrite", label: "缓存写入" },
+  { value: "output", label: "输出" },
+  { value: "requests", label: "请求数" },
+  { value: "usd", label: "费用" },
+  { value: "credits", label: "Credits" },
 ] as const;
 const features = tableFeatures({
   rowSortingFeature,
@@ -48,6 +64,22 @@ const features = tableFeatures({
 });
 type Row = ReturnType<typeof aggregateReport>[number];
 
+function reportRowLabel(
+  key: string,
+  dimension: ReportDimension,
+  accounts: LedgerAccount[],
+) {
+  if (dimension === "model") return modelLabel(key);
+  if (dimension === "account")
+    return accounts.find((account) => account.id === key)?.name ?? key;
+  return localTime(key, {
+    year: "numeric",
+    ...(dimension === "hour"
+      ? { hour: "2-digit", minute: "2-digit", hour12: false }
+      : {}),
+  });
+}
+
 /** 汇总表只呈现分组结果；逐次记录保留在独立的请求明细视图。 */
 export function ReportTable({
   data,
@@ -55,52 +87,30 @@ export function ReportTable({
   accounts,
   dimension,
   onDimension,
-  usdBasis,
 }: {
   data: Row[];
   count: number;
   accounts: LedgerAccount[];
   dimension: ReportDimension;
   onDimension: (dimension: ReportDimension) => void;
-  usdBasis: UsdBasis;
 }) {
-  const [sorting, setSorting] = usePreference<SortingState>("report-sort", preferenceSchemas.reportSort, [
-    { id: "key", desc: false },
-  ]);
+  const [sorting, setSorting] = usePreference<SortingState>(
+    "report-sort",
+    preferenceSchemas.reportSort,
+    [{ id: "key", desc: false }],
+  );
   const label = dimensions.find((item) => item.value === dimension)!.label;
   const columns: ColumnDef<typeof features, Row>[] = [
     {
       accessorKey: "key",
       header: label,
-      cell: (info) => {
-        const key = info.getValue<string>();
-        if (dimension === "model") return modelLabel(key);
-        if (dimension === "account")
-          return accounts.find((account) => account.id === key)?.name ?? key;
-        return localTime(key, {
-          year: "numeric",
-          ...(dimension === "hour"
-            ? { hour: "2-digit", minute: "2-digit", hour12: false }
-            : {}),
-        });
-      },
+      cell: (info) =>
+        reportRowLabel(info.getValue<string>(), dimension, accounts),
     },
     {
       accessorKey: "tokens",
       header: "总 Tokens",
-      cell: (info) => {
-        const row = info.row.original;
-        return (
-          <span>
-            {row.tokens === null ? "无已知值" : compact(row.tokens)}
-            {row.incompleteTokens > 0 && (
-              <small className="table-note">
-                {row.incompleteTokens} 条不完整
-              </small>
-            )}
-          </span>
-        );
-      },
+      cell: (info) => compact(info.getValue<number | null>()),
     },
     {
       accessorKey: "input",
@@ -134,34 +144,16 @@ export function ReportTable({
     {
       id: "usd",
       accessorFn: (row) => numericAmount(row.usd),
-      header: `USD 估值 · ${usdBasis === "subscription" ? "订阅等价" : "标准 API"}`,
-      cell: (info) => {
-        const row = info.row.original;
-        return (
-          <span>
-            <strong>{amount(info.getValue<number | null>(), "usd")}</strong>
-            {row.unpricedUsd > 0 && (
-              <small className="table-note">已计价小计</small>
-            )}
-          </span>
-        );
-      },
+      header: "费用",
+      cell: (info) => (
+        <strong>{amount(info.getValue<number | null>(), "usd")}</strong>
+      ),
     },
     {
       id: "credits",
       accessorFn: (row) => numericAmount(row.credits),
-      header: "Credits 估值",
-      cell: (info) => {
-        const row = info.row.original;
-        return (
-          <span>
-            {amount(info.getValue<number | null>(), "credits")}
-            {row.unpricedCredits > 0 && (
-              <small className="table-note">已计价小计</small>
-            )}
-          </span>
-        );
-      },
+      header: "Credits",
+      cell: (info) => amount(info.getValue<number | null>(), "credits"),
     },
   ];
   const table = useTable({
@@ -175,6 +167,13 @@ export function ReportTable({
   useEffect(() => {
     table.setPageIndex(0);
   }, [data]);
+  const activeSorting = sorting[0] ?? { id: "key", desc: false };
+  const mobileReportHeaders = [
+    { id: "key", label },
+    { id: "requests", label: "请求数" },
+    { id: "tokens", label: "Tokens" },
+    { id: "usd", label: "费用" },
+  ] as const;
   return (
     <section
       className="ledger-section report-section"
@@ -184,6 +183,75 @@ export function ReportTable({
         <div>
           <h2>分组汇总</h2>
           <span className="muted">{count.toLocaleString()} 次请求</span>
+        </div>
+        <div className="mobile-data-controls mobile-report-controls">
+          <ActionMenu.Root>
+            <ActionMenu.Trigger
+              className="mobile-data-tool"
+              aria-label="汇总选项"
+              title="汇总选项"
+            >
+              <SlidersHorizontal size={18} />
+            </ActionMenu.Trigger>
+            <ActionMenu.Portal>
+              <ActionMenu.Positioner
+                className="data-menu-positioner"
+                sideOffset={6}
+                align="end"
+              >
+                <ActionMenu.Popup className="data-menu">
+                  <ActionMenu.Group>
+                    <ActionMenu.GroupLabel>汇总维度</ActionMenu.GroupLabel>
+                    {dimensions.map((item) => (
+                      <ActionMenu.Item
+                        key={item.value}
+                        onClick={() => onDimension(item.value)}
+                      >
+                        {item.label}
+                        {dimension === item.value && (
+                          <Check size={15} aria-hidden="true" />
+                        )}
+                      </ActionMenu.Item>
+                    ))}
+                  </ActionMenu.Group>
+                  <ActionMenu.Separator />
+                  <ActionMenu.Group>
+                    <ActionMenu.GroupLabel>排序字段</ActionMenu.GroupLabel>
+                    {reportSortOptions.map((option) => (
+                      <ActionMenu.Item
+                        key={option.value}
+                        onClick={() =>
+                          setSorting([
+                            { id: option.value, desc: activeSorting.desc },
+                          ])
+                        }
+                      >
+                        {option.label}
+                        {activeSorting.id === option.value && (
+                          <Check size={15} aria-hidden="true" />
+                        )}
+                      </ActionMenu.Item>
+                    ))}
+                  </ActionMenu.Group>
+                  <ActionMenu.Separator />
+                  <ActionMenu.Item
+                    onClick={() =>
+                      setSorting([
+                        { ...activeSorting, desc: !activeSorting.desc },
+                      ])
+                    }
+                  >
+                    切换为{activeSorting.desc ? "升序" : "降序"}
+                    {activeSorting.desc ? (
+                      <ArrowUp size={15} />
+                    ) : (
+                      <ArrowDown size={15} />
+                    )}
+                  </ActionMenu.Item>
+                </ActionMenu.Popup>
+              </ActionMenu.Positioner>
+            </ActionMenu.Portal>
+          </ActionMenu.Root>
         </div>
         <div className="segmented" role="group" aria-label="汇总维度">
           {dimensions.map((item) => (
@@ -201,7 +269,7 @@ export function ReportTable({
         <p className="muted report-period">周一起始，首尾周按所选范围统计</p>
       )}
       <div
-        className="table-scroll"
+        className="table-scroll report-table-scroll"
         role="region"
         aria-label="汇总表格"
         tabIndex={0}
@@ -255,6 +323,115 @@ export function ReportTable({
             ))}
           </tbody>
         </table>
+      </div>
+      <div
+        className="mobile-report-list"
+        role="region"
+        aria-label="汇总列表"
+        tabIndex={0}
+      >
+        <div className="mobile-report-columns">
+          {mobileReportHeaders.map((header) => {
+            const column = table.getColumn(header.id);
+            if (!column) return null;
+            const direction = column.getIsSorted();
+            const directionLabel =
+              direction === "asc"
+                ? "升序"
+                : direction === "desc"
+                  ? "降序"
+                  : "未排序";
+            return (
+              <button
+                key={header.id}
+                type="button"
+                data-sort-direction={direction || "none"}
+                aria-label={`按${header.label}排序，当前${directionLabel}`}
+                onClick={column.getToggleSortingHandler()}
+              >
+                <span>{header.label}</span>
+                {direction === "asc" ? (
+                  <ArrowUp size={12} aria-hidden="true" />
+                ) : direction === "desc" ? (
+                  <ArrowDown size={12} aria-hidden="true" />
+                ) : (
+                  <ArrowUpDown size={12} aria-hidden="true" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {table.getRowModel().rows.map((row) => {
+          const item = row.original;
+          const keyLabel = reportRowLabel(item.key, dimension, accounts);
+          return (
+            <details key={item.key} className="mobile-report-item">
+              <summary>
+                <span className="mobile-report-key">
+                  {dimension === "model" && (
+                    <i
+                      style={{ background: modelColor(item.key) }}
+                      aria-hidden="true"
+                    />
+                  )}
+                  <span>{keyLabel}</span>
+                </span>
+                <span>
+                  <span className="sr-only">请求数 </span>
+                  {item.requests.toLocaleString()}
+                </span>
+                <span>
+                  <span className="sr-only">Tokens </span>
+                  {compact(item.tokens)}
+                </span>
+                <span className="mobile-report-usd">
+                  <span className="sr-only">费用 </span>
+                  <strong>{amount(numericAmount(item.usd), "usd")}</strong>
+                </span>
+              </summary>
+              <dl className="mobile-report-details">
+                <div>
+                  <dt>分组</dt>
+                  <dd>{keyLabel}</dd>
+                </div>
+                <div>
+                  <dt>总 Tokens</dt>
+                  <dd>{compact(item.tokens)}</dd>
+                </div>
+                <div>
+                  <dt>输入</dt>
+                  <dd>{compact(item.input)}</dd>
+                </div>
+                <div>
+                  <dt>缓存读取</dt>
+                  <dd className="cache-text">{compact(item.cacheRead)}</dd>
+                </div>
+                <div>
+                  <dt>缓存写入</dt>
+                  <dd>{compact(item.cacheWrite)}</dd>
+                </div>
+                <div>
+                  <dt>输出</dt>
+                  <dd>{compact(item.output)}</dd>
+                </div>
+                <div>
+                  <dt>请求数</dt>
+                  <dd>{item.requests.toLocaleString()}</dd>
+                </div>
+                <div>
+                  <dt>费用</dt>
+                  <dd>
+                    <strong>{amount(numericAmount(item.usd), "usd")}</strong>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Credits</dt>
+                  <dd>{amount(numericAmount(item.credits), "credits")}</dd>
+                </div>
+              </dl>
+            </details>
+          );
+        })}
       </div>
       {!data.length ? (
         <div className="empty-state">

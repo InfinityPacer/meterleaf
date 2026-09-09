@@ -1,4 +1,71 @@
-import type { AccountWindow } from "../../shared/report";
+import type { AccountWindow, LedgerAccount } from "../../shared/report";
+import { amount, numericAmount } from "./report";
+
+/** 各入口只展示当前周期可用的预估，缺值和过期金额不补零。 */
+export function estimateAmount(
+  window: AccountWindow | null,
+  unit: "usd" | "credits",
+  asOf: string,
+) {
+  if (!window || quotaState(window, asOf) === "expired") return "N/A";
+  const estimate = window.estimate;
+  if (!estimate || estimate.reason !== "eligible") return "N/A";
+  return amount(
+    numericAmount(unit === "usd" ? estimate.usd : estimate.credits),
+    unit,
+  );
+}
+
+/** 移动端紧凑金额行隐藏已耗尽、未知或过期周期的预估；Web 始终保留预估栏。 */
+export function showQuotaEstimate(window: AccountWindow | null, asOf: string) {
+  const percent = quotaPercent(window, asOf);
+  return (
+    quotaState(window, asOf) === "active" && percent !== null && percent < 100
+  );
+}
+
+export interface VisibleQuotaWindow {
+  key: "fiveHour" | "sevenDay";
+  label: "5h" | "7d";
+  window: AccountWindow;
+}
+
+/** 紧凑视图优先展示耗尽的周额度；完整视图保留所有有效周期。 */
+export function visibleQuotaWindows(
+  account: Pick<LedgerAccount, "fiveHour" | "sevenDay">,
+  asOf: string,
+  prioritizeExhaustedWeek = true,
+): VisibleQuotaWindow[] {
+  const windows: VisibleQuotaWindow[] = [];
+  for (const [key, label] of [
+    ["fiveHour", "5h"],
+    ["sevenDay", "7d"],
+  ] as const) {
+    const window = account[key];
+    if (
+      window &&
+      quotaState(window, asOf) === "active" &&
+      quotaPercent(window, asOf) !== null
+    ) {
+      windows.push({ key, label, window });
+    }
+  }
+  const exhaustedWeek = windows.find(
+    ({ key, window }) =>
+      key === "sevenDay" && quotaPercent(window, asOf) === 100,
+  );
+  return prioritizeExhaustedWeek && exhaustedWeek ? [exhaustedWeek] : windows;
+}
+
+/** 各入口使用同一有效周期规则，过期的耗尽状态不能延续到下一周期。 */
+export function accountQuotaExhausted(
+  account: Pick<LedgerAccount, "fiveHour" | "sevenDay">,
+  asOf: string,
+) {
+  return visibleQuotaWindows(account, asOf).some(
+    ({ window }) => quotaPercent(window, asOf) === 100,
+  );
+}
 
 /** 未处理的到期点即使已越过也要立即执行，不能在渲染和 effect 之间漏掉。 */
 export function nextQuotaRefreshDelay(

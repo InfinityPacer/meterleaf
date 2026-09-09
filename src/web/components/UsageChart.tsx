@@ -28,6 +28,38 @@ echarts.use([
   CanvasRenderer,
 ]);
 
+const chartUnitLabels: Record<ReportUnit, string> = {
+  usd: "USD（美元）",
+  tokens: "Tokens",
+  credits: "Credits",
+};
+const chartDateTimeOptions: Intl.DateTimeFormatOptions = {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+};
+
+function chartMetric(value: number | null, unit: ReportUnit) {
+  return `${chartUnitLabels[unit]}：${chartValue(value, unit)}`;
+}
+
+function chartValue(value: number | null, unit: ReportUnit) {
+  if (value === null || !Number.isFinite(value)) return "N/A";
+  return `${amount(value, unit)}${unit === "credits" ? " credits" : unit === "tokens" ? " tokens" : ""}`;
+}
+
+function pieRows(breakdown: LedgerView["view"]["breakdown"]) {
+  return breakdown.filter(
+    (row) =>
+      row.summary.hasKnown &&
+      Number.isFinite(row.summary.value) &&
+      row.summary.value > 0,
+  );
+}
+
 /** 趋势按时间分桶，饼图按模型分组；两者沿用相同筛选与计量单位。 */
 export type ChartStyle = "bar" | "line" | "area" | "pie";
 
@@ -53,6 +85,7 @@ export function UsageChart({
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const instance = useRef<ReturnType<typeof echarts.init> | null>(null);
+  const positivePieRows = pieRows(breakdown);
   useEffect(() => {
     if (!container.current) return;
     const chart = echarts.init(container.current, undefined, {
@@ -94,14 +127,7 @@ export function UsageChart({
           const values = params as { dataIndex: number }[];
           const point = data[values[0]?.dataIndex ?? 0];
           if (!point) return "";
-          const value =
-            point.value === null
-              ? "无已知值"
-              : `${amount(point.value, unit)}${unit === "credits" ? " credits" : unit === "tokens" ? " tokens" : ""}`;
-          const incomplete = point.incomplete
-            ? `\n${point.incomplete} 条记录字段不完整`
-            : "";
-          return `${localTime(point.at, { hour: granularity === "hour" ? "2-digit" : undefined })}\n${value}\n${point.count.toLocaleString()} 次请求${incomplete}`;
+          return `${localTime(point.at, { hour: granularity === "hour" ? "2-digit" : undefined })}\n${chartValue(point.value, unit)}\n${point.count.toLocaleString()} 次请求`;
         },
       },
       xAxis: {
@@ -149,18 +175,11 @@ export function UsageChart({
       ],
     };
     if (chartStyle === "pie") {
-      const pieData = breakdown.flatMap((row) => {
-        const value = row.summary.hasKnown ? row.summary.value : null;
-        return value !== null && value > 0
-          ? [
-              {
-                name: modelLabel(row.model),
-                value,
-                itemStyle: { color: modelColor(row.model) },
-              },
-            ]
-          : [];
-      });
+      const pieData = positivePieRows.map((row) => ({
+        name: modelLabel(row.model),
+        value: row.summary.value,
+        itemStyle: { color: modelColor(row.model) },
+      }));
       chart.setOption(
         {
           animation: false,
@@ -180,7 +199,7 @@ export function UsageChart({
               };
               const percent = Number.isFinite(point.percent)
                 ? `${point.percent}%`
-                : "无占比";
+                : "N/A";
               return `${point.name}\n${amount(point.value, unit)}${unit === "credits" ? " credits" : unit === "tokens" ? " tokens" : ""}\n${percent}`;
             },
           },
@@ -197,7 +216,7 @@ export function UsageChart({
           series: [
             {
               type: "pie",
-              radius: donut ? ["48%", "78%"] : "68%",
+              radius: donut ? ["58%", "90%"] : "68%",
               center: donut ? ["50%", "50%"] : ["50%", "43%"],
               stillShowZeroSum: false,
               label: {
@@ -237,28 +256,24 @@ export function UsageChart({
       />
       <dl
         className="sr-only"
-        aria-label={chartStyle === "pie" ? "模型用量占比数据" : "用量趋势数据"}
+        aria-label={`${chartStyle === "pie" ? "模型用量占比数据" : "用量趋势数据"}（单位：${chartUnitLabels[unit]}）`}
       >
         {chartStyle === "pie"
-          ? breakdown.map((row) => (
+          ? positivePieRows.map((row) => (
               <div key={row.model}>
                 <dt>{modelLabel(row.model)}</dt>
                 <dd>
-                  {amount(
-                    row.summary.hasKnown ? row.summary.value : null,
-                    unit,
-                  )}
-                  ，{row.count} 次请求
+                  {chartMetric(row.summary.value, unit)}，
+                  {row.count.toLocaleString("en-US")} 次请求
                 </dd>
               </div>
             ))
           : points.map((point) => (
               <div key={point.at}>
-                <dt>
-                  {localTime(point.at, { hour: "2-digit", minute: "2-digit" })}
-                </dt>
+                <dt>{localTime(point.at, chartDateTimeOptions)}</dt>
                 <dd>
-                  {amount(point.value, unit)}，{point.count} 次请求
+                  {chartMetric(point.value, unit)}，
+                  {point.count.toLocaleString("en-US")} 次请求
                 </dd>
               </div>
             ))}

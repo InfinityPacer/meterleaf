@@ -7,6 +7,73 @@ import {
   type LogEvent,
 } from "../src/server/diagnostics";
 import { SyncRunner } from "../src/server/sync";
+import {
+  createSyncPresenceRequestInit,
+  formatSyncStatusReadError,
+  getSyncStatusRefetchInterval,
+  isSyncStatusAuthenticationError,
+  isSyncStatusAuthenticationResponse,
+  shouldRetrySyncStatusRead,
+} from "../src/web/components/SyncControl";
+
+test("authentication redirects stop status retries and preserve ordinary retry behavior", () => {
+  const authenticationError = {
+    syncStatusReadError: "authentication" as const,
+    status: 401,
+  };
+  const timeoutError = {
+    syncStatusReadError: "gateway-timeout" as const,
+    status: 504,
+  };
+
+  expect(
+    isSyncStatusAuthenticationResponse({ type: "opaqueredirect", status: 0 }),
+  ).toBe(true);
+  expect(
+    isSyncStatusAuthenticationResponse({ type: "basic", status: 401 }),
+  ).toBe(true);
+  expect(
+    isSyncStatusAuthenticationResponse({ type: "basic", status: 403 }),
+  ).toBe(true);
+  expect(
+    isSyncStatusAuthenticationResponse({ type: "basic", status: 200 }),
+  ).toBe(false);
+  expect(isSyncStatusAuthenticationError(authenticationError)).toBe(true);
+  expect(formatSyncStatusReadError(authenticationError)).toBe(
+    "同步状态认证失败，请重新认证",
+  );
+
+  expect(shouldRetrySyncStatusRead(0, authenticationError)).toBe(false);
+  expect(shouldRetrySyncStatusRead(0, timeoutError)).toBe(true);
+  expect(shouldRetrySyncStatusRead(1, timeoutError)).toBe(false);
+  expect(
+    getSyncStatusRefetchInterval(
+      {
+        status: "error",
+        fetchFailureCount: 0,
+        error: authenticationError,
+      },
+      false,
+    ),
+  ).toBe(false);
+  expect(
+    getSyncStatusRefetchInterval(
+      {
+        status: "error",
+        fetchFailureCount: 0,
+        error: timeoutError,
+      },
+      false,
+    ),
+  ).toBe(15_000);
+
+  const request = createSyncPresenceRequestInit("page-1", true);
+  expect(request.redirect).toBe("manual");
+  expect(JSON.parse(String(request.body))).toEqual({
+    id: "page-1",
+    visible: true,
+  });
+});
 
 function fact(id: string, sourceId = "control"): UsageFact {
   return {

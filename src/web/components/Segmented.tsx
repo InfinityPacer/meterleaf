@@ -1,5 +1,3 @@
-import { motion } from "motion/react";
-
 /** 同类互斥选项统一使用相同的布局、选中层与键盘按钮语义。 */
 export function Segmented<T extends string>({
   label,
@@ -20,13 +18,7 @@ export function Segmented<T extends string>({
           aria-pressed={value === option.value}
           onClick={() => onChange(option.value)}
         >
-          {value === option.value && (
-            <motion.span
-              className="segment-active"
-              layoutId={`segment-${label}`}
-              transition={{ type: "spring", bounce: 0, duration: 0.25 }}
-            />
-          )}
+          {value === option.value && <span className="segment-active" />}
           <span>{option.label}</span>
         </button>
       ))}

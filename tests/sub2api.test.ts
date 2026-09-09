@@ -242,6 +242,40 @@ describe("Sub2API read-only connector", () => {
     await connector.close();
   });
 
+  test("normalizes image usage from metadata without dropping the raw fields", async () => {
+    const pool = new FakePool({
+      usage: [
+        {
+          id: "1",
+          account_id: "2",
+          model: "gpt-6-astra",
+          created_at: "2026-09-01T00:00:00Z",
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_tokens: 24,
+          image_input_tokens: 12,
+          image_output_tokens: 3,
+        },
+      ],
+    });
+    const connector = connectorFor(pool);
+
+    const record = (await connector.readUsage(null, 1)).records[0]!;
+
+    expect(record.tokens.cacheRead).toBe(24);
+    expect(record.tokens.image).toEqual({
+      input: 12,
+      output: 3,
+      cacheRead: null,
+      cacheReadMode: "aggregate",
+    });
+    expect(record.metadata).toMatchObject({
+      image_input_tokens: 12,
+      image_output_tokens: 3,
+    });
+    await connector.close();
+  });
+
   test("keeps missing, empty, and invalid reasoning effort values unknown", async () => {
     const pool = new FakePool({
       usage: [

@@ -4,6 +4,18 @@ export interface SourceRef {
   externalId: string;
 }
 
+/** 图像计量是现有总桶的子集，不能作为累计桶再次相加。 */
+export interface ImageTokenUsage {
+  /** 图像输入总量，已包含图像缓存输入。 */
+  input: number | null;
+  /** 图像输出，属于普通 output 桶的子集。 */
+  output: number | null;
+  /** 可确认的图像缓存输入；无法从来源拆分时保留 null。 */
+  cacheRead: number | null;
+  /** 缺省按明确模态细分计价；aggregate 沿用来源缓存统一计价、图像从非缓存输入拆出的口径。 */
+  cacheReadMode?: "split" | "aggregate";
+}
+
 /** 四桶互斥；reasoning 为输出子集，TTL 写入为 cacheWrite 子集，均不重复相加。 */
 export interface TokenUsage {
   input: number | null;
@@ -13,6 +25,7 @@ export interface TokenUsage {
   cacheWrite5m: number | null;
   cacheWrite1h: number | null;
   reasoning: number | null;
+  image?: ImageTokenUsage;
 }
 
 /** 源计量事实不可混入本地估值；元数据只能包含明确允许的计量字段。 */

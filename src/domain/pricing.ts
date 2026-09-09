@@ -35,6 +35,10 @@ export const priceBookSchema = z
           effectiveFrom: z.iso.datetime({ offset: true }),
           effectiveUntil: z.iso.datetime({ offset: true }).optional(),
           rates,
+          // 图像分桶是总 Tokens 的子集，按独立费率替代对应文本费用。
+          imageRates: rates
+            .pick({ input: true, cacheRead: true, output: true })
+            .optional(),
           longContext: z
             .object({ threshold: z.number().int().nonnegative(), rates })
             .strict()
@@ -176,12 +180,53 @@ export function valueUsage(
         ? rule.longContext.rates
         : rule.rates;
     const keys = ["input", "cacheRead", "cacheWrite", "output"] as const;
-    if (keys.some((key) => fact.tokens[key]! > 0 && prices[key] === null))
+    const counts = Object.fromEntries(
+      keys.map((key) => [key, fact.tokens[key]!]),
+    ) as Record<(typeof keys)[number], number>;
+    const imageCharges: { count: number; rate: string | null }[] = [];
+    if (rule.imageRates) {
+      const image = fact.tokens.image;
+      const validCount = (value: number | null | undefined): value is number =>
+        typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+      if (!validCount(image?.input) || !validCount(image?.output))
+        return unpriced("missing-or-invalid-image-token-bucket");
+      // 来源统一计缓存时，图像只从非缓存输入分配并封顶；保留原始计量，不推断缓存模态。
+      const aggregateCache = image.cacheReadMode === "aggregate";
+      const cachedImage = aggregateCache
+        ? 0
+        : (image.cacheRead ??
+          (counts.cacheRead === 0 || image.input === 0 ? 0 : null));
+      if (!validCount(cachedImage))
+        return unpriced("missing-image-cache-split");
+      const ordinaryImage = aggregateCache
+        ? Math.min(image.input, counts.input)
+        : image.input - cachedImage;
+      if (
+        cachedImage > image.input ||
+        cachedImage > counts.cacheRead ||
+        ordinaryImage > counts.input ||
+        image.output > counts.output
+      )
+        return unpriced("invalid-image-token-subset");
+      counts.input -= ordinaryImage;
+      counts.cacheRead -= cachedImage;
+      counts.output -= image.output;
+      imageCharges.push(
+        { count: ordinaryImage, rate: rule.imageRates.input },
+        { count: cachedImage, rate: rule.imageRates.cacheRead },
+        { count: image.output, rate: rule.imageRates.output },
+      );
+    }
+    const charges = [
+      ...keys.map((key) => ({ count: counts[key], rate: prices[key] })),
+      ...imageCharges,
+    ];
+    if (charges.some(({ count, rate }) => count > 0 && rate === null))
       return unpriced("unsupported-rate-bucket");
-    const amount = keys
+    const amount = charges
       .reduce(
-        (total, key) =>
-          total.add(new Decimal(fact.tokens[key]!).mul(prices[key] ?? "0")),
+        (total, charge) =>
+          total.add(new Decimal(charge.count).mul(charge.rate ?? "0")),
         new Decimal(0),
       )
       .div(1_000_000)

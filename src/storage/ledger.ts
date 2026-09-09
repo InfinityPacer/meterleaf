@@ -18,6 +18,7 @@ import {
   type PriceBook,
   type Valuation,
 } from "../domain/pricing";
+import { withSub2ApiImageUsage } from "../connectors/sub2api-usage";
 
 export interface StoredUsage {
   fact: UsageFact;
@@ -338,7 +339,7 @@ export class LedgerStore {
             sourceId,
             fact.externalId,
             priceBookKey(this.book),
-            JSON.stringify(valueUsage(fact, this.book)),
+            JSON.stringify(valueUsage(withSub2ApiImageUsage(fact), this.book)),
           );
         if (factWrite.changes > 0 || valuationWrite.changes > 0) {
           changed = true;
@@ -489,7 +490,7 @@ export class LedgerStore {
           fact,
           valuation: row.valuation
             ? (JSON.parse(row.valuation) as Valuation)
-            : valueUsage(fact, this.book),
+            : valueUsage(withSub2ApiImageUsage(fact), this.book),
         };
       });
   }
@@ -523,7 +524,7 @@ export class LedgerStore {
       fact,
       valuation: row.valuation
         ? (JSON.parse(row.valuation) as Valuation)
-        : valueUsage(fact, this.book),
+        : valueUsage(withSub2ApiImageUsage(fact), this.book),
     };
   }
 
@@ -606,7 +607,7 @@ export class LedgerStore {
     // 自定义价格版本可能还没有为历史事实落盘估值，只解析这条缺失估值的事实。
     if (!row.has_valuation && row.payload) {
       const fact = JSON.parse(row.payload) as UsageFact;
-      const valuation = valueUsage(fact, this.book);
+      const valuation = valueUsage(withSub2ApiImageUsage(fact), this.book);
       apiUsd = valuation.apiUsd.amount;
       subscriptionUsd = valuation.subscriptionUsd.amount;
       credits = valuation.credits.amount;

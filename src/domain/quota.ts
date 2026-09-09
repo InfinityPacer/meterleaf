@@ -45,8 +45,10 @@ export interface QuotaView {
 }
 
 function sumCharges(rows: readonly PricedUsage[], unit: "usd" | "credits") {
-  if (rows.some((row) => row.valuation[unit].amount === null)) return null;
-  return rows
+  // 周期费用累计可计价部分；只有有请求且全部缺价时金额才未知。
+  const priced = rows.filter((row) => row.valuation[unit].amount !== null);
+  if (rows.length > 0 && priced.length === 0) return null;
+  return priced
     .reduce(
       (total, row) => total.add(row.valuation[unit].amount!),
       new Decimal(0),

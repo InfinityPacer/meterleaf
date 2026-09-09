@@ -537,3 +537,29 @@ test("estimate excludes post-sample spend and does not divide by zero", () => {
     )!.estimate.reason,
   ).toBe("percent-unavailable");
 });
+
+test("quota amounts and estimates keep priced spend when another request is unpriced", () => {
+  const row = fact();
+  const valued = valueUsage(row, book);
+  const missing = { ...valued, usd: { ...valued.usd, amount: null } };
+  const history = [quota(25, "2026-09-08T02:00:00Z")];
+  const priced = { fact: row, valuation: valued };
+  const baseline = quotaView(history, [priced], "2026-09-08T02:01:00Z")!;
+  const view = quotaView(
+    history,
+    [priced, { fact: row, valuation: missing }],
+    "2026-09-08T02:01:00Z",
+  )!;
+  expect(view.periodUsd).toBe(baseline.periodUsd);
+  expect(view.estimate.usd).toBe(baseline.estimate.usd);
+  expect(view.estimate.reason).toBe("eligible");
+  expect(view.periodRequests).toBe(2);
+  const unknown = quotaView(
+    history,
+    [{ fact: row, valuation: missing }],
+    "2026-09-08T02:01:00Z",
+  )!;
+  expect(unknown.periodUsd).toBeNull();
+  expect(unknown.estimate.usd).toBeNull();
+  expect(unknown.periodCredits).not.toBeNull();
+});
