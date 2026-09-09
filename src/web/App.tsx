@@ -397,7 +397,7 @@ function AccountRow({
 }) {
   const accountUsage = account.lifetime ?? usage;
   const hasQuota = Boolean(account.fiveHour || account.sevenDay);
-  const windows = visibleQuotaWindows(account, asOf);
+  const windows = visibleQuotaWindows(account, asOf, compactUsage);
   const exhausted = accountQuotaExhausted(account, asOf);
   const status = archived ? "已归档" : exhausted ? null : "使用中";
   const plan = account.plan?.replace(
@@ -471,11 +471,15 @@ function AccountRow({
               额度 N/A
             </span>
           )}
-          {!compactUsage && showQuotaEstimate(account.sevenDay, asOf) && (
+          {!compactUsage && (
             <span className="account-capacity">
-              <small>7d 预估</small>
+              {showQuotaEstimate(account.sevenDay, asOf) && (
+                <small>7d 预估</small>
+              )}
               <AccountTrend accountId={account.id} load={readAccountTrend} />
-              <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
+              {showQuotaEstimate(account.sevenDay, asOf) && (
+                <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
+              )}
             </span>
           )}
         </>
@@ -575,7 +579,7 @@ function OverviewQuotas({
       >
         {accounts.map((account) => {
           const hasQuota = Boolean(account.fiveHour || account.sevenDay);
-          const windows = visibleQuotaWindows(account, asOf);
+          const windows = visibleQuotaWindows(account, asOf, compactUsage);
           const usage = accountUsage?.[account.id];
           const plan = account.plan?.replace(
             /\b(pro|plus)\b/gi,
@@ -2370,18 +2374,23 @@ export function App() {
               {selectedAccount.fiveHour || selectedAccount.sevenDay ? (
                 <>
                   <div className="account-detail-windows">
-                    {visibleQuotaWindows(selectedAccount, quotaAsOf).map(
-                      ({ key, label, window }) => (
-                        <QuotaBar
-                          key={key}
-                          window={window}
-                          label={`${label}窗口`}
-                          asOf={quotaAsOf}
-                        />
-                      ),
-                    )}
-                    {!visibleQuotaWindows(selectedAccount, quotaAsOf)
-                      .length && <span className="muted">额度 N/A</span>}
+                    {visibleQuotaWindows(
+                      selectedAccount,
+                      quotaAsOf,
+                      smallScreen,
+                    ).map(({ key, label, window }) => (
+                      <QuotaBar
+                        key={key}
+                        window={window}
+                        label={`${label}窗口`}
+                        asOf={quotaAsOf}
+                      />
+                    ))}
+                    {!visibleQuotaWindows(
+                      selectedAccount,
+                      quotaAsOf,
+                      smallScreen,
+                    ).length && <span className="muted">额度 N/A</span>}
                   </div>
                   <dl className="details-list">
                     <dt>快照时间</dt>
@@ -2407,9 +2416,11 @@ export function App() {
                               })
                             : "N/A"}
                     </dd>
-                    {visibleQuotaWindows(selectedAccount, quotaAsOf).some(
-                      ({ key }) => key === "fiveHour",
-                    ) && (
+                    {visibleQuotaWindows(
+                      selectedAccount,
+                      quotaAsOf,
+                      smallScreen,
+                    ).some(({ key }) => key === "fiveHour") && (
                       <>
                         <dt>5h 周期费用</dt>
                         <dd>

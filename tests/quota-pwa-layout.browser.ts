@@ -176,17 +176,23 @@ try {
           const plus = cards.filter({ hasText: "plus" });
           await expect(pro).toBeVisible();
           await expect(pro.getByRole("progressbar")).toHaveCount(1);
-          await expect(plus.getByRole("progressbar")).toHaveCount(1);
-          await expect(plus.getByRole("progressbar")).toHaveAttribute(
+          await expect(plus.getByRole("progressbar")).toHaveCount(
+            width > 900 ? 2 : 1,
+          );
+          await expect(plus.getByRole("progressbar").last()).toHaveAttribute(
             "aria-valuenow",
             "100",
           );
           await expect(pro).not.toContainText("5h");
-          await expect(plus).not.toContainText("5h");
+          if (width > 900) await expect(plus).toContainText("5h");
+          else await expect(plus).not.toContainText("5h");
           await expect(pro).toContainText("7d");
           await expect(plus).not.toContainText("已用尽");
           await expect(plus).not.toContainText("使用中");
-          const fill = plus.getByRole("progressbar").locator(":scope > span");
+          const fill = plus
+            .getByRole("progressbar")
+            .last()
+            .locator(":scope > span");
           expect(
             await fill.evaluate((el) => getComputedStyle(el).backgroundColor),
           ).toBe("rgb(217, 78, 105)");
@@ -205,9 +211,22 @@ try {
           ).toBe(true);
           await expect(
             plus.locator(
-              ".quota-cost-estimate, .quota-preview-estimate, .account-capacity",
+              ".quota-cost-estimate, .quota-preview-estimate, .account-capacity > small, .account-capacity > strong",
             ),
           ).toHaveCount(0);
+          if (width > 900 && route === "accounts") {
+            await expect(
+              plus.locator(".account-capacity .mini-trend"),
+            ).toBeVisible();
+            if (width > 1000) {
+              expect(
+                Math.abs(
+                  (await pro.boundingBox())!.height -
+                    (await plus.boundingBox())!.height,
+                ),
+              ).toBeLessThan(2);
+            }
+          }
           if (width <= 900) {
             const pair = pro.locator(".quota-cost-pair").first();
             const estimate = pair.locator(".quota-cost-estimate");

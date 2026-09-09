@@ -99,6 +99,9 @@ test("formats a large eligible estimate with grouped currency", () => {
 
 test("weekly exhaustion hides five-hour quota across all account entry points", () => {
   const account = { fiveHour: { ...window, percent: 75 }, sevenDay: window };
+  expect(
+    visibleQuotaWindows(account, now, false).map((item) => item.key),
+  ).toEqual(["fiveHour", "sevenDay"]);
   expect(visibleQuotaWindows(account, now).map((item) => item.key)).toEqual([
     "sevenDay",
   ]);

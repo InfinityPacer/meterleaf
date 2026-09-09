@@ -30,10 +30,11 @@ export interface VisibleQuotaWindow {
   window: AccountWindow;
 }
 
-/** 周额度耗尽会阻止继续使用，优先单独展示；其他情况只展示当前有效周期。 */
+/** 紧凑视图优先展示耗尽的周额度；完整视图保留所有有效周期。 */
 export function visibleQuotaWindows(
   account: Pick<LedgerAccount, "fiveHour" | "sevenDay">,
   asOf: string,
+  prioritizeExhaustedWeek = true,
 ): VisibleQuotaWindow[] {
   const windows: VisibleQuotaWindow[] = [];
   for (const [key, label] of [
@@ -53,7 +54,7 @@ export function visibleQuotaWindows(
     ({ key, window }) =>
       key === "sevenDay" && quotaPercent(window, asOf) === 100,
   );
-  return exhaustedWeek ? [exhaustedWeek] : windows;
+  return prioritizeExhaustedWeek && exhaustedWeek ? [exhaustedWeek] : windows;
 }
 
 /** 各入口使用同一有效周期规则，过期的耗尽状态不能延续到下一周期。 */

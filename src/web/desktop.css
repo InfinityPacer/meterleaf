@@ -915,13 +915,14 @@
   }
 
   .app-shell .account-row {
-    min-height: 208px;
+    min-height: 234px;
     grid-template-columns:
       minmax(180px, 0.72fr) minmax(0, 1fr) minmax(0, 1fr)
       minmax(155px, 0.53fr) 44px;
     gap: 14px;
   }
   .app-shell .account-row .account-window {
+    align-self: stretch;
     min-height: 166px;
     padding: 18px 20px;
     border: 1px solid var(--desktop-line-soft);
@@ -1866,12 +1867,8 @@
     width: 32px;
     height: 32px;
   }
-  .app-shell .account-row[data-quota-count="1"] .account-capacity .mini-trend {
-    --mini-trend-height: 76px;
-  }
-  .app-shell .account-row[data-quota-count="1"][data-has-estimate="false"] {
-    grid-template-columns: minmax(160px, 0.7fr) minmax(0, 2.1fr) 32px;
-    grid-template-areas: "identity single arrow";
+  .app-shell .account-row .account-capacity .mini-trend {
+    --mini-trend-height: 64px;
   }
 }
 @media (min-width: 901px) and (max-width: 1000px) {
@@ -1882,9 +1879,6 @@
   .app-shell .account-row[data-quota-count="1"] .account-window,
   .app-shell .account-row .account-window-unavailable {
     grid-area: single;
-  }
-  .app-shell .account-row[data-quota-count="1"][data-has-estimate="false"] {
-    grid-template-areas: "identity identity" "single single";
   }
 }
 
