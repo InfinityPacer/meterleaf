@@ -42,6 +42,10 @@ import {
   Wallet,
   X,
   Zap,
+  Home,
+  UserRound,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import type {
   AccountWindow,
@@ -71,7 +75,12 @@ import {
 import { quotaLabel, quotaPercent, quotaState } from "./lib/quota-display";
 import { useQuotaClock } from "./lib/use-quota-clock";
 import { useReportFilters } from "./lib/report-preferences";
-import { preferenceSchemas as prefs, readPreference, usePreference, useScopedPreference } from "./lib/preferences";
+import {
+  preferenceSchemas as prefs,
+  readPreference,
+  usePreference,
+  useScopedPreference,
+} from "./lib/preferences";
 import { orderedAccounts, moveAccount } from "./lib/account-order";
 import { useAccountArchive } from "./lib/use-account-archive";
 import { Segmented } from "./components/Segmented";
@@ -88,6 +97,10 @@ import { LedgerTable } from "./components/LedgerTable";
 import { DateRangePicker } from "./components/DateRangePicker";
 import { ReportTable } from "./components/ReportTable";
 import { ModelDistribution } from "./components/ModelDistribution";
+import { MobileFilters } from "./components/MobileFilters";
+import { MobileHome } from "./components/MobileHome";
+import { useMobileLayout } from "./lib/use-mobile-layout";
+import { useLiveUpdates } from "./lib/use-live-updates";
 import type { ChartStyle } from "./components/UsageChart";
 import type { ReportDimension } from "./lib/report";
 import { Button } from "./components/ui/button";
@@ -107,11 +120,16 @@ import {
 const UsageChart = lazy(() =>
   import("./components/UsageChart").then((m) => ({ default: m.UsageChart })),
 );
-const pages = [
+const primaryPages = [
   { id: "overview", name: "用量总览", icon: Activity },
   { id: "accounts", name: "账户额度", icon: Wallet },
   { id: "reports", name: "统计报表", icon: BarChart3 },
   { id: "ledger", name: "请求明细", icon: FileText },
+] as const;
+const pages = [
+  ...primaryPages,
+  { id: "period", name: "用量总览", icon: Activity },
+  { id: "settings", name: "我的", icon: UserRound },
 ] as const;
 type Page = (typeof pages)[number]["id"];
 const initialFilter: ReportFilter = {
@@ -125,7 +143,9 @@ function readStoredUsdBasis(): UsdBasis | null {
   try {
     const value = localStorage.getItem("meterleaf-usd-basis");
     return value === "api" || value === "subscription" ? value : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 async function readLedger(
@@ -260,7 +280,9 @@ function estimateAmount(
 
 function readPage(): Page {
   const id = location.hash.slice(1);
-  return pages.some((p) => p.id === id) ? (id as Page) : readPreference("page", prefs.page, "overview");
+  return pages.some((p) => p.id === id)
+    ? (id as Page)
+    : readPreference("page", prefs.page, "overview");
 }
 
 function QuotaBar({
@@ -278,7 +300,10 @@ function QuotaBar({
   const percent = quotaPercent(window, asOf);
   const suffix = quotaLabel(window, asOf);
   return (
-    <div className="quota-bar">
+    <div
+      className="quota-bar"
+      data-quota-level={percent !== null && percent > 80 ? "high" : "normal"}
+    >
       <div>
         <span>{label}</span>
         <span className="tabular">{suffix}</span>
@@ -302,38 +327,73 @@ function QuotaBar({
 }
 
 /** 周期统计跟随额度窗口；缺失和到期窗口不展示旧统计或虚构零值。 */
-function QuotaPeriod({ window, label, asOf }: { window: AccountWindow | null; label: string; asOf: string }) {
-  const available = window && quotaPercent(window, asOf) !== null && window.state !== "unknown";
-  const reset = available && window.resetsAt ? <span className="quota-period-reset" aria-label={`${label}重置时间`}>
-    {label === "5 小时"
-      ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(window.resetsAt))
-      : localTime(window.resetsAt, { hour: "2-digit", minute: "2-digit", hour12: false })} 重置
-  </span> : undefined;
-  return <span className="quota-period">
-    <QuotaBar window={window} label={label} asOf={asOf} reset={reset} />
-    {available && <>
-      <span className="quota-period-usage">
-        <strong aria-label={`${label}估算费用`}>{windowAmount(window, "usd", asOf)}</strong>
-        <span className="quota-period-volume">
-          <span>{compact(window.periodTokens ?? null)} Tokens</span>
-          <span aria-hidden="true">·</span>
-          <span>{window.periodRequests?.toLocaleString("en-US") ?? "N/A"} 次</span>
-        </span>
+function QuotaPeriod({
+  window,
+  label,
+  asOf,
+}: {
+  window: AccountWindow | null;
+  label: string;
+  asOf: string;
+}) {
+  const available =
+    window && quotaPercent(window, asOf) !== null && window.state !== "unknown";
+  const reset =
+    available && window.resetsAt ? (
+      <span className="quota-period-reset" aria-label={`${label}重置时间`}>
+        {label === "5 小时"
+          ? new Intl.DateTimeFormat("zh-CN", {
+              timeZone: "Asia/Shanghai",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            }).format(new Date(window.resetsAt))
+          : localTime(window.resetsAt, {
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            })}{" "}
+        重置
       </span>
-    </>}
-  </span>;
+    ) : undefined;
+  return (
+    <span className="quota-period">
+      <QuotaBar window={window} label={label} asOf={asOf} reset={reset} />
+      {available && (
+        <>
+          <span className="quota-period-usage">
+            <strong aria-label={`${label}估算费用`}>
+              {windowAmount(window, "usd", asOf)}
+            </strong>
+            <span className="quota-period-volume">
+              <span>{compact(window.periodTokens ?? null)} Tokens</span>
+              <span aria-hidden="true">·</span>
+              <span>
+                {window.periodRequests?.toLocaleString("en-US") ?? "N/A"} 次
+              </span>
+            </span>
+          </span>
+        </>
+      )}
+    </span>
+  );
 }
 
 function AccountRow({
   account,
   asOf,
   onOpen,
+  compactView = false,
+  archived = false,
 }: {
   account: LedgerAccount;
   asOf: string;
   onOpen: () => void;
+  compactView?: boolean;
+  archived?: boolean;
 }) {
   const hasQuota = Boolean(account.fiveHour || account.sevenDay);
+  const primaryFiveHour = quotaPercent(account.fiveHour, asOf) !== null;
   const plan = account.plan?.replace(
     /\b(pro|plus)\b/gi,
     (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
@@ -347,29 +407,53 @@ function AccountRow({
   return (
     <button className="account-row" data-has-quota={hasQuota} onClick={onOpen}>
       <span className="account-identity">
-        <span className={`account-avatar ${account.id}`}>
+        <span
+          className={`account-avatar ${account.id}`}
+          data-kind={account.kind}
+          data-plan={account.plan?.toLowerCase()}
+        >
           <Wallet size={18} />
         </span>
         <span className="account-name">
           <strong>{account.name}</strong>
           <small>
             {plan && !["未提供", "unknown"].includes(plan) && (
-              <span className="plan-chip" data-plan={account.plan?.toLowerCase()}>
+              <span
+                className="plan-chip"
+                data-plan={account.plan?.toLowerCase()}
+              >
                 {plan}
               </span>
             )}
             <span>{accountKind}</span>
           </small>
+          <span className="desktop-account-status" data-archived={archived}>
+            <span aria-hidden="true" />
+            {archived ? "已归档" : "使用中"}
+          </span>
         </span>
       </span>
+      {compactView && (
+        <span className="app-account-status">
+          {archived ? "已归档" : "使用中"}
+        </span>
+      )}
       {hasQuota ? (
         <>
-          <span className="account-window account-five-hour">
-            <QuotaPeriod window={account.fiveHour} label="5 小时" asOf={asOf} />
-          </span>
-          <span className="account-window account-seven-day">
-            <QuotaPeriod window={account.sevenDay} label="7 天" asOf={asOf} />
-          </span>
+          {(!compactView || primaryFiveHour || !account.sevenDay) && (
+            <span className="account-window account-five-hour">
+              <QuotaPeriod
+                window={account.fiveHour}
+                label="5 小时"
+                asOf={asOf}
+              />
+            </span>
+          )}
+          {(!compactView || (!primaryFiveHour && !!account.sevenDay)) && (
+            <span className="account-window account-seven-day">
+              <QuotaPeriod window={account.sevenDay} label="7 天" asOf={asOf} />
+            </span>
+          )}
           <span className="account-capacity">
             <small>7 天预估</small>
             <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
@@ -379,11 +463,22 @@ function AccountRow({
         <span className="account-no-quota">
           {account.lifetime ? (
             <span className="account-lifetime">
-              <span><small>累计 Tokens</small><strong>{compact(account.lifetime.tokens)}</strong></span>
-              <span><small>累计请求</small><strong>{account.lifetime.count.toLocaleString()}</strong></span>
-              <span><small>估算费用</small><strong>{formatUsd(account.lifetime.usd)}</strong></span>
+              <span>
+                <small>累计 Tokens</small>
+                <strong>{compact(account.lifetime.tokens)}</strong>
+              </span>
+              <span>
+                <small>累计请求</small>
+                <strong>{account.lifetime.count.toLocaleString()}</strong>
+              </span>
+              <span>
+                <small>估算费用</small>
+                <strong>{formatUsd(account.lifetime.usd)}</strong>
+              </span>
             </span>
-          ) : <span>暂无额度快照</span>}
+          ) : (
+            <span>暂无额度快照</span>
+          )}
         </span>
       )}
       <ArrowRight className="row-arrow" size={16} />
@@ -425,59 +520,82 @@ function OverviewQuotas({
         tabIndex={0}
       >
         {accounts.map((account) => {
-            const hasQuota = Boolean(account.fiveHour || account.sevenDay);
-            const usage = accountUsage?.[account.id];
-            const plan = account.plan?.replace(
-              /\b(pro|plus)\b/gi,
-              (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
-            );
-            return (
-              <button
-                className="quota-preview"
-                key={account.id}
-                onClick={() =>
-                  hasQuota ? onOpen(account) : onRequests(account)
-                }
-                aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
-              >
-                <span className="quota-preview-heading">
-                  <strong>{account.name}</strong>
-                  {plan && !["未提供", "unknown"].includes(plan) && (
-                    <span
-                      className="plan-chip"
-                      data-plan={account.plan?.toLowerCase()}
-                    >
-                      {plan}
-                    </span>
-                  )}
-                  <ArrowRight size={16} />
+          const hasQuota = Boolean(account.fiveHour || account.sevenDay);
+          const usage = accountUsage?.[account.id];
+          const plan = account.plan?.replace(
+            /\b(pro|plus)\b/gi,
+            (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
+          );
+          return (
+            <button
+              className="quota-preview"
+              key={account.id}
+              onClick={() => (hasQuota ? onOpen(account) : onRequests(account))}
+              aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
+            >
+              <span className="quota-preview-heading">
+                <span
+                  className="account-avatar"
+                  data-kind={account.kind}
+                  data-plan={account.plan?.toLowerCase()}
+                >
+                  <Wallet size={22} />
                 </span>
-                {hasQuota ? (
-                  <>
-                    {([
-                      ["5 小时", account.fiveHour],
-                      ["7 天", account.sevenDay],
-                    ] as const).map(([label, window]) => (
-                      <QuotaPeriod key={label} window={window} label={label} asOf={asOf} />
-                    ))}
-                    <span className="quota-preview-estimate">
-                      <span>7 天预估</span>
-                      <strong>
-                        {estimateAmount(account.sevenDay, "usd", asOf)}
-                      </strong>
-                    </span>
-                  </>
-                ) : (
-                  <span className="quota-preview-usage">
-                    <span className="quota-preview-period-label">时间段用量</span>
-                    <span><span>Tokens</span><strong>{usage ? compact(usage.tokens) : "N/A"}</strong></span>
-                    <span><span>请求</span><strong>{usage ? usage.count.toLocaleString() : "N/A"}</strong></span>
-                    <span><span>估算费用</span><strong>{usage ? formatUsd(usage.usd) : "N/A"}</strong></span>
+                <strong>{account.name}</strong>
+                {plan && !["未提供", "unknown"].includes(plan) && (
+                  <span
+                    className="plan-chip"
+                    data-plan={account.plan?.toLowerCase()}
+                  >
+                    {plan}
                   </span>
                 )}
-              </button>
-            );
-          })}
+                <ArrowRight size={16} />
+              </span>
+              {hasQuota ? (
+                <>
+                  {(
+                    [
+                      ["5 小时", account.fiveHour],
+                      ["7 天", account.sevenDay],
+                    ] as const
+                  ).map(([label, window]) => (
+                    <QuotaPeriod
+                      key={label}
+                      window={window}
+                      label={label}
+                      asOf={asOf}
+                    />
+                  ))}
+                  <span className="quota-preview-estimate">
+                    <span>7 天预估</span>
+                    <strong>
+                      {estimateAmount(account.sevenDay, "usd", asOf)}
+                    </strong>
+                  </span>
+                </>
+              ) : (
+                <span className="quota-preview-usage">
+                  <span className="quota-preview-period-label">时间段用量</span>
+                  <span>
+                    <span>Tokens</span>
+                    <strong>{usage ? compact(usage.tokens) : "N/A"}</strong>
+                  </span>
+                  <span>
+                    <span>请求</span>
+                    <strong>
+                      {usage ? usage.count.toLocaleString() : "N/A"}
+                    </strong>
+                  </span>
+                  <span>
+                    <span>估算费用</span>
+                    <strong>{usage ? formatUsd(usage.usd) : "N/A"}</strong>
+                  </span>
+                </span>
+              )}
+            </button>
+          );
+        })}
         {!accounts.length && <p className="muted">暂无账户</p>}
       </div>
     </section>
@@ -485,37 +603,101 @@ function OverviewQuotas({
 }
 
 export function App() {
-  const [accountOrder, setAccountOrder] = usePreference<string[]>("account-order", prefs.accountOrder, []);
+  const { paused: liveUpdatesPaused } = useLiveUpdates();
+  const [accountOrder, setAccountOrder] = usePreference<string[]>(
+    "account-order",
+    prefs.accountOrder,
+    [],
+  );
   const [editingAccountOrder, setEditingAccountOrder] = useState(false);
   const accountArchive = useAccountArchive();
-  const [accountToHide, setAccountToHide] = useState<LedgerAccount | null>(null);
-  const [archiveView, setArchiveView] = usePreference("account-archive-view", prefs.accountArchiveView, "active");
+  const [accountToHide, setAccountToHide] = useState<LedgerAccount | null>(
+    null,
+  );
+  const [archiveView, setArchiveView] = usePreference(
+    "account-archive-view",
+    prefs.accountArchiveView,
+    "active",
+  );
   // 账户列表范围独立于请求明细；钻取请求不能反向改变账户页筛选。
-  const [accountFilter, setAccountFilter] = usePreference("account-filter", prefs.accountFilter, "all");
-  const [reportDimension, setReportDimension] =
-    usePreference<ReportDimension>("report-dimension", prefs.dimension, "day");
+  const [accountFilter, setAccountFilter] = usePreference(
+    "account-filter",
+    prefs.accountFilter,
+    "all",
+  );
+  const [reportDimension, setReportDimension] = usePreference<ReportDimension>(
+    "report-dimension",
+    prefs.dimension,
+    "day",
+  );
   const [page, setPage] = useState<Page>(readPage);
+  const smallScreen = useMobileLayout();
+  const [mobileLayout, setMobileLayout] = usePreference(
+    "mobile-layout",
+    prefs.mobileLayout,
+    "app",
+  );
+  const mobile = smallScreen && mobileLayout === "app";
+  useEffect(() => {
+    document.documentElement.dataset.mobileLayout = mobileLayout;
+  }, [mobileLayout]);
+  const scrollPositions = useRef<Partial<Record<Page, number>>>({});
+  useEffect(() => {
+    if (!mobile) return;
+    window.scrollTo(0, scrollPositions.current[page] ?? 0);
+    const rememberScroll = () => {
+      scrollPositions.current[page] = window.scrollY;
+    };
+    window.addEventListener("scroll", rememberScroll, { passive: true });
+    return () => window.removeEventListener("scroll", rememberScroll);
+  }, [page, mobile]);
   const [, rememberPage] = usePreference<Page>("page", prefs.page, "overview");
-  useEffect(() => { rememberPage(page); }, [page, rememberPage]);
-  const [filter, setFilter] = useReportFilters(page);
-  const [settledSearch, setSettledSearch] = useState({ page, value: filter.search });
+  useEffect(() => {
+    rememberPage(page);
+  }, [page, rememberPage]);
+  const [filter, setFilter] = useReportFilters(
+    page === "period" ? "overview" : page,
+  );
+  const [settledSearch, setSettledSearch] = useState({
+    page,
+    value: filter.search,
+  });
   // 输入即时显示，只有文本搜索合并短时间内的按键；清空与日期修改不等待防抖。
   useEffect(() => {
     if (!filter.search) {
       setSettledSearch({ page, value: "" });
       return;
     }
-    const timer = setTimeout(() => setSettledSearch({ page, value: filter.search }), 150);
+    const timer = setTimeout(
+      () => setSettledSearch({ page, value: filter.search }),
+      150,
+    );
     return () => clearTimeout(timer);
   }, [filter.search, page]);
-  const searchForQuery = filter.search && settledSearch.page === page ? settledSearch.value : "";
+  const searchForQuery =
+    filter.search && settledSearch.page === page ? settledSearch.value : "";
   const searchPending = filter.search !== searchForQuery;
-  const [unit, setUnit] = useScopedPreference<ReportUnit>(page, "unit", prefs.unit, "usd");
+  const [unit, setUnit] = useScopedPreference<ReportUnit>(
+    page,
+    "unit",
+    prefs.unit,
+    page === "overview" || page === "period" ? "tokens" : "usd",
+  );
   const [usdBasisOverride, setUsdBasisOverride] = useState<UsdBasis | null>(
     readStoredUsdBasis,
   );
-  const [granularity, setGranularity] = useScopedPreference<Granularity>(page, "granularity", prefs.granularity, "day");
-  const [chartStyle, setChartStyle] = useScopedPreference<ChartStyle>(page, "chart", prefs.chart, "bar");
+  const [granularity, setGranularity] = useScopedPreference<Granularity>(
+    page,
+    "granularity",
+    prefs.granularity,
+    page === "overview" || page === "period" ? "hour" : "day",
+  );
+  const [chartStyle, setChartStyle] = useScopedPreference<ChartStyle>(
+    page,
+    "chart",
+    prefs.chart,
+    "area",
+  );
   const [selected, setSelected] = useState<LedgerRecord | null>(null);
   const selectedRequestId = useRef<string | null>(null);
   const selectRecord = useCallback((record: LedgerRecord) => {
@@ -528,9 +710,15 @@ export function App() {
       [
         ...document.querySelectorAll<HTMLButtonElement>("[data-request-id]"),
       ].find(
-        (button) => button.dataset.requestId === selectedRequestId.current,
+        (button) =>
+          button.dataset.requestId === selectedRequestId.current &&
+          button.getClientRects().length > 0,
       ) ??
-      document.querySelector<HTMLElement>(".request-table-scroll") ??
+      [
+        ...document.querySelectorAll<HTMLElement>(
+          ".request-table-scroll, .mobile-request-list",
+        ),
+      ].find((element) => element.getClientRects().length > 0) ??
       document.querySelector<HTMLElement>("#main-content")
     );
   }, []);
@@ -538,9 +726,15 @@ export function App() {
     null,
   );
   const [mobileOpen, setMobileOpen] = useState(false);
+  useEffect(() => {
+    if (mobile) setMobileOpen(false);
+  }, [mobile]);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [recordPage, setRecordPage] = useState(0);
-  const [recordSort, setRecordSort] = useScopedPreference<{ id: string; desc: boolean }>(page, "record-sort", prefs.recordSort, {
+  const [recordSort, setRecordSort] = useScopedPreference<{
+    id: string;
+    desc: boolean;
+  }>(page, "record-sort", prefs.recordSort, {
     id: "occurredAt",
     desc: true,
   });
@@ -577,6 +771,7 @@ export function App() {
     },
     // 仅在报表后台重算期间读取结果；同步完成由公共同步控件使所有报表缓存失效。
     refetchInterval: (query) => {
+      if (liveUpdatesPaused) return false;
       if (query.state.status === "error" || query.state.fetchFailureCount)
         return false;
       return query.state.data?.reportStatus?.refreshing ? 1000 : false;
@@ -615,11 +810,53 @@ export function App() {
         )
       : undefined);
   const quotaAsOf = useQuotaClock(quotaSnapshot);
+  // 首页总量不随时段筛选变化，微型趋势同样固定为全账户近 30 天。
+  const homeTrendQuery: ViewQuery = {
+    filter: { days: 30, model: "all", account: "all", search: "" },
+    unit: "tokens",
+    granularity: "day",
+    dimension: "day",
+    page: 0,
+    pageSize: 1,
+    sort: "occurredAt",
+    desc: true,
+  };
+  const homeTrend = useQuery({
+    queryKey: ["ledger", "home-trend", homeTrendQuery],
+    // 固定区间也是后台报表；只轮询结果，不能重复触发重算。
+    queryFn: ({ signal, client, queryKey }) => {
+      const cached = client.getQueryData<LedgerView>(queryKey);
+      const failed = client.getQueryState(queryKey)?.status === "error";
+      return readLedger(
+        homeTrendQuery,
+        undefined,
+        signal,
+        failed || !cached?.reportStatus?.refreshing,
+      );
+    },
+    refetchInterval: (query) => {
+      if (
+        liveUpdatesPaused ||
+        query.state.status === "error" ||
+        query.state.fetchFailureCount
+      )
+        return false;
+      return query.state.data?.reportStatus?.refreshing ? 1000 : false;
+    },
+    enabled: mobile && page === "overview",
+  });
   const hiddenIds = new Set(accountArchive.data?.hidden ?? []);
-  const sortedAccounts = orderedAccounts((quotaSnapshot?.accounts ?? []).filter(account => !hiddenIds.has(account.id)), accountOrder);
+  const sortedAccounts = orderedAccounts(
+    (quotaSnapshot?.accounts ?? []).filter(
+      (account) => !hiddenIds.has(account.id),
+    ),
+    accountOrder,
+  );
   const archivedIds = new Set(accountArchive.data?.archived ?? []);
-  const visibleAccounts = sortedAccounts.filter((account) =>
-    archiveView === "all" || archivedIds.has(account.id) === (archiveView === "archived"),
+  const visibleAccounts = sortedAccounts.filter(
+    (account) =>
+      archiveView === "all" ||
+      archivedIds.has(account.id) === (archiveView === "archived"),
   );
   const usdBasis = usdBasisOverride ?? snapshot?.usdBasis ?? "subscription";
   useEffect(() => {
@@ -681,7 +918,21 @@ export function App() {
   };
   const openAccountRequests = (accountId: string) => {
     // 总览钻取沿用当前时段；账户页钻取保留请求页自己的日期。
-    setFilter(current => ({ ...current, ...(page === "overview" ? { days: filter.days, dateRange: filter.dateRange, model: filter.model } : { model: "all" }), account: accountId, search: "" }), "ledger");
+    setFilter(
+      (current) => ({
+        ...current,
+        ...(page === "overview"
+          ? {
+              days: filter.days,
+              dateRange: filter.dateRange,
+              model: filter.model,
+            }
+          : { model: "all" }),
+        account: accountId,
+        search: "",
+      }),
+      "ledger",
+    );
     navigate("ledger");
   };
   const nav = (
@@ -697,12 +948,20 @@ export function App() {
         <span>Meterleaf</span>
       </a>
       <nav aria-label="主导航">
-        {pages.map((item) => (
+        {primaryPages.map((item) => (
           <button
             key={item.id}
             onClick={() => navigate(item.id)}
-            aria-current={page === item.id ? "page" : undefined}
-            className={page === item.id ? "active" : ""}
+            aria-current={
+              page === item.id || (page === "period" && item.id === "overview")
+                ? "page"
+                : undefined
+            }
+            className={
+              page === item.id || (page === "period" && item.id === "overview")
+                ? "active"
+                : ""
+            }
           >
             <item.icon size={17} />
             <span>{item.name}</span>
@@ -719,7 +978,7 @@ export function App() {
     </>
   );
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-page={page}>
       <a
         className="skip-link"
         href="#main-content"
@@ -731,10 +990,32 @@ export function App() {
       >
         跳到主要内容
       </a>
-      <aside className="sidebar">{nav}</aside>
+      <aside className="sidebar">
+        <img
+          className="sidebar-art"
+          src="/meterleaf-sidebar-leaves.png"
+          alt=""
+          width="1024"
+          height="1536"
+          aria-hidden="true"
+        />
+        {nav}
+      </aside>
       <div className="main-shell">
-        <header className="topbar">
+        <header
+          className={`topbar ${mobile ? "app-topbar" : ""} ${mobile && page === "overview" ? "app-home-topbar" : ""}`}
+        >
           <div className="topbar-title">
+            {mobile && page !== "overview" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="返回总览"
+                onClick={() => navigate("overview")}
+              >
+                <ChevronLeft size={20} />
+              </Button>
+            )}
             <Button
               className="mobile-menu"
               variant="ghost"
@@ -744,18 +1025,86 @@ export function App() {
             >
               <Menu size={18} />
             </Button>
-            <a className="mobile-brand" href="#overview" aria-label="Meterleaf 首页">
-              <span>Meterleaf<small>{pages.find((p) => p.id === page)?.name}</small></span>
-            </a>
-            <h1 id="page-title">{pages.find((p) => p.id === page)?.name}</h1>
+            <Button
+              className="mobile-about"
+              variant="ghost"
+              size="icon"
+              aria-label="关于 Meterleaf"
+              title="关于 Meterleaf"
+              onClick={() => setAboutOpen(true)}
+            >
+              <Info size={20} />
+            </Button>
+            {mobile && page === "overview" ? (
+              <a
+                className="mobile-brand"
+                href="#overview"
+                aria-label="Meterleaf 首页"
+              >
+                <img src="/favicon.svg" width="30" height="30" alt="" />
+                <span>Meterleaf</span>
+                <h1 id="page-title" className="sr-only">
+                  用量总览
+                </h1>
+              </a>
+            ) : mobile ? (
+              <h1 id="page-title">{pages.find((p) => p.id === page)?.name}</h1>
+            ) : (
+              <>
+                <a
+                  className="mobile-brand"
+                  href="#overview"
+                  aria-label="Meterleaf 首页"
+                >
+                  <span>
+                    Meterleaf
+                    <small>{pages.find((p) => p.id === page)?.name}</small>
+                  </span>
+                </a>
+                <h1 id="page-title">
+                  {pages.find((p) => p.id === page)?.name}
+                </h1>
+                <p className="topbar-subtitle">
+                  {page === "accounts"
+                    ? "管理账户的使用情况、额度限制与费用预估"
+                    : page === "reports"
+                      ? "多维统计分析，洞察用量与成本"
+                      : page === "ledger"
+                        ? "每一条请求，都清晰可查"
+                        : "实时掌握 API 使用情况，洞察成本与性能"}
+                </p>
+              </>
+            )}
           </div>
           <div className="topbar-actions">
             <span className="timezone-label">Asia/Shanghai</span>
-            {import.meta.env.VITE_METERLEAF_DEMO !== "true" && <SyncControl />}
+            {import.meta.env.VITE_METERLEAF_DEMO !== "true" && (
+              <div className="app-sync">
+                <SyncControl compact={mobile} />
+              </div>
+            )}
             {snapshot?.mode === "demo" && (
               <span className="demo-badge">演示数据</span>
             )}
-            <ThemeControl onResolvedChange={setDark} />
+            {page !== "settings" && (
+              <ThemeControl
+                hidden={mobile}
+                onResolvedChange={setDark}
+                mobileLayout={mobileLayout}
+                onMobileLayoutChange={setMobileLayout}
+              />
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="app-profile-button"
+              aria-label="我的设置"
+              onClick={() => navigate("settings")}
+            >
+              <span className="profile-monogram" aria-hidden="true">
+                M
+              </span>
+            </Button>
           </div>
         </header>
         <main
@@ -769,7 +1118,51 @@ export function App() {
             false
           }
         >
-          {page === "overview" && quotaSnapshot && (
+          {mobile && page === "overview" && quotaSnapshot && (
+            <MobileHome
+              snapshot={quotaSnapshot}
+              accounts={sortedAccounts.filter(
+                (account) => !archivedIds.has(account.id),
+              )}
+              asOf={quotaAsOf}
+              trendPoints={homeTrend.data?.view.units.tokens.points ?? []}
+              onAccount={setSelectedAccount}
+              onRequests={(account) => openAccountRequests(account.id)}
+              onAllAccounts={() => navigate("accounts")}
+              onPeriod={() => navigate("period")}
+            />
+          )}
+          {page === "settings" && (
+            <section className="app-settings">
+              <div className="app-settings-brand">
+                <img src="/favicon.svg" width="52" height="52" alt="" />
+                <div>
+                  <h2>Meterleaf</h2>
+                  <span>独立 AI 用量账本</span>
+                </div>
+              </div>
+              <ThemeControl
+                inline
+                onResolvedChange={setDark}
+                mobileLayout={mobileLayout}
+                onMobileLayoutChange={setMobileLayout}
+              />
+              <div className="app-settings-row">
+                <span>时区</span>
+                <strong>Asia/Shanghai</strong>
+              </div>
+              <button
+                className="app-settings-row"
+                onClick={() => setAboutOpen(true)}
+              >
+                <span>关于 Meterleaf</span>
+                <span>
+                  {appVersion} <ArrowRight size={16} />
+                </span>
+              </button>
+            </section>
+          )}
+          {!mobile && page === "overview" && quotaSnapshot && (
             <>
               {quotaSnapshot.lifetimeTotals && (
                 <section className="lifetime-summary" aria-label="历史累计">
@@ -792,9 +1185,7 @@ export function App() {
                       </dd>
                     </div>
                     <div>
-                      <dt>
-                        估算费用
-                      </dt>
+                      <dt>估算费用</dt>
                       <dd>{formatUsd(quotaSnapshot.lifetimeTotals.usd)}</dd>
                     </div>
                     <div>
@@ -807,7 +1198,9 @@ export function App() {
                 </section>
               )}
               <OverviewQuotas
-                accounts={sortedAccounts.filter((account) => !archivedIds.has(account.id))}
+                accounts={sortedAccounts.filter(
+                  (account) => !archivedIds.has(account.id),
+                )}
                 asOf={quotaAsOf}
                 accountUsage={snapshot?.view.accountUsage}
                 onOpen={setSelectedAccount}
@@ -816,18 +1209,130 @@ export function App() {
                   openAccountRequests(account.id);
                 }}
               />
-              <h2 className="period-heading">时间段用量</h2>
+              <h2 className="period-heading">
+                <button onClick={() => navigate("period")}>
+                  时间段用量 <ChevronRight size={18} />
+                </button>
+              </h2>
             </>
           )}
-          <div className="filterbar">
-            <div className="filters">
-              {page !== "accounts" && (
-                <DateRangePicker
-                  value={filter}
-                  asOf={snapshot?.asOf ?? new Date().toISOString()}
-                  onChange={patchFilter}
-                />
-              )}
+          {!mobile && page === "period" && (
+            <section className="desktop-banner">
+              <img src="/favicon.svg" width="64" height="64" alt="" />
+              <div>
+                <h2>时间段用量分析</h2>
+                <p>深入洞察使用趋势，优化成本与性能</p>
+              </div>
+            </section>
+          )}
+          {page !== "settings" && !(mobile && page === "overview") && (
+            <MobileFilters
+              enabled={mobile}
+              page={page}
+              presets={
+                page === "period" ? (
+                  <div className="mobile-period-presets">
+                    {([1, 7, 30] as const).map((days) => (
+                      <button
+                        key={days}
+                        aria-pressed={!filter.dateRange && filter.days === days}
+                        onClick={() =>
+                          patchFilter({ days, dateRange: undefined })
+                        }
+                      >
+                        {days === 1 ? "近 24 小时" : `近 ${days} 天`}
+                      </button>
+                    ))}
+                    <DateRangePicker
+                      value={filter}
+                      asOf={snapshot?.asOf ?? new Date().toISOString()}
+                      onChange={patchFilter}
+                    />
+                  </div>
+                ) : undefined
+              }
+              primary={
+                <>
+                  {page !== "accounts" && (
+                    <FilterSelect
+                      label="快捷模型筛选"
+                      value={filter.model}
+                      onChange={(model) => patchFilter({ model })}
+                      icon={<Layers3 size={15} />}
+                      options={[
+                        { value: "all", label: "全部模型" },
+                        ...modelNames.map((model) => ({
+                          value: model,
+                          label: modelLabel(model),
+                        })),
+                      ]}
+                    />
+                  )}
+                  {(page === "accounts" || page === "period") && (
+                    <FilterSelect
+                      label="快捷账户筛选"
+                      value={
+                        page === "accounts" ? accountFilter : filter.account
+                      }
+                      onChange={(account) =>
+                        page === "accounts"
+                          ? setAccountFilter(account)
+                          : patchFilter({ account })
+                      }
+                      icon={<Wallet size={15} />}
+                      options={[
+                        { value: "all", label: "全部账户" },
+                        ...(quotaSnapshot?.accounts.map((account) => ({
+                          value: account.id,
+                          label: account.name,
+                        })) ?? []),
+                      ]}
+                    />
+                  )}
+                  {page === "accounts" && (
+                    <FilterSelect
+                      label="快捷归档状态"
+                      value={archiveView}
+                      onChange={(value) =>
+                        setArchiveView(prefs.accountArchiveView.parse(value))
+                      }
+                      options={[
+                        { value: "active", label: "使用中" },
+                        { value: "archived", label: "已归档" },
+                        { value: "all", label: "全部状态" },
+                      ]}
+                    />
+                  )}
+                </>
+              }
+              summary={[
+                page !== "accounts" && filter.model !== "all"
+                  ? modelLabel(filter.model)
+                  : null,
+                quotaSnapshot?.accounts.find(
+                  (account) =>
+                    account.id ===
+                    (page === "accounts" ? accountFilter : filter.account),
+                )?.name ?? "全部账户",
+                usdBasis === "subscription" ? "订阅等价" : "标准 API",
+                page === "accounts"
+                  ? { active: "使用中", archived: "已归档", all: "全部状态" }[
+                      archiveView
+                    ]
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              date={
+                page !== "accounts" ? (
+                  <DateRangePicker
+                    value={filter}
+                    asOf={snapshot?.asOf ?? new Date().toISOString()}
+                    onChange={patchFilter}
+                  />
+                ) : undefined
+              }
+            >
               {page !== "accounts" && (
                 <FilterSelect
                   label="模型筛选"
@@ -846,7 +1351,11 @@ export function App() {
               <FilterSelect
                 label="账户筛选"
                 value={page === "accounts" ? accountFilter : filter.account}
-                onChange={(account) => page === "accounts" ? setAccountFilter(account) : patchFilter({ account })}
+                onChange={(account) =>
+                  page === "accounts"
+                    ? setAccountFilter(account)
+                    : patchFilter({ account })
+                }
                 icon={<Wallet size={15} />}
                 options={[
                   { value: "all", label: "全部账户" },
@@ -869,35 +1378,93 @@ export function App() {
                 ]}
               />
               {page === "accounts" && (
-                <FilterSelect label="归档状态" value={archiveView} onChange={(value) => setArchiveView(prefs.accountArchiveView.parse(value))}
-                  options={[{ value: "active", label: "使用中" }, { value: "archived", label: "已归档" }, { value: "all", label: "全部状态" }]} />
+                <FilterSelect
+                  label="归档状态"
+                  value={archiveView}
+                  onChange={(value) =>
+                    setArchiveView(prefs.accountArchiveView.parse(value))
+                  }
+                  options={[
+                    { value: "active", label: "使用中" },
+                    { value: "archived", label: "已归档" },
+                    { value: "all", label: "全部状态" },
+                  ]}
+                />
               )}
               {page === "accounts" && (
-                <Button variant="ghost" size="icon" aria-label={editingAccountOrder ? "完成账户排序" : "调整账户顺序"}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={
+                    editingAccountOrder ? "完成账户排序" : "调整账户顺序"
+                  }
                   title={editingAccountOrder ? "完成账户排序" : "调整账户顺序"}
                   aria-pressed={editingAccountOrder}
-                  onClick={() => setEditingAccountOrder((value) => !value)}>
-                  {editingAccountOrder ? <Check size={18} /> : <ArrowUpDown size={18} />}
+                  onClick={() => setEditingAccountOrder((value) => !value)}
+                >
+                  {editingAccountOrder ? (
+                    <Check size={18} />
+                  ) : (
+                    <ArrowUpDown size={18} />
+                  )}
                 </Button>
               )}
-              {((page === "accounts" ? accountFilter : filter.account) !== "all" ||
+              {mobile && page === "period" && (
+                <>
+                  <Segmented
+                    label="时间粒度"
+                    value={granularity}
+                    onChange={setGranularity}
+                    options={[
+                      { value: "hour", label: "时" },
+                      { value: "day", label: "天" },
+                      { value: "week", label: "周" },
+                    ]}
+                  />
+                  <FilterSelect
+                    label="图表样式"
+                    value={chartStyle}
+                    onChange={(value) =>
+                      setChartStyle(prefs.chart.parse(value))
+                    }
+                    options={[
+                      { value: "bar", label: "柱状图" },
+                      { value: "line", label: "折线图" },
+                      { value: "area", label: "面积图" },
+                      { value: "pie", label: "饼图" },
+                    ]}
+                  />
+                </>
+              )}
+              {((page === "accounts" ? accountFilter : filter.account) !==
+                "all" ||
                 (page !== "accounts" &&
-                  (filter.model !== "all" || filter.search || filter.dateRange))) && (
+                  (filter.model !== "all" ||
+                    filter.search ||
+                    filter.dateRange))) && (
                 <Button
                   variant="ghost"
                   size="icon"
                   aria-label="清除筛选"
                   title="清除筛选"
-                  onClick={() => page === "accounts" ? setAccountFilter("all") : setFilter(initialFilter)}
+                  onClick={() =>
+                    page === "accounts"
+                      ? setAccountFilter("all")
+                      : setFilter(initialFilter)
+                  }
                 >
                   <X size={14} />
                 </Button>
               )}
-            </div>
-          </div>
-          {page === "accounts" && (accountArchive.isError || accountArchive.mutation.isError) && (
-            <p role="alert" className="sync-warning">{accountArchive.mutation.error?.message ?? "账户归档状态读取失败，请刷新重试"}</p>
+            </MobileFilters>
           )}
+          {page === "accounts" &&
+            (accountArchive.isError || accountArchive.mutation.isError) && (
+              <p role="alert" className="sync-warning">
+                {accountArchive.mutation.error?.message ??
+                  "账户归档状态读取失败，请刷新重试"}
+              </p>
+            )}
           {snapshot && (query.isError || snapshot.reportStatus?.lastError) && (
             <div role="alert" className="report-error sync-warning">
               <span>
@@ -930,10 +1497,14 @@ export function App() {
             </div>
           ) : (
             <>
-              {page === "overview" && (
-                <>
+              {((page === "overview" && !mobile) || page === "period") && (
+                <div className={mobile ? "app-period" : "desktop-period"}>
+                  {mobile && <h2 className="app-metrics-heading">关键指标</h2>}
                   <section className="metrics" aria-label="用量摘要">
                     <div className="metric primary-metric">
+                      <span className="metric-symbol" aria-hidden="true">
+                        <Leaf />
+                      </span>
                       <div className="metric-label">
                         估算费用{" "}
                         <Button
@@ -978,6 +1549,9 @@ export function App() {
                       </div>
                     </div>
                     <div className="metric">
+                      <span className="metric-symbol" aria-hidden="true">
+                        <Layers3 />
+                      </span>
                       <div className="metric-label">
                         订阅 Credits <Coins size={14} />
                       </div>
@@ -992,6 +1566,9 @@ export function App() {
                       </div>
                     </div>
                     <div className="metric">
+                      <span className="metric-symbol" aria-hidden="true">
+                        <Coins />
+                      </span>
                       <div className="metric-label">
                         Tokens 总量 <Activity size={14} />
                       </div>
@@ -1010,6 +1587,9 @@ export function App() {
                       </div>
                     </div>
                     <div className="metric">
+                      <span className="metric-symbol" aria-hidden="true">
+                        <Activity />
+                      </span>
                       <div className="metric-label">
                         缓存命中率 <Zap size={14} />
                       </div>
@@ -1160,18 +1740,30 @@ export function App() {
                               : "Tokens"}
                         </span>
                       </div>
-                      <div className="distribution-bar" aria-hidden="true">
-                        {breakdown
-                          .filter((item) => item.count > 0)
-                          .map((item) => (
-                            <span
-                              key={item.model}
-                              style={{
-                                width: `${totalSummary.hasKnown && item.summary.hasKnown ? (item.summary.value / total) * 100 : 0}%`,
-                                background: modelColor(item.model),
-                              }}
-                            />
-                          ))}
+                      <div className="model-donut overview-donut">
+                        <Suspense fallback={<div className="usage-chart" />}>
+                          <UsageChart
+                            points={[]}
+                            breakdown={breakdown}
+                            unit={unit}
+                            granularity={granularity}
+                            chartStyle="pie"
+                            donut
+                            dark={dark}
+                          />
+                        </Suspense>
+                        <div className="model-donut-total" aria-hidden="true">
+                          <span>
+                            {unit === "tokens"
+                              ? "总 Tokens"
+                              : unit === "usd"
+                                ? "估算费用"
+                                : "Credits"}
+                          </span>
+                          <strong>
+                            {amount(totalSummary.hasKnown ? total : null, unit)}
+                          </strong>
+                        </div>
                       </div>
                       <div className="model-breakdown">
                         {breakdown
@@ -1222,7 +1814,7 @@ export function App() {
                       </div>
                     </div>
                   </section>
-                </>
+                </div>
               )}
               {page === "accounts" && (
                 <section className="accounts-section" aria-label="账户额度列表">
@@ -1240,68 +1832,159 @@ export function App() {
                           accountFilter === "all" || a.id === accountFilter,
                       )
                       .map((account) => (
-                        <div className="account-list-item" key={account.id} data-account-id={account.id} data-manageable={accountArchive.data?.writable || undefined}>
-                        <AccountRow
-                          account={account}
-                          asOf={quotaAsOf}
-                          onOpen={() => {
-                            if (account.fiveHour || account.sevenDay) setSelectedAccount(account);
-                            else {
-                              openAccountRequests(account.id);
-                            }
-                          }}
-                        />
-                        {editingAccountOrder && (
-                          <div className="account-order-actions" aria-label={`${account.name} 排序`}>
-                            {editingAccountOrder && ([-1, 1] as const).map((direction) => (
-                              <Button key={direction} variant="ghost" size="icon"
-                                aria-label={`${direction === -1 ? "上移" : "下移"} ${account.name}`}
-                                title={direction === -1 ? "上移账户" : "下移账户"}
-                                disabled={sortedAccounts.indexOf(account) + direction < 0 || sortedAccounts.indexOf(account) + direction >= sortedAccounts.length}
-                                onClick={() => setAccountOrder(moveAccount(sortedAccounts.map((value) => value.id), account.id, direction))}>
-                                {direction === -1 ? <ArrowUp size={18} /> : <ArrowDown size={18} />}
-                              </Button>
-                            ))}
-                          </div>
-                        )}
-                        {accountArchive.data?.writable && (
-                          <ActionMenu.Root>
-                            <ActionMenu.Trigger className="account-menu-trigger" render={<Button variant="ghost" size="icon" />}
-                              aria-label={`${account.name} 账户操作`} title="账户操作"><MoreHorizontal size={18} /></ActionMenu.Trigger>
-                            <ActionMenu.Portal><ActionMenu.Positioner side="bottom" align="end" sideOffset={4} className="account-menu-positioner">
-                              <ActionMenu.Popup className="account-menu-popup">
-                                <ActionMenu.Item className="account-menu-item" disabled={accountArchive.mutation.isPending}
-                                  onClick={() => accountArchive.mutation.mutate({ id: account.id, archived: !archivedIds.has(account.id) })}>
-                                  {archivedIds.has(account.id) ? <ArchiveRestore size={16} /> : <Archive size={16} />}
-                                  {archivedIds.has(account.id) ? "恢复账户" : "归档账户"}
-                                </ActionMenu.Item>
-                                <ActionMenu.Item className="account-menu-item" disabled={accountArchive.mutation.isPending} onClick={() => setAccountToHide(account)}>
-                                  <Trash2 size={16} />删除账户
-                                </ActionMenu.Item>
-                              </ActionMenu.Popup>
-                            </ActionMenu.Positioner></ActionMenu.Portal>
-                          </ActionMenu.Root>
-                        )}
+                        <div
+                          className="account-list-item"
+                          key={account.id}
+                          data-account-id={account.id}
+                          data-manageable={
+                            accountArchive.data?.writable || undefined
+                          }
+                        >
+                          <AccountRow
+                            account={account}
+                            asOf={quotaAsOf}
+                            compactView={mobile}
+                            archived={archivedIds.has(account.id)}
+                            onOpen={() => {
+                              if (account.fiveHour || account.sevenDay)
+                                setSelectedAccount(account);
+                              else {
+                                openAccountRequests(account.id);
+                              }
+                            }}
+                          />
+                          {editingAccountOrder && (
+                            <div
+                              className="account-order-actions"
+                              aria-label={`${account.name} 排序`}
+                            >
+                              {editingAccountOrder &&
+                                ([-1, 1] as const).map((direction) => (
+                                  <Button
+                                    key={direction}
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label={`${direction === -1 ? "上移" : "下移"} ${account.name}`}
+                                    title={
+                                      direction === -1 ? "上移账户" : "下移账户"
+                                    }
+                                    disabled={
+                                      sortedAccounts.indexOf(account) +
+                                        direction <
+                                        0 ||
+                                      sortedAccounts.indexOf(account) +
+                                        direction >=
+                                        sortedAccounts.length
+                                    }
+                                    onClick={() =>
+                                      setAccountOrder(
+                                        moveAccount(
+                                          sortedAccounts.map(
+                                            (value) => value.id,
+                                          ),
+                                          account.id,
+                                          direction,
+                                        ),
+                                      )
+                                    }
+                                  >
+                                    {direction === -1 ? (
+                                      <ArrowUp size={18} />
+                                    ) : (
+                                      <ArrowDown size={18} />
+                                    )}
+                                  </Button>
+                                ))}
+                            </div>
+                          )}
+                          {accountArchive.data?.writable && (
+                            <ActionMenu.Root>
+                              <ActionMenu.Trigger
+                                className="account-menu-trigger"
+                                render={<Button variant="ghost" size="icon" />}
+                                aria-label={`${account.name} 账户操作`}
+                                title="账户操作"
+                              >
+                                <MoreHorizontal size={18} />
+                              </ActionMenu.Trigger>
+                              <ActionMenu.Portal>
+                                <ActionMenu.Positioner
+                                  side="bottom"
+                                  align="end"
+                                  sideOffset={4}
+                                  className="account-menu-positioner"
+                                >
+                                  <ActionMenu.Popup className="account-menu-popup">
+                                    <ActionMenu.Item
+                                      className="account-menu-item"
+                                      disabled={
+                                        accountArchive.mutation.isPending
+                                      }
+                                      onClick={() =>
+                                        accountArchive.mutation.mutate({
+                                          id: account.id,
+                                          archived: !archivedIds.has(
+                                            account.id,
+                                          ),
+                                        })
+                                      }
+                                    >
+                                      {archivedIds.has(account.id) ? (
+                                        <ArchiveRestore size={16} />
+                                      ) : (
+                                        <Archive size={16} />
+                                      )}
+                                      {archivedIds.has(account.id)
+                                        ? "恢复账户"
+                                        : "归档账户"}
+                                    </ActionMenu.Item>
+                                    <ActionMenu.Item
+                                      className="account-menu-item"
+                                      disabled={
+                                        accountArchive.mutation.isPending
+                                      }
+                                      onClick={() => setAccountToHide(account)}
+                                    >
+                                      <Trash2 size={16} />
+                                      删除账户
+                                    </ActionMenu.Item>
+                                  </ActionMenu.Popup>
+                                </ActionMenu.Positioner>
+                              </ActionMenu.Portal>
+                            </ActionMenu.Root>
+                          )}
                         </div>
                       ))}
-                    {!visibleAccounts.length && <p className="empty-chart">{archiveView === "archived" ? "暂无归档账户" : "暂无账户"}</p>}
+                    {!visibleAccounts.length && (
+                      <p className="empty-chart">
+                        {archiveView === "archived"
+                          ? "暂无归档账户"
+                          : "暂无账户"}
+                      </p>
+                    )}
                   </div>
                 </section>
               )}
               {page === "reports" && (
                 <>
-                {view && <ModelDistribution view={view} dark={dark} onModel={(model) => {
-                  setFilter({ ...filter, model, search: "" }, "ledger");
-                  navigate("ledger");
-                }} />}
-                <ReportTable
-                  data={view?.reportRows ?? []}
-                  count={view?.count ?? 0}
-                  accounts={snapshot.accounts}
-                  dimension={reportDimension}
-                  onDimension={setReportDimension}
-                  usdBasis={usdBasis}
-                />
+                  {view && (
+                    <ModelDistribution
+                      view={view}
+                      dark={dark}
+                      onModel={(model) => {
+                        setFilter({ ...filter, model, search: "" }, "ledger");
+                        navigate("ledger");
+                      }}
+                    />
+                  )}
+                  <ReportTable
+                    data={view?.reportRows ?? []}
+                    count={view?.count ?? 0}
+                    accounts={snapshot.accounts}
+                    dimension={reportDimension}
+                    onDimension={setReportDimension}
+                    usdBasis={usdBasis}
+                  />
                 </>
               )}
               {page === "ledger" && (
@@ -1328,22 +2011,69 @@ export function App() {
           )}
         </main>
       </div>
-      <AlertDialog.Root open={!!accountToHide} onOpenChange={(open) => { if (!open) setAccountToHide(null); }}>
+      <AlertDialog.Root
+        open={!!accountToHide}
+        onOpenChange={(open) => {
+          if (!open) setAccountToHide(null);
+        }}
+      >
         <AlertDialog.Portal>
           <AlertDialog.Backdrop className="account-confirm-backdrop" />
           <AlertDialog.Popup className="account-confirm">
             <AlertDialog.Title>删除账户</AlertDialog.Title>
-            <AlertDialog.Description>从列表移除 {accountToHide?.name}，历史请求和统计仍保留。</AlertDialog.Description>
-            {accountArchive.mutation.isError && <p role="alert">{accountArchive.mutation.error.message}</p>}
+            <AlertDialog.Description>
+              从列表移除 {accountToHide?.name}，历史请求和统计仍保留。
+            </AlertDialog.Description>
+            {accountArchive.mutation.isError && (
+              <p role="alert">{accountArchive.mutation.error.message}</p>
+            )}
             <div>
-              <AlertDialog.Close render={<Button variant="outline" />}>取消</AlertDialog.Close>
-              <Button disabled={accountArchive.mutation.isPending} onClick={() => {
-                if (accountToHide) accountArchive.mutation.mutate({ id: accountToHide.id, hidden: true }, { onSuccess: () => setAccountToHide(null) });
-              }}><Trash2 size={16} />删除</Button>
+              <AlertDialog.Close render={<Button variant="outline" />}>
+                取消
+              </AlertDialog.Close>
+              <Button
+                disabled={accountArchive.mutation.isPending}
+                onClick={() => {
+                  if (accountToHide)
+                    accountArchive.mutation.mutate(
+                      { id: accountToHide.id, hidden: true },
+                      { onSuccess: () => setAccountToHide(null) },
+                    );
+                }}
+              >
+                <Trash2 size={16} />
+                删除
+              </Button>
             </div>
           </AlertDialog.Popup>
         </AlertDialog.Portal>
       </AlertDialog.Root>
+      <nav className="mobile-tabbar" aria-label="底部导航">
+        {[
+          { ...primaryPages[0], icon: Home },
+          ...primaryPages.slice(1),
+          pages[5],
+        ].map((item, index) => (
+          <button
+            key={item.id}
+            aria-label={item.name}
+            aria-current={
+              page === item.id || (page === "period" && item.id === "overview")
+                ? "page"
+                : undefined
+            }
+            className={
+              page === item.id || (page === "period" && item.id === "overview")
+                ? "active"
+                : ""
+            }
+            onClick={() => navigate(item.id)}
+          >
+            <item.icon size={22} strokeWidth={page === item.id ? 2.2 : 1.8} />
+            <span>{["首页", "账户", "统计", "明细", "我的"][index]}</span>
+          </button>
+        ))}
+      </nav>
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="mobile-nav-sheet">
           <SheetHeader className="sr-only">
@@ -1359,7 +2089,11 @@ export function App() {
           if (!open) setSelected(null);
         }}
       >
-        <SheetContent className="detail-sheet" finalFocus={requestReturnFocus}>
+        <SheetContent
+          side={mobile ? "bottom" : "right"}
+          className="detail-sheet"
+          finalFocus={requestReturnFocus}
+        >
           <SheetHeader>
             <span className="detail-eyebrow">
               <FileText size={16} />
@@ -1368,7 +2102,9 @@ export function App() {
             <SheetTitle>
               {selected ? modelLabel(selected.model) : "请求"}
             </SheetTitle>
-            <SheetDescription className="sr-only">请求用量与估算费用</SheetDescription>
+            <SheetDescription className="sr-only">
+              请求用量与估算费用
+            </SheetDescription>
           </SheetHeader>
           {selected && (
             <div className="detail-body">
@@ -1543,7 +2279,10 @@ export function App() {
           if (!open) setSelectedAccount(null);
         }}
       >
-        <SheetContent className="detail-sheet">
+        <SheetContent
+          side={mobile ? "bottom" : "right"}
+          className="detail-sheet"
+        >
           <SheetHeader>
             <span className="detail-eyebrow">
               <Wallet size={16} />
@@ -1657,7 +2396,10 @@ export function App() {
         </SheetContent>
       </Sheet>
       <Sheet open={aboutOpen} onOpenChange={setAboutOpen}>
-        <SheetContent className="detail-sheet">
+        <SheetContent
+          side={mobile ? "bottom" : "right"}
+          className="detail-sheet"
+        >
           <SheetHeader>
             <span className="brand-icon">
               <Leaf size={22} />
@@ -1676,14 +2418,68 @@ export function App() {
               <dt>许可证</dt>
               <dd>Apache-2.0</dd>
               <dt>GitHub</dt>
-              <dd><a className="repository-link" href="https://github.com/InfinityPacer/meterleaf" target="_blank" rel="noopener noreferrer">InfinityPacer/meterleaf <ExternalLink size={14} aria-hidden="true" /></a></dd>
+              <dd>
+                <a
+                  className="repository-link"
+                  href="https://github.com/InfinityPacer/meterleaf"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  InfinityPacer/meterleaf{" "}
+                  <ExternalLink size={14} aria-hidden="true" />
+                </a>
+              </dd>
               <dt>运行时</dt>
               <dd>Bun</dd>
             </dl>
             <h2>计价说明</h2>
             <p>
-              订阅等价不加收长上下文费用，标准 API 按公开费率估算，七天额度按本周期消费与已用比例预估。
+              订阅等价不加收长上下文费用，标准 API
+              按公开费率估算，七天额度按本周期消费与已用比例预估。
             </p>
+            <details className="term-glossary">
+              <summary>常用术语</summary>
+              <dl>
+                <dt>Tokens</dt>
+                <dd>
+                  模型处理文字的计数单位，一个单位可能是字、词或词的一部分。
+                </dd>
+                <dt>Credits</dt>
+                <dd>订阅额度点数。它与美元是不同计量单位，按对应费率换算。</dd>
+                <dt>API</dt>
+                <dd>应用程序接口，指软件向模型服务发送请求的方式。</dd>
+                <dt>USD</dt>
+                <dd>美元。这里的金额是按费率估算的用量费用，不是付款账单。</dd>
+                <dt>ID</dt>
+                <dd>标识符，用于区分账户、模型或某一次请求。</dd>
+                <dt>N/A</dt>
+                <dd>当前无可用值，可能是未提供或已过期，不表示零。</dd>
+                <dt>缓存读取 / 写入</dt>
+                <dd>
+                  读取是复用之前的输入，写入是保存输入以供后续复用。两者按各自费率计价。
+                </dd>
+                <dt>推理强度</dt>
+                <dd>
+                  请求采用的思考程度。low、medium、high、xhigh、max
+                  依次表示由低到高的等级，以服务实际返回为准。
+                </dd>
+                <dt>服务等级</dt>
+                <dd>
+                  Standard 是标准处理，Priority 是优先处理，Flex
+                  是弹性处理；等级可能影响费率。
+                </dd>
+                <dt>额度窗口</dt>
+                <dd>
+                  上游计算额度的时间范围，例如 5 小时或 7
+                  天；到期后需要新的额度快照。
+                </dd>
+                <dt>HTTP</dt>
+                <dd>
+                  浏览器与服务传输数据使用的协议。错误代码用于定位读取失败的原因，例如
+                  503 表示服务暂不可用。
+                </dd>
+              </dl>
+            </details>
           </div>
         </SheetContent>
       </Sheet>

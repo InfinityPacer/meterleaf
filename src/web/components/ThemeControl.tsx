@@ -66,8 +66,17 @@ function persist(storage: Storage | null, key: string, value: string) {
 
 export function ThemeControl({
   onResolvedChange,
+  mobileLayout,
+  onMobileLayoutChange,
+  inline = false,
+  hidden = false,
 }: {
   onResolvedChange: (dark: boolean) => void;
+  mobileLayout?: "sidebar" | "app";
+  onMobileLayoutChange?: (layout: "sidebar" | "app") => void;
+  inline?: boolean;
+  /** 不显示入口时仍应用已保存主题和系统外观变化。 */
+  hidden?: boolean;
 }) {
   const storage = browserStorage();
   const [mode, setMode] = useState<ThemeMode>(() =>
@@ -116,6 +125,49 @@ export function ThemeControl({
     persist(storage, PALETTE_STORAGE_KEY, next);
   };
 
+  const fields = (
+    <>
+      <div className="theme-control-fields">
+        {onMobileLayoutChange && (
+          <div className="theme-control-field">
+            <span className="theme-control-label">手机导航</span>
+            <FilterSelect
+              label="手机导航"
+              value={mobileLayout ?? "app"}
+              onChange={(value) => {
+                if (value === "app" || value === "sidebar")
+                  onMobileLayoutChange(value);
+              }}
+              options={[
+                { value: "app", label: "App 模式" },
+                { value: "sidebar", label: "侧栏模式" },
+              ]}
+            />
+          </div>
+        )}
+        <div className="theme-control-field">
+          <span className="theme-control-label">外观</span>
+          <FilterSelect
+            label="外观"
+            value={mode}
+            onChange={changeMode}
+            options={themeModeOptions}
+          />
+        </div>
+        <div className="theme-control-field">
+          <span className="theme-control-label">配色</span>
+          <FilterSelect
+            label="配色"
+            value={palette}
+            onChange={changePalette}
+            options={themePaletteOptions}
+          />
+        </div>
+      </div>
+    </>
+  );
+  if (hidden) return null;
+  if (inline) return <div className="theme-control-inline">{fields}</div>;
   return (
     <div className="theme-control">
       <Popover.Root>
@@ -143,26 +195,7 @@ export function ThemeControl({
                   主题
                 </Popover.Title>
               </div>
-              <div className="theme-control-fields">
-                <div className="theme-control-field">
-                  <span className="theme-control-label">外观</span>
-                  <FilterSelect
-                    label="外观"
-                    value={mode}
-                    onChange={changeMode}
-                    options={themeModeOptions}
-                  />
-                </div>
-                <div className="theme-control-field">
-                  <span className="theme-control-label">配色</span>
-                  <FilterSelect
-                    label="配色"
-                    value={palette}
-                    onChange={changePalette}
-                    options={themePaletteOptions}
-                  />
-                </div>
-              </div>
+              {fields}
             </Popover.Popup>
           </Popover.Positioner>
         </Popover.Portal>

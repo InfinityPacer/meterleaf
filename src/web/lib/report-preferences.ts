@@ -24,7 +24,7 @@ export function readReportPreference(
   return readStoredPreference(
     scope ? `${key}-${scope}` : key,
     schema,
-    { days: 7, model: "all", account: "all" },
+    { days: scope === "overview" ? 1 : 7, model: "all", account: "all" },
     storage,
   );
 }
@@ -51,11 +51,18 @@ export function saveReportPreference(
 /** 每个视图保存独立筛选；跨页钻取显式指定目标，不修改来源页。 */
 export function useReportFilters(scope: string) {
   const [filters, setFilters] = useState<Record<string, ReportFilter>>({});
-  const read = (target: string): ReportFilter => filters[target] ?? { ...readReportPreference(undefined, target), search: "" };
-  const update = (value: ReportFilter | ((current: ReportFilter) => ReportFilter), target = scope) => {
+  const read = (target: string): ReportFilter =>
+    filters[target] ?? {
+      ...readReportPreference(undefined, target),
+      search: "",
+    };
+  const update = (
+    value: ReportFilter | ((current: ReportFilter) => ReportFilter),
+    target = scope,
+  ) => {
     const next = typeof value === "function" ? value(read(target)) : value;
     saveReportPreference(next, undefined, target);
-    setFilters(current => ({ ...current, [target]: next }));
+    setFilters((current) => ({ ...current, [target]: next }));
   };
   return [read(scope), update] as const;
 }

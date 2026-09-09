@@ -58,23 +58,38 @@ export function usePreference<T>(
 }
 
 /** 视图选项按范围隔离，切页不把旧值写入新范围；搜索不使用此持久化入口。 */
-export function useScopedPreference<T>(scope: string, key: string, schema: z.ZodType<T>, fallback: T) {
+export function useScopedPreference<T>(
+  scope: string,
+  key: string,
+  schema: z.ZodType<T>,
+  fallback: T,
+) {
   const [values, setValues] = useState<Record<string, T>>({});
   const scopedKey = `${scope}-${key}`;
-  const value = values[scopedKey] ?? readPreference(scopedKey, schema, fallback);
+  const value =
+    values[scopedKey] ?? readPreference(scopedKey, schema, fallback);
   const update = (next: T | ((current: T) => T)) => {
-    const resolved = typeof next === "function" ? (next as (current: T) => T)(value) : next;
+    const resolved =
+      typeof next === "function" ? (next as (current: T) => T)(value) : next;
     writeStoredPreference(`meterleaf-pref-${scopedKey}`, schema, resolved);
-    setValues(current => ({ ...current, [scopedKey]: resolved }));
+    setValues((current) => ({ ...current, [scopedKey]: resolved }));
   };
   return [value, update] as const;
 }
 
 export const preferenceSchemas = {
+  mobileLayout: z.enum(["sidebar", "app"]),
   accountOrder: z.array(z.string().min(1).max(512)).max(10000),
   accountArchiveView: z.enum(["active", "archived", "all"]),
   accountFilter: z.string().min(1).max(512),
-  page: z.enum(["overview", "accounts", "reports", "ledger"]),
+  page: z.enum([
+    "overview",
+    "accounts",
+    "reports",
+    "ledger",
+    "period",
+    "settings",
+  ]),
   unit: z.enum(["usd", "credits", "tokens"]),
   distributionUnit: z.enum(["usd", "tokens"]),
   granularity: z.enum(["hour", "day", "week"]),

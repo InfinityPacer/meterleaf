@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Popover } from "@base-ui/react/popover";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Bell } from "lucide-react";
 import { Button } from "./ui/button";
 import type { SyncStatus } from "../../server/sync";
+import { useLiveUpdates } from "../lib/use-live-updates";
 import "./controls.css";
 
 const stageLabels: Record<string, string> = {
@@ -70,6 +71,15 @@ function createSyncStatusReadError(
   return error;
 }
 
+function postPresence(pageId: string, visible: boolean, signal?: AbortSignal) {
+  return fetch("/api/sync/presence", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: pageId, visible }),
+    signal,
+  });
+}
+
 /** 查询失败时旧快照不再是当前运行状态的可靠依据。 */
 export function isSyncActuallyRunning(
   status: Pick<SyncStatus, "running"> | undefined,
@@ -128,10 +138,11 @@ function statusTone(
 }
 
 /** 只负责同步控制面的可见状态，不改变后端同步任务的生命周期。 */
-export function SyncControl() {
+export function SyncControl({ compact = false }: { compact?: boolean }) {
   const client = useQueryClient();
+  const { paused, setPaused } = useLiveUpdates();
   const lastSuccess = useRef<string | null | undefined>(undefined);
-  const [feedbackDuration, setFeedbackDuration] = useState(0);
+  const wasPaused = useRef(false);
   const [pageId] = useState(() =>
     Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) =>
       value.toString(16),
@@ -145,15 +156,11 @@ export function SyncControl() {
     queryKey: ["sync-status"],
     queryFn: async ({ signal }) => {
       try {
-        const response = await fetch("/api/sync/presence", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: pageId,
-            visible: document.visibilityState === "visible",
-          }),
+        const response = await postPresence(
+          pageId,
+          document.visibilityState === "visible",
           signal,
-        });
+        );
         if (!response.ok) {
           const kind =
             response.status === 408 || response.status === 504
@@ -170,10 +177,11 @@ export function SyncControl() {
         throw createSyncStatusReadError("network");
       }
     },
-    enabled: visible,
+    enabled: visible && !paused,
     // 恢复可见时不能因全局 staleTime 跳过心跳，后台同步可能已经完成。
     staleTime: 0,
     refetchInterval: (current) => {
+      if (paused) return false;
       if (current.state.status === "error" || current.state.fetchFailureCount)
         return 15_000;
       return current.state.data?.running ? 3000 : 15_000;
@@ -202,6 +210,25 @@ export function SyncControl() {
       leave();
     };
   }, [pageId]);
+  useEffect(() => {
+    if (!paused || !visible) return;
+    const controller = new AbortController();
+    const keepPresence = () => {
+      if (document.visibilityState !== "visible") return;
+      void postPresence(pageId, true, controller.signal).catch(() => {});
+    };
+    keepPresence();
+    const timer = window.setInterval(keepPresence, 15_000);
+    return () => {
+      window.clearInterval(timer);
+      controller.abort();
+    };
+  }, [pageId, paused, visible]);
+  useEffect(() => {
+    const resumed = wasPaused.current && !paused;
+    wasPaused.current = paused;
+    if (resumed && visible) void query.refetch();
+  }, [paused, visible, query.refetch]);
   const trigger = useMutation({
     mutationFn: async () => {
       const response = await fetch("/api/sync", { method: "POST" });
@@ -224,14 +251,6 @@ export function SyncControl() {
     lastSuccess.current = completedAt;
     if (changed) void client.invalidateQueries({ queryKey: ["ledger"] });
   }, [completedAt, client]);
-  useEffect(() => {
-    if (!query.dataUpdatedAt) return;
-    // 检查反馈与成功同步时间独立；相同快照也反馈检查完成，但不推进时间或重取报表。
-    const duration = 1000 + Math.floor(Math.random() * 1001);
-    setFeedbackDuration(duration);
-    const timer = setTimeout(() => setFeedbackDuration(0), duration);
-    return () => clearTimeout(timer);
-  }, [query.dataUpdatedAt]);
   const automatic = useMutation({
     mutationFn: async (enabled: boolean) => {
       const response = await fetch("/api/sync/automatic", {
@@ -273,22 +292,11 @@ export function SyncControl() {
         title={updatedLabel ? `数据同步 · ${updatedLabel}` : "数据同步"}
         aria-busy={running || requestPending || undefined}
       >
-        <RefreshCw
-          size={16}
-          aria-hidden="true"
-          className={
-            running || requestPending
-              ? "spinning"
-              : feedbackDuration > 0
-                ? "sync-updated"
-                : ""
-          }
-          style={
-            feedbackDuration > 0 && !running && !requestPending
-              ? { animationDuration: `${feedbackDuration}ms` }
-              : undefined
-          }
-        />
+        {compact ? (
+          <Bell size={20} aria-hidden="true" />
+        ) : (
+          <RefreshCw size={16} aria-hidden="true" />
+        )}
         <span className="sync-trigger-label">{updatedLabel ?? "数据同步"}</span>
         {hasError && <span className="sync-trigger-badge">需处理</span>}
       </Popover.Trigger>
@@ -316,7 +324,7 @@ export function SyncControl() {
                 )}
               </div>
               {statusKnown && status?.lastError && (
-                <p className="sync-error" role="alert">
+                <p className="sync-error" role="status" aria-live="polite">
                   阶段：
                   {stageLabels[status.lastError.stage] ??
                     status.lastError.stage}{" "}
@@ -325,11 +333,16 @@ export function SyncControl() {
                   错误编号 {status.lastError.id}
                 </p>
               )}
-              {(trigger.isError || automatic.isError || queryFailed) && (
+              {queryFailed && (
+                <p className="sync-error" role="status" aria-live="polite">
+                  {formatSyncStatusReadError(query.error)}
+                </p>
+              )}
+              {(trigger.isError || automatic.isError) && (
                 <p className="sync-error" role="alert">
                   {trigger.error?.message ??
                     automatic.error?.message ??
-                    formatSyncStatusReadError(query.error)}
+                    "操作失败，请稍后重试"}
                 </p>
               )}
               <label className="sync-auto-control">
@@ -340,6 +353,14 @@ export function SyncControl() {
                   onChange={(event) => automatic.mutate(event.target.checked)}
                 />
                 <span>自动同步</span>
+              </label>
+              <label className="sync-auto-control">
+                <input
+                  type="checkbox"
+                  checked={paused}
+                  onChange={(event) => setPaused(event.target.checked)}
+                />
+                <span>暂停页面自动更新</span>
               </label>
               <Button
                 variant="outline"
@@ -352,11 +373,7 @@ export function SyncControl() {
                 }}
                 title="立即同步上游用量"
               >
-                <RefreshCw
-                  size={15}
-                  aria-hidden="true"
-                  className={requestPending || running ? "spinning" : ""}
-                />
+                <RefreshCw size={15} aria-hidden="true" />
                 {requestPending
                   ? "正在提交"
                   : running

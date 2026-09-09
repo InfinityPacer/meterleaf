@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { Menu as ActionMenu } from "@base-ui/react/menu";
 import {
   flexRender,
   rowPaginationFeature,
@@ -16,6 +18,8 @@ import {
   ChevronRight,
   ChevronRight as OpenIcon,
   Search,
+  Check,
+  SlidersHorizontal,
 } from "lucide-react";
 import type {
   LedgerAccount,
@@ -32,6 +36,7 @@ import {
   numericAmount,
 } from "../lib/report";
 import { Button } from "./ui/button";
+import "./mobile-data.css";
 
 interface Props {
   records: LedgerRecord[];
@@ -54,6 +59,24 @@ const features = tableFeatures({
   sortFns: { alphanumeric: sortFn_alphanumeric, basic: sortFn_basic },
 });
 
+const ledgerSortOptions = [
+  { value: "occurredAt", label: "时间" },
+  { value: "model", label: "模型" },
+  { value: "accountId", label: "账户" },
+  { value: "input", label: "输入 Tokens" },
+  { value: "cacheRead", label: "缓存读取" },
+  { value: "output", label: "输出 Tokens" },
+  { value: "usd", label: "USD 估值" },
+] as const;
+
+/** 输入展示包含三个输入桶；缺少任一桶时保留未知，不用部分值冒充总输入。 */
+function requestInputTokens(record: LedgerRecord) {
+  const values = [record.input, record.cacheRead, record.cacheWrite];
+  return values.every(isKnownNumber)
+    ? values.reduce((total, value) => total + value, 0)
+    : null;
+}
+
 export function LedgerTable({
   records,
   total,
@@ -68,6 +91,7 @@ export function LedgerTable({
   usdBasis,
   compactView = false,
 }: Props) {
+  const [searchOpen, setSearchOpen] = useState(false);
   const pageSize = compactView ? 5 : 12;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const columns: ColumnDef<typeof features, LedgerRecord>[] = [
@@ -83,7 +107,9 @@ export function LedgerTable({
               hour12: false,
             })}
           </span>
-          {info.row.original.sourceId && <small>{info.row.original.sourceId}</small>}
+          {info.row.original.sourceId && (
+            <small>{info.row.original.sourceId}</small>
+          )}
         </div>
       ),
     },
@@ -101,7 +127,10 @@ export function LedgerTable({
       id: "reasoningEffort",
       header: "推理强度",
       // 有效强度优先；上游未记录有效值时保留请求值，不推断默认档位。
-      accessorFn: (row) => row.details?.reasoningEffort ?? row.details?.requestedReasoningEffort ?? null,
+      accessorFn: (row) =>
+        row.details?.reasoningEffort ??
+        row.details?.requestedReasoningEffort ??
+        null,
       cell: (info) => info.getValue<string | null>() ?? "N/A",
       enableSorting: false,
     },
@@ -114,12 +143,7 @@ export function LedgerTable({
     },
     {
       id: "input",
-      accessorFn: (row) => {
-        const values = [row.input, row.cacheRead, row.cacheWrite];
-        return values.every(isKnownNumber)
-          ? values.reduce((total, value) => total + value, 0)
-          : null;
-      },
+      accessorFn: requestInputTokens,
       header: "输入 tokens",
       cell: (info) => compact(info.getValue<number | null>()),
     },
@@ -168,13 +192,74 @@ export function LedgerTable({
     },
   });
   return (
-    <section className="ledger-section">
+    <section className="ledger-section request-section">
       <div className="section-heading">
         <div>
           <h2>{compactView ? "最近请求" : "请求明细"}</h2>
           <span className="muted">{total.toLocaleString()} 条记录</span>
         </div>
-        <label className="search-control">
+        <div className="mobile-data-controls mobile-request-controls">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="搜索请求"
+            title="搜索请求"
+            aria-expanded={searchOpen || !!search}
+            onClick={() => {
+              if (searchOpen || search) {
+                onSearch("");
+                setSearchOpen(false);
+              } else setSearchOpen(true);
+            }}
+          >
+            <Search size={18} />
+          </Button>
+          <ActionMenu.Root>
+            <ActionMenu.Trigger
+              className="mobile-data-tool"
+              aria-label="请求排序"
+              title="请求排序"
+            >
+              <SlidersHorizontal size={18} />
+            </ActionMenu.Trigger>
+            <ActionMenu.Portal>
+              <ActionMenu.Positioner sideOffset={6} align="end">
+                <ActionMenu.Popup className="mobile-data-menu">
+                  {ledgerSortOptions.map((option) => (
+                    <ActionMenu.Item
+                      key={option.value}
+                      onClick={() =>
+                        onSorting({ id: option.value, desc: sorting.desc })
+                      }
+                    >
+                      {option.label}
+                      {sorting.id === option.value && (
+                        <Check size={15} aria-hidden="true" />
+                      )}
+                    </ActionMenu.Item>
+                  ))}
+                  <ActionMenu.Separator />
+                  <ActionMenu.Item
+                    onClick={() =>
+                      onSorting({ ...sorting, desc: !sorting.desc })
+                    }
+                  >
+                    切换为{sorting.desc ? "升序" : "降序"}
+                    {sorting.desc ? (
+                      <ArrowUp size={15} />
+                    ) : (
+                      <ArrowDown size={15} />
+                    )}
+                  </ActionMenu.Item>
+                </ActionMenu.Popup>
+              </ActionMenu.Positioner>
+            </ActionMenu.Portal>
+          </ActionMenu.Root>
+        </div>
+        <label
+          className="search-control"
+          data-expanded={searchOpen || !!search}
+        >
           <Search size={15} />
           <input
             aria-label="搜索请求"
@@ -272,6 +357,57 @@ export function LedgerTable({
             ))}
           </tbody>
         </table>
+      </div>
+      <div
+        className="mobile-request-list"
+        role="region"
+        aria-label="请求列表"
+        tabIndex={0}
+      >
+        {table.getRowModel().rows.map((row) => {
+          const record = row.original;
+          const account =
+            accounts.find((item) => item.id === record.accountId)?.name ??
+            record.accountId;
+          return (
+            <button
+              key={row.id}
+              type="button"
+              className="mobile-request-item"
+              data-request-id={record.id}
+              aria-label={`查看 ${record.id} 的计量明细`}
+              onClick={() => onSelect(record)}
+            >
+              <span className="mobile-request-heading">
+                <time dateTime={record.occurredAt}>
+                  {localTime(record.occurredAt, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hour12: false,
+                  })}
+                </time>
+                <span className="mobile-request-model">
+                  <i
+                    style={{ background: modelColor(record.model) }}
+                    aria-hidden="true"
+                  />
+                  <span>{modelLabel(record.model)}</span>
+                </span>
+                <strong>{amount(numericAmount(record.usd), "usd")}</strong>
+                <OpenIcon size={14} aria-hidden="true" />
+              </span>
+              <span className="mobile-request-meta">
+                <span title="来源">{record.sourceId || "N/A"}</span>
+                <span title="推理强度">
+                  {record.details?.reasoningEffort ??
+                    record.details?.requestedReasoningEffort ??
+                    "N/A"}
+                </span>
+                <span title="账户">{account || "N/A"}</span>
+              </span>
+            </button>
+          );
+        })}
       </div>
       {!records.length && (
         <div className="empty-state">

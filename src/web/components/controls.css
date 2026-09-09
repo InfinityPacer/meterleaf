@@ -274,22 +274,11 @@
   min-width: 172px;
   font-variant-numeric: tabular-nums;
 }
-.sync-updated {
-  animation: sync-updated-turn 1500ms ease-out;
-}
-@keyframes sync-updated-turn {
-  from {
-    transform: rotate(-180deg);
-  }
-  to {
-    transform: rotate(0);
-  }
-}
 
 .sync-trigger-badge {
   border-radius: 999px;
   padding: 2px 7px;
-  background: color-mix(in srgb, var(--danger), transparent 92%);
+  background: var(--surface);
   color: var(--danger);
   font-size: 12px;
   font-weight: 650;
@@ -314,18 +303,27 @@
 }
 
 .sync-status-running {
-  background: color-mix(in srgb, var(--blue), transparent 86%);
+  background: var(--surface);
   color: var(--blue);
 }
 
 .sync-status-success {
-  background: color-mix(in srgb, var(--teal), transparent 84%);
+  background: var(--surface);
   color: var(--teal);
 }
 
 .sync-status-error {
-  background: color-mix(in srgb, var(--danger), transparent 86%);
+  background: var(--surface);
   color: var(--danger);
+}
+
+@media (forced-colors: active) {
+  .sync-status-running,
+  .sync-status-success,
+  .sync-status-error {
+    outline: 3px solid CanvasText;
+    outline-offset: 1px;
+  }
 }
 
 .sync-control-body {
@@ -384,7 +382,7 @@
   justify-content: center;
 }
 
-@media (max-width: 700px) {
+@media (max-width: 900px) {
   .sync-trigger-label,
   .sync-trigger-badge {
     display: none;
@@ -397,9 +395,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sync-updated {
-    animation: none;
-  }
   .filter-select-trigger,
   .filter-select-popup,
   .theme-control-trigger,

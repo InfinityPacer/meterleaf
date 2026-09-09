@@ -1,0 +1,52 @@
+import { expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MobileHome } from "../src/web/components/MobileHome";
+import { createDemoLedger } from "../src/web/demo/ledger";
+import { createLedgerView } from "../src/shared/ledger-view";
+
+function renderHome(values: (number | null)[]) {
+  const snapshot = createDemoLedger();
+  const view = createLedgerView(snapshot, {
+    filter: { days: 7, model: "all", account: "all", search: "" },
+    unit: "tokens",
+    granularity: "day",
+    dimension: "day",
+    page: 0,
+    pageSize: 1,
+    sort: "occurredAt",
+    desc: true,
+  });
+  return renderToStaticMarkup(
+    <MobileHome
+      snapshot={view}
+      accounts={[]}
+      asOf={view.asOf}
+      trendPoints={values.map((value, index) => ({
+        at: Date.parse(view.asOf) - index * 86400000,
+        value,
+        count: value === null ? 1 : 0,
+        incomplete: value === null ? 1 : 0,
+      }))}
+      onAccount={() => {}}
+      onRequests={() => {}}
+      onAllAccounts={() => {}}
+      onPeriod={() => {}}
+    />,
+  );
+}
+
+test("home trend preserves zero and distinguishes unknown from known bars", () => {
+  const html = renderHome([0, 100, null]);
+  expect(html).toContain('style="height:0%"');
+  expect(html).toContain('style="height:100%"');
+  expect(html).toContain('class="mobile-home-trend-bar is-unknown"');
+  expect(html).toContain("无已知值");
+  expect(html).toContain("近 30 天 Tokens 趋势");
+});
+
+test("home without cumulative facts does not substitute filtered totals", () => {
+  const html = renderHome([]);
+  expect(html).toContain("暂无累计快照");
+  expect(html).toContain("暂无真实趋势数据");
+  expect(html).not.toContain("$0.00");
+});
