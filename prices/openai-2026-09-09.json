@@ -1,23 +1,27 @@
 {
   "schemaVersion": 1,
   "id": "meterleaf-openai",
-  "version": "2026-09-09.1",
-  "publishedAt": "2026-09-08T16:00:00Z",
+  "version": "2026-09-09.3",
+  "publishedAt": "2026-09-09T16:00:00Z",
   "unit": "per_million_tokens",
   "sources": [
     "https://developers.openai.com/api/docs/pricing",
     "https://learn.chatgpt.com/docs/pricing",
     "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
     "https://developers.openai.com/api/docs/models/gpt-5.4",
-    "https://developers.openai.com/api/docs/models/gpt-5.4-mini"
+    "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+    "https://developers.openai.com/api/docs/models/gpt-image-2",
+    "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst",
+    "https://developers.openai.com/api/docs/models/gpt-image-2.5-flare"
   ],
   "notes": [
     "Subscription-equivalent USD uses the same published base prices but excludes long-context uplifts; it is an estimate, not an invoice or a credit-to-dollar exchange rate.",
     "API USD retains published long-context prices. Sol promotional prices are already applied in both USD branches.",
-    "Astra credits keeps standard rates above 272K per the selected subscription policy. Credit cache-write prices and unverified long-context rates remain unspecified.",
+    "Credits follow the published subscription token rate card without importing API long-context uplifts. Cache-write credits remain unspecified.",
     "Historical records are revalued at this observed price snapshot and marked as estimates, not historical invoices.",
     "Sol promotion is available at least through 2026-11-21. No unannounced post-promotion price is assumed.",
-    "GPT-5.4 and GPT-5.4 mini use their independently published Standard token rates. GPT-5.4 API prices above 272K use 2x input and 1.5x output. No unverified Fast, Flex or cache-write rates are inferred."
+    "GPT-5.4 and GPT-5.4 mini use their independently published Standard token rates. GPT-5.4 API prices above 272K use 2x input and 1.5x output. No unverified Fast, Flex or cache-write rates are inferred.",
+    "Only documented model IDs and snapshots are included; generic gpt-image-2.5 is not inferred as a variant alias."
   ],
   "rules": [
     {
@@ -365,15 +369,6 @@
         "cacheRead": "10",
         "cacheWrite": null,
         "output": "500"
-      },
-      "longContext": {
-        "threshold": 272000,
-        "rates": {
-          "input": null,
-          "cacheRead": null,
-          "cacheWrite": null,
-          "output": null
-        }
       }
     },
     {
@@ -491,15 +486,6 @@
         "cacheRead": "5",
         "cacheWrite": null,
         "output": "300"
-      },
-      "longContext": {
-        "threshold": 272000,
-        "rates": {
-          "input": null,
-          "cacheRead": null,
-          "cacheWrite": null,
-          "output": null
-        }
       }
     },
     {
@@ -617,15 +603,324 @@
         "cacheRead": "0.5",
         "cacheWrite": null,
         "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": null
       },
-      "longContext": {
-        "threshold": 272000,
-        "rates": {
-          "input": null,
-          "cacheRead": null,
-          "cacheWrite": null,
-          "output": null
-        }
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": null
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "credits",
+      "tier": "standard",
+      "rates": {
+        "input": "125",
+        "cacheRead": "31.25",
+        "cacheWrite": null,
+        "output": "250"
+      },
+      "imageRates": {
+        "input": "200",
+        "cacheRead": "50",
+        "output": "750"
+      }
+    },
+    {
+      "model": "gpt-image-2-2026-04-21",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": null
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2-2026-04-21",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": null
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2-2026-04-21",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "credits",
+      "tier": "standard",
+      "rates": {
+        "input": "125",
+        "cacheRead": "31.25",
+        "cacheWrite": null,
+        "output": "250"
+      },
+      "imageRates": {
+        "input": "200",
+        "cacheRead": "50",
+        "output": "750"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-sunburst",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-sunburst",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-sunburst-2026-09-08",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-sunburst-2026-09-08",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-flare",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-flare",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-flare-2026-09-08",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-flare-2026-09-08",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-sunburst",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "credits",
+      "tier": "standard",
+      "rates": {
+        "input": "125",
+        "cacheRead": "31.25",
+        "cacheWrite": null,
+        "output": "250"
+      },
+      "imageRates": {
+        "input": "200",
+        "cacheRead": "50",
+        "output": "750"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-sunburst-2026-09-08",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "credits",
+      "tier": "standard",
+      "rates": {
+        "input": "125",
+        "cacheRead": "31.25",
+        "cacheWrite": null,
+        "output": "250"
+      },
+      "imageRates": {
+        "input": "200",
+        "cacheRead": "50",
+        "output": "750"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-flare",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "credits",
+      "tier": "standard",
+      "rates": {
+        "input": "125",
+        "cacheRead": "31.25",
+        "cacheWrite": null,
+        "output": "250"
+      },
+      "imageRates": {
+        "input": "200",
+        "cacheRead": "50",
+        "output": "750"
+      }
+    },
+    {
+      "model": "gpt-image-2.5-flare-2026-09-08",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "credits",
+      "tier": "standard",
+      "rates": {
+        "input": "125",
+        "cacheRead": "31.25",
+        "cacheWrite": null,
+        "output": "250"
+      },
+      "imageRates": {
+        "input": "200",
+        "cacheRead": "50",
+        "output": "750"
       }
     }
   ]

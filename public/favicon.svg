@@ -1,7 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#245d4f" />
-  <g transform="translate(4 4)" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M11 20a10 10 0 0010-10 25.9 25.9 0 00-1.04-7.281 1 1 0 00-1.755-.325C15.833 5.5 13 5.5 9.8 6.1A7 7 0 0011 20" />
-    <path d="M2 21a5 5 0 012.911-4.544C7.613 15.212 8.351 15.24 11 13" />
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="jade" x1="0" y1="0" x2="1" y2="0.8">
+      <stop stop-color="#29bd9a" />
+      <stop offset="0.5" stop-color="#16a466" />
+      <stop offset="1" stop-color="#098858" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#jade)" />
+  <g fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 19 39 C 13 31 19 23 28 22 C 37 21 43 20 49 15 C 46 24 47 35 38 42 C 32 47 24 46 21 43" />
+    <path d="M 14 50 C 22 36 37 31 49 15" />
   </g>
 </svg>

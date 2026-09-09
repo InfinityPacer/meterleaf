@@ -1,0 +1,53 @@
+.mini-trend {
+  --mini-trend-height: 48px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto var(--mini-trend-height);
+  gap: 2px;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-align: left;
+}
+
+.mini-trend.is-caption-hidden {
+  grid-template-rows: var(--mini-trend-height);
+}
+
+.mini-trend-caption {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted, #64748b);
+  font-size: 10px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mini-trend-chart,
+.mini-trend-state {
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--mini-trend-height);
+  min-height: var(--mini-trend-height);
+}
+
+.mini-trend-chart {
+  display: block;
+  min-width: 0;
+}
+
+.mini-trend-state {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  color: var(--muted, #64748b);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mini-trend-state.is-error {
+  color: var(--danger, #b42318);
+}

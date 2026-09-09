@@ -56,7 +56,7 @@ export function modelLabel(model: string) {
 }
 
 export function compact(value: number | null) {
-  if (value === null || !Number.isFinite(value)) return "—";
+  if (value === null || !Number.isFinite(value)) return "N/A";
   return new Intl.NumberFormat("en-US", {
     notation: "compact",
     maximumFractionDigits: 2,
@@ -64,7 +64,7 @@ export function compact(value: number | null) {
 }
 
 export function amount(value: number | null, unit: ReportUnit) {
-  if (value === null || !Number.isFinite(value)) return "—";
+  if (value === null || !Number.isFinite(value)) return "N/A";
   if (unit === "usd")
     return new Intl.NumberFormat("en-US", {
       style: "currency",
@@ -130,7 +130,7 @@ export function tokenFieldSummary(
   };
 }
 
-/** 汇总只累加已知值，同时记录缺证据的记录数供 UI 明示。 */
+/** 汇总只累加已知值，完整性计数保留在数据中，不影响已有金额的展示。 */
 export function summarize(
   records: LedgerRecord[],
   unit: ReportUnit,

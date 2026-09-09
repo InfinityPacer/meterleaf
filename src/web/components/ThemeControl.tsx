@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { Popover } from "@base-ui/react/popover";
-import { Moon, Palette, Sun } from "lucide-react";
+import {
+  Check,
+  Monitor,
+  Moon,
+  Palette,
+  PanelLeft,
+  Smartphone,
+  Sun,
+} from "lucide-react";
 import { FilterSelect } from "./FilterSelect";
 import "./controls.css";
 
@@ -66,8 +74,17 @@ function persist(storage: Storage | null, key: string, value: string) {
 
 export function ThemeControl({
   onResolvedChange,
+  mobileLayout,
+  onMobileLayoutChange,
+  inline = false,
+  hidden = false,
 }: {
   onResolvedChange: (dark: boolean) => void;
+  mobileLayout?: "sidebar" | "app";
+  onMobileLayoutChange?: (layout: "sidebar" | "app") => void;
+  inline?: boolean;
+  /** 不显示入口时仍应用已保存主题和系统外观变化。 */
+  hidden?: boolean;
 }) {
   const storage = browserStorage();
   const [mode, setMode] = useState<ThemeMode>(() =>
@@ -91,6 +108,9 @@ export function ThemeControl({
       const nextDark = resolveThemeDark(mode, media?.matches ?? false);
       root.classList.toggle("dark", nextDark);
       root.dataset.palette = palette;
+      document
+        .querySelector('meta[name="theme-color"]')
+        ?.setAttribute("content", nextDark ? "#171b20" : "#f7f8fa");
       setDark(nextDark);
       onResolvedChange(nextDark);
     };
@@ -116,6 +136,135 @@ export function ThemeControl({
     persist(storage, PALETTE_STORAGE_KEY, next);
   };
 
+  const fields = (
+    <>
+      <div className="theme-control-fields">
+        {onMobileLayoutChange && (
+          <div className="theme-control-field">
+            <span className="theme-control-label">页面布局</span>
+            <FilterSelect
+              label="页面布局"
+              value={mobileLayout ?? "app"}
+              onChange={(value) => {
+                if (value === "app" || value === "sidebar")
+                  onMobileLayoutChange(value);
+              }}
+              options={[
+                { value: "app", label: "App 模式" },
+                { value: "sidebar", label: "侧栏模式" },
+              ]}
+            />
+          </div>
+        )}
+        <div className="theme-control-field">
+          <span className="theme-control-label">外观</span>
+          <FilterSelect
+            label="外观"
+            value={mode}
+            onChange={changeMode}
+            options={themeModeOptions}
+          />
+        </div>
+        <div className="theme-control-field">
+          <span className="theme-control-label">配色</span>
+          <FilterSelect
+            label="配色"
+            value={palette}
+            onChange={changePalette}
+            options={themePaletteOptions}
+          />
+        </div>
+      </div>
+    </>
+  );
+  if (hidden) return null;
+  if (inline)
+    return (
+      <div className="theme-control-inline theme-preferences">
+        <div className="theme-preferences-section">
+          <h3>外观</h3>
+          <div
+            className="theme-appearance-options"
+            role="group"
+            aria-label="外观"
+          >
+            {themeModeOptions.map((option) => {
+              const Icon =
+                option.value === "light"
+                  ? Sun
+                  : option.value === "dark"
+                    ? Moon
+                    : Monitor;
+              return (
+                <button
+                  key={option.value}
+                  aria-pressed={mode === option.value}
+                  onClick={() => changeMode(option.value)}
+                >
+                  <span
+                    className={`theme-appearance-preview theme-preview-${option.value}`}
+                    aria-hidden="true"
+                  >
+                    <span />
+                    <span>
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                  </span>
+                  <span className="theme-option-caption">
+                    <Icon size={15} />
+                    {option.label}
+                    {mode === option.value && <Check size={14} />}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="theme-preferences-row">
+          <span>配色</span>
+          <div className="theme-palette-options" role="group" aria-label="配色">
+            {themePaletteOptions.map((option) => (
+              <button
+                key={option.value}
+                aria-pressed={palette === option.value}
+                onClick={() => changePalette(option.value)}
+              >
+                <i data-palette={option.value} aria-hidden="true" />
+                {option.label}
+                {palette === option.value && <Check size={13} />}
+              </button>
+            ))}
+          </div>
+        </div>
+        {onMobileLayoutChange && (
+          <div className="theme-preferences-row">
+            <span>页面布局</span>
+            <div
+              className="theme-navigation-options"
+              role="group"
+              aria-label="页面布局"
+            >
+              <button
+                aria-pressed={mobileLayout === "app"}
+                onClick={() => onMobileLayoutChange("app")}
+              >
+                <Smartphone size={15} />
+                App 模式
+              </button>
+              <button
+                aria-pressed={mobileLayout === "sidebar"}
+                onClick={() => onMobileLayoutChange("sidebar")}
+              >
+                <PanelLeft size={15} />
+                侧栏模式
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   return (
     <div className="theme-control">
       <Popover.Root>
@@ -143,26 +292,7 @@ export function ThemeControl({
                   主题
                 </Popover.Title>
               </div>
-              <div className="theme-control-fields">
-                <div className="theme-control-field">
-                  <span className="theme-control-label">外观</span>
-                  <FilterSelect
-                    label="外观"
-                    value={mode}
-                    onChange={changeMode}
-                    options={themeModeOptions}
-                  />
-                </div>
-                <div className="theme-control-field">
-                  <span className="theme-control-label">配色</span>
-                  <FilterSelect
-                    label="配色"
-                    value={palette}
-                    onChange={changePalette}
-                    options={themePaletteOptions}
-                  />
-                </div>
-              </div>
+              {fields}
             </Popover.Popup>
           </Popover.Positioner>
         </Popover.Portal>

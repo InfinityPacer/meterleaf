@@ -892,9 +892,17 @@ describe("ReportIndex", () => {
       ).toEqual({
         count: 4,
         tokens: null,
-        usd: null,
+        usd: "0.6",
         credits: "11",
       });
+      expect(
+        index.sumWindow(
+          "quota-account",
+          "2026-09-08T02:30:00.000Z",
+          "2026-09-08T02:30:00.000Z",
+          "subscription",
+        ),
+      ).toEqual({ count: 1, tokens: null, usd: null, credits: "4.4" });
       expect(
         index.sumWindow(
           "quota-account",

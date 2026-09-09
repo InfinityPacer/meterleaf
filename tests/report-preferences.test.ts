@@ -7,14 +7,38 @@ const defaults = { days: 7, model: "all", account: "all" };
 
 test("tab selections are independent and never copy a legacy shared account filter", () => {
   const values = new Map<string, string>();
-  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+  };
   saveReportPreference({ ...defaults, account: "legacy" }, storage);
   expect(readReportPreference(storage, "reports")).toEqual(defaults);
-  saveReportPreference({ ...defaults, days: 1, account: "api" }, storage, "ledger");
-  saveReportPreference({ ...defaults, days: 30, model: "model-a" }, storage, "reports");
-  expect(readReportPreference(storage, "overview")).toEqual(defaults);
-  expect(readReportPreference(storage, "ledger")).toEqual({ ...defaults, days: 1, account: "api" });
-  expect(readReportPreference(storage, "reports")).toEqual({ ...defaults, days: 30, model: "model-a" });
+  saveReportPreference(
+    { ...defaults, days: 1, account: "api" },
+    storage,
+    "ledger",
+  );
+  saveReportPreference(
+    { ...defaults, days: 30, model: "model-a" },
+    storage,
+    "reports",
+  );
+  expect(readReportPreference(storage, "overview")).toEqual({
+    ...defaults,
+    days: 1,
+  });
+  expect(readReportPreference(storage, "ledger")).toEqual({
+    ...defaults,
+    days: 1,
+    account: "api",
+  });
+  expect(readReportPreference(storage, "reports")).toEqual({
+    ...defaults,
+    days: 30,
+    model: "model-a",
+  });
 });
 
 test("restores dates and identities without persisting search", () => {

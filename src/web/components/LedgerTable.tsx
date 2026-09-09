@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { Menu as ActionMenu } from "@base-ui/react/menu";
 import {
   flexRender,
   rowPaginationFeature,
@@ -16,12 +18,9 @@ import {
   ChevronRight,
   ChevronRight as OpenIcon,
   Search,
+  Check,
 } from "lucide-react";
-import type {
-  LedgerAccount,
-  LedgerRecord,
-  UsdBasis,
-} from "../../shared/report";
+import type { LedgerAccount, LedgerRecord } from "../../shared/report";
 import {
   amount,
   compact,
@@ -32,6 +31,7 @@ import {
   numericAmount,
 } from "../lib/report";
 import { Button } from "./ui/button";
+import "./mobile-data.css";
 
 interface Props {
   records: LedgerRecord[];
@@ -44,7 +44,6 @@ interface Props {
   onSelect: (row: LedgerRecord) => void;
   search: string;
   onSearch: (value: string) => void;
-  usdBasis: UsdBasis;
   compactView?: boolean;
 }
 
@@ -53,6 +52,76 @@ const features = tableFeatures({
   rowPaginationFeature,
   sortFns: { alphanumeric: sortFn_alphanumeric, basic: sortFn_basic },
 });
+
+const ledgerSortOptions = [
+  { value: "occurredAt", label: "时间" },
+  { value: "model", label: "模型" },
+  { value: "accountId", label: "账户" },
+  { value: "input", label: "输入 Tokens" },
+  { value: "cacheRead", label: "缓存读取" },
+  { value: "output", label: "输出 Tokens" },
+  { value: "usd", label: "费用" },
+] as const;
+
+/** 输入展示包含三个输入桶；缺少任一桶时保留未知，不用部分值冒充总输入。 */
+function requestInputTokens(record: LedgerRecord) {
+  const values = [record.input, record.cacheRead, record.cacheWrite];
+  return values.every(isKnownNumber)
+    ? values.reduce((total, value) => total + value, 0)
+    : null;
+}
+
+/** 有效强度优先；缺少有效值时保留请求值，不推断默认档位。 */
+function requestReasoningEffort(record: LedgerRecord) {
+  return (
+    record.details?.reasoningEffort?.trim() ||
+    record.details?.requestedReasoningEffort?.trim() ||
+    null
+  );
+}
+
+export type LedgerPageItem =
+  | { type: "page"; pageIndex: number }
+  | { type: "ellipsis"; position: "start" | "end" };
+
+/** 生成桌面页码项；数字项沿用请求分页接口的零基页索引。 */
+export function getLedgerPageItems(
+  pageIndex: number,
+  pageCount: number,
+): LedgerPageItem[] {
+  const count = Math.max(1, Math.floor(pageCount));
+  const current = Math.min(Math.max(Math.floor(pageIndex), 0), count - 1);
+
+  if (count <= 7) {
+    return Array.from({ length: count }, (_, index) => ({
+      type: "page" as const,
+      pageIndex: index,
+    }));
+  }
+
+  const windowStart = Math.max(0, Math.min(current - 2, count - 5));
+  const windowPages = Array.from(
+    { length: 5 },
+    (_, index) => windowStart + index,
+  );
+  const pages = [...new Set([0, ...windowPages, count - 1])].sort(
+    (left, right) => left - right,
+  );
+  const items: LedgerPageItem[] = [];
+
+  pages.forEach((page, index) => {
+    const previous = pages[index - 1];
+    if (previous !== undefined && page - previous > 1) {
+      items.push({
+        type: "ellipsis",
+        position: previous === 0 ? "start" : "end",
+      });
+    }
+    items.push({ type: "page", pageIndex: page });
+  });
+
+  return items;
+}
 
 export function LedgerTable({
   records,
@@ -65,11 +134,16 @@ export function LedgerTable({
   onSelect,
   search,
   onSearch,
-  usdBasis,
   compactView = false,
 }: Props) {
+  const [searchOpen, setSearchOpen] = useState(false);
   const pageSize = compactView ? 5 : 12;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(Math.max(pageIndex, 0), pageCount - 1);
+  // 刷新后的总量可能缩小；页码回到有效范围后重新读取对应记录。
+  useEffect(() => {
+    if (!compactView && currentPage !== pageIndex) onPage(currentPage);
+  }, [compactView, currentPage, onPage, pageIndex]);
   const columns: ColumnDef<typeof features, LedgerRecord>[] = [
     {
       accessorKey: "occurredAt",
@@ -83,7 +157,9 @@ export function LedgerTable({
               hour12: false,
             })}
           </span>
-          {info.row.original.sourceId && <small>{info.row.original.sourceId}</small>}
+          {info.row.original.sourceId && (
+            <small>{info.row.original.sourceId}</small>
+          )}
         </div>
       ),
     },
@@ -100,8 +176,7 @@ export function LedgerTable({
     {
       id: "reasoningEffort",
       header: "推理强度",
-      // 有效强度优先；上游未记录有效值时保留请求值，不推断默认档位。
-      accessorFn: (row) => row.details?.reasoningEffort ?? row.details?.requestedReasoningEffort ?? null,
+      accessorFn: requestReasoningEffort,
       cell: (info) => info.getValue<string | null>() ?? "N/A",
       enableSorting: false,
     },
@@ -114,12 +189,7 @@ export function LedgerTable({
     },
     {
       id: "input",
-      accessorFn: (row) => {
-        const values = [row.input, row.cacheRead, row.cacheWrite];
-        return values.every(isKnownNumber)
-          ? values.reduce((total, value) => total + value, 0)
-          : null;
-      },
+      accessorFn: requestInputTokens,
       header: "输入 tokens",
       cell: (info) => compact(info.getValue<number | null>()),
     },
@@ -140,7 +210,7 @@ export function LedgerTable({
     {
       id: "usd",
       accessorFn: (row) => numericAmount(row.usd),
-      header: `USD 估值 · ${usdBasis === "subscription" ? "订阅等价" : "标准 API"}`,
+      header: "费用",
       cell: (info) => (
         <strong>{amount(info.getValue<number | null>(), "usd")}</strong>
       ),
@@ -158,7 +228,10 @@ export function LedgerTable({
     columns,
     manualSorting: true,
     manualPagination: true,
-    state: { sorting: [sorting], pagination: { pageIndex, pageSize } },
+    state: {
+      sorting: [sorting],
+      pagination: { pageIndex: currentPage, pageSize },
+    },
     onSortingChange: (updater) => {
       const next = typeof updater === "function" ? updater([sorting]) : updater;
       onSorting(next[0] ?? { id: "occurredAt", desc: true });
@@ -168,13 +241,78 @@ export function LedgerTable({
     },
   });
   return (
-    <section className="ledger-section">
+    <section className="ledger-section request-section">
       <div className="section-heading">
         <div>
           <h2>{compactView ? "最近请求" : "请求明细"}</h2>
           <span className="muted">{total.toLocaleString()} 条记录</span>
         </div>
-        <label className="search-control">
+        <div className="mobile-data-controls mobile-request-controls">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="搜索请求"
+            title="搜索请求"
+            aria-expanded={searchOpen || !!search}
+            onClick={() => {
+              if (searchOpen || search) {
+                onSearch("");
+                setSearchOpen(false);
+              } else setSearchOpen(true);
+            }}
+          >
+            <Search size={18} />
+          </Button>
+          <ActionMenu.Root>
+            <ActionMenu.Trigger
+              className="mobile-data-tool"
+              aria-label="请求排序"
+              title="请求排序"
+            >
+              <ArrowUpDown size={18} />
+            </ActionMenu.Trigger>
+            <ActionMenu.Portal>
+              <ActionMenu.Positioner
+                className="data-menu-positioner"
+                sideOffset={6}
+                align="end"
+              >
+                <ActionMenu.Popup className="data-menu">
+                  {ledgerSortOptions.map((option) => (
+                    <ActionMenu.Item
+                      key={option.value}
+                      onClick={() =>
+                        onSorting({ id: option.value, desc: sorting.desc })
+                      }
+                    >
+                      {option.label}
+                      {sorting.id === option.value && (
+                        <Check size={15} aria-hidden="true" />
+                      )}
+                    </ActionMenu.Item>
+                  ))}
+                  <ActionMenu.Separator />
+                  <ActionMenu.Item
+                    onClick={() =>
+                      onSorting({ ...sorting, desc: !sorting.desc })
+                    }
+                  >
+                    切换为{sorting.desc ? "升序" : "降序"}
+                    {sorting.desc ? (
+                      <ArrowUp size={15} />
+                    ) : (
+                      <ArrowDown size={15} />
+                    )}
+                  </ActionMenu.Item>
+                </ActionMenu.Popup>
+              </ActionMenu.Positioner>
+            </ActionMenu.Portal>
+          </ActionMenu.Root>
+        </div>
+        <label
+          className="search-control"
+          data-expanded={searchOpen || !!search}
+        >
           <Search size={15} />
           <input
             aria-label="搜索请求"
@@ -273,6 +411,68 @@ export function LedgerTable({
           </tbody>
         </table>
       </div>
+      <div
+        className="mobile-request-list"
+        role="region"
+        aria-label="请求列表"
+        tabIndex={0}
+      >
+        {table.getRowModel().rows.map((row) => {
+          const record = row.original;
+          const effort = requestReasoningEffort(record);
+          const account =
+            accounts.find((item) => item.id === record.accountId)?.name ??
+            record.accountId;
+          return (
+            <button
+              key={row.id}
+              type="button"
+              className="mobile-request-item"
+              data-request-id={record.id}
+              aria-label={`查看 ${record.id} 的计量明细`}
+              onClick={() => onSelect(record)}
+            >
+              <span className="mobile-request-heading">
+                <span className="mobile-request-model">
+                  <i
+                    style={{ background: modelColor(record.model) }}
+                    aria-hidden="true"
+                  />
+                  <span className="mobile-request-identity">
+                    <span>{modelLabel(record.model)}</span>
+                    {effort && (
+                      <span
+                        className="mobile-request-effort"
+                        title="推理强度"
+                        aria-label={`推理强度：${effort}`}
+                      >
+                        {effort}
+                      </span>
+                    )}
+                  </span>
+                </span>
+                <strong>{amount(numericAmount(record.usd), "usd")}</strong>
+                <OpenIcon size={14} aria-hidden="true" />
+              </span>
+              <span className="mobile-request-meta">
+                <time dateTime={record.occurredAt}>
+                  {localTime(record.occurredAt, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hour12: false,
+                  })}
+                </time>
+                <span
+                  className="mobile-request-account"
+                  title={account || "N/A"}
+                >
+                  {account || "N/A"}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
       {!records.length && (
         <div className="empty-state">
           <Search size={26} />
@@ -287,27 +487,52 @@ export function LedgerTable({
           </Button>
         </div>
       )}
-      {!compactView && records.length > 0 && (
+      {!compactView && total > 0 && (
         <div className="pagination">
-          <span>
-            第 {pageIndex + 1} / {pageCount} 页
+          <span className="ledger-page-summary mobile-only">
+            第 {currentPage + 1} / {pageCount} 页
+          </span>
+          <span className="ledger-page-total desktop-only">
+            每页 {pageSize} 条，共 {total.toLocaleString()} 条记录
           </span>
           <div>
             <Button
               variant="outline"
               size="icon-sm"
               aria-label="上一页"
-              onClick={() => onPage(pageIndex - 1)}
-              disabled={pageIndex === 0}
+              onClick={() => onPage(currentPage - 1)}
+              disabled={currentPage === 0}
             >
               <ChevronLeft size={15} />
             </Button>
+            <nav className="ledger-page-numbers" aria-label="页码">
+              {getLedgerPageItems(currentPage, pageCount).map((item) =>
+                item.type === "ellipsis" ? (
+                  <span key={`${item.position}-ellipsis`} aria-hidden="true">
+                    …
+                  </span>
+                ) : (
+                  <Button
+                    key={item.pageIndex}
+                    variant="outline"
+                    size="icon-sm"
+                    aria-label={`第 ${item.pageIndex + 1} 页`}
+                    aria-current={
+                      item.pageIndex === currentPage ? "page" : undefined
+                    }
+                    onClick={() => onPage(item.pageIndex)}
+                  >
+                    {item.pageIndex + 1}
+                  </Button>
+                ),
+              )}
+            </nav>
             <Button
               variant="outline"
               size="icon-sm"
               aria-label="下一页"
-              onClick={() => onPage(pageIndex + 1)}
-              disabled={pageIndex + 1 >= pageCount}
+              onClick={() => onPage(currentPage + 1)}
+              disabled={currentPage + 1 >= pageCount}
             >
               <ChevronRight size={15} />
             </Button>
