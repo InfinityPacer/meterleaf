@@ -28,6 +28,30 @@ echarts.use([
   CanvasRenderer,
 ]);
 
+const chartUnitLabels: Record<ReportUnit, string> = {
+  usd: "USD（美元）",
+  tokens: "Tokens",
+  credits: "Credits",
+};
+const chartDateTimeOptions: Intl.DateTimeFormatOptions = {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+};
+
+function chartMetric(value: number | null, unit: ReportUnit) {
+  return value === null || !Number.isFinite(value)
+    ? `${chartUnitLabels[unit]}：无已知值`
+    : `${chartUnitLabels[unit]}：${amount(value, unit)}`;
+}
+
+function chartIncomplete(count: number) {
+  return count > 0 ? `，${count.toLocaleString("en-US")} 条记录字段不完整` : "";
+}
+
 /** 趋势按时间分桶，饼图按模型分组；两者沿用相同筛选与计量单位。 */
 export type ChartStyle = "bar" | "line" | "area" | "pie";
 
@@ -197,7 +221,7 @@ export function UsageChart({
           series: [
             {
               type: "pie",
-              radius: donut ? ["48%", "78%"] : "68%",
+              radius: donut ? ["58%", "90%"] : "68%",
               center: donut ? ["50%", "50%"] : ["50%", "43%"],
               stillShowZeroSum: false,
               label: {
@@ -237,28 +261,29 @@ export function UsageChart({
       />
       <dl
         className="sr-only"
-        aria-label={chartStyle === "pie" ? "模型用量占比数据" : "用量趋势数据"}
+        aria-label={`${chartStyle === "pie" ? "模型用量占比数据" : "用量趋势数据"}（单位：${chartUnitLabels[unit]}）`}
       >
         {chartStyle === "pie"
           ? breakdown.map((row) => (
               <div key={row.model}>
                 <dt>{modelLabel(row.model)}</dt>
                 <dd>
-                  {amount(
+                  {chartMetric(
                     row.summary.hasKnown ? row.summary.value : null,
                     unit,
                   )}
-                  ，{row.count} 次请求
+                  ，{row.count.toLocaleString("en-US")} 次请求
+                  {chartIncomplete(row.summary.incompleteRows)}
                 </dd>
               </div>
             ))
           : points.map((point) => (
               <div key={point.at}>
-                <dt>
-                  {localTime(point.at, { hour: "2-digit", minute: "2-digit" })}
-                </dt>
+                <dt>{localTime(point.at, chartDateTimeOptions)}</dt>
                 <dd>
-                  {amount(point.value, unit)}，{point.count} 次请求
+                  {chartMetric(point.value, unit)}，
+                  {point.count.toLocaleString("en-US")} 次请求
+                  {chartIncomplete(point.incomplete)}
                 </dd>
               </div>
             ))}

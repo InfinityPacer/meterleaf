@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 180" fill="none" preserveAspectRatio="none">
+  <defs>
+    <linearGradient id="sky" x1="650" y1="0" x2="400" y2="180" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C4E6FC" stop-opacity=".6"/>
+      <stop offset="1" stop-color="#E9F5FD" stop-opacity=".12"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="550" y1="60" x2="520" y2="180" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8ECAC8" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#E5F5F3" stop-opacity=".15"/>
+    </linearGradient>
+    <linearGradient id="ice" x1="700" y1="100" x2="650" y2="180" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#87B8CE" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#E5F4FA" stop-opacity=".2"/>
+    </linearGradient>
+  </defs>
+  <path d="M180 180C285 178 322 157 381 99C427 54 469-15 529 4C591 24 593 113 656 107C713 102 745 7 800 0V180Z" fill="url(#sky)"/>
+  <path d="M250 180C350 173 369 155 417 161C486 170 505 50 551 53C589 57 598 144 654 143C723 142 739 35 800 25V180Z" fill="url(#mint)" stroke="#fff" stroke-opacity=".65"/>
+  <path d="M431 180C514 180 552 150 589 148C638 145 664 94 706 111C740 124 759 165 800 177V180Z" fill="url(#ice)" stroke="#fff" stroke-opacity=".8"/>
+</svg>

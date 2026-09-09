@@ -21,8 +21,8 @@
     --desktop-line: #dceaf2;
     --desktop-line-soft: #e8f0f5;
     --desktop-ink: #152138;
-    --desktop-muted: #405069;
-    --desktop-teal: #07594f;
+    --desktop-muted: #62738c;
+    --desktop-teal: #087d70;
     --desktop-blue: #2378df;
     --desktop-shadow: 0 10px 28px rgb(36 82 112 / 7%);
     min-height: 100vh;
@@ -323,7 +323,9 @@
     padding: 22px 32px;
     border: 1px solid var(--desktop-line);
     border-radius: 16px;
-    background: linear-gradient(105deg, #ffffff 0%, #f5fcfd 62%, #e9f6fa 100%);
+    background:
+      url("/meterleaf-waves.svg") right bottom / auto 100% no-repeat,
+      linear-gradient(105deg, #ffffff 0%, #f5fcfd 62%, #e9f6fa 100%);
     box-shadow: var(--desktop-shadow);
   }
 
@@ -357,7 +359,9 @@
     padding: 22px 32px;
     border: 1px solid var(--desktop-line);
     border-radius: 16px;
-    background: linear-gradient(105deg, #ffffff 0%, #f7fcfd 65%, #edf8fb 100%);
+    background:
+      url("/meterleaf-waves.svg") right bottom / auto 100% no-repeat,
+      linear-gradient(105deg, #ffffff 0%, #f7fcfd 65%, #edf8fb 100%);
     box-shadow: var(--desktop-shadow);
   }
 
@@ -567,9 +571,11 @@
   }
 
   .app-shell .metric-info {
-    min-width: 44px;
-    min-height: 44px;
-    margin: -4px 0 -4px auto;
+    min-width: 24px;
+    min-height: 24px;
+    width: 24px;
+    height: 24px;
+    margin: 0 0 0 auto;
   }
 
   .app-shell .metric-value {
@@ -583,6 +589,15 @@
   .app-shell .metric-value small {
     color: var(--desktop-muted);
     font-size: 14px;
+  }
+
+  .app-shell[data-page="period"] .metrics .metric {
+    background:
+      url("/meterleaf-waves.svg") right bottom / auto 42px no-repeat,
+      var(--desktop-panel);
+  }
+  .dark .app-shell[data-page="period"] .metrics .metric {
+    background: var(--desktop-panel);
   }
 
   .app-shell .metric-foot {
@@ -618,6 +633,23 @@
     min-width: 0;
     padding-left: 28px;
     border-left: 1px solid var(--desktop-line);
+  }
+
+  .app-shell[data-page="period"] .analysis-section {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 0.38fr);
+    gap: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .app-shell[data-page="period"] .trend-panel,
+  .app-shell[data-page="period"] .model-panel {
+    padding: 20px;
+    border: 0;
+    border-radius: 16px;
+    background: var(--desktop-panel);
   }
 
   .app-shell .chart-toolbar {
@@ -743,6 +775,9 @@
   .app-shell .account-row .account-name small {
     color: var(--desktop-muted);
     font-size: 13px;
+  }
+  .app-shell .account-row .account-name > strong {
+    font-size: 22px;
   }
 
   .app-shell .desktop-account-status {
@@ -902,6 +937,26 @@
   .app-shell .account-avatar[data-kind="api"] {
     color: #6438a1;
     background: #f0e8ff;
+  }
+  .app-shell .account-row .account-avatar {
+    width: 60px;
+    height: 60px;
+    border-radius: 16px;
+    color: #ffffff;
+    background: linear-gradient(135deg, #9bc2ff, #568df2);
+    box-shadow:
+      inset 0 1px 1px #ffffff66,
+      0 6px 14px #377bd21a;
+  }
+  .app-shell .account-row .account-avatar svg {
+    width: 28px;
+    height: 28px;
+  }
+  .app-shell .account-row .account-avatar[data-plan="pro"] {
+    background: linear-gradient(135deg, #a5ded4, #189b8c);
+  }
+  .app-shell .account-row .account-avatar[data-kind="api"] {
+    background: linear-gradient(135deg, #d6c0ff, #9b75ef);
   }
   .dark .app-shell .account-row .progress-track,
   .dark .app-shell .quota-preview .progress-track {
@@ -1083,9 +1138,12 @@
     background: var(--desktop-panel-soft);
   }
 
-  .app-shell .report-section .distribution-usd,
-  .app-shell .request-section td strong {
+  .app-shell .report-section .distribution-usd {
     color: var(--desktop-teal);
+  }
+  .app-shell .request-section td strong {
+    color: var(--desktop-ink);
+    font-weight: 650;
   }
 
   .app-shell .request-section {
@@ -1120,9 +1178,16 @@
     min-width: 980px;
   }
 
-  .app-shell .request-section .request-table-scroll th,
   .app-shell .request-section .request-table-scroll td {
     height: 72px;
+    font-size: 16px;
+  }
+  .app-shell .request-section .model-label {
+    font-size: 16px;
+  }
+  .app-shell .request-section .request-table-scroll th {
+    height: 48px;
+    font-size: 14px;
   }
 
   .app-shell .request-section .time-cell {
@@ -1138,7 +1203,43 @@
   }
 
   .app-shell .pagination {
+    flex-wrap: wrap;
     padding: 18px 4px 0;
+  }
+  .app-shell .ledger-page-summary {
+    display: none;
+  }
+  .app-shell .ledger-page-total {
+    display: inline;
+  }
+  .app-shell .ledger-page-numbers {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .app-shell .ledger-page-numbers button {
+    display: inline-flex;
+    justify-content: center;
+    min-width: 36px;
+    min-height: 36px;
+    width: auto;
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--desktop-line-soft);
+    border-radius: 7px;
+    color: var(--desktop-muted);
+    background: var(--desktop-panel);
+    font-size: 14px;
+  }
+  .app-shell .ledger-page-numbers button[aria-current="page"] {
+    border-color: var(--desktop-teal);
+    background: var(--desktop-teal);
+    color: var(--desktop-panel);
+    box-shadow: 0 3px 8px rgb(8 125 112 / 15%);
+  }
+  .app-shell .ledger-page-numbers > span {
+    padding: 0 3px;
+    color: var(--desktop-muted);
   }
 
   .app-shell .mobile-data-controls,
@@ -1201,6 +1302,41 @@
 
 /* 总览将同一时段的筛选、指标和趋势排在左侧，模型占比跨行保持完整。 */
 @media (min-width: 1350px) {
+  .app-shell[data-page="reports"] main > .filterbar {
+    background:
+      url("/meterleaf-waves.svg") right bottom / auto 100% no-repeat,
+      var(--desktop-panel);
+  }
+  .dark .app-shell[data-page="reports"] main > .filterbar {
+    background: var(--desktop-panel);
+  }
+  .app-shell[data-page="ledger"] main {
+    position: relative;
+  }
+  .app-shell[data-page="ledger"] main > .filterbar {
+    padding-right: 350px;
+  }
+  .app-shell[data-page="ledger"] .request-section .search-control {
+    position: absolute;
+    top: 34px;
+    right: 40px;
+    width: 310px;
+    height: 48px;
+  }
+  .app-shell[data-page="ledger"] .request-section .search-control input {
+    min-width: 0;
+    width: 100%;
+  }
+  .app-shell[data-page="ledger"] .request-table-scroll {
+    max-height: max(360px, calc(100dvh - 400px));
+    overflow-y: auto;
+    scroll-padding-top: 54px;
+  }
+  .app-shell[data-page="ledger"] .request-table-scroll thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
   .app-shell .model-distribution-layout {
     grid-template-columns: minmax(220px, 0.85fr) minmax(160px, 0.55fr) minmax(
         0,
@@ -1390,10 +1526,27 @@
   .app-shell[data-page="overview"] .chart-toolbar > span {
     display: none;
   }
+  .app-shell[data-page="overview"] .chart-toolbar button,
+  .app-shell[data-page="overview"]
+    .trend-panel
+    > .section-heading
+    > .segmented
+    button {
+    min-width: 36px;
+    min-height: 36px;
+    height: 36px;
+  }
+  .app-shell[data-page="overview"] .chart-toolbar .segmented,
+  .app-shell[data-page="overview"]
+    .trend-panel
+    > .section-heading
+    > .segmented {
+    min-height: 40px;
+  }
   .app-shell[data-page="overview"] .trend-panel > .usage-chart {
     grid-column: 1;
     grid-row: 6;
-    height: 170px;
+    height: 160px;
     margin: 0;
     padding: 0 18px 12px;
     border-radius: 0 0 16px 16px;
@@ -1408,29 +1561,41 @@
     background: var(--desktop-panel);
   }
   .app-shell .overview-donut {
-    width: 190px;
+    width: 180px;
     max-width: 100%;
     margin: 0 auto;
   }
   .app-shell .overview-donut .usage-chart {
-    height: 190px;
+    height: 180px;
   }
   .app-shell .overview-donut .model-donut-total strong {
     font-size: 21px;
   }
   .app-shell .model-breakdown {
-    max-height: 180px;
+    max-height: 136px;
     overflow: auto;
   }
   .app-shell .model-breakdown button {
-    min-height: 44px;
-    padding: 6px 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content 48px;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    padding: 4px 0;
   }
   .app-shell .model-breakdown button > div:first-child {
+    display: contents;
     font-size: 13px;
   }
   .app-shell .model-breakdown button > div:last-child {
-    font-size: 11px;
+    display: contents;
+    font-size: 12px;
+  }
+  .app-shell .model-breakdown button > div:last-child > span:first-child {
+    display: none;
+  }
+  .app-shell .model-breakdown button > div:last-child > span:last-child {
+    text-align: right;
   }
 }
 

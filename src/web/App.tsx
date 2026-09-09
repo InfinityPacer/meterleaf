@@ -8,7 +8,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Menu as ActionMenu } from "@base-ui/react/menu";
 import type { Charge } from "../domain/pricing";
@@ -603,6 +607,7 @@ function OverviewQuotas({
 }
 
 export function App() {
+  const queryClient = useQueryClient();
   const { paused: liveUpdatesPaused } = useLiveUpdates();
   const [accountOrder, setAccountOrder] = usePreference<string[]>(
     "account-order",
@@ -881,6 +886,23 @@ export function App() {
   // 查询切换不撤销已知选项，否则受控选择器可能将仍有效的选择重置。
   const modelNames = quotaSnapshot?.view.models ?? [];
   const records = snapshot?.records ?? [];
+  const changeRecordPage = useCallback(
+    (next: number) => {
+      const current = snapshot?.view;
+      if (
+        current &&
+        current.page >= Math.max(1, Math.ceil(current.count / current.pageSize))
+      ) {
+        // 总量收缩后其它页的缓存也可能已过时，回页时必须重新读取。
+        void queryClient.invalidateQueries({
+          queryKey: ["ledger"],
+          refetchType: "none",
+        });
+      }
+      setRecordPage(next);
+    },
+    [queryClient, snapshot],
+  );
   const emptySummary = {
     value: 0,
     hasKnown: false,
@@ -1993,7 +2015,7 @@ export function App() {
                   records={records}
                   total={view?.count ?? 0}
                   pageIndex={view?.page ?? 0}
-                  onPage={setRecordPage}
+                  onPage={changeRecordPage}
                   sorting={recordSort}
                   onSorting={(next) => {
                     setRecordPage(0);

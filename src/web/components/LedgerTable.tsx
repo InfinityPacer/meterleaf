@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Menu as ActionMenu } from "@base-ui/react/menu";
 import {
   flexRender,
@@ -77,6 +77,49 @@ function requestInputTokens(record: LedgerRecord) {
     : null;
 }
 
+export type LedgerPageItem =
+  | { type: "page"; pageIndex: number }
+  | { type: "ellipsis"; position: "start" | "end" };
+
+/** 生成桌面页码项；数字项沿用请求分页接口的零基页索引。 */
+export function getLedgerPageItems(
+  pageIndex: number,
+  pageCount: number,
+): LedgerPageItem[] {
+  const count = Math.max(1, Math.floor(pageCount));
+  const current = Math.min(Math.max(Math.floor(pageIndex), 0), count - 1);
+
+  if (count <= 7) {
+    return Array.from({ length: count }, (_, index) => ({
+      type: "page" as const,
+      pageIndex: index,
+    }));
+  }
+
+  const windowStart = Math.max(0, Math.min(current - 2, count - 5));
+  const windowPages = Array.from(
+    { length: 5 },
+    (_, index) => windowStart + index,
+  );
+  const pages = [...new Set([0, ...windowPages, count - 1])].sort(
+    (left, right) => left - right,
+  );
+  const items: LedgerPageItem[] = [];
+
+  pages.forEach((page, index) => {
+    const previous = pages[index - 1];
+    if (previous !== undefined && page - previous > 1) {
+      items.push({
+        type: "ellipsis",
+        position: previous === 0 ? "start" : "end",
+      });
+    }
+    items.push({ type: "page", pageIndex: page });
+  });
+
+  return items;
+}
+
 export function LedgerTable({
   records,
   total,
@@ -94,6 +137,11 @@ export function LedgerTable({
   const [searchOpen, setSearchOpen] = useState(false);
   const pageSize = compactView ? 5 : 12;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(Math.max(pageIndex, 0), pageCount - 1);
+  // 刷新后的总量可能缩小；页码回到有效范围后重新读取对应记录。
+  useEffect(() => {
+    if (!compactView && currentPage !== pageIndex) onPage(currentPage);
+  }, [compactView, currentPage, onPage, pageIndex]);
   const columns: ColumnDef<typeof features, LedgerRecord>[] = [
     {
       accessorKey: "occurredAt",
@@ -182,7 +230,10 @@ export function LedgerTable({
     columns,
     manualSorting: true,
     manualPagination: true,
-    state: { sorting: [sorting], pagination: { pageIndex, pageSize } },
+    state: {
+      sorting: [sorting],
+      pagination: { pageIndex: currentPage, pageSize },
+    },
     onSortingChange: (updater) => {
       const next = typeof updater === "function" ? updater([sorting]) : updater;
       onSorting(next[0] ?? { id: "occurredAt", desc: true });
@@ -423,27 +474,52 @@ export function LedgerTable({
           </Button>
         </div>
       )}
-      {!compactView && records.length > 0 && (
+      {!compactView && total > 0 && (
         <div className="pagination">
-          <span>
-            第 {pageIndex + 1} / {pageCount} 页
+          <span className="ledger-page-summary mobile-only">
+            第 {currentPage + 1} / {pageCount} 页
+          </span>
+          <span className="ledger-page-total desktop-only">
+            每页 {pageSize} 条，共 {total.toLocaleString()} 条记录
           </span>
           <div>
             <Button
               variant="outline"
               size="icon-sm"
               aria-label="上一页"
-              onClick={() => onPage(pageIndex - 1)}
-              disabled={pageIndex === 0}
+              onClick={() => onPage(currentPage - 1)}
+              disabled={currentPage === 0}
             >
               <ChevronLeft size={15} />
             </Button>
+            <nav className="ledger-page-numbers" aria-label="页码">
+              {getLedgerPageItems(currentPage, pageCount).map((item) =>
+                item.type === "ellipsis" ? (
+                  <span key={`${item.position}-ellipsis`} aria-hidden="true">
+                    …
+                  </span>
+                ) : (
+                  <Button
+                    key={item.pageIndex}
+                    variant="outline"
+                    size="icon-sm"
+                    aria-label={`第 ${item.pageIndex + 1} 页`}
+                    aria-current={
+                      item.pageIndex === currentPage ? "page" : undefined
+                    }
+                    onClick={() => onPage(item.pageIndex)}
+                  >
+                    {item.pageIndex + 1}
+                  </Button>
+                ),
+              )}
+            </nav>
             <Button
               variant="outline"
               size="icon-sm"
               aria-label="下一页"
-              onClick={() => onPage(pageIndex + 1)}
-              disabled={pageIndex + 1 >= pageCount}
+              onClick={() => onPage(currentPage + 1)}
+              disabled={currentPage + 1 >= pageCount}
             >
               <ChevronRight size={15} />
             </Button>

@@ -524,7 +524,12 @@ try {
   const firstId = await page.locator("tbody tr").first().innerText();
   await page.getByRole("button", { name: "下一页" }).click();
   await expect(page.locator("tbody tr").first()).not.toHaveText(firstId!);
-  await expect(page.getByText("第 2 / 75 页", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "第 2 页", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  await expect(
+    page.getByRole("button", { name: "第 75 页", exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: /USD 估值/ }).click();
   await expect(
     page.getByRole("columnheader", { name: /USD 估值/ }),
