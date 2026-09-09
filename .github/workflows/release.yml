@@ -1,0 +1,101 @@
+name: Release
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+concurrency:
+  group: meterleaf-release
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      packages: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Validate version and extract notes
+        id: release
+        run: bun scripts/release.ts
+      - run: bun install --frozen-lockfile
+        if: steps.release.outputs.publish == 'true'
+      - name: Test
+        if: steps.release.outputs.publish == 'true'
+        run: bun test tests
+      - name: Build
+        if: steps.release.outputs.publish == 'true'
+        run: bun run build
+      - name: Validate Compose
+        if: steps.release.outputs.publish == 'true'
+        env:
+          SUB2API_DATABASE_URL: postgresql://readonly:example@postgres:5432/sub2api
+        run: docker compose config -q
+      - uses: docker/setup-qemu-action@v4
+        if: steps.release.outputs.publish == 'true'
+      - uses: docker/setup-buildx-action@v4
+        if: steps.release.outputs.publish == 'true'
+      - name: Log in to Docker Hub
+        if: steps.release.outputs.publish == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Log in to GHCR
+        if: steps.release.outputs.publish == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Tag tested commit
+        if: steps.release.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            previous=$(git rev-parse --verify --quiet "refs/tags/$TAG" || true)
+            git tag --force "$TAG" "$GITHUB_SHA"
+            git push --force-with-lease="refs/tags/$TAG:$previous" origin "refs/tags/$TAG"
+          else
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
+      - name: Build and publish
+        if: steps.release.outputs.publish == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}
+            ${{ steps.release.outputs.image }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/meterleaf:${{ steps.release.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/meterleaf:latest
+          labels: |
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Publish release notes
+        if: steps.release.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" --verify-tag --title "Meterleaf $TAG" --notes-file release-notes.md
+          fi

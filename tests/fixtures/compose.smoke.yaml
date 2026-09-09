@@ -1,0 +1,21 @@
+services:
+  meterleaf:
+    image: meterleaf:compose-smoke
+    ports: !override
+      - "127.0.0.1::4318"
+    volumes: !override
+      - ${METERLEAF_TEST_DATA_DIR:?}:/app/app_data
+    environment:
+      SUB2API_DATABASE_URL: postgres://meterleaf_reader@postgres:5432/postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres]
+      interval: 1s
+      timeout: 3s
+      retries: 30

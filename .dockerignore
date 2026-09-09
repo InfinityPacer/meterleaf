@@ -1,0 +1,9 @@
+.git
+.workbench
+node_modules
+dist
+app_data
+.env
+.env.*
+test-results
+coverage

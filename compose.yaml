@@ -1,0 +1,29 @@
+services:
+  meterleaf:
+    build: .
+    image: infinitypacer/meterleaf:latest
+    init: true
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "${METERLEAF_BIND_ADDRESS:-127.0.0.1}:${METERLEAF_PUBLISHED_PORT:-4318}:4318"
+    environment:
+      SUB2API_DATABASE_URL: ${SUB2API_DATABASE_URL:?Set the read-only Sub2API PostgreSQL connection URL}
+      METERLEAF_SOURCE_ID: ${METERLEAF_SOURCE_ID:-sub2api}
+      METERLEAF_LOG_LEVEL: ${METERLEAF_LOG_LEVEL:-info}
+      METERLEAF_REPORT_REFRESH_INTERVAL_MS: ${METERLEAF_REPORT_REFRESH_INTERVAL_MS:-300000}
+      METERLEAF_SYNC_VISIBLE_INTERVAL_MS: ${METERLEAF_SYNC_VISIBLE_INTERVAL_MS:-15000}
+      METERLEAF_SYNC_HIDDEN_INTERVAL_MS: ${METERLEAF_SYNC_HIDDEN_INTERVAL_MS:-60000}
+      METERLEAF_USD_BASIS: ${METERLEAF_USD_BASIS:-subscription}
+      METERLEAF_PRICE_BOOK: ${METERLEAF_PRICE_BOOK:-}
+      METERLEAF_DATA_DIR: /app/app_data
+      METERLEAF_HOST: 0.0.0.0
+      METERLEAF_PORT: 4318
+    volumes:
+      - ./app_data:/app/app_data
+      - ./prices:/app/prices:ro

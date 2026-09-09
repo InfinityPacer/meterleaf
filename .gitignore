@@ -1,0 +1,10 @@
+node_modules/
+.workbench/
+dist/
+.env
+.env.*
+!.env.example
+app_data/
+coverage/
+test-results/
+.DS_Store

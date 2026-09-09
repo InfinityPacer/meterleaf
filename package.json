@@ -1,0 +1,53 @@
+{
+  "name": "meterleaf",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "packageManager": "bun@1.4.2",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "scripts": {
+    "start": "bun src/server/main.ts",
+    "dev:server": "bun --watch src/server/main.ts",
+    "dev:demo": "VITE_METERLEAF_DEMO=true bun run dev",
+    "dev": "bun --bun vite --host 127.0.0.1",
+    "build": "bun run typecheck && bun --bun vite build",
+    "preview": "bun --bun vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests",
+    "test:browser": "bun tests/browser.smoke.ts"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.8.0",
+    "@fastify/static": "^10.1.3",
+    "@tanstack/react-query": "^5.102.8",
+    "@tanstack/react-table": "^9.2.4",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "decimal.js": "^10.6.0",
+    "echarts": "^6.1.0",
+    "fastify": "^5.12.3",
+    "lucide-react": "^1.42.0",
+    "motion": "^13.2.0",
+    "pg": "^8.23.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tailwind-merge": "^3.6.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/bun": "^1.4.2",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "prettier": "^3.9.6",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}

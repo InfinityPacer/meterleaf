@@ -1,0 +1,172 @@
+import { useEffect, useState } from "react";
+import { Popover } from "@base-ui/react/popover";
+import { Moon, Palette, Sun } from "lucide-react";
+import { FilterSelect } from "./FilterSelect";
+import "./controls.css";
+
+export type ThemeMode = "system" | "light" | "dark";
+export type ThemePalette = "default" | "natural";
+
+export const THEME_STORAGE_KEY = "meterleaf-theme";
+export const PALETTE_STORAGE_KEY = "meterleaf-palette";
+
+export const themeModeOptions = [
+  { value: "system", label: "跟随系统" },
+  { value: "light", label: "浅色" },
+  { value: "dark", label: "深色" },
+] satisfies { value: ThemeMode; label: string }[];
+
+export const themePaletteOptions = [
+  { value: "default", label: "默认" },
+  { value: "natural", label: "自然" },
+] satisfies { value: ThemePalette; label: string }[];
+
+export function resolveThemeDark(mode: ThemeMode, systemDark: boolean) {
+  return mode === "dark" || (mode === "system" && systemDark);
+}
+
+export function readStoredThemeMode(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): ThemeMode {
+  const value = storage?.getItem(THEME_STORAGE_KEY);
+  if (value === "system" || value === "light" || value === "dark") return value;
+  return "system";
+}
+
+export function readStoredPalette(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): ThemePalette {
+  return storage?.getItem(PALETTE_STORAGE_KEY) === "natural"
+    ? "natural"
+    : "default";
+}
+
+function browserStorage(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function systemDark(): boolean {
+  return typeof window !== "undefined" &&
+    typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)").matches
+    : false;
+}
+
+function persist(storage: Storage | null, key: string, value: string) {
+  try {
+    storage?.setItem(key, value);
+  } catch {
+    // 隐私模式或受限文档可能禁止持久化，主题切换仍应继续生效。
+  }
+}
+
+export function ThemeControl({
+  onResolvedChange,
+}: {
+  onResolvedChange: (dark: boolean) => void;
+}) {
+  const storage = browserStorage();
+  const [mode, setMode] = useState<ThemeMode>(() =>
+    readStoredThemeMode(storage),
+  );
+  const [palette, setPalette] = useState<ThemePalette>(() =>
+    readStoredPalette(storage),
+  );
+  const [dark, setDark] = useState(() =>
+    resolveThemeDark(readStoredThemeMode(storage), systemDark()),
+  );
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const root = document.documentElement;
+    const media =
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-color-scheme: dark)")
+        : null;
+    const apply = () => {
+      const nextDark = resolveThemeDark(mode, media?.matches ?? false);
+      root.classList.toggle("dark", nextDark);
+      root.dataset.palette = palette;
+      setDark(nextDark);
+      onResolvedChange(nextDark);
+    };
+    const onSystemChange = () => {
+      if (mode === "system") apply();
+    };
+
+    apply();
+    media?.addEventListener("change", onSystemChange);
+    return () => {
+      media?.removeEventListener("change", onSystemChange);
+    };
+  }, [mode, palette, onResolvedChange]);
+
+  const changeMode = (next: string) => {
+    if (next !== "system" && next !== "light" && next !== "dark") return;
+    setMode(next);
+    persist(storage, THEME_STORAGE_KEY, next);
+  };
+  const changePalette = (next: string) => {
+    if (next !== "default" && next !== "natural") return;
+    setPalette(next);
+    persist(storage, PALETTE_STORAGE_KEY, next);
+  };
+
+  return (
+    <div className="theme-control">
+      <Popover.Root>
+        <Popover.Trigger
+          className="theme-control-trigger"
+          aria-label="主题设置"
+          title="主题设置"
+        >
+          {dark ? (
+            <Moon size={18} aria-hidden="true" />
+          ) : (
+            <Sun size={18} aria-hidden="true" />
+          )}
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Positioner
+            className="theme-control-positioner"
+            sideOffset={8}
+            align="end"
+          >
+            <Popover.Popup className="theme-control-popup">
+              <div className="theme-control-heading">
+                <Popover.Title className="theme-control-title">
+                  <Palette size={16} aria-hidden="true" />
+                  主题
+                </Popover.Title>
+              </div>
+              <div className="theme-control-fields">
+                <div className="theme-control-field">
+                  <span className="theme-control-label">外观</span>
+                  <FilterSelect
+                    label="外观"
+                    value={mode}
+                    onChange={changeMode}
+                    options={themeModeOptions}
+                  />
+                </div>
+                <div className="theme-control-field">
+                  <span className="theme-control-label">配色</span>
+                  <FilterSelect
+                    label="配色"
+                    value={palette}
+                    onChange={changePalette}
+                    options={themePaletteOptions}
+                  />
+                </div>
+              </div>
+            </Popover.Popup>
+          </Popover.Positioner>
+        </Popover.Portal>
+      </Popover.Root>
+    </div>
+  );
+}

@@ -1,0 +1,420 @@
+/* 自然配色沿用应用变量，使组件不需要知道页面的具体色值。 */
+:root[data-palette="natural"] {
+  --surface: #fbfcf8;
+  --canvas: #f1f5f0;
+  --ink: #10231b;
+  --muted: #2f473c;
+  --line: #75887c;
+  --soft: #e6eee8;
+  --sidebar: #edf4ee;
+  --teal: #07553f;
+  --blue: #064a8f;
+  --danger: #8d183d;
+  --control-line: #5e7166;
+  --tint: #deede4;
+  color-scheme: light;
+}
+
+:root.dark[data-palette="natural"] {
+  --surface: #16201b;
+  --canvas: #111914;
+  --ink: #f3f8f4;
+  --muted: #d2e0d6;
+  --line: #9bb2a1;
+  --soft: #27362d;
+  --sidebar: #121a16;
+  --teal: #b7f0d4;
+  --blue: #c3ddff;
+  --danger: #ffc0cc;
+  --control-line: #b0c4b7;
+  --tint: #1d4434;
+  color-scheme: dark;
+}
+
+.filter-select {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+}
+
+.filter-select-trigger {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  max-width: min(260px, calc(100vw - 32px));
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--control-line);
+  border-radius: 9px;
+  padding: 0 11px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.25;
+  text-align: left;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.filter-select-trigger:hover,
+.filter-select-trigger[aria-expanded="true"] {
+  border-color: var(--blue);
+  background: var(--soft);
+}
+
+.filter-select-trigger:focus-visible,
+.theme-control-trigger:focus-visible,
+.sync-trigger:focus-visible,
+.sync-auto-control input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--blue);
+}
+
+.filter-select-icon,
+.filter-select-chevron {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.filter-select-icon {
+  color: var(--muted);
+}
+
+.filter-select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-select-chevron {
+  color: var(--muted);
+}
+
+.filter-select-positioner,
+.theme-control-positioner,
+.sync-positioner {
+  z-index: 80;
+}
+
+.filter-select-popup,
+.theme-control-popup,
+.sync-popup {
+  border: 1px solid var(--control-line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 14px 34px #0000002b;
+  transform-origin: var(--transform-origin);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.filter-select-popup[data-starting-style],
+.filter-select-popup[data-ending-style],
+.theme-control-popup[data-starting-style],
+.theme-control-popup[data-ending-style],
+.sync-popup[data-starting-style],
+.sync-popup[data-ending-style] {
+  opacity: 0;
+  transform: scale(0.98) translateY(-3px);
+}
+
+.filter-select-popup {
+  min-width: var(--anchor-width);
+  max-width: min(320px, calc(100vw - 32px));
+  padding: 4px;
+}
+
+.filter-select-list {
+  max-height: min(320px, calc(100vh - 96px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 2px;
+}
+
+.filter-select-item {
+  position: relative;
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  border-radius: 7px;
+  padding: 0 34px 0 10px;
+  color: var(--ink);
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.filter-select-item[data-highlighted],
+.filter-select-item[data-selected] {
+  background: var(--soft);
+}
+
+.filter-select-item[data-highlighted] {
+  color: var(--blue);
+}
+
+/* 焦点环收进选项边界，避免菜单滚动区域裁切或覆盖相邻选项。 */
+.filter-select-list .filter-select-item:focus-visible {
+  outline: 3px solid var(--blue);
+  outline-offset: -3px;
+}
+
+.filter-select-indicator {
+  position: absolute;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--teal);
+}
+
+.filter-select-scroll-arrow {
+  display: flex;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.theme-control {
+  display: inline-flex;
+  align-items: center;
+}
+
+.theme-control-trigger,
+.sync-trigger {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 0 9px;
+  background: transparent;
+  color: var(--muted);
+  transition: border-color 140ms ease;
+}
+
+.theme-control-trigger:hover,
+.theme-control-trigger[aria-expanded="true"],
+.sync-trigger:hover,
+.sync-trigger[aria-expanded="true"] {
+  border-color: var(--line);
+  background: var(--soft);
+  color: var(--ink);
+}
+
+.theme-control-popup {
+  width: min(300px, calc(100vw - 32px));
+  padding: 15px;
+}
+
+/* 矮视口保留完整操作，内容在弹层内滚动而不是越出可视区域。 */
+.theme-control-popup,
+.sync-popup {
+  max-height: min(var(--available-height, 100dvh), calc(100dvh - 16px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.theme-control-heading,
+.sync-popup-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.theme-control-title,
+.sync-popup-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.theme-control-fields {
+  display: grid;
+  gap: 13px;
+  margin-top: 15px;
+}
+
+.theme-control-field {
+  display: grid;
+  gap: 6px;
+}
+
+.theme-control-label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.theme-control-field .filter-select,
+.theme-control-field .filter-select-trigger {
+  width: 100%;
+}
+
+.sync-trigger-label {
+  font-size: 14px;
+  white-space: nowrap;
+  min-width: 172px;
+  font-variant-numeric: tabular-nums;
+}
+.sync-updated {
+  animation: sync-updated-turn 1500ms ease-out;
+}
+@keyframes sync-updated-turn {
+  from {
+    transform: rotate(-180deg);
+  }
+  to {
+    transform: rotate(0);
+  }
+}
+
+.sync-trigger-badge {
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: color-mix(in srgb, var(--danger), transparent 92%);
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sync-popup {
+  width: min(370px, calc(100vw - 32px));
+  padding: 16px;
+}
+
+.sync-status {
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.sync-status-idle {
+  background: var(--soft);
+  color: var(--muted);
+}
+
+.sync-status-running {
+  background: color-mix(in srgb, var(--blue), transparent 86%);
+  color: var(--blue);
+}
+
+.sync-status-success {
+  background: color-mix(in srgb, var(--teal), transparent 84%);
+  color: var(--teal);
+}
+
+.sync-status-error {
+  background: color-mix(in srgb, var(--danger), transparent 86%);
+  color: var(--danger);
+}
+
+.sync-control-body {
+  display: grid;
+  gap: 12px;
+  margin-top: 15px;
+}
+
+.sync-summary {
+  display: grid;
+  gap: 2px;
+  color: var(--ink);
+}
+
+.sync-summary strong {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.sync-summary span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.sync-error {
+  margin: 0;
+  border-left: 3px solid var(--danger);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--danger), transparent 92%);
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.sync-auto-control {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.sync-auto-control input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--teal);
+}
+
+.sync-action {
+  width: 100%;
+  min-height: 44px;
+  justify-content: center;
+}
+
+@media (max-width: 700px) {
+  .sync-trigger-label,
+  .sync-trigger-badge {
+    display: none;
+  }
+
+  .sync-popup,
+  .theme-control-popup {
+    width: min(370px, calc(100vw - 24px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sync-updated {
+    animation: none;
+  }
+  .filter-select-trigger,
+  .filter-select-popup,
+  .theme-control-trigger,
+  .theme-control-popup,
+  .sync-trigger,
+  .sync-popup {
+    transition: none;
+  }
+
+  .filter-select-popup[data-starting-style],
+  .filter-select-popup[data-ending-style],
+  .theme-control-popup[data-starting-style],
+  .theme-control-popup[data-ending-style],
+  .sync-popup[data-starting-style],
+  .sync-popup[data-ending-style] {
+    transform: none;
+  }
+}
