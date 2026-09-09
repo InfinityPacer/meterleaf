@@ -167,8 +167,7 @@ svg {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  background: #245d4f;
-  color: #fff;
+  object-fit: contain;
 }
 .brand + nav {
   margin-top: 16px;
@@ -1908,6 +1907,19 @@ button[data-size="icon-sm"],
   display: grid;
   gap: 10px;
   min-width: 0;
+}
+.account-window-unavailable {
+  color: var(--muted);
+}
+@media (max-width: 1250px) {
+  .account-row[data-quota-count="1"],
+  .account-row[data-has-quota="true"][data-quota-count="0"] {
+    grid-template-areas: "identity capacity" "single single";
+  }
+  .account-row[data-quota-count="1"] .account-window,
+  .account-row .account-window-unavailable {
+    grid-area: single;
+  }
 }
 .repository-link {
   display: inline-flex;

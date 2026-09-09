@@ -1,11 +1,12 @@
 import { ChevronRight, Wallet } from "lucide-react";
 import type { LedgerView } from "../../shared/ledger-view";
-import type {
-  AccountLifetime,
-  AccountWindow,
-  LedgerAccount,
-} from "../../shared/report";
-import { quotaLabel, quotaPercent, quotaState } from "../lib/quota-display";
+import type { AccountLifetime, LedgerAccount } from "../../shared/report";
+import {
+  quotaLabel,
+  quotaPercent,
+  type VisibleQuotaWindow,
+  visibleQuotaWindows,
+} from "../lib/quota-display";
 import { amount, compact, numericAmount } from "../lib/report";
 import "./mobile-home.css";
 import { MiniTrend } from "./AccountTrend";
@@ -51,11 +52,6 @@ export interface MobileHomeProps {
   chartStyle?: "line" | "area" | "bar";
   onChartStyleChange?: (style: ChartStyle) => void;
 }
-
-type QuotaSelection = {
-  label: "5 小时" | "7 天";
-  window: AccountWindow;
-};
 
 function validDate(value: string | number | null | undefined) {
   if (value === null || value === undefined) return null;
@@ -116,46 +112,16 @@ function planLabel(account: LedgerAccount) {
   return account.kind === "api" ? "API" : null;
 }
 
-function selectPrimaryQuota(
-  account: LedgerAccount,
-  asOf: string,
-): QuotaSelection | null {
-  const candidates: QuotaSelection[] = [
-    account.fiveHour ? { label: "5 小时", window: account.fiveHour } : null,
-    account.sevenDay ? { label: "7 天", window: account.sevenDay } : null,
-  ].filter((candidate): candidate is QuotaSelection => candidate !== null);
-  if (!candidates.length) return null;
-
-  // 只有当前周期可证明有效时才优先 5 小时；未知周期不能覆盖有效的 7 天窗口。
-  return (
-    candidates.find(({ window }) => quotaState(window, asOf) === "active") ??
-    candidates.find(({ window }) => quotaState(window, asOf) !== "expired") ??
-    candidates[0]!
-  );
-}
-
-function quotaStatus(window: AccountWindow, asOf: string) {
-  switch (quotaState(window, asOf)) {
-    case "active":
-      return "使用中";
-    case "expired":
-      return "已过期";
-    default:
-      return "未知";
-  }
-}
-
 function QuotaSummary({
   selection,
   asOf,
 }: {
-  selection: QuotaSelection;
+  selection: VisibleQuotaWindow;
   asOf: string;
 }) {
   const { label, window } = selection;
-  const state = quotaState(window, asOf);
   const percent = quotaPercent(window, asOf);
-  const usable = state === "active" && percent !== null;
+  const usable = percent !== null;
   const reset = formatResetTime(window.resetsAt, asOf);
   const amountValue = usable ? formatUsd(window.periodUsd) : "N/A";
   const tokens = usable ? formatTokens(window.periodTokens) : "N/A";
@@ -164,17 +130,16 @@ function QuotaSummary({
   return (
     <div
       className="mobile-home-quota"
-      data-state={state}
       data-exhausted={usable && percent >= 100}
     >
       <div className="mobile-home-quota-head">
-        <strong className="mobile-home-visually-hidden">{label}</strong>
-        <span className="mobile-home-quota-status">
-          {usable ? quotaLabel(window, asOf) : quotaStatus(window, asOf)}
-        </span>
-        <span className="mobile-home-quota-reset">
-          {state === "expired" ? "等待新周期" : reset}
-        </span>
+        <div className="mobile-home-quota-title">
+          <strong className="mobile-home-quota-label">{label}</strong>
+          <span className="mobile-home-quota-status">
+            {usable ? quotaLabel(window, asOf) : "N/A"}
+          </span>
+        </div>
+        <span className="mobile-home-quota-reset">{reset}</span>
       </div>
       <div
         className="mobile-home-progress"
@@ -183,7 +148,7 @@ function QuotaSummary({
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={usable ? percent : undefined}
-        aria-valuetext={usable ? quotaLabel(window, asOf) : "未知"}
+        aria-valuetext={usable ? quotaLabel(window, asOf) : "N/A"}
       >
         <span style={usable ? { width: `${percent}%` } : undefined} />
       </div>
@@ -419,24 +384,26 @@ export function MobileHome({
         </div>
         <ul className="mobile-home-account-list" aria-label="账户额度摘要">
           {accounts.map((account) => {
-            const quota = selectPrimaryQuota(account, asOf);
+            const quotas = visibleQuotaWindows(account, asOf);
+            const hasQuota = Boolean(account.fiveHour || account.sevenDay);
             const plan = planLabel(account);
             const open = () =>
-              quota ? onAccount(account) : onRequests(account);
+              hasQuota ? onAccount(account) : onRequests(account);
             return (
               <li key={account.id}>
                 <button
                   type="button"
                   className="mobile-home-account-card"
+                  data-quota-count={quotas.length}
                   onClick={open}
-                  aria-label={`查看 ${account.name} ${quota ? "账户额度" : "请求用量"}`}
+                  aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
                 >
                   <span className="mobile-home-account-head">
                     <span
                       className="mobile-home-account-avatar"
                       aria-hidden="true"
                     >
-                      <Wallet size={18} />
+                      <Wallet size={quotas.length === 1 ? 20 : 18} />
                     </span>
                     <span className="mobile-home-account-name">
                       <strong>{account.name}</strong>
@@ -448,8 +415,21 @@ export function MobileHome({
                       aria-hidden="true"
                     />
                   </span>
-                  {quota ? (
-                    <QuotaSummary selection={quota} asOf={asOf} />
+                  {quotas.length ? (
+                    <div
+                      className="mobile-home-quota-list"
+                      data-count={quotas.length}
+                    >
+                      {quotas.map((quota) => (
+                        <QuotaSummary
+                          key={quota.key}
+                          selection={quota}
+                          asOf={asOf}
+                        />
+                      ))}
+                    </div>
+                  ) : hasQuota ? (
+                    <div className="mobile-home-quota-unavailable">N/A</div>
                   ) : (
                     <UsageSummary
                       account={account}

@@ -1,8 +1,12 @@
-const CACHE_NAME = "meterleaf-offline-v1";
+const CACHE_NAME = "meterleaf-offline-v3";
 const OFFLINE_URL = "/offline.html";
 const PRECACHE_URLS = [
   OFFLINE_URL,
   "/manifest.webmanifest",
+  "/icons/meterleaf-leaf-180.png",
+  "/icons/meterleaf-leaf-192.png",
+  "/icons/meterleaf-leaf-512.png",
+  // 旧安装引用的路径保留同一品牌图标。
   "/icons/meterleaf-192.png",
   "/icons/meterleaf-512.png",
 ];

@@ -105,7 +105,6 @@
     width: 36px;
     height: 36px;
     border-radius: 10px;
-    background: #0c7569;
     box-shadow: 0 5px 12px rgb(8 123 112 / 16%);
   }
 
@@ -1835,6 +1834,50 @@
     width: 100%;
     max-width: 360px;
     margin: 0 auto;
+  }
+}
+
+@media (min-width: 1001px) {
+  .app-shell .account-row[data-quota-count="1"],
+  .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
+    grid-template-columns:
+      minmax(160px, 0.7fr) minmax(0, 1.1fr) minmax(180px, 1fr)
+      32px;
+    grid-template-areas: "identity single capacity arrow";
+  }
+  .app-shell .account-row[data-quota-count="1"] .account-identity {
+    grid-area: identity;
+  }
+  .app-shell .account-row[data-quota-count="1"] .account-window,
+  .app-shell .account-row .account-window-unavailable {
+    grid-area: single;
+  }
+  .app-shell .account-row[data-quota-count="1"] .account-capacity {
+    grid-area: capacity;
+  }
+  .app-shell .account-row[data-quota-count="1"] .row-arrow {
+    grid-area: arrow;
+  }
+  .app-shell .account-row[data-quota-count="1"] .account-avatar {
+    width: 68px;
+    height: 68px;
+  }
+  .app-shell .account-row[data-quota-count="1"] .account-avatar svg {
+    width: 32px;
+    height: 32px;
+  }
+  .app-shell .account-row[data-quota-count="1"] .account-capacity .mini-trend {
+    --mini-trend-height: 76px;
+  }
+}
+@media (min-width: 901px) and (max-width: 1000px) {
+  .app-shell .account-row[data-quota-count="1"],
+  .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
+    grid-template-areas: "identity capacity" "single single";
+  }
+  .app-shell .account-row[data-quota-count="1"] .account-window,
+  .app-shell .account-row .account-window-unavailable {
+    grid-area: single;
   }
 }
 

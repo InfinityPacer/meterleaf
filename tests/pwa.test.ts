@@ -32,24 +32,34 @@ test("manifest declares a standalone Meterleaf app with maskable icons", async (
     {
       sizes: "192x192",
       purpose: "any maskable",
-      src: "/icons/meterleaf-192.png",
+      src: "/icons/meterleaf-leaf-192.png",
       type: "image/png",
     },
     {
       sizes: "512x512",
       purpose: "any maskable",
-      src: "/icons/meterleaf-512.png",
+      src: "/icons/meterleaf-leaf-512.png",
       type: "image/png",
     },
   ]);
 });
 
 test("generated icon assets have the manifest dimensions", async () => {
-  for (const size of [192, 512]) {
-    const path = join(root, `public/icons/meterleaf-${size}.png`);
+  for (const size of [180, 192, 512]) {
+    const path = join(root, `public/icons/meterleaf-leaf-${size}.png`);
     const file = await readFile(path);
     expect((await stat(path)).isFile()).toBe(true);
     expect(pngSize(file)).toEqual({ width: size, height: size });
+  }
+
+  for (const size of [192, 512]) {
+    const canonical = await readFile(
+      join(root, `public/icons/meterleaf-leaf-${size}.png`),
+    );
+    const legacy = await readFile(
+      join(root, `public/icons/meterleaf-${size}.png`),
+    );
+    expect(legacy).toEqual(canonical);
   }
 });
 
@@ -57,8 +67,12 @@ test("service worker only precaches independent offline resources", async () => 
   const worker = await readFile(join(root, "public/sw.js"), "utf8");
   expect(worker).toContain("/offline.html");
   expect(worker).toContain("/manifest.webmanifest");
+  expect(worker).toContain("/icons/meterleaf-leaf-180.png");
+  expect(worker).toContain("/icons/meterleaf-leaf-192.png");
+  expect(worker).toContain("/icons/meterleaf-leaf-512.png");
   expect(worker).toContain("/icons/meterleaf-192.png");
   expect(worker).toContain("/icons/meterleaf-512.png");
+  expect(worker).toContain('const CACHE_NAME = "meterleaf-offline-v3"');
   expect(worker).toContain('event.request.mode !== "navigate"');
   expect(worker).toContain("caches.match(OFFLINE_URL)");
   expect(worker).not.toContain("/api/");
@@ -68,15 +82,22 @@ test("service worker only precaches independent offline resources", async () => 
 test("offline page does not expose a stale ledger", async () => {
   const offline = await readFile(join(root, "public/offline.html"), "utf8");
   expect(offline).toContain("账本需要联网查看");
+  expect(offline).toContain('src="/icons/meterleaf-leaf-192.png"');
   expect(offline).toContain("重新连接");
   expect(offline).not.toContain("<script");
 });
 
 test("HTML exposes the manifest and Apple touch icon for native browser install", async () => {
   const html = await readFile(join(root, "index.html"), "utf8");
-  expect(html).toContain('rel="manifest" href="/manifest.webmanifest"');
-  expect(html).toContain(
-    'rel="apple-touch-icon" href="/icons/meterleaf-192.png"',
+  const normalizedHtml = html.replace(/\s+/g, " ");
+  expect(normalizedHtml).toContain(
+    'rel="manifest" href="/manifest.webmanifest"',
+  );
+  expect(normalizedHtml).toContain(
+    'name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"',
+  );
+  expect(normalizedHtml).toContain(
+    'rel="apple-touch-icon" sizes="180x180" href="/icons/meterleaf-leaf-180.png"',
   );
 });
 

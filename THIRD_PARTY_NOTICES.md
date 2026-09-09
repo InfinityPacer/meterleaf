@@ -2,7 +2,7 @@
 
 ## Lucide
 
-`public/favicon.svg` 的叶片图形来自 Lucide Leaf，与应用内图标保持一致，保留以下许可证原文。
+应用内的操作与导航图标使用 `lucide-react`，保留以下许可证原文。Meterleaf 品牌 Logo 不属于 Lucide 图标。
 
 ISC License
 

@@ -34,7 +34,6 @@ import {
   FileText,
   Info,
   Layers3,
-  Leaf,
   Menu,
   RefreshCw,
   Search,
@@ -68,7 +67,13 @@ import {
   readStoredThemeMode,
   resolveThemeDark,
 } from "./components/ThemeControl";
-import { quotaLabel, quotaPercent, quotaState } from "./lib/quota-display";
+import {
+  accountQuotaExhausted,
+  quotaLabel,
+  quotaPercent,
+  quotaState,
+  visibleQuotaWindows,
+} from "./lib/quota-display";
 import { useQuotaClock } from "./lib/use-quota-clock";
 import { useReportFilters } from "./lib/report-preferences";
 import {
@@ -379,7 +384,9 @@ function AccountRow({
 }) {
   const accountUsage = account.lifetime ?? usage;
   const hasQuota = Boolean(account.fiveHour || account.sevenDay);
-  const primaryFiveHour = quotaPercent(account.fiveHour, asOf) !== null;
+  const windows = visibleQuotaWindows(account, asOf);
+  const exhausted = accountQuotaExhausted(account, asOf);
+  const status = archived ? "已归档" : exhausted ? null : "使用中";
   const plan = account.plan?.replace(
     /\b(pro|plus)\b/gi,
     (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
@@ -391,7 +398,13 @@ function AccountRow({
         ? "订阅账户"
         : "账户类型未知";
   return (
-    <button className="account-row" data-has-quota={hasQuota} onClick={onOpen}>
+    <button
+      className="account-row"
+      data-has-quota={hasQuota}
+      data-quota-count={windows.length}
+      data-quota-exhausted={exhausted}
+      onClick={onOpen}
+    >
       <span className="account-identity">
         <span
           className={`account-avatar ${account.id}`}
@@ -413,31 +426,30 @@ function AccountRow({
             )}
             <span>{accountKind}</span>
           </small>
-          <span className="desktop-account-status" data-archived={archived}>
-            <span aria-hidden="true" />
-            {archived ? "已归档" : "使用中"}
-          </span>
+          {status && (
+            <span className="desktop-account-status" data-archived={archived}>
+              <span aria-hidden="true" />
+              {status}
+            </span>
+          )}
         </span>
       </span>
-      {compactView && (
-        <span className="app-account-status">
-          {archived ? "已归档" : "使用中"}
-        </span>
+      {compactView && status && (
+        <span className="app-account-status">{status}</span>
       )}
       {hasQuota ? (
         <>
-          {(!compactView || primaryFiveHour || !account.sevenDay) && (
-            <span className="account-window account-five-hour">
-              <QuotaPeriod
-                window={account.fiveHour}
-                label="5 小时"
-                asOf={asOf}
-              />
+          {windows.map(({ key, label, window }) => (
+            <span
+              key={key}
+              className={`account-window ${key === "fiveHour" ? "account-five-hour" : "account-seven-day"}`}
+            >
+              <QuotaPeriod window={window} label={label} asOf={asOf} />
             </span>
-          )}
-          {(!compactView || (!primaryFiveHour && !!account.sevenDay)) && (
-            <span className="account-window account-seven-day">
-              <QuotaPeriod window={account.sevenDay} label="7 天" asOf={asOf} />
+          ))}
+          {!windows.length && (
+            <span className="account-window account-window-unavailable">
+              额度 N/A
             </span>
           )}
           <span className="account-capacity">
@@ -540,6 +552,7 @@ function OverviewQuotas({
       >
         {accounts.map((account) => {
           const hasQuota = Boolean(account.fiveHour || account.sevenDay);
+          const windows = visibleQuotaWindows(account, asOf);
           const usage = accountUsage?.[account.id];
           const plan = account.plan?.replace(
             /\b(pro|plus)\b/gi,
@@ -549,6 +562,8 @@ function OverviewQuotas({
             <button
               className="quota-preview"
               data-has-quota={hasQuota}
+              data-quota-count={windows.length}
+              data-quota-exhausted={accountQuotaExhausted(account, asOf)}
               key={account.id}
               onClick={() => (hasQuota ? onOpen(account) : onRequests(account))}
               aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
@@ -574,19 +589,15 @@ function OverviewQuotas({
               </span>
               {hasQuota ? (
                 <>
-                  {(
-                    [
-                      ["5 小时", account.fiveHour],
-                      ["7 天", account.sevenDay],
-                    ] as const
-                  ).map(([label, window]) => (
+                  {windows.map(({ key, label, window }) => (
                     <QuotaPeriod
-                      key={label}
+                      key={key}
                       window={window}
                       label={label}
                       asOf={asOf}
                     />
                   ))}
+                  {!windows.length && <span className="muted">额度 N/A</span>}
                   <span className="quota-preview-estimate">
                     <span>7 天预估</span>
                     <strong>
@@ -995,9 +1006,13 @@ export function App() {
         className="brand"
         onClick={() => navigate("overview")}
       >
-        <span className="brand-icon">
-          <Leaf size={21} strokeWidth={1.8} />
-        </span>
+        <img
+          className="brand-icon"
+          src="/favicon.svg"
+          alt=""
+          width="32"
+          height="32"
+        />
         <span>Meterleaf</span>
       </a>
       <nav aria-label="主导航">
@@ -1528,7 +1543,7 @@ export function App() {
                   <section className="metrics" aria-label="用量摘要">
                     <div className="metric primary-metric">
                       <span className="metric-symbol" aria-hidden="true">
-                        <Leaf />
+                        <img src="/favicon.svg" width="26" height="26" alt="" />
                       </span>
                       <div className="metric-label">费用</div>
                       <div className="metric-value">
@@ -2326,16 +2341,18 @@ export function App() {
               {selectedAccount.fiveHour || selectedAccount.sevenDay ? (
                 <>
                   <div className="account-detail-windows">
-                    <QuotaBar
-                      window={selectedAccount.fiveHour}
-                      label="5 小时窗口"
-                      asOf={quotaAsOf}
-                    />
-                    <QuotaBar
-                      window={selectedAccount.sevenDay}
-                      label="7 天窗口"
-                      asOf={quotaAsOf}
-                    />
+                    {visibleQuotaWindows(selectedAccount, quotaAsOf).map(
+                      ({ key, label, window }) => (
+                        <QuotaBar
+                          key={key}
+                          window={window}
+                          label={`${label}窗口`}
+                          asOf={quotaAsOf}
+                        />
+                      ),
+                    )}
+                    {!visibleQuotaWindows(selectedAccount, quotaAsOf)
+                      .length && <span className="muted">额度 N/A</span>}
                   </div>
                   <dl className="details-list">
                     <dt>快照时间</dt>
@@ -2361,18 +2378,28 @@ export function App() {
                               })
                             : "N/A"}
                     </dd>
-                    <dt>5 小时周期费用</dt>
-                    <dd>
-                      {windowAmount(selectedAccount.fiveHour, "usd", quotaAsOf)}
-                    </dd>
-                    <dt>5 小时周期 Credits</dt>
-                    <dd>
-                      {windowAmount(
-                        selectedAccount.fiveHour,
-                        "credits",
-                        quotaAsOf,
-                      )}
-                    </dd>
+                    {visibleQuotaWindows(selectedAccount, quotaAsOf).some(
+                      ({ key }) => key === "fiveHour",
+                    ) && (
+                      <>
+                        <dt>5 小时周期费用</dt>
+                        <dd>
+                          {windowAmount(
+                            selectedAccount.fiveHour,
+                            "usd",
+                            quotaAsOf,
+                          )}
+                        </dd>
+                        <dt>5 小时周期 Credits</dt>
+                        <dd>
+                          {windowAmount(
+                            selectedAccount.fiveHour,
+                            "credits",
+                            quotaAsOf,
+                          )}
+                        </dd>
+                      </>
+                    )}
                     <dt>7 天周期费用</dt>
                     <dd>
                       {windowAmount(selectedAccount.sevenDay, "usd", quotaAsOf)}

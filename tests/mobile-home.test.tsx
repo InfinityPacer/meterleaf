@@ -1,10 +1,40 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { AccountWindow, LedgerAccount } from "../src/shared/report";
 import { MobileHome } from "../src/web/components/MobileHome";
 import { createDemoLedger } from "../src/web/demo/ledger";
 import { createLedgerView } from "../src/shared/ledger-view";
+import { quotaLabel } from "../src/web/lib/quota-display";
 
-function renderHome(values: (number | null)[]) {
+const asOf = "2026-09-08T16:00:00+08:00";
+
+function quotaWindow(overrides: Partial<AccountWindow> = {}): AccountWindow {
+  return {
+    percent: 32,
+    resetsAt: "2026-09-15T13:43:00+08:00",
+    sampledAt: asOf,
+    state: "active",
+    periodUsd: "31.85",
+    periodTokens: 22_980_000,
+    periodRequests: 193,
+    ...overrides,
+  };
+}
+
+function accountFixture(overrides: Partial<LedgerAccount> = {}): LedgerAccount {
+  return {
+    id: "pro",
+    name: "Pro",
+    plan: "Pro",
+    kind: "subscription",
+    sampledAt: asOf,
+    fiveHour: null,
+    sevenDay: null,
+    ...overrides,
+  };
+}
+
+function renderHome(values: (number | null)[], accounts: LedgerAccount[] = []) {
   const snapshot = createDemoLedger();
   const view = createLedgerView(snapshot, {
     filter: { days: 7, model: "all", account: "all", search: "" },
@@ -19,7 +49,7 @@ function renderHome(values: (number | null)[]) {
   return renderToStaticMarkup(
     <MobileHome
       snapshot={view}
-      accounts={[]}
+      accounts={accounts}
       asOf={view.asOf}
       trendPoints={values.map((value, index) => ({
         at: Date.parse(view.asOf) - index * 86400000,
@@ -31,6 +61,14 @@ function renderHome(values: (number | null)[]) {
       onRequests={() => {}}
       onAllAccounts={() => {}}
     />,
+  );
+}
+
+function accountCard(html: string) {
+  return (
+    html.match(
+      /<button type="button" class="mobile-home-account-card"[\s\S]*?<\/button>/,
+    )?.[0] ?? ""
   );
 }
 
@@ -50,4 +88,83 @@ test("home without cumulative facts does not substitute filtered totals", () => 
   expect(html).toContain("暂无累计快照");
   expect(html).toContain("暂无真实趋势数据");
   expect(html).not.toContain("$0.00");
+});
+
+test("home prioritizes an exhausted seven-day window without adding a prompt", () => {
+  const account = accountFixture({
+    fiveHour: quotaWindow({ percent: 40 }),
+    sevenDay: quotaWindow({ percent: 100 }),
+  });
+  const html = renderHome([], [account]);
+
+  expect(html).toContain("7 天");
+  expect(html).not.toContain("5 小时");
+  expect(html).toContain(quotaLabel(account.sevenDay, asOf));
+  expect(html).not.toContain("7 天已用尽");
+  expect(html).toContain('data-exhausted="true"');
+  expect(html).toContain('data-quota-count="1"');
+});
+
+test("home renders both valid quota windows with explicit period labels", () => {
+  const account = accountFixture({
+    fiveHour: quotaWindow({ percent: 7 }),
+    sevenDay: quotaWindow({ percent: 32 }),
+  });
+  const html = renderHome([], [account]);
+
+  expect((html.match(/class="mobile-home-quota"/g) ?? []).length).toBe(2);
+  expect(html).toContain("5 小时");
+  expect(html).toContain("7 天");
+  expect(html).toContain('data-count="2"');
+});
+
+test("home hides an unavailable five-hour window instead of rendering an N/A placeholder", () => {
+  const account = accountFixture({
+    fiveHour: quotaWindow({ percent: null }),
+    sevenDay: quotaWindow({ percent: 64 }),
+  });
+  const html = renderHome([], [account]);
+  const card = accountCard(html);
+
+  expect((card.match(/class="mobile-home-quota"/g) ?? []).length).toBe(1);
+  expect(card).toContain("7 天");
+  expect(card).not.toContain("5 小时");
+  expect(card).not.toContain("N/A");
+});
+
+test("home keeps unavailable subscription windows as N/A and preserves account entry", () => {
+  const expired = accountFixture({
+    id: "expired",
+    name: "Expired Pro",
+    fiveHour: quotaWindow({
+      resetsAt: "2026-09-08T15:59:59+08:00",
+    }),
+    sevenDay: null,
+  });
+  const unknown = accountFixture({
+    id: "unknown",
+    name: "Unknown Pro",
+    fiveHour: null,
+    sevenDay: quotaWindow({ percent: null, state: "unknown" }),
+  });
+  const html = renderHome([], [expired, unknown]);
+
+  expect(html).toContain('aria-label="查看 Expired Pro 账户额度"');
+  expect(html).toContain('aria-label="查看 Unknown Pro 账户额度"');
+  expect(html).not.toContain("请求用量");
+  expect((html.match(/>N\/A<\/div>/g) ?? []).length).toBe(2);
+  expect(html).not.toContain("0 Tokens");
+});
+
+test("home keeps a quota-less API account on the request entry", () => {
+  const account = accountFixture({
+    id: "api",
+    name: "API",
+    plan: "API",
+    kind: "api",
+  });
+  const html = renderHome([], [account]);
+
+  expect(html).toContain('aria-label="查看 API 请求用量"');
+  expect(html).toContain("API");
 });

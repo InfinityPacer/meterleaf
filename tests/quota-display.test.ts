@@ -4,6 +4,8 @@ import {
   quotaPercent,
   quotaState,
   nextQuotaRefreshDelay,
+  visibleQuotaWindows,
+  accountQuotaExhausted,
 } from "../src/web/lib/quota-display";
 
 const now = "2026-09-08T12:00:00Z";
@@ -29,6 +31,50 @@ test("old sample keeps concise usage without claiming synchronization failure", 
   expect(quotaLabel({ ...window, stale: false }, now)).toBe(
     quotaLabel(window, now),
   );
+});
+
+test("weekly exhaustion hides five-hour quota across all account entry points", () => {
+  const account = { fiveHour: { ...window, percent: 75 }, sevenDay: window };
+  expect(visibleQuotaWindows(account, now).map((item) => item.key)).toEqual([
+    "sevenDay",
+  ]);
+  expect(accountQuotaExhausted(account, now)).toBe(true);
+  expect(
+    visibleQuotaWindows(
+      { ...account, sevenDay: { ...window, percent: 99 } },
+      now,
+    ).map((item) => item.key),
+  ).toEqual(["fiveHour", "sevenDay"]);
+});
+
+test("missing and expired five-hour windows do not occupy quota layout", () => {
+  for (const fiveHour of [
+    null,
+    { ...window, percent: null },
+    { ...window, resetsAt: now },
+    { ...window, state: "unknown" as const },
+  ]) {
+    expect(
+      visibleQuotaWindows(
+        { fiveHour, sevenDay: { ...window, percent: 57 } },
+        now,
+      ).map((item) => item.key),
+    ).toEqual(["sevenDay"]);
+  }
+  expect(visibleQuotaWindows({ fiveHour: null, sevenDay: null }, now)).toEqual(
+    [],
+  );
+});
+
+test("weekly reset restores five-hour visibility instead of keeping an expired exhausted state", () => {
+  const account = {
+    fiveHour: { ...window, percent: 75 },
+    sevenDay: { ...window, resetsAt: now },
+  };
+  expect(visibleQuotaWindows(account, now).map((item) => item.key)).toEqual([
+    "fiveHour",
+  ]);
+  expect(accountQuotaExhausted(account, now)).toBe(false);
 });
 
 test("quota timer catches a reset crossed before the effect starts", () => {
