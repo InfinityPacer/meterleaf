@@ -89,16 +89,30 @@ export function createApp({
   }));
   app.put("/api/accounts/archive", (request, reply) => {
     const id = z.string().min(1).max(512);
-    const parsed = z.union([
-      z.object({ id, archived: z.boolean() }).strict(),
-      z.object({ id, hidden: z.literal(true) }).strict(),
-    ]).safeParse(request.body);
+    const parsed = z
+      .union([
+        z.object({ id, archived: z.boolean() }).strict(),
+        z.object({ id, hidden: z.literal(true) }).strict(),
+      ])
+      .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "归档参数无效" });
-    if (!accountArchive) return reply.code(503).send({ error: "当前账本不支持归档" });
+    if (!accountArchive)
+      return reply.code(503).send({ error: "当前账本不支持归档" });
     if ("hidden" in parsed.data) accountArchive.hide(parsed.data.id);
     else accountArchive.write(parsed.data.id, parsed.data.archived);
-    diagnostics.info("account.display_updated", { action: "hidden" in parsed.data ? "hide" : parsed.data.archived ? "archive" : "restore" });
-    return { archived: accountArchive.read(), hidden: accountArchive.hidden(), writable: true };
+    diagnostics.info("account.display_updated", {
+      action:
+        "hidden" in parsed.data
+          ? "hide"
+          : parsed.data.archived
+            ? "archive"
+            : "restore",
+    });
+    return {
+      archived: accountArchive.read(),
+      hidden: accountArchive.hidden(),
+      writable: true,
+    };
   });
   app.get("/api/view", async (request, reply) => {
     const parsed = z
@@ -284,7 +298,27 @@ export function createApp({
     });
   });
   if (webRoot && existsSync(resolve(webRoot, "index.html"))) {
-    app.register(fastifyStatic, { root: resolve(webRoot) });
+    const staticRoot = resolve(webRoot);
+    app.register(fastifyStatic, {
+      root: staticRoot,
+      preCompressed: true,
+      cacheControl: false,
+      setHeaders: (reply, path) => {
+        const relative = path.slice(staticRoot.length).replaceAll("\\", "/");
+        const logical = relative.replace(/\.(?:br|gz)$/, "");
+        if (/^\/assets\/.+[-_][A-Za-z0-9_-]{8,}\.(?:js|css)$/.test(logical)) {
+          reply.header("Cache-Control", "public, max-age=31536000, immutable");
+        } else if (
+          logical === "/index.html" ||
+          logical === "/sw.js" ||
+          logical === "/manifest.webmanifest"
+        ) {
+          reply.header("Cache-Control", "no-cache");
+        } else {
+          reply.header("Cache-Control", "public, max-age=3600");
+        }
+      },
+    });
     app.setNotFoundHandler((request, reply) =>
       request.url.startsWith("/api/")
         ? reply.code(404).send({ error: "not-found" })

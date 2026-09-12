@@ -1,6 +1,6 @@
 {
   "name": "meterleaf",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -13,7 +13,7 @@
     "dev:server": "bun --watch src/server/main.ts",
     "dev:demo": "VITE_METERLEAF_DEMO=true bun run dev",
     "dev": "bun --bun vite --host 127.0.0.1",
-    "build": "bun run typecheck && bun --bun vite build",
+    "build": "bun run typecheck && bun --bun vite build && bun scripts/compress-web-assets.ts",
     "preview": "bun --bun vite preview --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "test": "bun test tests",

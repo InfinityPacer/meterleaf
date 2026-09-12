@@ -72,7 +72,9 @@ test("service worker only precaches independent offline resources", async () => 
   expect(worker).toContain("/icons/meterleaf-leaf-512.png");
   expect(worker).toContain("/icons/meterleaf-192.png");
   expect(worker).toContain("/icons/meterleaf-512.png");
-  expect(worker).toContain('const CACHE_NAME = "meterleaf-offline-v3"');
+  expect(worker).toContain('const CACHE_NAME = "meterleaf-offline-v4"');
+  expect(worker).toContain("navigationPreload.enable");
+  expect(worker).toContain("event.preloadResponse");
   expect(worker).toContain('event.request.mode !== "navigate"');
   expect(worker).toContain("caches.match(OFFLINE_URL)");
   expect(worker).not.toContain("/api/");
@@ -99,6 +101,7 @@ test("HTML exposes the manifest and Apple touch icon for native browser install"
   expect(normalizedHtml).toContain(
     'rel="apple-touch-icon" sizes="180x180" href="/icons/meterleaf-leaf-180.png"',
   );
+  expect(normalizedHtml).toContain('class="boot-shell"');
 });
 
 test("PWA module only exposes production service-worker registration", async () => {

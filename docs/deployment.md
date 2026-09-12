@@ -42,7 +42,7 @@ docker compose up -d --no-build --pull never
 
 完成后用 `docker compose ps` 检查状态，默认访问 `http://127.0.0.1:4318`。镜像以 Bun 用户运行，挂载目录必须可写；不要让多个 Meterleaf 进程共用同一账本。发布流程见[版本与发布](releasing.md)。
 
-生产构建包含 PWA 清单、图标和离线页，浏览器可将应用安装为独立窗口，无需额外安装插件。除本机地址外，需要 HTTPS；反向代理须允许访问 `/manifest.webmanifest`、`/sw.js`、`/offline.html` 和 `/icons/*`。离线资源不缓存 API 或账户数据，断网后重新打开不会展示旧账本。
+生产构建包含 PWA 清单、图标和离线页，浏览器可将应用安装为独立窗口，无需额外安装插件。首页在脚本加载期间显示启动提示；构建会为文本静态资源生成 Brotli/Gzip 变体，服务器按浏览器能力返回。除本机地址外，需要 HTTPS；反向代理须允许访问 `/manifest.webmanifest`、`/sw.js`、`/offline.html` 和 `/icons/*`。离线资源不缓存 API 或账户数据，断网后重新打开不会展示旧账本。
 
 随附 Compose 仅绑定宿主机回环地址。如果反向代理在其他容器中，应加入共享 Docker 网络并访问 `meterleaf:4318`，或显式调整宿主机绑定地址。应用不内置认证，可在代理层接入 OAuth/OIDC 认证。
 

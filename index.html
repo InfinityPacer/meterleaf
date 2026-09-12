@@ -16,6 +16,48 @@
         background: #171b20;
         color-scheme: dark;
       }
+      body {
+        margin: 0;
+      }
+      .boot-shell {
+        box-sizing: border-box;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        color: #17201d;
+        font:
+          500 15px/1.5 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+      .boot-shell__content {
+        display: grid;
+        justify-items: center;
+        gap: 14px;
+      }
+      .boot-shell__mark {
+        width: 34px;
+        height: 34px;
+        border: 3px solid color-mix(in srgb, #07594f 22%, transparent);
+        border-top-color: #07594f;
+        border-radius: 50%;
+        animation: boot-shell-spin 900ms linear infinite;
+      }
+      .dark .boot-shell {
+        color: #eef3f0;
+      }
+      @keyframes boot-shell-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-shell__mark {
+          animation: none;
+        }
+      }
     </style>
     <script id="theme-bootstrap">
       // 在样式和应用模块加载前恢复外观，避免刷新时先绘制浅色页面。
@@ -53,7 +95,14 @@
     <title>Meterleaf</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot-shell" role="status" aria-live="polite">
+        <div class="boot-shell__content">
+          <span class="boot-shell__mark" aria-hidden="true"></span>
+          <span>正在连接 Meterleaf…</span>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/web/main.tsx"></script>
   </body>
 </html>
