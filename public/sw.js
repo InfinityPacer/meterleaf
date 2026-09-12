@@ -1,4 +1,4 @@
-const CACHE_NAME = "meterleaf-offline-v3";
+const CACHE_NAME = "meterleaf-offline-v4";
 const OFFLINE_URL = "/offline.html";
 const PRECACHE_URLS = [
   OFFLINE_URL,
@@ -22,19 +22,19 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches
-      .keys()
-      .then((keys) =>
-        Promise.all(
-          keys
-            .filter(
-              (key) =>
-                key.startsWith("meterleaf-offline-") && key !== CACHE_NAME,
-            )
-            .map((key) => caches.delete(key)),
-        ),
-      )
-      .then(() => self.clients.claim()),
+    (async () => {
+      if ("navigationPreload" in self.registration)
+        await self.registration.navigationPreload.enable();
+      const keys = await caches.keys();
+      await Promise.all(
+        keys
+          .filter(
+            (key) => key.startsWith("meterleaf-offline-") && key !== CACHE_NAME,
+          )
+          .map((key) => caches.delete(key)),
+      );
+      await self.clients.claim();
+    })(),
   );
 });
 
@@ -56,6 +56,13 @@ self.addEventListener("fetch", (event) => {
   if (event.request.mode !== "navigate") return;
 
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(OFFLINE_URL)),
+    (async () => {
+      try {
+        // 网络导航仍需经过外部认证；预加载与 Worker 启动并行，避免冷 Worker 先阻塞网络。
+        return (await event.preloadResponse) ?? (await fetch(event.request));
+      } catch {
+        return caches.match(OFFLINE_URL);
+      }
+    })(),
   );
 });
