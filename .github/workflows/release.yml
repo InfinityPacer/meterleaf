@@ -77,6 +77,10 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          # 默认开启的 provenance / SBOM 会为每次发布额外推两个 unknown/unknown
+          # 证明清单，在 GHCR 的版本列表里表现为无 tag 记录，这里不需要。
+          provenance: false
+          sbom: false
           tags: |
             ${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}
             ${{ steps.release.outputs.image }}:latest
