@@ -43,7 +43,7 @@ test("bundled JSON contains separate USD branches with unchanged credits", () =>
   expect(api.usd.amount).toBe("6.075");
   expect(subscription.credits).toEqual(api.credits);
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-09-25.2");
+  expect(subscription.version).toBe("meterleaf@2026-09-25.3");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
@@ -82,6 +82,29 @@ test("GPT-6 Sol and Luna use the 2026-09-22 rates with long context only in API 
   }
 });
 
+test("Codex Fast credits use the published multiplier on Standard credits", () => {
+  for (const [model, multiplier] of [
+    ["gpt-5.4", "2"],
+    ["gpt-5.6-sol", "2.5"],
+    ["gpt-5.6-terra", "2.5"],
+    ["gpt-5.6-luna", "2.5"],
+    ["gpt-6-astra", "2.5"],
+    ["gpt-6-sol", "2.5"],
+    ["gpt-6-luna", "2.5"],
+  ] as const) {
+    const standard = valueUsage({ ...usage, model }, defaultPriceBook);
+    const fast = valueUsage(
+      { ...usage, model, tier: "fast" },
+      defaultPriceBook,
+    );
+    expect(fast.credits.basis).toBe("estimated");
+    expect(Number(fast.credits.amount)).toBeCloseTo(
+      Number(standard.credits.amount) * Number(multiplier),
+      9,
+    );
+  }
+});
+
 test("GPT-5.4 mini has independent USD and credits prices without inherited long-context rates", () => {
   const fact = {
     ...usage,
@@ -99,7 +122,12 @@ test("new model prices do not guess tiers, cache writes or unrelated model alias
     for (const tier of ["fast", "priority", "flex"]) {
       const result = valueUsage({ ...usage, model, tier }, defaultPriceBook);
       expect(result.usd.reason).toBe("missing-rate");
-      expect(result.credits.amount).toBeNull();
+      // 只有 GPT-5.4 公布了 Fast credits，Flex 与 mini 都没有。
+      if (model === "gpt-5.4" && tier !== "flex") {
+        expect(result.credits.amount).not.toBeNull();
+      } else {
+        expect(result.credits.amount).toBeNull();
+      }
     }
     const write = valueUsage(
       { ...usage, model, tokens: { ...usage.tokens, cacheWrite: 1 } },
