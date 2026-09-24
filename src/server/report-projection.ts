@@ -45,8 +45,8 @@ export class ReportProjection {
   }
 
   /**
-   * 只判断下一次 ensure 是否需要全量重建，不写入索引。源文件身份变了说明账本被替换，
-   * 旧索引属于另一个账本，不能作为过渡结果。
+   * 只判断下一次 ensure 是否需要全量重建，不写入索引。尚无索引或源文件身份变了
+   * （账本被替换）时返回 replaced-source，旧索引不属于当前账本，不能作为过渡结果。
    */
   rebuildNeeded(): "none" | "same-source" | "replaced-source" {
     if (this.upToDate()) return "none";

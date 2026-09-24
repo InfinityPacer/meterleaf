@@ -1307,6 +1307,51 @@ footer > span {
 .empty-state h3 {
   color: var(--ink);
 }
+.report-building {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 440px;
+  margin: 48px auto;
+  padding: 0 16px;
+  text-align: center;
+  color: var(--muted);
+}
+.report-building h2 {
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 600;
+}
+.report-building p {
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+.report-building .report-building-icon {
+  width: 28px;
+  height: 28px;
+  color: var(--teal);
+}
+.report-building-elapsed {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+.report-rebuilding {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.report-rebuilding .report-building-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--teal);
+}
+.report-building-icon {
+  animation: spin 1.2s linear infinite;
+}
 .empty-chart {
   display: flex;
   flex-direction: column;
@@ -1639,6 +1684,9 @@ footer > span {
   }
   [data-slot="sheet-content"] {
     transform: none !important;
+  }
+  .report-building-icon {
+    animation: none !important;
   }
 }
 @media (prefers-reduced-transparency: reduce) {

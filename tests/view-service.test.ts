@@ -5,7 +5,10 @@ import { mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LedgerStore } from "../src/storage/ledger";
-import { ViewService } from "../src/server/view-service";
+import {
+  ReportBuildingError,
+  ViewService,
+} from "../src/server/view-service";
 import { loadPriceBook } from "../src/server/price-book";
 import { priceBookKey, valueUsage } from "../src/domain/pricing";
 import { createApp } from "../src/server/app";
@@ -263,7 +266,10 @@ test("a price change rebuilds in the background and answers uncached queries fro
         },
       })),
     };
-    reports = new ViewService(path, nextBook, { refreshIntervalMs: 0 });
+    reports = new ViewService(path, nextBook, {
+      refreshIntervalMs: 0,
+      inlineRebuildLimit: 0,
+    });
     // 缓存里没有的查询不再等待全量重建，先由旧索引回答并标记为刷新中。
     const uncached = { ...query, pageSize: 5 };
     const transitional = await reports.read(uncached, "subscription", sync);
@@ -298,6 +304,161 @@ test("a price change rebuilds in the background and answers uncached queries fro
     );
     await reports.read(query, "subscription", sync);
     await waitForCount(reports, 2);
+  } finally {
+    await reports?.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function readWhenBuilt(
+  reports: ViewService,
+  selected: ViewQuery,
+  timeoutMs = 5000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const result = await reports.read(selected, "subscription", sync, false);
+      if (!result.reportStatus?.refreshing || Date.now() > deadline)
+        return result;
+    } catch (error) {
+      if (!(error instanceof ReportBuildingError) || Date.now() > deadline)
+        throw error;
+    }
+    await Bun.sleep(20);
+  }
+}
+
+test("a first build without any index answers building instead of blocking", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-first-build-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  let reports: ViewService | undefined;
+  let app: ReturnType<typeof createApp> | undefined;
+  try {
+    const now = new Date().toISOString();
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [viewUsage("1", now)], nextCursor: "1", hasMore: false },
+      now,
+    );
+    reports = new ViewService(path, book, {
+      refreshIntervalMs: 0,
+      inlineRebuildLimit: 0,
+    });
+    const service = reports;
+    app = createApp({
+      snapshot: () => createDemoLedger(),
+      view: (selected, basis, refresh) =>
+        service.read(selected, basis ?? "subscription", sync, refresh),
+    });
+    const first = await app.inject({ method: "GET", url: "/api/view?days=7" });
+    expect(first.statusCode).toBe(202);
+    expect(first.json()).toMatchObject({ status: "building" });
+    expect(Number.isFinite(Date.parse(first.json().since))).toBe(true);
+
+    const built = await readWhenBuilt(reports, query);
+    expect(built.view.count).toBe(1);
+    expect(built.reportStatus?.refreshing).toBe(false);
+  } finally {
+    await app?.close();
+    await reports?.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("switching to an unrelated price book keeps showing the previous results under their own version", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-other-book-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  let reports: ViewService | undefined;
+  try {
+    const now = new Date().toISOString();
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [viewUsage("1", now)], nextCursor: "1", hasMore: false },
+      now,
+    );
+    reports = new ViewService(path, book, { refreshIntervalMs: 0 });
+    await reports.read(query, "subscription", sync);
+    await reports.close();
+    const otherBook = {
+      ...book,
+      id: "custom-book",
+      version: "1",
+      supersedes: undefined,
+    };
+    reports = new ViewService(path, otherBook, {
+      refreshIntervalMs: 0,
+      inlineRebuildLimit: 0,
+    });
+    const transitional = await reports.read(query, "subscription", sync);
+    expect(transitional.reportStatus?.refreshing).toBe(true);
+    expect(transitional.pricing!.version).toBe(priceBookKey(book));
+    expect(transitional.view.count).toBe(1);
+    const fresh = await readWhenBuilt(reports, query);
+    expect(fresh.pricing!.version).toBe(priceBookKey(otherBook));
+  } finally {
+    await reports?.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a replaced ledger never shows the previous ledger's index while rebuilding", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-replaced-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  let store = new LedgerStore(path, book);
+  let reports: ViewService | undefined;
+  try {
+    const now = new Date().toISOString();
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [viewUsage("1", now)], nextCursor: "1", hasMore: false },
+      now,
+    );
+    reports = new ViewService(path, book, {
+      refreshIntervalMs: 0,
+      cachePath: null,
+    });
+    await reports.read(query, "subscription", sync);
+    await reports.close();
+    store.close();
+    // 用另一份账本替换同名文件：旧索引属于旧账本，不能作为过渡结果。
+    const replacement = join(dir, "replacement.sqlite");
+    store = new LedgerStore(replacement, book);
+    store.savePage(
+      "test",
+      "incremental",
+      {
+        records: [viewUsage("1", now), viewUsage("2", now)],
+        nextCursor: "2",
+        hasMore: false,
+      },
+      now,
+    );
+    store.close();
+    await rm(path, { force: true });
+    await rename(replacement, path);
+    store = new LedgerStore(path, book);
+    reports = new ViewService(path, book, {
+      refreshIntervalMs: 0,
+      cachePath: null,
+      inlineRebuildLimit: 0,
+    });
+    await expect(
+      reports.read(query, "subscription", sync),
+    ).rejects.toBeInstanceOf(ReportBuildingError);
+    const built = await readWhenBuilt(reports, query);
+    expect(built.view.count).toBe(2);
   } finally {
     await reports?.close();
     store.close();

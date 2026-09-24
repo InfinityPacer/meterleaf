@@ -28,15 +28,20 @@ if (parentPort) {
         dataVersion: store.reportFingerprint(),
       });
     })();
+    // 切回回滚日志模式会合并并删除 WAL，让旁路文件自包含。macOS 系统 SQLite 关闭连接时
+    // 保留 WAL 文件，只靠关闭不能保证替换时没有残留。
+    projection.index.db.exec("PRAGMA journal_mode=DELETE");
+    lifetime.db.exec("PRAGMA journal_mode=DELETE");
   } finally {
     projection.close();
     lifetime.close();
     store.close();
   }
-  // 关闭最后一个连接会合并并删除 WAL；残留说明文件不完整，不能替换进来。
-  const leftover = indexFiles(config.target).filter(
-    (file) => /-(wal|shm)$/.test(file) && existsSync(file),
-  );
-  if (leftover.length > 0) throw new Error("Index build left journal files");
+  // 残留 WAL 说明文件不完整，不能替换进来。连接已全部关闭，剩下的 -shm 只是共享内存索引，可以删除。
+  const files = indexFiles(config.target);
+  if (files.some((file) => file.endsWith("-wal") && existsSync(file)))
+    throw new Error("Index build left journal files");
+  for (const file of files)
+    if (file.endsWith("-shm")) rmSync(file, { force: true });
   parentPort.postMessage({ type: "built" });
 }

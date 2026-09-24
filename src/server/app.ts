@@ -13,6 +13,7 @@ import { z } from "zod";
 import {
   createLedgerView,
   type LedgerView,
+  type ReportBuilding,
   type ViewQuery,
 } from "../shared/ledger-view";
 
@@ -45,6 +46,17 @@ interface AppOptions {
     updatePresence?(id: string, visible: boolean): void;
   };
 }
+function isReportBuilding(
+  error: unknown,
+): error is { code: "ERR_REPORT_BUILDING"; since: string } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "ERR_REPORT_BUILDING" &&
+    typeof (error as { since?: unknown }).since === "string"
+  );
+}
+
 /** 服务读写本地账本状态；上游保持只读，认证由外部反代负责。 */
 export function createApp({
   snapshot,
@@ -190,6 +202,12 @@ export function createApp({
             snapshot(query.filter.days, q.usdBasis, dateRange),
             query,
           );
+    } catch (error) {
+      if (isReportBuilding(error)) {
+        const body: ReportBuilding = { status: "building", since: error.since };
+        return reply.code(202).send(body);
+      }
+      throw error;
     } finally {
       // 包括视图缓存读取或 worker 等待，但不包括响应编码、压缩和网络传输。
       reply.header(
