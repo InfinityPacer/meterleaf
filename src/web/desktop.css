@@ -725,9 +725,8 @@
     justify-content: center;
     gap: 6px;
     margin: 0;
-    padding: 0 0 0 20px;
+    padding: 0;
     border: 0;
-    border-left: 1px solid var(--desktop-line);
     border-radius: 0;
     background: transparent;
     text-align: right;
@@ -1220,7 +1219,6 @@
   }
   .app-shell[data-page="overview"] main {
     display: block;
-    padding-top: 18px;
   }
   .app-shell[data-page="overview"] .lifetime-summary,
   .app-shell[data-page="overview"] .overview-quotas {
@@ -1569,9 +1567,6 @@
   }
   .app-shell .account-row[data-quota-count="1"] .row-arrow {
     grid-area: arrow;
-  }
-  .app-shell .account-row .account-capacity .mini-trend {
-    --mini-trend-height: 64px;
   }
 }
 @media (min-width: 901px) and (max-width: 1000px) {

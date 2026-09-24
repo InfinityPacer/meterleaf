@@ -87,20 +87,15 @@
   background: var(--soft);
 }
 
-/* 没有有效额度时只给一行说明，不再占出与额度窗口同样大的空卡片。 */
+/* 没有有效额度时用虚线框占住额度与预估的位置，只给一行说明，不伪造空窗口。 */
 .account-window-unavailable {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 4px;
+  align-items: center;
+  min-height: 44px;
+  padding: 6px 18px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
   color: var(--muted);
-}
-.account-window-unavailable strong {
-  color: var(--ink);
-  font-size: 15px;
-  font-weight: 600;
-}
-.account-window-unavailable small {
   font-size: 13px;
   line-height: 1.5;
 }
@@ -122,8 +117,14 @@
     overflow-wrap: normal;
   }
   .app-shell .account-row .account-window-unavailable {
-    min-height: 0;
-    align-items: flex-start;
+    min-height: 44px;
+    padding: 6px 18px;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+  }
+  /* 预估列的折线只示意近 7 天走势，保持矮小，让金额成为这一列的重点。 */
+  .app-shell .account-row .account-capacity .mini-trend {
+    --mini-trend-height: 34px;
   }
 }
 
