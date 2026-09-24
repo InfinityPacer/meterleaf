@@ -523,7 +523,7 @@ function AccountRow({
           {!windows.length && (
             <span className="account-window account-window-unavailable">
               {account.sampledAt
-                ? `${quotaUnavailableNote(account)}。上游再次上报后自动恢复。`
+                ? `${quotaUnavailableNote(account)}，上报后自动恢复。`
                 : quotaUnavailableNote(account)}
             </span>
           )}

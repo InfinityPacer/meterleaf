@@ -154,16 +154,17 @@ function buildMiniTrendOption(
       bottom: 2,
       containLabel: showScale,
     },
+    // 微图只有几十像素高，外层还会裁切溢出；提示挂到 body 上才能完整显示。
     tooltip: {
       trigger: "axis",
-      confine: true,
+      appendTo: "body",
       backgroundColor: colors.surface,
       borderColor: colors.line,
-      textStyle: { color: colors.ink, fontSize: 11 },
+      textStyle: { color: colors.ink, fontSize: 12 },
       formatter: (params: unknown) => {
         const point = tooltipPoint(params, points);
         if (!point) return "";
-        return `${localTime(point.at, tooltipDateOptions)}\n${formatMetricValue(displayValue(point, metric), metric)}`;
+        return `${localTime(point.at, tooltipDateOptions)}<br/>${formatMetricValue(displayValue(point, metric), metric)}`;
       },
     },
     xAxis: {
