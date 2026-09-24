@@ -1,0 +1,168 @@
+/*
+ * 账户身份的统一样式：名称、套餐徽标与头像在总览、账户页、移动端首页和
+ * 移动端列表中保持一致。头像颜色只表达账户类型（订阅、API、未知）。
+ * 套餐徽标只用强度区分档位（见 lib/plan.ts），与上游厂商无关，同档位的
+ * Claude 与 ChatGPT 套餐外观相同。
+ * 本文件最后加载，覆盖各布局文件里的同名规则。
+ */
+
+.plan-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--teal) 42%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--teal) 9%, transparent);
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.plan-chip:not([data-tier]),
+.plan-chip[data-tier="1"] {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+}
+.plan-chip[data-tier="3"] {
+  border-color: var(--teal);
+  background: var(--teal);
+  color: #ffffff;
+}
+
+/* 名称固定单行，过长时省略，完整名称放在 title 中。 */
+.account-name > strong,
+.quota-preview-heading > strong,
+.mobile-home-account-name > strong {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.account-name > small {
+  flex-wrap: nowrap;
+  min-width: 0;
+  white-space: nowrap;
+}
+.account-name > small > span:not(.plan-chip) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quota-preview-heading {
+  min-width: 0;
+}
+.mobile-home-account-name {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+/* 头像按账户类型着色。 */
+.account-avatar,
+.mobile-home-account-avatar {
+  color: var(--teal);
+  background: color-mix(in srgb, var(--teal) 12%, var(--surface));
+}
+.account-avatar[data-kind="api"],
+.mobile-home-account-avatar[data-kind="api"] {
+  color: #7a4fc2;
+  background: color-mix(in srgb, #9b75ef 14%, var(--surface));
+}
+.account-avatar[data-kind="unknown"],
+.mobile-home-account-avatar[data-kind="unknown"] {
+  color: var(--muted);
+  background: var(--soft);
+}
+.dark .account-avatar[data-kind="api"],
+.dark .mobile-home-account-avatar[data-kind="api"] {
+  color: #dec5ff;
+}
+
+/* 没有有效额度时只给一行说明，不再占出与额度窗口同样大的空卡片。 */
+.account-window-unavailable {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  color: var(--muted);
+}
+.account-window-unavailable strong {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+.account-window-unavailable small {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.quota-preview-unavailable {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+@media (min-width: 901px) {
+  .app-shell .account-row {
+    min-height: 0;
+  }
+  .app-shell .account-row .account-name > strong {
+    font-size: 20px;
+  }
+  .app-shell .account-row .account-avatar,
+  .app-shell .account-row[data-quota-count="1"] .account-avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 16px;
+    color: #ffffff;
+    background: linear-gradient(135deg, #a5ded4, #189b8c);
+  }
+  .app-shell .account-row .account-avatar svg,
+  .app-shell .account-row[data-quota-count="1"] .account-avatar svg {
+    width: 26px;
+    height: 26px;
+  }
+  .app-shell .account-row .account-avatar[data-kind="api"] {
+    background: linear-gradient(135deg, #d6c0ff, #9b75ef);
+  }
+  .app-shell .account-row .account-avatar[data-kind="unknown"] {
+    background: linear-gradient(135deg, #c3ccd4, #7d8b97);
+  }
+  .app-shell .account-capacity strong {
+    font-size: clamp(19px, 1.6vw, 25px);
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+  .app-shell .account-row .account-window-unavailable {
+    min-height: 0;
+    align-items: flex-start;
+    border-style: dashed;
+  }
+  .app-shell .quota-preview-heading .plan-chip {
+    margin-right: auto;
+  }
+  .app-shell .quota-preview-heading > strong {
+    flex: 0 1 auto;
+  }
+}
+
+@media (min-width: 1001px) {
+  .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
+    grid-template-areas: "identity single single arrow";
+  }
+  .app-shell
+    .account-row[data-has-quota="true"][data-quota-count="0"]
+    .row-arrow {
+    grid-area: arrow;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1000px) {
+  .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
+    grid-template-areas: "identity identity" "single single";
+  }
+}

@@ -98,12 +98,6 @@ export function planFor(account: ClaudeAccount): string | null {
   return account.organizationType;
 }
 
-const planLabels: Record<string, string> = {
-  "max-5x": "Claude Max 5x",
-  "max-20x": "Claude Max 20x",
-  pro: "Claude Pro",
-};
-
 /** 订阅需同时满足 Claude 订阅组织类型和订阅计费方式，任一未知都不认定为订阅。 */
 export function kindFor(account: ClaudeAccount): IngestAccount["kind"] {
   const organizationType = account.organizationType ?? "";
@@ -128,12 +122,15 @@ export function subjectKeyFor(account: ClaudeAccount): string | null {
   return `sha256:${digest}`;
 }
 
+/**
+ * 默认名只说明来源；套餐由 plan 单独展示，UUID 对用户没有意义，也不放进名称。
+ * 多个账户需要区分时由用户在 Meterleaf 中设置别名。
+ */
 export function accountFact(account: ClaudeAccount): IngestAccount {
   const plan = planFor(account);
-  const label = (plan && planLabels[plan]) ?? plan ?? "Claude";
   return {
     externalId: account.accountUuid,
-    name: `${label} · ${account.accountUuid.slice(0, 8)}`,
+    name: "Claude Code",
     platform: "anthropic",
     kind: kindFor(account),
     plan,

@@ -54,10 +54,6 @@
     --desktop-teal: var(--teal);
     --desktop-blue: var(--blue);
   }
-  .app-shell .account-avatar[data-plan="pro"] {
-    color: var(--teal);
-    background: var(--tint);
-  }
 
   body {
     background: var(--desktop-canvas, #f1f7fb);
@@ -971,9 +967,6 @@
   .app-shell .account-row .account-avatar svg {
     width: 28px;
     height: 28px;
-  }
-  .app-shell .account-row .account-avatar[data-plan="pro"] {
-    background: linear-gradient(135deg, #a5ded4, #189b8c);
   }
   .app-shell .account-row .account-avatar[data-kind="api"] {
     background: linear-gradient(135deg, #d6c0ff, #9b75ef);

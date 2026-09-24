@@ -28,6 +28,7 @@ import {
   ArchiveRestore,
   Trash2,
   MoreHorizontal,
+  PencilLine,
   BarChart3,
   Coins,
   Database,
@@ -87,6 +88,8 @@ import {
 } from "./lib/preferences";
 import { orderedAccounts, moveAccount } from "./lib/account-order";
 import { useAccountArchive } from "./lib/use-account-archive";
+import { withAccountAliases } from "./lib/account-aliases";
+import { planBadge } from "./lib/plan";
 import { Segmented } from "./components/Segmented";
 import {
   amount,
@@ -104,6 +107,10 @@ import { ModelDistribution } from "./components/ModelDistribution";
 import { MobileFilters } from "./components/MobileFilters";
 import { MobileHome } from "./components/MobileHome";
 import { AboutPage } from "./components/AboutPage";
+import {
+  AccountRenameDialog,
+  type RenameTarget,
+} from "./components/AccountRenameDialog";
 import {
   ReportBuildingPanel,
   ReportRebuildingNotice,
@@ -152,15 +159,6 @@ const initialFilter: ReportFilter = {
 };
 
 /** 套餐名首字母大写；Claude 的 max-5x 这类档位显示为 Max 5x，未知套餐保留原文。 */
-function formatPlan(plan: string | null | undefined) {
-  return plan
-    ?.replace(/^max-(\d+x)$/i, "max $1")
-    .replace(
-      /\b(pro|plus|max)\b/gi,
-      (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
-    );
-}
-
 function readStoredUsdBasis(): UsdBasis | null {
   try {
     const value = localStorage.getItem("meterleaf-usd-basis");
@@ -424,7 +422,7 @@ function AccountRow({
   const windows = visibleQuotaWindows(account, asOf, compactUsage);
   const exhausted = accountQuotaExhausted(account, asOf);
   const status = archived ? "已归档" : exhausted ? null : "使用中";
-  const plan = formatPlan(account.plan);
+  const plan = account.kind === "api" ? null : planBadge(account);
   const accountKind =
     account.kind === "api"
       ? "API 接入"
@@ -446,19 +444,15 @@ function AccountRow({
         <span
           className={`account-avatar ${account.id}`}
           data-kind={account.kind}
-          data-plan={account.plan?.toLowerCase()}
         >
           <Wallet size={18} />
         </span>
         <span className="account-name">
-          <strong>{account.name}</strong>
+          <strong title={account.name}>{account.name}</strong>
           <small>
-            {plan && !["未提供", "unknown"].includes(plan) && (
-              <span
-                className="plan-chip"
-                data-plan={account.plan?.toLowerCase()}
-              >
-                {plan}
+            {plan && (
+              <span className="plan-chip" data-tier={plan.tier ?? undefined}>
+                {plan.label}
               </span>
             )}
             <span>{accountKind}</span>
@@ -491,10 +485,11 @@ function AccountRow({
           ))}
           {!windows.length && (
             <span className="account-window account-window-unavailable">
-              额度 N/A
+              <strong>暂无有效额度</strong>
+              <small>额度快照已过期或上游暂未提供，下次同步后更新</small>
             </span>
           )}
-          {!compactUsage && (
+          {!compactUsage && windows.length > 0 && (
             <span className="account-capacity">
               <small>7d 预估</small>
               <AccountTrend accountId={account.id} load={readAccountTrend} />
@@ -600,7 +595,7 @@ function OverviewQuotas({
           const hasQuota = Boolean(account.fiveHour || account.sevenDay);
           const windows = visibleQuotaWindows(account, asOf, compactUsage);
           const usage = accountUsage?.[account.id];
-          const plan = formatPlan(account.plan);
+          const plan = account.kind === "api" ? null : planBadge(account);
           return (
             <button
               className="quota-preview"
@@ -615,20 +610,16 @@ function OverviewQuotas({
               aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
             >
               <span className="quota-preview-heading">
-                <span
-                  className="account-avatar"
-                  data-kind={account.kind}
-                  data-plan={account.plan?.toLowerCase()}
-                >
+                <span className="account-avatar" data-kind={account.kind}>
                   <Wallet size={22} />
                 </span>
-                <strong>{account.name}</strong>
-                {plan && !["未提供", "unknown"].includes(plan) && (
+                <strong title={account.name}>{account.name}</strong>
+                {plan && (
                   <span
                     className="plan-chip"
-                    data-plan={account.plan?.toLowerCase()}
+                    data-tier={plan.tier ?? undefined}
                   >
-                    {plan}
+                    {plan.label}
                   </span>
                 )}
                 <ArrowRight size={16} />
@@ -644,8 +635,12 @@ function OverviewQuotas({
                       compactEstimate={compactUsage}
                     />
                   ))}
-                  {!windows.length && <span className="muted">额度 N/A</span>}
-                  {!compactUsage && (
+                  {!windows.length && (
+                    <span className="quota-preview-unavailable">
+                      暂无有效额度
+                    </span>
+                  )}
+                  {!compactUsage && windows.length > 0 && (
                     <span className="quota-preview-estimate">
                       <span>7d 预估</span>
                       <strong>
@@ -704,6 +699,9 @@ export function App() {
   const [editingAccountOrder, setEditingAccountOrder] = useState(false);
   const accountArchive = useAccountArchive();
   const [accountToHide, setAccountToHide] = useState<LedgerAccount | null>(
+    null,
+  );
+  const [accountToRename, setAccountToRename] = useState<RenameTarget | null>(
     null,
   );
   const [archiveView, setArchiveView] = usePreference(
@@ -878,7 +876,7 @@ export function App() {
   useEffect(() => {
     document.title = `${pages.find((item) => item.id === page)?.name} · Meterleaf`;
   }, [page]);
-  const snapshot = useMemo(
+  const selectedView = useMemo(
     () =>
       query.data
         ? selectUsdView(
@@ -888,19 +886,31 @@ export function App() {
         : undefined,
     [query.data, usdBasisOverride],
   );
+  const accountAliases = accountArchive.data?.aliases;
+  const snapshot = useMemo(
+    () => selectedView && withAccountAliases(selectedView, accountAliases),
+    [selectedView, accountAliases],
+  );
   // 切换报表查询时保留额度摘要，不能让独立订阅窗口随报表加载状态消失。
   const [lastSnapshot, setLastSnapshot] = useState<LedgerView>();
   useEffect(() => {
-    if (snapshot) setLastSnapshot(snapshot);
-  }, [snapshot]);
+    if (selectedView) setLastSnapshot(selectedView);
+  }, [selectedView]);
   const quotaSnapshot =
     snapshot ??
     (lastSnapshot
-      ? selectUsdView(
-          lastSnapshot,
-          usdBasisOverride ?? lastSnapshot.usdBasis ?? "subscription",
+      ? withAccountAliases(
+          selectUsdView(
+            lastSnapshot,
+            usdBasisOverride ?? lastSnapshot.usdBasis ?? "subscription",
+          ),
+          accountAliases,
         )
       : undefined);
+  /** 重命名对话框需要上游原名作为默认值，别名清空后恢复它。 */
+  const upstreamAccountName = (id: string) =>
+    (selectedView ?? lastSnapshot)?.accounts.find((item) => item.id === id)
+      ?.name;
   const quotaAsOf = useQuotaClock(quotaSnapshot);
   // 首页总量不随时段筛选变化，微型趋势同样固定为全账户近 30 天。
   const homeTrendQuery: ViewQuery = {
@@ -2037,6 +2047,29 @@ export function App() {
                                         !accountArchive.data?.writable ||
                                         accountArchive.mutation.isPending
                                       }
+                                      onClick={() => {
+                                        accountArchive.mutation.reset();
+                                        setAccountToRename({
+                                          id: account.id,
+                                          name: account.name,
+                                          upstreamName:
+                                            upstreamAccountName(account.id) ??
+                                            account.name,
+                                          hasAlias: Boolean(
+                                            accountAliases?.[account.id],
+                                          ),
+                                        });
+                                      }}
+                                    >
+                                      <PencilLine size={16} />
+                                      重命名
+                                    </ActionMenu.Item>
+                                    <ActionMenu.Item
+                                      className="account-menu-item"
+                                      disabled={
+                                        !accountArchive.data?.writable ||
+                                        accountArchive.mutation.isPending
+                                      }
                                       onClick={() =>
                                         accountArchive.mutation.mutate({
                                           id: account.id,
@@ -2127,6 +2160,23 @@ export function App() {
           )}
         </main>
       </div>
+      <AccountRenameDialog
+        target={accountToRename}
+        pending={accountArchive.mutation.isPending}
+        error={
+          accountToRename && accountArchive.mutation.isError
+            ? accountArchive.mutation.error.message
+            : null
+        }
+        onClose={() => setAccountToRename(null)}
+        onSave={(alias) => {
+          if (!accountToRename) return;
+          accountArchive.mutation.mutate(
+            { id: accountToRename.id, alias },
+            { onSuccess: () => setAccountToRename(null) },
+          );
+        }}
+      />
       <AlertDialog.Root
         open={!!accountToHide}
         onOpenChange={(open) => {
@@ -2379,11 +2429,7 @@ export function App() {
             </span>
             <SheetTitle>{selectedAccount?.name}</SheetTitle>
             <SheetDescription>
-              {selectedAccount?.plan?.replace(
-                /\b(pro|plus)\b/gi,
-                (value) =>
-                  value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
-              )}
+              {selectedAccount && planBadge(selectedAccount)?.label}
             </SheetDescription>
           </SheetHeader>
           {selectedAccount && snapshot && (

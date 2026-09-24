@@ -2139,22 +2139,6 @@ button[data-size="icon-sm"],
   scrollbar-gutter: stable;
   padding-inline: 4px;
 }
-.plan-chip {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 4px;
-  padding: 2px 7px;
-  background: var(--soft);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 650;
-}
-.plan-chip[data-plan="pro"] {
-  border: 1px solid var(--teal);
-}
-.plan-chip[data-plan="plus"] {
-  border: 1px solid var(--blue);
-}
 .account-list-heading,
 .account-row {
   display: grid;
@@ -2471,6 +2455,43 @@ button[data-size="icon-sm"],
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+.account-rename form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 18px;
+}
+.account-rename label {
+  font-size: 14px;
+  color: var(--muted);
+}
+.account-rename input {
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 16px;
+}
+.account-rename .account-rename-hint {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.account-rename [role="alert"] {
+  margin: 0 0 12px;
+  color: var(--danger);
+}
+.account-rename-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.account-rename-reset {
+  margin-right: auto;
 }
 .account-lifetime {
   display: grid;

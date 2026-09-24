@@ -62,6 +62,8 @@ export interface LedgerAccount {
   id: string;
   name: string;
   plan: string;
+  /** 上游平台，例如 anthropic、openai；同名套餐在不同平台代表不同档位。 */
+  platform?: string;
   kind: "subscription" | "api" | "unknown";
   sampledAt: string | null;
   fiveHour: AccountWindow | null;

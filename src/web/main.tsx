@@ -7,6 +7,7 @@ import { App } from "./App";
 import "./styles.css";
 import "./mobile.css";
 import "./desktop.css";
+import "./account-identity.css";
 import { registerPwa } from "./pwa";
 
 void registerPwa().catch(() => undefined);
