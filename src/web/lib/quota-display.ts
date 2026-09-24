@@ -28,9 +28,14 @@ export interface VisibleQuotaWindow {
   key: "fiveHour" | "sevenDay";
   label: "5h" | "7d";
   window: AccountWindow;
+  /** 上游报过这个窗口，但当前快照已过期或缺值；只占位，不展示旧用量。 */
+  waiting?: boolean;
 }
 
-/** 紧凑视图优先展示耗尽的周额度；完整视图保留所有有效周期。 */
+/**
+ * 紧凑视图优先展示耗尽的周额度；完整视图保留所有有效周期。周额度有效且未用满时，
+ * 上游报过的 5h 窗口即使暂时过期或缺值也保留位置，避免它随采样节奏时隐时现。
+ */
 export function visibleQuotaWindows(
   account: Pick<LedgerAccount, "fiveHour" | "sevenDay">,
   asOf: string,
@@ -54,7 +59,25 @@ export function visibleQuotaWindows(
     ({ key, window }) =>
       key === "sevenDay" && quotaPercent(window, asOf) === 100,
   );
-  return prioritizeExhaustedWeek && exhaustedWeek ? [exhaustedWeek] : windows;
+  if (exhaustedWeek) return prioritizeExhaustedWeek ? [exhaustedWeek] : windows;
+  const week = windows.find(({ key }) => key === "sevenDay");
+  if (week && account.fiveHour && windows[0] === week)
+    return [
+      { key: "fiveHour", label: "5h", window: account.fiveHour, waiting: true },
+      week,
+    ];
+  return windows;
+}
+
+/** 等待新采样的窗口只说明上一周期何时结束，不给出百分比或金额。 */
+export function quotaWaitingReset(window: AccountWindow, asOf: string) {
+  if (quotaState(window, asOf) !== "expired" || !window.resetsAt) return null;
+  return `${new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(window.resetsAt))} 已重置`;
 }
 
 /** 各入口使用同一有效周期规则，过期的耗尽状态不能延续到下一周期。 */
@@ -63,7 +86,7 @@ export function accountQuotaExhausted(
   asOf: string,
 ) {
   return visibleQuotaWindows(account, asOf).some(
-    ({ window }) => quotaPercent(window, asOf) === 100,
+    ({ window, waiting }) => !waiting && quotaPercent(window, asOf) === 100,
   );
 }
 

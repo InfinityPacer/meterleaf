@@ -8,6 +8,7 @@ import {
   nextQuotaRefreshDelay,
   showQuotaEstimate,
   visibleQuotaWindows,
+  quotaWaitingReset,
   accountQuotaExhausted,
 } from "../src/web/lib/quota-display";
 
@@ -114,20 +115,45 @@ test("weekly exhaustion hides five-hour quota across all account entry points", 
   ).toEqual(["fiveHour", "sevenDay"]);
 });
 
-test("missing and expired five-hour windows do not occupy quota layout", () => {
+test("a reported five-hour window keeps its place while waiting for a new sample", () => {
+  const week = { ...window, percent: 57 };
+  expect(
+    visibleQuotaWindows({ fiveHour: null, sevenDay: week }, now).map(
+      (item) => item.key,
+    ),
+  ).toEqual(["sevenDay"]);
   for (const fiveHour of [
-    null,
     { ...window, percent: null },
     { ...window, resetsAt: now },
-    { ...window, state: "unknown" as const },
+    { ...window, state: "unknown" as const, percent: 100 },
   ]) {
-    expect(
-      visibleQuotaWindows(
-        { fiveHour, sevenDay: { ...window, percent: 57 } },
-        now,
-      ).map((item) => item.key),
-    ).toEqual(["sevenDay"]);
+    const visible = visibleQuotaWindows({ fiveHour, sevenDay: week }, now);
+    expect(visible.map((item) => [item.key, item.waiting ?? false])).toEqual([
+      ["fiveHour", true],
+      ["sevenDay", false],
+    ]);
+    // 占位窗口不带旧百分比，也不能让账户显示为已用满。
+    expect(accountQuotaExhausted({ fiveHour, sevenDay: week }, now)).toBe(
+      false,
+    );
   }
+  const expiredFiveHour = { ...window, resetsAt: now };
+  expect(
+    visibleQuotaWindows(
+      { fiveHour: expiredFiveHour, sevenDay: { ...window, percent: 100 } },
+      now,
+      false,
+    ).map((item) => item.key),
+  ).toEqual(["sevenDay"]);
+  expect(
+    visibleQuotaWindows(
+      { fiveHour: expiredFiveHour, sevenDay: { ...window, resetsAt: now } },
+      now,
+    ),
+  ).toEqual([]);
+  expect(quotaWaitingReset(expiredFiveHour, now)).toMatch(
+    /^\d{2}:\d{2} 已重置$/,
+  );
   expect(visibleQuotaWindows({ fiveHour: null, sevenDay: null }, now)).toEqual(
     [],
   );
