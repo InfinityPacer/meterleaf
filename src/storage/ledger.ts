@@ -263,6 +263,16 @@ export class LedgerStore {
       .run(priceBookKey(book), payload);
   }
 
+  /** 账本记录过的价格表原文；只用于标注旧结果，不参与重新计价。 */
+  storedPriceBook(key: string): PriceBook | null {
+    const row = this.db
+      .query<{ payload: string }, [string]>(
+        "SELECT payload FROM price_books WHERE version=?",
+      )
+      .get(key);
+    return row ? (JSON.parse(row.payload) as PriceBook) : null;
+  }
+
   getState<T>(key: string): T | null {
     const row = this.db
       .query<{ value: string }, [string]>(

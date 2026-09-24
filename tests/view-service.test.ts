@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import Decimal from "decimal.js";
-import { mkdtemp, rename, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LedgerStore } from "../src/storage/ledger";
@@ -225,6 +225,79 @@ test("restart serves the previous successful price version immediately while reb
     expect(persisted.pricing!.version).toBe(priceBookKey(nextBook));
     expect(persisted.view.usdSummary).toEqual(fresh.view.usdSummary);
     expect(persisted.reportStatus?.refreshing).toBe(false);
+  } finally {
+    await reports?.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a price change rebuilds in the background and answers uncached queries from the previous index", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-background-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  let reports: ViewService | undefined;
+  try {
+    const now = new Date().toISOString();
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [viewUsage("1", now)], nextCursor: "1", hasMore: false },
+      now,
+    );
+    reports = new ViewService(path, book, { refreshIntervalMs: 0 });
+    await reports.read(query, "subscription", sync);
+    await reports.close();
+    const nextBook = {
+      ...book,
+      version: `${book.version}-revised`,
+      rules: book.rules.map((rule) => ({
+        ...rule,
+        rates: {
+          ...rule.rates,
+          input:
+            rule.rates.input === null
+              ? null
+              : new Decimal(rule.rates.input).mul(2).toString(),
+        },
+      })),
+    };
+    reports = new ViewService(path, nextBook, { refreshIntervalMs: 0 });
+    // 缓存里没有的查询不再等待全量重建，先由旧索引回答并标记为刷新中。
+    const uncached = { ...query, pageSize: 5 };
+    const transitional = await reports.read(uncached, "subscription", sync);
+    expect(transitional.reportStatus?.refreshing).toBe(true);
+    expect(transitional.pricing!.version).toBe(priceBookKey(book));
+    let fresh = transitional;
+    const deadline = Date.now() + 5000;
+    while (
+      (fresh.reportStatus?.refreshing ||
+        fresh.pricing!.version !== priceBookKey(nextBook)) &&
+      Date.now() < deadline
+    ) {
+      await Bun.sleep(20);
+      fresh = await reports.read(uncached, "subscription", sync, false);
+    }
+    expect(fresh.pricing!.version).toBe(priceBookKey(nextBook));
+    expect(fresh.reportStatus?.refreshing).toBe(false);
+    expect(fresh.view.usdSummary.value).toBeGreaterThan(
+      transitional.view.usdSummary.value!,
+    );
+    expect(
+      (await readdir(dir)).filter((name) => name.includes(".next")),
+    ).toEqual([]);
+
+    // 替换后的索引继续接收增量。
+    const later = new Date().toISOString();
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [viewUsage("2", later)], nextCursor: "2", hasMore: false },
+      later,
+    );
+    await reports.read(query, "subscription", sync);
+    await waitForCount(reports, 2);
   } finally {
     await reports?.close();
     store.close();
