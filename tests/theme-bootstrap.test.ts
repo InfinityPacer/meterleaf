@@ -35,15 +35,14 @@ for (const [mode, systemDark, expected] of [
     const meta = { content: "" };
     runInNewContext(script!, {
       localStorage: {
-        getItem: (key: string) =>
-          key === "meterleaf-theme" ? mode : "natural",
+        getItem: (key: string) => (key === "meterleaf-theme" ? mode : "indigo"),
       },
       matchMedia: () => ({ matches: systemDark }),
       document: { documentElement: root, querySelector: () => meta },
     });
     expect(root.dark).toBe(expected);
-    expect(root.dataset.palette).toBe("natural");
-    expect(meta.content).toBe(expected ? "#171b20" : "#f7f8fa");
+    expect(root.dataset.palette).toBe("indigo");
+    expect(meta.content).toBe(expected ? "#0f0f11" : "#f7f7f8");
   });
 }
 

@@ -162,7 +162,7 @@ try {
   await page.reload();
   await expect(rows).toHaveCount(0);
   await page.goto(`${base}#overview`);
-  await expect(page.locator(".quota-preview")).toHaveCount(2);
+  await expect(page.locator(".overview-quotas .account-row")).toHaveCount(2);
   console.log(JSON.stringify({ cumulativeUsage: true, orderPersists: true, archiveRestore: true, deleteArchived: true, errorRetainsAccount: true, hiddenAfterReload: true, dialogContrast: true, narrowDialog: true, reducedMotion: true }));
 } finally {
   await page.unroute("**/api/accounts/archive");

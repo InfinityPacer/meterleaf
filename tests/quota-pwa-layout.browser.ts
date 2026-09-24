@@ -166,11 +166,7 @@ try {
           const mobileHome =
             width <= 900 && layout === "app" && route === "overview";
           const cards = page.locator(
-            route === "accounts"
-              ? ".account-row"
-              : mobileHome
-                ? ".mobile-home-account-card"
-                : ".quota-preview",
+            mobileHome ? ".mobile-home-account-card" : ".account-row",
           );
           const pro = cards.filter({ hasText: "20x" });
           const plus = cards.filter({ hasText: "plus" });
@@ -211,7 +207,7 @@ try {
           ).toBe(true);
           await expect(
             plus.locator(
-              ".quota-cost-estimate, .quota-preview-estimate, .account-capacity > small, .account-capacity > strong",
+              ".quota-cost-estimate, .account-capacity > small, .account-capacity > strong",
             ),
           ).toHaveCount(0);
           if (width > 900 && route === "accounts") {
@@ -253,22 +249,6 @@ try {
                 .locator(".quota-bar .tabular")
                 .boundingBox())!;
               expect(Math.abs(title.y - status.y)).toBeLessThan(3);
-            }
-          }
-          if (route === "overview" && width > 900) {
-            for (const card of [pro]) {
-              const heading = (await card
-                .locator(".quota-preview-heading")
-                .boundingBox())!;
-              const period = (await card
-                .locator(".quota-period")
-                .boundingBox())!;
-              const estimate = (await card
-                .locator(".quota-preview-estimate")
-                .boundingBox())!;
-              const above = period.y - heading.y - heading.height;
-              const below = estimate.y - period.y - period.height;
-              expect(Math.abs(above - below)).toBeLessThan(2);
             }
           }
           if (width >= 1200 && route === "accounts") {
@@ -313,11 +293,9 @@ try {
         await page.goto(`${base}#${route}`);
         await page.reload();
         const cards = page.locator(
-          route === "accounts"
-            ? ".account-row"
-            : width <= 900 && layout === "app"
-              ? ".mobile-home-account-card"
-              : ".quota-preview",
+          route === "overview" && width <= 900 && layout === "app"
+            ? ".mobile-home-account-card"
+            : ".account-row",
         );
         const bars = cards.filter({ hasText: "plus" }).getByRole("progressbar");
         await expect(bars).toHaveCount(2);

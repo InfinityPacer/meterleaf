@@ -19,3 +19,9 @@ export function withAccountAliases(
     ),
   };
 }
+
+/** 头像显示的首字符，按字素切分，避免把表情或组合字符截成半个。 */
+export function accountInitial(name: string): string {
+  const first = [...new Intl.Segmenter().segment(name.trim())][0]?.segment;
+  return first ? first.toLocaleUpperCase() : "?";
+}

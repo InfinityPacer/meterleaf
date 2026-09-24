@@ -64,11 +64,7 @@ import {
 } from "../shared/ledger-view";
 import { SyncControl } from "./components/SyncControl";
 import { FilterSelect } from "./components/FilterSelect";
-import {
-  ThemeControl,
-  readStoredThemeMode,
-  resolveThemeDark,
-} from "./components/ThemeControl";
+import { ThemeControl } from "./components/ThemeControl";
 import {
   accountQuotaExhausted,
   estimateAmount,
@@ -88,7 +84,7 @@ import {
 } from "./lib/preferences";
 import { orderedAccounts, moveAccount } from "./lib/account-order";
 import { useAccountArchive } from "./lib/use-account-archive";
-import { withAccountAliases } from "./lib/account-aliases";
+import { accountInitial, withAccountAliases } from "./lib/account-aliases";
 import { planBadge } from "./lib/plan";
 import { Segmented } from "./components/Segmented";
 import {
@@ -98,6 +94,7 @@ import {
   modelColor,
   modelLabel,
   numericAmount,
+  quotaUnavailableNote,
   summarize,
 } from "./lib/report";
 import { LedgerTable } from "./components/LedgerTable";
@@ -442,22 +439,25 @@ function AccountRow({
     >
       <span className="account-identity">
         <span
-          className={`account-avatar ${account.id}`}
+          className="account-avatar"
           data-kind={account.kind}
+          aria-hidden="true"
         >
-          <Wallet size={18} />
+          {accountInitial(account.name)}
         </span>
         <span className="account-name">
-          <strong title={account.name}>{account.name}</strong>
-          <small>
+          <span className="account-name-line">
+            <strong title={account.name}>{account.name}</strong>
             {plan && (
               <span className="plan-chip" data-tier={plan.tier ?? undefined}>
                 {plan.label}
               </span>
             )}
+          </span>
+          <small>
             <span>{accountKind}</span>
           </small>
-          {status && (
+          {archived && (
             <span className="desktop-account-status" data-archived={archived}>
               <span aria-hidden="true" />
               {status}
@@ -486,13 +486,17 @@ function AccountRow({
           {!windows.length && (
             <span className="account-window account-window-unavailable">
               <strong>暂无有效额度</strong>
-              <small>额度快照已过期或上游暂未提供，下次同步后更新</small>
+              <small>{quotaUnavailableNote(account)}</small>
             </span>
           )}
           {!compactUsage && windows.length > 0 && (
             <span className="account-capacity">
               <small>7d 预估</small>
-              <AccountTrend accountId={account.id} load={readAccountTrend} />
+              <AccountTrend
+                accountId={account.id}
+                load={readAccountTrend}
+                variant="line"
+              />
               <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
             </span>
           )}
@@ -554,7 +558,53 @@ function AccountRow({
   );
 }
 
-/** 订阅账户按独立额度窗口展示；无额度账户使用当前报表筛选后的用量。 */
+/**
+ * 全历史累计。三个数只来自 lifetimeTotals，不受页面筛选影响；附注说明口径，
+ * 缺少依据时不显示，不用 0 代替未知。
+ */
+function LedgerStrip({
+  totals,
+  usdBasis,
+}: {
+  totals: NonNullable<LedgerView["lifetimeTotals"]>;
+  usdBasis: UsdBasis;
+}) {
+  const { total, cacheRead } = totals.tokens;
+  const cacheShare =
+    total && cacheRead !== null && total > 0
+      ? `缓存读取占 ${((cacheRead / total) * 100).toFixed(1)}%`
+      : null;
+  const apiUsd = numericAmount(totals.apiUsd);
+  const usdNote =
+    usdBasis === "subscription"
+      ? `订阅等价${apiUsd !== null ? ` · 标准 API ${amount(apiUsd, "usd")}` : ""}`
+      : "标准 API";
+  return (
+    <section className="lifetime-summary" aria-label="历史累计">
+      <dl>
+        <div>
+          <dt>Tokens</dt>
+          <dd>{compact(total)}</dd>
+          {cacheShare && <small>{cacheShare}</small>}
+        </div>
+        <div>
+          <dt>费用</dt>
+          <dd>{formatUsd(totals.usd)}</dd>
+          <small>{usdNote}</small>
+        </div>
+        <div>
+          <dt>请求</dt>
+          <dd>{totals.count.toLocaleString()}</dd>
+          {totals.from && (
+            <small>{localTime(totals.from, { year: "numeric" })} 起</small>
+          )}
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+/** 总览沿用账户页的行布局，所有账户排在同一个面板里。 */
 function OverviewQuotas({
   accounts,
   asOf,
@@ -585,105 +635,28 @@ function OverviewQuotas({
           全部账户 <ArrowRight size={16} />
         </Button>
       </div>
-      <div
-        className="quota-preview-list"
-        role="region"
-        aria-label="账户额度摘要"
-        tabIndex={0}
-      >
-        {accounts.map((account) => {
-          const hasQuota = Boolean(account.fiveHour || account.sevenDay);
-          const windows = visibleQuotaWindows(account, asOf, compactUsage);
-          const usage = accountUsage?.[account.id];
-          const plan = account.kind === "api" ? null : planBadge(account);
-          return (
-            <button
-              className="quota-preview"
-              data-has-quota={hasQuota}
-              data-quota-count={windows.length}
-              data-quota-exhausted={accountQuotaExhausted(account, asOf)}
-              data-has-estimate={
-                !compactUsage || showQuotaEstimate(account.sevenDay, asOf)
-              }
-              key={account.id}
-              onClick={() => (hasQuota ? onOpen(account) : onRequests(account))}
-              aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
-            >
-              <span className="quota-preview-heading">
-                <span className="account-avatar" data-kind={account.kind}>
-                  <Wallet size={22} />
-                </span>
-                <strong title={account.name}>{account.name}</strong>
-                {plan && (
-                  <span
-                    className="plan-chip"
-                    data-tier={plan.tier ?? undefined}
-                  >
-                    {plan.label}
-                  </span>
-                )}
-                <ArrowRight size={16} />
-              </span>
-              {hasQuota ? (
-                <>
-                  {windows.map(({ key, label, window }) => (
-                    <QuotaPeriod
-                      key={key}
-                      window={window}
-                      label={label}
-                      asOf={asOf}
-                      compactEstimate={compactUsage}
-                    />
-                  ))}
-                  {!windows.length && (
-                    <span className="quota-preview-unavailable">
-                      暂无有效额度
-                    </span>
-                  )}
-                  {!compactUsage && windows.length > 0 && (
-                    <span className="quota-preview-estimate">
-                      <span>7d 预估</span>
-                      <strong>
-                        {estimateAmount(account.sevenDay, "usd", asOf)}
-                      </strong>
-                    </span>
-                  )}
-                </>
-              ) : (
-                <span className="quota-preview-usage">
-                  <span className="quota-preview-period-label">时间段用量</span>
-                  <span>
-                    <span>
-                      <Activity size={16} aria-hidden="true" /> Tokens
-                    </span>
-                    <strong>{usage ? compact(usage.tokens) : "N/A"}</strong>
-                  </span>
-                  <span>
-                    <span>
-                      <Zap size={16} aria-hidden="true" /> 请求
-                    </span>
-                    <strong>
-                      {usage ? usage.count.toLocaleString() : "N/A"}
-                    </strong>
-                  </span>
-                  <span>
-                    <span>
-                      <Coins size={16} aria-hidden="true" /> 费用
-                    </span>
-                    <strong>{usage ? formatUsd(usage.usd) : "N/A"}</strong>
-                  </span>
-                  <AccountTrend
-                    accountId={account.id}
-                    load={readAccountTrend}
-                    usdBasis={usdBasis}
-                  />
-                </span>
-              )}
-            </button>
-          );
-        })}
-        {!accounts.length && <p className="muted">暂无账户</p>}
-      </div>
+      {accounts.length ? (
+        <div className="account-list" aria-label="账户额度摘要">
+          {accounts.map((account) => (
+            <div className="account-list-item" key={account.id}>
+              <AccountRow
+                account={account}
+                asOf={asOf}
+                usdBasis={usdBasis}
+                compactUsage={compactUsage}
+                usage={accountUsage?.[account.id]}
+                onOpen={() =>
+                  account.fiveHour || account.sevenDay
+                    ? onOpen(account)
+                    : onRequests(account)
+                }
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="muted">暂无账户</p>
+      )}
     </section>
   );
 }
@@ -831,12 +804,6 @@ export function App() {
   }>(page, "record-sort", prefs.recordSort, {
     id: "occurredAt",
     desc: true,
-  });
-  const [dark, setDark] = useState(() => {
-    return resolveThemeDark(
-      readStoredThemeMode(localStorage),
-      matchMedia("(prefers-color-scheme: dark)").matches,
-    );
   });
   const viewQuery: ViewQuery = {
     filter: { ...filter, search: searchForQuery },
@@ -1081,10 +1048,6 @@ export function App() {
           >
             <item.icon size={17} />
             <span>{item.name}</span>
-            {(page === item.id ||
-              (page === "period" && item.id === "overview")) && (
-              <span className="nav-marker" />
-            )}
           </button>
         ))}
       </nav>
@@ -1113,17 +1076,7 @@ export function App() {
       >
         跳到主要内容
       </a>
-      <aside className="sidebar">
-        <img
-          className="sidebar-art"
-          src="/meterleaf-sidebar-leaves.png"
-          alt=""
-          width="1024"
-          height="1536"
-          aria-hidden="true"
-        />
-        {nav}
-      </aside>
+      <aside className="sidebar">{nav}</aside>
       <div className="main-shell">
         <header
           className={`topbar ${mobile ? "app-topbar" : ""} ${mobile && (page === "overview" || page === "period") ? "app-home-topbar" : ""}`}
@@ -1177,17 +1130,6 @@ export function App() {
                 <h1 id="page-title">
                   {pages.find((p) => p.id === page)?.name}
                 </h1>
-                <p className="topbar-subtitle">
-                  {page === "accounts"
-                    ? "管理账户的使用情况、额度限制与费用预估"
-                    : page === "reports"
-                      ? "多维统计分析，洞察用量与成本"
-                      : page === "ledger"
-                        ? "每一条请求，都清晰可查"
-                        : page === "settings"
-                          ? "Meterleaf · 独立 AI 用量账本"
-                          : "实时掌握 API 使用情况，洞察成本与性能"}
-                </p>
               </>
             )}
           </div>
@@ -1204,7 +1146,6 @@ export function App() {
             {page !== "settings" && (
               <ThemeControl
                 hidden={mobile}
-                onResolvedChange={setDark}
                 mobileLayout={mobileLayout}
                 onMobileLayoutChange={setMobileLayout}
               />
@@ -1258,7 +1199,6 @@ export function App() {
           {page === "settings" && (
             <AboutPage
               mode={snapshot?.mode}
-              onResolvedChange={setDark}
               mobileLayout={mobileLayout}
               onMobileLayoutChange={setMobileLayout}
             />
@@ -1266,37 +1206,10 @@ export function App() {
           {!mobile && page === "overview" && quotaSnapshot && (
             <>
               {quotaSnapshot.lifetimeTotals && (
-                <section className="lifetime-summary" aria-label="历史累计">
-                  <div className="lifetime-heading">
-                    <h2>历史累计</h2>
-                    {quotaSnapshot.lifetimeTotals.from && (
-                      <span>
-                        {localTime(quotaSnapshot.lifetimeTotals.from, {
-                          year: "numeric",
-                        })}{" "}
-                        起
-                      </span>
-                    )}
-                  </div>
-                  <dl>
-                    <div>
-                      <dt>Tokens</dt>
-                      <dd>
-                        {compact(quotaSnapshot.lifetimeTotals.tokens.total)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>费用</dt>
-                      <dd>{formatUsd(quotaSnapshot.lifetimeTotals.usd)}</dd>
-                    </div>
-                    <div>
-                      <dt>请求</dt>
-                      <dd>
-                        {quotaSnapshot.lifetimeTotals.count.toLocaleString()}
-                      </dd>
-                    </div>
-                  </dl>
-                </section>
+                <LedgerStrip
+                  totals={quotaSnapshot.lifetimeTotals}
+                  usdBasis={usdBasis}
+                />
               )}
               <OverviewQuotas
                 accounts={sortedAccounts.filter(
@@ -1340,7 +1253,6 @@ export function App() {
                     unit="tokens"
                     granularity="day"
                     chartStyle={homeChartStyle}
-                    dark={dark}
                   />
                 </Suspense>
               </section>
@@ -1602,9 +1514,6 @@ export function App() {
                   {mobile && <h2 className="app-metrics-heading">关键指标</h2>}
                   <section className="metrics" aria-label="用量摘要">
                     <div className="metric primary-metric">
-                      <span className="metric-symbol" aria-hidden="true">
-                        <img src="/favicon.svg" width="26" height="26" alt="" />
-                      </span>
                       <div className="metric-label">费用</div>
                       <div className="metric-value">
                         {amount(
@@ -1638,40 +1547,27 @@ export function App() {
                       <MiniTrend
                         points={view?.units.usd.points ?? []}
                         metric="usd"
-                        tone="teal"
                         label="所选时段费用趋势"
                         hideCaption
                       />
                     </div>
+                    {creditsSummary.hasKnown && (
+                      <div className="metric">
+                        <div className="metric-label">订阅 Credits</div>
+                        <div className="metric-value">
+                          {amount(creditsSummary.value, "credits")}
+                        </div>
+                        <div className="metric-foot" />
+                        <MiniTrend
+                          points={view?.units.credits.points ?? []}
+                          metric="credits"
+                          label="所选时段 Credits 趋势"
+                          hideCaption
+                        />
+                      </div>
+                    )}
                     <div className="metric">
-                      <span className="metric-symbol" aria-hidden="true">
-                        <Layers3 />
-                      </span>
-                      <div className="metric-label">
-                        订阅 Credits <Coins size={14} />
-                      </div>
-                      <div className="metric-value">
-                        {amount(
-                          creditsSummary.hasKnown ? creditsSummary.value : null,
-                          "credits",
-                        )}
-                      </div>
-                      <div className="metric-foot" />
-                      <MiniTrend
-                        points={view?.units.credits.points ?? []}
-                        metric="credits"
-                        tone="blue"
-                        label="所选时段 Credits 趋势"
-                        hideCaption
-                      />
-                    </div>
-                    <div className="metric">
-                      <span className="metric-symbol" aria-hidden="true">
-                        <Coins />
-                      </span>
-                      <div className="metric-label">
-                        Tokens 总量 <Activity size={14} />
-                      </div>
+                      <div className="metric-label">Tokens 总量</div>
                       <div className="metric-value">
                         {tokenSummary.hasKnown
                           ? compact(tokenSummary.value)
@@ -1685,18 +1581,12 @@ export function App() {
                       <MiniTrend
                         points={view?.units.tokens.points ?? []}
                         metric="tokens"
-                        tone="purple"
                         label="所选时段 Tokens 趋势"
                         hideCaption
                       />
                     </div>
                     <div className="metric">
-                      <span className="metric-symbol" aria-hidden="true">
-                        <Activity />
-                      </span>
-                      <div className="metric-label">
-                        缓存命中率 <Zap size={14} />
-                      </div>
+                      <div className="metric-label">缓存命中率</div>
                       <div className="metric-value">
                         {cacheRate === null ? "N/A" : cacheRate.toFixed(1)}
                         {cacheRate !== null && <small>%</small>}
@@ -1707,7 +1597,7 @@ export function App() {
                             ? compact(cacheSummary.value)
                             : "N/A"}
                         </span>
-                        <span>缓存读取 tokens</span>
+                        <span>缓存读取 Tokens</span>
                       </div>
                       {cacheRate !== null && (
                         <div className="cache-rate-track" aria-hidden="true">
@@ -1768,7 +1658,7 @@ export function App() {
                             ? "费用"
                             : unit === "credits"
                               ? "Credits"
-                              : "总 tokens"}
+                              : "总 Tokens"}
                         </span>
                         <div className="chart-controls">
                           <ChartStyleControl
@@ -1803,7 +1693,6 @@ export function App() {
                             unit={unit}
                             granularity={granularity}
                             chartStyle={chartStyle}
-                            dark={dark}
                           />
                         </Suspense>
                       ) : (
@@ -1833,7 +1722,6 @@ export function App() {
                             granularity={granularity}
                             chartStyle="pie"
                             donut
-                            dark={dark}
                           />
                         </Suspense>
                         <div className="model-donut-total" aria-hidden="true">
@@ -1941,7 +1829,7 @@ export function App() {
                     <span>7d 预估</span>
                     <span />
                   </div>
-                  <div>
+                  <div className="account-list">
                     {visibleAccounts
                       .filter(
                         (a) =>
@@ -2121,7 +2009,6 @@ export function App() {
                   {view && (
                     <ModelDistribution
                       view={view}
-                      dark={dark}
                       onModel={(model) => {
                         setFilter({ ...filter, model, search: "" }, "ledger");
                         navigate("ledger");
