@@ -1,5 +1,12 @@
 import Decimal from "decimal.js";
-import type { LedgerRecord, LedgerSnapshot, UsdBasis } from "../../shared/report";
+import type {
+  AccountLifetime,
+  AccountWindow,
+  LedgerRecord,
+  LedgerSnapshot,
+  UsdBasis,
+} from "../../shared/report";
+import type { LifetimeTotals } from "../../shared/ledger-view";
 import type { Charge, Valuation } from "../../domain/pricing";
 
 export const modelNames = [
@@ -84,6 +91,51 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
       });
     }
   }
+  const lifetime = (accountId?: string): AccountLifetime =>
+    usage(records.filter((row) => !accountId || row.accountId === accountId));
+  // 演示额度沿用服务端口径，周期用量从窗口起点累计到采样时刻，7d 预估按用量占百分比外推。
+  const window = (
+    accountId: string,
+    percent: number,
+    resetsAt: string,
+    hours: number,
+  ): AccountWindow => {
+    const start = Date.parse(resetsAt) - hours * 3600000;
+    const period = usage(
+      records.filter(
+        (row) =>
+          row.accountId === accountId && Date.parse(row.occurredAt) >= start,
+      ),
+    );
+    const credits = records
+      .filter(
+        (row) =>
+          row.accountId === accountId && Date.parse(row.occurredAt) >= start,
+      )
+      .reduce((sum, row) => sum.add(row.credits ?? 0), new Decimal(0));
+    const project = (value: Decimal.Value) =>
+      new Decimal(value).mul(100).div(percent).toFixed(6);
+    return {
+      percent,
+      resetsAt,
+      sampledAt: asOf,
+      state: "active",
+      periodUsd: period.usd,
+      periodCredits: credits.toFixed(6),
+      periodRequests: period.count,
+      periodTokens: period.tokens,
+      ...(hours === 168
+        ? {
+            estimate: {
+              usd: project(period.usd ?? 0),
+              credits: project(credits),
+              deltaPercent: null,
+              reason: "eligible" as const,
+            },
+          }
+        : {}),
+    };
+  };
   return {
     mode: "demo",
     usdBasis,
@@ -97,8 +149,9 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
         platform: "openai",
         kind: "subscription",
         sampledAt: asOf,
-        fiveHour: { percent: 28, resetsAt: "2026-09-08T18:40:00+08:00" },
-        sevenDay: { percent: 64, resetsAt: "2026-09-11T09:20:00+08:00" },
+        fiveHour: window("personal", 28, "2026-09-08T18:40:00+08:00", 5),
+        sevenDay: window("personal", 64, "2026-09-11T09:20:00+08:00", 168),
+        lifetime: lifetime("personal"),
       },
       {
         id: "studio",
@@ -107,8 +160,9 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
         platform: "openai",
         kind: "subscription",
         sampledAt: asOf,
-        fiveHour: { percent: 12, resetsAt: "2026-09-08T20:10:00+08:00" },
-        sevenDay: { percent: 21, resetsAt: "2026-09-14T14:00:00+08:00" },
+        fiveHour: window("studio", 12, "2026-09-08T20:10:00+08:00", 5),
+        sevenDay: window("studio", 21, "2026-09-14T14:00:00+08:00", 168),
+        lifetime: lifetime("studio"),
       },
       {
         id: "api",
@@ -118,11 +172,66 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
         sampledAt: asOf,
         fiveHour: null,
         sevenDay: null,
+        lifetime: lifetime("api"),
       },
     ],
     resets: [
       { accountId: "personal", at: "2026-09-04T09:20:00+08:00" },
       { accountId: "studio", at: "2026-09-07T14:00:00+08:00" },
     ],
+  };
+}
+
+function tokens(row: LedgerRecord) {
+  return (
+    (row.input ?? 0) +
+    (row.cacheRead ?? 0) +
+    (row.cacheWrite ?? 0) +
+    (row.output ?? 0)
+  );
+}
+
+function usage(rows: LedgerRecord[]): AccountLifetime {
+  return {
+    count: rows.length,
+    tokens: rows.reduce((sum, row) => sum + tokens(row), 0),
+    usd: rows
+      .reduce((sum, row) => sum.add(row.usd ?? 0), new Decimal(0))
+      .toFixed(6),
+    incompleteTokens: 0,
+    incompleteUsd: 0,
+  };
+}
+
+/** 演示账本的全历史累计，对应服务端累计索引给出的汇总。 */
+export function demoLifetimeTotals(snapshot: LedgerSnapshot): LifetimeTotals {
+  const rows = snapshot.records;
+  const sum = (pick: (row: LedgerRecord) => Decimal.Value | null | undefined) =>
+    rows
+      .reduce((total, row) => total.add(pick(row) ?? 0), new Decimal(0))
+      .toFixed(6);
+  const bucket = (key: "input" | "cacheRead" | "cacheWrite" | "output") =>
+    rows.reduce((total, row) => total + (row[key] ?? 0), 0);
+  const times = rows.map((row) => Date.parse(row.occurredAt));
+  return {
+    asOf: snapshot.asOf,
+    from: new Date(Math.min(...times)).toISOString(),
+    to: new Date(Math.max(...times)).toISOString(),
+    count: rows.length,
+    tokens: {
+      input: bucket("input"),
+      cacheRead: bucket("cacheRead"),
+      cacheWrite: bucket("cacheWrite"),
+      output: bucket("output"),
+      total: rows.reduce((total, row) => total + tokens(row), 0),
+      incomplete: 0,
+    },
+    usd: sum((row) => row.usd),
+    apiUsd: sum((row) => row.valuation?.apiUsd.amount),
+    subscriptionUsd: sum((row) => row.valuation?.subscriptionUsd.amount),
+    credits: sum((row) => row.credits),
+    incomplete: { usd: 0, apiUsd: 0, subscriptionUsd: 0, credits: 0 },
+    usdBasis: snapshot.usdBasis ?? "subscription",
+    priceVersion: "demo-2026-09",
   };
 }

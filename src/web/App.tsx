@@ -54,7 +54,7 @@ import type {
   ReportUnit,
   UsdBasis,
 } from "../shared/report";
-import { createDemoLedger } from "./demo/ledger";
+import { createDemoLedger, demoLifetimeTotals } from "./demo/ledger";
 import {
   createLedgerView,
   withUsdVariants,
@@ -179,12 +179,20 @@ async function readLedger(
   refresh = true,
 ): Promise<LedgerView> {
   const { filter } = viewQuery;
-  if (import.meta.env.VITE_METERLEAF_DEMO === "true")
+  if (import.meta.env.VITE_METERLEAF_DEMO === "true") {
+    const demo = (basis: UsdBasis) => {
+      const snapshot = createDemoLedger(basis);
+      return {
+        ...createLedgerView(snapshot, viewQuery),
+        lifetimeTotals: demoLifetimeTotals(snapshot),
+      };
+    };
     return withUsdVariants(
-      createLedgerView(createDemoLedger("subscription"), viewQuery),
-      createLedgerView(createDemoLedger("api"), viewQuery),
+      demo("subscription"),
+      demo("api"),
       usdBasis ?? "subscription",
     );
+  }
   const params = new URLSearchParams(
     filter.dateRange ?? { days: String(filter.days) },
   );
