@@ -53,7 +53,7 @@ GPT-5.6 的 Credits 使用对应模型的标准 Token 费率，不套用 API 长
 
 Claude 规则使用 Anthropic 公布的 API 价格，订阅等价 USD 与标准 API USD 使用相同基础价，它们都是估值，不是 Claude 订阅账单。只收录官方模型页列出的模型 ID 与别名，其他 Claude 模型保留未计价。Opus 5.5 与 Opus 5 的快速模式记为 `priority` 档，按快速模式基础价再叠加缓存倍率。仅限美国推理的 1.1 倍加价和网页搜索按次费用不计入。
 
-GPT-5.4 与 Mini 使用各自规则，不相互继承长上下文档位；未配置的 Fast、Flex 或缓存写入费率不会从标准档推导。内置表的促销说明只描述该版本已采用的规则，不能据此假设促销结束后的价格。
+GPT-5.4 与 Mini 使用各自规则，不相互继承长上下文档位；未配置的 Fast、Flex 或缓存写入费率不会从标准档推导。Codex 快速模式的 Credits 记为 `priority` 档，按官方公布的倍数配置，GPT-5.6 与 GPT-6 各型号为标准档的 2.5 倍，GPT-5.4 为 2 倍，GPT-5.4 Mini 未公布，保留未计价。内置表的促销说明只描述该版本已采用的规则，不能据此假设促销结束后的价格。
 
 内置表覆盖 GPT Image 2、GPT Image 2.5 Sunburst 和 Flare，以及各自已公布的日期快照。两代图像模型配置相同的 USD 和 Credits Token 单价。
 
