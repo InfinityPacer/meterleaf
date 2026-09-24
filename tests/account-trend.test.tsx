@@ -75,12 +75,10 @@ test("MiniTrend is a display-only component with an optional hidden caption", ()
       metric="requests"
       label="账户请求趋势"
       hideCaption
-      tone="purple"
     />,
   );
 
   expect(html).toContain('data-metric="requests"');
-  expect(html).toContain('data-tone="purple"');
   expect(html).toContain('title="账户请求趋势"');
   expect(html).toContain('aria-label="账户请求趋势，真实报表趋势，非预测曲线"');
   expect(html).not.toContain('class="mini-trend-caption"');

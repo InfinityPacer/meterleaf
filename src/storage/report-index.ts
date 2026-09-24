@@ -843,13 +843,24 @@ export class ReportIndex {
       .run(key, serialized);
   }
 
+  /**
+   * 全量重建时先移除明细表的二级索引，写完再一次性重建。逐行维护二十多个索引
+   * 是重建的主要耗时；整个过程在同一事务内，失败时索引定义随回滚恢复。
+   */
   replace(records: Iterable<LedgerRecord>): void {
     this.db.transaction(() => {
+      const indexes = this.db
+        .query<{ name: string; sql: string }, []>(
+          "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='report_records' AND sql IS NOT NULL",
+        )
+        .all();
+      for (const index of indexes) this.db.exec(`DROP INDEX "${index.name}"`);
       this.db.exec("DELETE FROM report_records; DELETE FROM report_hours;");
       this.db.exec(
         "DELETE FROM report_meta WHERE key LIKE 'account-lifetime:%'",
       );
       for (const record of records) this.writeRecord(storedRecord(record));
+      for (const index of indexes) this.db.exec(index.sql);
       this.rebuildHours();
     })();
   }

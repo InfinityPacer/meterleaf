@@ -263,6 +263,16 @@ export class LedgerStore {
       .run(priceBookKey(book), payload);
   }
 
+  /** 账本记录过的价格表原文；只用于标注旧结果，不参与重新计价。 */
+  storedPriceBook(key: string): PriceBook | null {
+    const row = this.db
+      .query<{ payload: string }, [string]>(
+        "SELECT payload FROM price_books WHERE version=?",
+      )
+      .get(key);
+    return row ? (JSON.parse(row.payload) as PriceBook) : null;
+  }
+
   getState<T>(key: string): T | null {
     const row = this.db
       .query<{ value: string }, [string]>(
@@ -294,6 +304,22 @@ export class LedgerStore {
       const ids = [...new Set([...this.hiddenAccounts(), id])];
       this.setState("local:hidden-accounts", ids);
       return ids;
+    })();
+  }
+
+  /** 用户设置的账户别名，只影响展示；上游账户名称仍按同步结果保存。 */
+  accountAliases(): Record<string, string> {
+    return this.getState<Record<string, string>>("local:account-aliases") ?? {};
+  }
+
+  /** alias 为 null 时恢复上游名称。 */
+  setAccountAlias(id: string, alias: string | null): Record<string, string> {
+    return this.db.transaction(() => {
+      const aliases = { ...this.accountAliases() };
+      if (alias === null) delete aliases[id];
+      else aliases[id] = alias;
+      this.setState("local:account-aliases", aliases);
+      return aliases;
     })();
   }
 

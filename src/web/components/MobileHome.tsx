@@ -1,4 +1,6 @@
-import { ChevronRight, Wallet } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import { accountInitial } from "../lib/account-aliases";
+import { planBadge } from "../lib/plan";
 import type { LedgerView } from "../../shared/ledger-view";
 import type { AccountLifetime, LedgerAccount } from "../../shared/report";
 import {
@@ -8,8 +10,15 @@ import {
   showQuotaEstimate,
   type VisibleQuotaWindow,
   visibleQuotaWindows,
+  quotaWaitingReset,
 } from "../lib/quota-display";
-import { amount, compact, numericAmount } from "../lib/report";
+import {
+  amount,
+  compact,
+  continuousPoints,
+  numericAmount,
+  quotaUnavailableNote,
+} from "../lib/report";
 import "./mobile-home.css";
 import { MiniTrend } from "./AccountTrend";
 import { ChartStyleControl } from "./ChartStyleControl";
@@ -103,17 +112,6 @@ function formatRequests(value: number | null | undefined) {
     : "N/A";
 }
 
-function planLabel(account: LedgerAccount) {
-  const plan = account.plan?.trim();
-  if (plan && !["unknown", "未提供"].includes(plan.toLowerCase())) {
-    return plan.replace(
-      /\b(pro|plus)\b/gi,
-      (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
-    );
-  }
-  return account.kind === "api" ? "API" : null;
-}
-
 function QuotaSummary({
   selection,
   asOf,
@@ -121,7 +119,34 @@ function QuotaSummary({
   selection: VisibleQuotaWindow;
   asOf: string;
 }) {
-  const { key, label, window } = selection;
+  const { key, label, window, waiting } = selection;
+  if (waiting) {
+    const ended = quotaWaitingReset(window, asOf);
+    return (
+      <div className="mobile-home-quota" data-waiting="true">
+        <div className="mobile-home-quota-head">
+          <div className="mobile-home-quota-title">
+            <strong className="mobile-home-quota-label">{label}</strong>
+            <span className="mobile-home-quota-status">等待新采样</span>
+          </div>
+          {ended && <span className="mobile-home-quota-reset">{ended}</span>}
+        </div>
+        <div
+          className="mobile-home-progress"
+          role="progressbar"
+          aria-label={`${label}额度使用情况`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuetext="等待新采样"
+        >
+          <span />
+        </div>
+        <div className="mobile-home-quota-foot">
+          <span className="quota-cost-volume">上游下次上报后更新</span>
+        </div>
+      </div>
+    );
+  }
   const percent = quotaPercent(window, asOf);
   const usable = percent !== null;
   const reset = formatResetTime(window.resetsAt, asOf);
@@ -169,6 +194,7 @@ function QuotaSummary({
                 title="7d 预估"
                 aria-label={`7d 预估 ${estimated}`}
               >
+                <small aria-hidden="true">预估</small>
                 {estimated}
               </em>
             </>
@@ -228,7 +254,7 @@ function UsageSummary({
 }
 
 function TrendStrip({
-  points,
+  points: reportedPoints,
   asOf,
   chartStyle,
   onChartStyleChange,
@@ -238,6 +264,7 @@ function TrendStrip({
   chartStyle: "line" | "area" | "bar";
   onChartStyleChange?: (style: ChartStyle) => void;
 }) {
+  const points = continuousPoints(reportedPoints, "day");
   const axisIndexes =
     points.length <= 3
       ? points.map((_, index) => index)
@@ -337,14 +364,14 @@ function LifetimeSummary({
           <span>{source}</span>
         </div>
       </div>
+      <div className="mobile-home-summary-hero">
+        <small>历史费用 · {source}</small>
+        <strong>{formatUsd(lifetime?.usd)}</strong>
+      </div>
       <div className="mobile-home-summary-metrics">
         <span>
           <small>Tokens</small>
           <strong>{formatTokens(lifetime?.tokens.total)}</strong>
-        </span>
-        <span>
-          <small>费用</small>
-          <strong>{formatUsd(lifetime?.usd)}</strong>
         </span>
         <span>
           <small>请求</small>
@@ -406,7 +433,7 @@ export function MobileHome({
           {accounts.map((account) => {
             const quotas = visibleQuotaWindows(account, asOf);
             const hasQuota = Boolean(account.fiveHour || account.sevenDay);
-            const plan = planLabel(account);
+            const plan = planBadge(account);
             const open = () =>
               hasQuota ? onAccount(account) : onRequests(account);
             return (
@@ -421,13 +448,21 @@ export function MobileHome({
                   <span className="mobile-home-account-head">
                     <span
                       className="mobile-home-account-avatar"
+                      data-kind={account.kind}
                       aria-hidden="true"
                     >
-                      <Wallet size={quotas.length === 1 ? 20 : 18} />
+                      {accountInitial(account.name)}
                     </span>
                     <span className="mobile-home-account-name">
-                      <strong>{account.name}</strong>
-                      {plan && <small>{plan}</small>}
+                      <strong title={account.name}>{account.name}</strong>
+                      {plan && (
+                        <span
+                          className="plan-chip"
+                          data-tier={plan.tier ?? undefined}
+                        >
+                          {plan.label}
+                        </span>
+                      )}
                     </span>
                     <ChevronRight
                       className="mobile-home-account-chevron"
@@ -449,7 +484,9 @@ export function MobileHome({
                       ))}
                     </div>
                   ) : hasQuota ? (
-                    <div className="mobile-home-quota-unavailable">N/A</div>
+                    <div className="mobile-home-quota-unavailable">
+                      {quotaUnavailableNote(account)}
+                    </div>
                   ) : (
                     <UsageSummary
                       account={account}

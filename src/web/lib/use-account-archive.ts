@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 interface ArchiveState {
   archived: string[];
   hidden: string[];
+  /** 账户 ID 到用户别名；未设置的账户沿用上游名称。 */
+  aliases: Record<string, string>;
   writable: boolean;
 }
 const key = ["account-archive"];
@@ -15,7 +17,7 @@ export function useAccountArchive() {
     queryFn: async () => {
       // 演示账本不对应服务端账户，保留只读菜单而不读取真实账户偏好。
       if (import.meta.env.VITE_METERLEAF_DEMO === "true")
-        return { archived: [], hidden: [], writable: false };
+        return { archived: [], hidden: [], aliases: {}, writable: false };
       const response = await fetch("/api/accounts/archive");
       if (!response.ok) throw new Error("账户归档状态读取失败");
       return response.json();
@@ -24,7 +26,10 @@ export function useAccountArchive() {
   });
   const mutation = useMutation({
     mutationFn: async (
-      value: { id: string; archived: boolean } | { id: string; hidden: true },
+      value:
+        | { id: string; archived: boolean }
+        | { id: string; hidden: true }
+        | { id: string; alias: string | null },
     ) => {
       const response = await fetch("/api/accounts/archive", {
         method: "PUT",

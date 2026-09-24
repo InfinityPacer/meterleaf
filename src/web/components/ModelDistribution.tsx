@@ -84,11 +84,9 @@ export function sortedDistributionRows(
 /** 同一查询的多单位聚合按模型键关联，不从当前明细页推算模型总量。 */
 export function ModelDistribution({
   view,
-  dark,
   onModel,
 }: {
   view: LedgerView["view"];
-  dark: boolean;
   onModel: (model: string) => void;
 }) {
   const [unit, setUnit] = usePreference(
@@ -188,7 +186,6 @@ export function ModelDistribution({
                   granularity="day"
                   chartStyle="pie"
                   donut
-                  dark={dark}
                 />
               </Suspense>
             ) : (

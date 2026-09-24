@@ -83,7 +83,7 @@ test("distribution omits unavailable shares but retains the model in other units
   ]);
   expect(rows.reduce((sum, row) => sum + row.summary.value, 0)).toBe(7);
   const html = renderToStaticMarkup(
-    <ModelDistribution view={view} dark={false} onModel={() => {}} />,
+    <ModelDistribution view={view} onModel={() => {}} />,
   );
   expect(html).toContain("28.6%");
   expect(html).toContain("71.4%");
@@ -107,7 +107,7 @@ test("distribution never lists zero, negative, nonfinite or all-missing shares",
     row.summary.hasKnown = false;
   });
   const html = renderToStaticMarkup(
-    <ModelDistribution view={view} dark={false} onModel={() => {}} />,
+    <ModelDistribution view={view} onModel={() => {}} />,
   );
   expect(html).toContain("暂无可展示的占比");
   expect(html).not.toMatch(/未知|NaN|Infinity|已知小计/);
@@ -115,7 +115,7 @@ test("distribution never lists zero, negative, nonfinite or all-missing shares",
 
 test("distribution exposes sortable table headings and a ranking menu", () => {
   const html = renderToStaticMarkup(
-    <ModelDistribution view={fixture()} dark={false} onModel={() => {}} />,
+    <ModelDistribution view={fixture()} onModel={() => {}} />,
   );
   expect(html).toContain('aria-label="模型排名排序"');
   expect(html.match(/aria-sort=/g)).toHaveLength(5);

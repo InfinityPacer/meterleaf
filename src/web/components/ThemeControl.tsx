@@ -13,7 +13,8 @@ import { FilterSelect } from "./FilterSelect";
 import "./controls.css";
 
 export type ThemeMode = "system" | "light" | "dark";
-export type ThemePalette = "default" | "natural";
+/** 强调色方案，与明暗相互独立；旧版本保存的配色一律回到翠绿。 */
+export type ThemePalette = "green" | "indigo" | "mono";
 
 export const THEME_STORAGE_KEY = "meterleaf-theme";
 export const PALETTE_STORAGE_KEY = "meterleaf-palette";
@@ -25,8 +26,9 @@ export const themeModeOptions = [
 ] satisfies { value: ThemeMode; label: string }[];
 
 export const themePaletteOptions = [
-  { value: "default", label: "默认" },
-  { value: "natural", label: "自然" },
+  { value: "green", label: "翠绿" },
+  { value: "indigo", label: "靛蓝" },
+  { value: "mono", label: "黑白" },
 ] satisfies { value: ThemePalette; label: string }[];
 
 export function resolveThemeDark(mode: ThemeMode, systemDark: boolean) {
@@ -44,9 +46,8 @@ export function readStoredThemeMode(
 export function readStoredPalette(
   storage: Pick<Storage, "getItem"> | null | undefined,
 ): ThemePalette {
-  return storage?.getItem(PALETTE_STORAGE_KEY) === "natural"
-    ? "natural"
-    : "default";
+  const value = storage?.getItem(PALETTE_STORAGE_KEY);
+  return value === "indigo" || value === "mono" ? value : "green";
 }
 
 function browserStorage(): Storage | null {
@@ -79,7 +80,8 @@ export function ThemeControl({
   inline = false,
   hidden = false,
 }: {
-  onResolvedChange: (dark: boolean) => void;
+  /** 图表颜色直接读取主题变量，这里只供需要明暗结果的调用方使用。 */
+  onResolvedChange?: (dark: boolean) => void;
   mobileLayout?: "sidebar" | "app";
   onMobileLayoutChange?: (layout: "sidebar" | "app") => void;
   inline?: boolean;
@@ -110,9 +112,9 @@ export function ThemeControl({
       root.dataset.palette = palette;
       document
         .querySelector('meta[name="theme-color"]')
-        ?.setAttribute("content", nextDark ? "#171b20" : "#f7f8fa");
+        ?.setAttribute("content", nextDark ? "#0f0f11" : "#f7f7f8");
       setDark(nextDark);
-      onResolvedChange(nextDark);
+      onResolvedChange?.(nextDark);
     };
     const onSystemChange = () => {
       if (mode === "system") apply();
@@ -131,7 +133,7 @@ export function ThemeControl({
     persist(storage, THEME_STORAGE_KEY, next);
   };
   const changePalette = (next: string) => {
-    if (next !== "default" && next !== "natural") return;
+    if (next !== "green" && next !== "indigo" && next !== "mono") return;
     setPalette(next);
     persist(storage, PALETTE_STORAGE_KEY, next);
   };

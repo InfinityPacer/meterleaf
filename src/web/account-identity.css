@@ -1,0 +1,146 @@
+/*
+ * 账户身份的统一样式：名称、套餐徽标与头像在总览、账户页、移动端首页和
+ * 移动端列表中保持一致。头像颜色只表达账户类型（订阅、API、未知）。
+ * 套餐徽标只用强度区分档位（见 lib/plan.ts），与上游厂商无关，同档位的
+ * Claude 与 ChatGPT 套餐外观相同。
+ * 本文件最后加载，覆盖各布局文件里的同名规则。
+ */
+
+.plan-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--accent-line);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.plan-chip:not([data-tier]),
+.plan-chip[data-tier="1"] {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+}
+.plan-chip[data-tier="3"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* 名称固定单行，过长时省略，完整名称放在 title 中。 */
+.account-name-line > strong,
+.mobile-home-account-name > strong {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.account-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.account-name > small {
+  flex-wrap: nowrap;
+  min-width: 0;
+  white-space: nowrap;
+}
+.account-name > small > span:not(.plan-chip) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mobile-home-account-name {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+/* 头像显示账户名首字，按账户类型区分：订阅用强调色，API 与未知用灰阶。 */
+.account-avatar,
+.mobile-home-account-avatar {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+}
+.account-avatar[data-kind="api"],
+.mobile-home-account-avatar[data-kind="api"] {
+  color: var(--ink);
+  background: var(--soft);
+}
+.account-avatar[data-kind="unknown"],
+.mobile-home-account-avatar[data-kind="unknown"] {
+  color: var(--muted);
+  background: var(--soft);
+}
+
+/* 没有有效额度时用虚线框占住额度与预估的位置，只给一行说明，不伪造空窗口。 */
+.account-window-unavailable {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 6px 18px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+@media (min-width: 901px) {
+  .app-shell .account-row .account-name-line > strong {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .app-shell .account-row .account-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    font-size: 17px;
+  }
+  .app-shell .account-capacity strong {
+    font-size: clamp(19px, 1.6vw, 24px);
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+  .app-shell .account-row .account-window-unavailable {
+    min-height: 44px;
+    padding: 6px 18px;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+  }
+  /* 预估列的折线只示意近 7 天走势，保持矮小，让金额成为这一列的重点。 */
+  .app-shell .account-row .account-capacity .mini-trend {
+    --mini-trend-height: 34px;
+  }
+}
+
+@media (min-width: 1001px) {
+  .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
+    grid-template-areas: "identity single single arrow";
+  }
+  .app-shell
+    .account-row[data-has-quota="true"][data-quota-count="0"]
+    .row-arrow {
+    grid-area: arrow;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1000px) {
+  .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
+    grid-template-areas: "identity identity" "single single";
+  }
+}

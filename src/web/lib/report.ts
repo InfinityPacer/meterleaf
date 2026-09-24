@@ -8,19 +8,35 @@ import type {
   UsdBasis,
 } from "../../shared/report";
 
+/** 内置价格表中的模型使用固定且互不相同的颜色，跨图表和页面保持一致。 */
 export const modelColors: Record<string, string> = {
   "gpt-6-astra": "#3779d5",
+  "gpt-6-sol": "#4f8fe0",
+  "gpt-6-luna": "#7ba7e8",
   "gpt-5.6-sol": "#15998c",
   "gpt-5.6-terra": "#bb8b42",
   "gpt-5.6-luna": "#9b6fa5",
+  "gpt-5.4": "#5f7a91",
+  "gpt-5.4-mini": "#8a9bab",
+  "claude-opus-5-5": "#d9704f",
+  "claude-opus-5": "#c84c61",
+  "claude-opus-4-8": "#b0508f",
+  "claude-fable-5-1": "#e0a13a",
+  "claude-sonnet-5": "#2aa3c7",
+  "claude-haiku-4-5": "#5a9e4b",
+  "claude-haiku-4-5-20251001": "#5a9e4b",
 };
 const fallbackModelColors = [
   "#3779d5",
   "#15998c",
   "#bb8b42",
   "#9b6fa5",
+  "#d9704f",
   "#c84c61",
   "#5f7a91",
+  "#5a9e4b",
+  "#2aa3c7",
+  "#b0508f",
 ];
 const tokenFields = ["input", "cacheRead", "cacheWrite", "output"] as const;
 export type TokenField = (typeof tokenFields)[number];
@@ -80,9 +96,12 @@ export function amount(value: number | null, unit: ReportUnit) {
 
 function decimalValue(value: string | null) {
   // Decimal 的字符串输出可使用科学计数法；很小的已知金额不能因此被标记为未知。
-  if (value === null || !/^\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value)) return null;
+  if (value === null || !/^\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value))
+    return null;
   const amount = new Decimal(value);
-  return amount.isFinite() && Number.isFinite(amount.toNumber()) ? amount : null;
+  return amount.isFinite() && Number.isFinite(amount.toNumber())
+    ? amount
+    : null;
 }
 
 /** 返回字符串金额的数值表示；未知或非法金额保持未知，不能变成 NaN。 */
@@ -235,6 +254,51 @@ export function series(
         incomplete: summary.incompleteRows,
       };
     });
+}
+
+type TrendPoint = ReturnType<typeof series>[number];
+
+const bucketSpan: Record<Granularity, number> = {
+  hour: 3600000,
+  day: 86400000,
+  week: 7 * 86400000,
+};
+
+/**
+ * 趋势只返回有请求的时间桶；绘图前在首尾两个已有桶之间补上没有请求的桶，横轴才按
+ * 真实时间等距。账本在这段时间内持续采集，没有记录就是确实没有请求，因此补为 0；
+ * 首个桶之前和末个桶之后可能超出账本覆盖范围，属于未知，不向外补。上海时区没有
+ * 夏令时，桶宽固定。
+ */
+export function continuousPoints<T extends TrendPoint>(
+  points: readonly T[],
+  granularity: Granularity,
+  limit = 10_000,
+): (T | TrendPoint)[] {
+  if (points.length < 2) return [...points];
+  const span = bucketSpan[granularity];
+  const first = points[0]!.at;
+  const last = points[points.length - 1]!.at;
+  // 未按时间递增或不在同一组桶边界上的点无法判断空档，保持原样。
+  if (
+    last <= first ||
+    (last - first) / span + 1 > limit ||
+    points.some(
+      (point, index) =>
+        (point.at - first) % span !== 0 ||
+        (index > 0 && point.at <= points[index - 1]!.at),
+    )
+  )
+    return [...points];
+  const filled: (T | TrendPoint)[] = [];
+  let index = 0;
+  for (let at = first; at <= last; at += span) {
+    if (points[index]?.at === at) {
+      filled.push(points[index]!);
+      index += 1;
+    } else filled.push({ at, value: 0, count: 0, incomplete: 0 });
+  }
+  return filled;
 }
 
 export function localTime(
@@ -431,4 +495,14 @@ export function csv(
       r.gatewayBilled ?? null,
     ]),
   ]);
+}
+
+/**
+ * 没有有效额度窗口时的说明。快照过期仍给出最近一次采样时刻，让人判断数据
+ * 停在哪里；从未采样过则说明上游尚未提供，不暗示存在旧值。
+ */
+export function quotaUnavailableNote(account: { sampledAt: string | null }) {
+  return account.sampledAt
+    ? `额度快照已过期，最近一次采样 ${localTime(account.sampledAt, { hour: "2-digit", minute: "2-digit", hour12: false })}`
+    : "上游暂未提供额度";
 }

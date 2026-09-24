@@ -38,6 +38,16 @@ export interface ViewQuery {
  * token 桶按已知值分别累加，incomplete 记录缺少至少一个 token 桶的行数；
  * amount incomplete 记录对应金额不可用的行数，count 始终是全历史请求数。
  */
+/**
+ * /api/view 以 202 返回：报表首次计算、账本被替换或旧索引无法沿用时正在后台建立，
+ * 暂时没有结果。客户端稍后重读，不应展示为失败或补零。
+ */
+export interface ReportBuilding {
+  status: "building";
+  /** 本次后台计算开始的时间。 */
+  since: string;
+}
+
 export interface LifetimeTotals {
   asOf: string;
   from: string | null;
@@ -71,6 +81,8 @@ export interface LedgerView extends Omit<LedgerSnapshot, "records"> {
   /** 刷新失败时数据仍是最近成功快照，状态不应令前端丢弃可用账本。 */
   reportStatus?: {
     refreshing: boolean;
+    /** 报表索引正在后台重建，当前结果来自重建前的索引，可能按旧价格表计算。 */
+    rebuilding?: boolean;
     lastError: { kind: string; code?: string } | null;
   };
   records: LedgerRecord[];

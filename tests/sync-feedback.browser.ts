@@ -22,36 +22,23 @@ try {
     }),
   );
   await page.bringToFront();
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  const durations: number[] = [];
+  // 触发器显示上次成功的同步时间并在重载后保持；页面主体不重复同步状态。
   for (let index = 0; index < 3; index++) {
     await page.goto(base + "#overview");
     await page.reload();
-    const icon = page.locator(".sync-trigger .sync-updated");
-    await expect(icon).toHaveCount(1);
-    const duration = await icon.evaluate((element) =>
-      parseFloat(getComputedStyle(element).animationDuration),
-    );
-    expect(duration).toBeGreaterThanOrEqual(1);
-    expect(duration).toBeLessThanOrEqual(2);
-    durations.push(duration);
-    await expect(icon).toHaveCount(0, { timeout: 3000 });
     await expect(page.locator(".sync-trigger-label")).toHaveText(
       "更新于 09/09 04:25:36",
     );
+    await expect(
+      page.getByRole("button", { name: "数据同步", exact: true }),
+    ).toHaveAttribute("title", "数据同步 · 更新于 09/09 04:25:36");
+    await expect(page.locator(".sync-trigger-badge")).toHaveCount(0);
     await expect(page.locator("main .sync-state")).toHaveCount(0);
   }
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.reload();
-  await expect(page.locator(".sync-trigger .sync-updated")).toHaveCSS(
-    "animation-name",
-    "none",
-  );
   console.log(
     JSON.stringify({
-      durations,
+      reloads: 3,
       timestampPreserved: true,
-      reducedMotion: true,
     }),
   );
 } finally {

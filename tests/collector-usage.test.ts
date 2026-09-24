@@ -147,7 +147,7 @@ describe("Claude Code 账户与额度", () => {
     const account = accountFact(snapshot.account!);
     expect(account).toEqual({
       externalId: FIXTURE_ACCOUNT_UUID,
-      name: "Claude Max 5x · aaaaaaaa",
+      name: "Claude Code",
       platform: "anthropic",
       kind: "subscription",
       plan: "max-5x",
