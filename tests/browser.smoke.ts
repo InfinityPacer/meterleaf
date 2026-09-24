@@ -356,9 +356,12 @@ try {
   await expect(
     page.getByRole("region", { name: "历史累计", exact: true }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("region", { name: "账户额度摘要", exact: true }),
-  ).toBeVisible();
+  // 总览账户额度沿用账户页的行组件，按区块标题识别。
+  const overviewAccounts = page.getByRole("region", {
+    name: "账户额度",
+    exact: true,
+  });
+  await expect(overviewAccounts).toBeVisible();
   await expect(page.locator(".overview-history-trend canvas")).toBeVisible();
   await expect(page.getByRole("region", { name: "用量摘要" })).toHaveCount(0);
   await expect(page.locator(".filterbar")).toHaveCount(0);
@@ -390,12 +393,12 @@ try {
       );
     }),
   ).toBe(true);
-  await expect(
-    page.getByRole("button", {
-      name: "查看 Development 请求用量",
-      exact: true,
-    }),
-  ).toContainText("时间段用量 Tokens");
+  // 无额度账户在总览中展示所选时段用量，而不是额度窗口。
+  const overviewDevelopment = overviewAccounts.getByRole("button", {
+    name: /^Development API 接入/,
+  });
+  await expect(overviewDevelopment).toContainText("时段 Tokens");
+  await expect(overviewDevelopment).toContainText("时段请求");
   await openAboutPage(page);
   await expect(page).toHaveURL(`${baseUrl}#settings`);
   await expect(page.locator(".about-page")).toBeVisible();
@@ -485,9 +488,7 @@ try {
   await expect(page.getByRole("listbox")).toHaveCount(0);
   await page.getByRole("button", { name: "累计总览", exact: true }).click();
   await expect(page).toHaveURL(`${baseUrl}#overview`);
-  await page
-    .getByRole("button", { name: "查看 Development 请求用量", exact: true })
-    .click();
+  await overviewDevelopment.click();
   await expect(page).toHaveURL(`${baseUrl}#ledger`);
   await expect(
     page.getByRole("combobox", { name: "账户筛选", exact: true }),
@@ -778,22 +779,22 @@ try {
   });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("button", { name: "用量总览", exact: true }).click();
-  const quotaPreview = page.getByRole("region", { name: "账户额度摘要" });
+  const quotaPreview = overviewAccounts;
   const lifetime = page.getByRole("region", { name: "历史累计", exact: true });
   await expect(lifetime).toBeVisible();
-  const quotaWindows = quotaPreview.getByRole("button", { name: /账户额度$/ });
+  const quotaWindows = quotaPreview.locator(
+    '.account-row[data-has-quota="true"]',
+  );
+  await expect(quotaWindows).toHaveCount(2);
   const quotasBeforeDate = await quotaWindows.allTextContents();
-  const periodAccount = quotaPreview.getByRole("button", {
-    name: "查看 Development 请求用量",
-    exact: true,
-  });
+  const periodAccount = overviewDevelopment;
   const periodBeforeDate = await periodAccount.textContent();
   const lifetimeBeforeDate = await lifetime.textContent();
   expect(
     (await page.locator("main h2").allTextContents()).map((text) =>
       text.trim(),
     ),
-  ).toEqual(["历史累计", "账户额度", "Tokens 趋势"]);
+  ).toEqual(["账户额度", "Tokens 趋势"]);
   await page.getByRole("button", { name: "时间段用量", exact: true }).click();
   await expect(page).toHaveURL(`${baseUrl}#period`);
   await expect(
@@ -812,7 +813,7 @@ try {
         .getByRole("heading", { name: "用量总览", exact: true })
         .evaluate((button) => getComputedStyle(button).color),
     )
-    .toBe("rgb(237, 245, 247)");
+    .toBe("rgb(242, 242, 243)");
   await capture({
     path: "test-results/overview-dark.png",
     fullPage: false,
@@ -937,9 +938,12 @@ try {
   await page.getByRole("button", { name: "关闭日期选择" }).click();
   await page.getByRole("button", { name: "累计总览", exact: true }).click();
   await expect(page).toHaveURL(`${baseUrl}#overview`);
+  // 额度行在窄屏改用紧凑布局；在记录基准的同一宽度下比较，只检验日期筛选的影响。
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await expect(quotaWindows).toHaveText(quotasBeforeDate);
   await expect(periodAccount).not.toHaveText(periodBeforeDate!);
   await expect(lifetime).toHaveText(lifetimeBeforeDate!);
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "时间段用量", exact: true }).click();
   await expect(page).toHaveURL(`${baseUrl}#period`);
   const customRows = filterRecords(
@@ -1124,12 +1128,19 @@ try {
       code: "ECONNREFUSED",
     },
   };
+  // 失败说明面向使用者：讲清哪一步、什么原因、怎么处理；阶段代码与错误编号只留在服务端日志。
+  const syncDialog = page.getByRole("dialog", {
+    name: "数据同步",
+    exact: true,
+  });
   await expect(
-    page
-      .getByRole("dialog", { name: "数据同步", exact: true })
-      .getByRole("status")
-      .filter({ hasText: "test-error-id" }),
+    syncDialog.getByRole("status").filter({
+      hasText:
+        "补采用量时连接中断。请确认 Meterleaf 能连上 Sub2API 数据库，恢复后会自动继续。",
+    }),
   ).toBeVisible({ timeout: 10000 });
+  for (const code of ["test-error-id", "incremental", "ECONNREFUSED"])
+    await expect(syncDialog).not.toContainText(code);
   await expect(
     page.getByRole("button", { name: "重试同步", exact: true }),
   ).toBeEnabled();
@@ -1281,9 +1292,11 @@ try {
   const readsBeforeExpiry = expiryReads;
   await page.locator(".account-row").first().click();
   await expect(page.getByRole("dialog")).toContainText("$12.34");
+  // 到期后不再给出旧百分比：已过期的窗口从详情中移除，只剩额度 N/A。
   await expect(
-    page.getByRole("dialog").getByRole("progressbar", { name: "7d窗口" }),
-  ).not.toHaveAttribute("aria-valuenow", /.+/);
+    page.getByRole("dialog").locator('[role="progressbar"][aria-valuenow]'),
+  ).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toContainText("额度 N/A");
   await expect(page.getByRole("dialog")).not.toContainText("$12.34");
   await expect(page.getByRole("dialog")).not.toContainText("$16.45");
   await page.keyboard.press("Escape");

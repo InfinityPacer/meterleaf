@@ -20,10 +20,12 @@ try {
       const actions = await page.locator(".topbar-actions").boundingBox();
       expect(title && actions && (title.x + title.width <= actions.x || title.y + title.height <= actions.y)).toBeTruthy();
       if (tab === "accounts") {
-        await expect(page.locator("main h2")).toHaveCount(0);
+        // 账户页只有列表标题一个二级标题，页面主标题仍在顶栏 h1。
+        await expect(page.locator("main h2")).toHaveCount(1);
+        await expect(page.locator("main .account-actions-heading h2")).toContainText("账户");
         const heading = page.locator(".account-list-heading");
         if (width > 1250) {
-          await expect(heading).toBeVisible();
+          // 桌面外壳不显示列标题（desktop.css 在 901px 以上隐藏），这里只核对两个额度窗口仍按列对齐。
           const row = page.locator('.account-row[data-has-quota="true"]').first();
           if (await row.count()) {
             const five = await row.locator(".account-five-hour .progress-track").boundingBox();
@@ -33,7 +35,7 @@ try {
         } else {
           await expect(heading).toBeHidden();
         }
-        for (const reset of await page.locator(".account-row .account-reset").all()) {
+        for (const reset of await page.locator(".account-row .quota-period-reset").all()) {
           await expect(reset).toBeVisible();
         }
         if (width <= 650) {
