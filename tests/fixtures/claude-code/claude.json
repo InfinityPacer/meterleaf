@@ -1,0 +1,28 @@
+{
+  "numStartups": 3,
+  "oauthAccount": {
+    "accountUuid": "aaaaaaaa-1111-4111-8111-111111111111",
+    "emailAddress": "person@example.com",
+    "organizationUuid": "bbbbbbbb-2222-4222-8222-222222222222",
+    "organizationName": "Secret Org",
+    "displayName": "Test Person",
+    "organizationType": "claude_max",
+    "organizationRateLimitTier": "default_claude_max_5x",
+    "billingType": "apple_subscription"
+  },
+  "cachedUsageUtilization": {
+    "fetchedAtMs": 1788257400000,
+    "accountUuid": "aaaaaaaa-1111-4111-8111-111111111111",
+    "utilization": {
+      "five_hour": {
+        "utilization": 9,
+        "resets_at": "2026-09-01T12:20:00.030375+00:00"
+      },
+      "seven_day": {
+        "utilization": 25,
+        "resets_at": "2026-09-06T08:00:00.030398+00:00"
+      },
+      "seven_day_opus": null
+    }
+  }
+}

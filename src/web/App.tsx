@@ -140,6 +140,16 @@ const initialFilter: ReportFilter = {
   search: "",
 };
 
+/** 套餐名首字母大写；Claude 的 max-5x 这类档位显示为 Max 5x，未知套餐保留原文。 */
+function formatPlan(plan: string | null | undefined) {
+  return plan
+    ?.replace(/^max-(\d+x)$/i, "max $1")
+    .replace(
+      /\b(pro|plus|max)\b/gi,
+      (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
+    );
+}
+
 function readStoredUsdBasis(): UsdBasis | null {
   try {
     const value = localStorage.getItem("meterleaf-usd-basis");
@@ -400,10 +410,7 @@ function AccountRow({
   const windows = visibleQuotaWindows(account, asOf, compactUsage);
   const exhausted = accountQuotaExhausted(account, asOf);
   const status = archived ? "已归档" : exhausted ? null : "使用中";
-  const plan = account.plan?.replace(
-    /\b(pro|plus)\b/gi,
-    (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
-  );
+  const plan = formatPlan(account.plan);
   const accountKind =
     account.kind === "api"
       ? "API 接入"
@@ -579,10 +586,7 @@ function OverviewQuotas({
           const hasQuota = Boolean(account.fiveHour || account.sevenDay);
           const windows = visibleQuotaWindows(account, asOf, compactUsage);
           const usage = accountUsage?.[account.id];
-          const plan = account.plan?.replace(
-            /\b(pro|plus)\b/gi,
-            (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
-          );
+          const plan = formatPlan(account.plan);
           return (
             <button
               className="quota-preview"

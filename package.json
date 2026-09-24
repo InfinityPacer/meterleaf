@@ -17,7 +17,9 @@
     "preview": "bun --bun vite preview --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "test": "bun test tests",
-    "test:browser": "bun tests/browser.smoke.ts"
+    "test:browser": "bun tests/browser.smoke.ts",
+    "collector": "bun src/collector/main.ts",
+    "build:collector": "bun scripts/build-collector.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

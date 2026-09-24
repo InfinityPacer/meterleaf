@@ -2,7 +2,7 @@
 
 AI 用量账本，账户额度、Token 消耗、费用估算与多维统计。
 
-Meterleaf 只读采集一个 Sub2API PostgreSQL 实例，将用量保存到本地 SQLite 并生成独立报表。不代理模型请求、不修改 Sub2API，也不直接请求 OpenAI；单个容器即可运行。
+Meterleaf 只读采集一个 Sub2API PostgreSQL 实例，也可以接收本机采集器推送的 Claude Code 本地直连用量，将用量保存到本地 SQLite 并生成独立报表。不代理模型请求、不修改 Sub2API，也不直接请求 OpenAI 或 Anthropic；单个容器即可运行。
 
 ## 能做什么
 
@@ -84,6 +84,7 @@ docker compose up -d --pull never
 - [使用与报表](docs/reporting.md)：筛选、账户管理、同步显示及统计口径。
 - [部署指南](docs/deployment.md)：安装、环境变量、升级、备份和排障。
 - [计价说明](docs/pricing.md)：USD 分支、费率版本与自定义 JSON。
+- [本机采集器](docs/collector.md)：接入本地直连的 Claude Code 用量、账户与额度。
 - [贡献指南](AGENTS.md)：目录结构、代码规范、测试与提交要求。
 - [版本与发布](docs/releasing.md)：版本递增、双架构镜像及 Release 流程。
 
