@@ -161,7 +161,6 @@
       color: var(--blue);
       background: #283c50;
     }
-    .dark .app-shell .account-avatar[data-plan="pro"],
     .dark .app-shell .account-avatar.studio {
       color: #a4e2d1;
       background: #234239;
@@ -319,12 +318,6 @@
       small
       > span:last-child:not(.plan-chip) {
       display: none;
-    }
-    .plan-chip {
-      padding: 0 4px;
-      font-size: 11px;
-      border-radius: 3px;
-      font-weight: 500;
     }
     .app-account-status {
       display: inline-flex;

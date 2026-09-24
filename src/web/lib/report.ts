@@ -8,19 +8,35 @@ import type {
   UsdBasis,
 } from "../../shared/report";
 
+/** 内置价格表中的模型使用固定且互不相同的颜色，跨图表和页面保持一致。 */
 export const modelColors: Record<string, string> = {
   "gpt-6-astra": "#3779d5",
+  "gpt-6-sol": "#4f8fe0",
+  "gpt-6-luna": "#7ba7e8",
   "gpt-5.6-sol": "#15998c",
   "gpt-5.6-terra": "#bb8b42",
   "gpt-5.6-luna": "#9b6fa5",
+  "gpt-5.4": "#5f7a91",
+  "gpt-5.4-mini": "#8a9bab",
+  "claude-opus-5-5": "#d9704f",
+  "claude-opus-5": "#c84c61",
+  "claude-opus-4-8": "#b0508f",
+  "claude-fable-5-1": "#e0a13a",
+  "claude-sonnet-5": "#2aa3c7",
+  "claude-haiku-4-5": "#5a9e4b",
+  "claude-haiku-4-5-20251001": "#5a9e4b",
 };
 const fallbackModelColors = [
   "#3779d5",
   "#15998c",
   "#bb8b42",
   "#9b6fa5",
+  "#d9704f",
   "#c84c61",
   "#5f7a91",
+  "#5a9e4b",
+  "#2aa3c7",
+  "#b0508f",
 ];
 const tokenFields = ["input", "cacheRead", "cacheWrite", "output"] as const;
 export type TokenField = (typeof tokenFields)[number];

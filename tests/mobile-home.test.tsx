@@ -210,7 +210,7 @@ test("home omits the estimate group without a valid seven-day quota", () => {
   expect(html).not.toContain("mobile-home-quota-estimate");
 });
 
-test("home keeps unavailable subscription windows as N/A and preserves account entry", () => {
+test("home marks unavailable subscription windows and preserves account entry", () => {
   const expired = accountFixture({
     id: "expired",
     name: "Expired Pro",
@@ -230,7 +230,7 @@ test("home keeps unavailable subscription windows as N/A and preserves account e
   expect(html).toContain('aria-label="查看 Expired Pro 账户额度"');
   expect(html).toContain('aria-label="查看 Unknown Pro 账户额度"');
   expect(html).not.toContain("请求用量");
-  expect((html.match(/>N\/A<\/div>/g) ?? []).length).toBe(2);
+  expect((html.match(/>暂无有效额度<\/div>/g) ?? []).length).toBe(2);
   expect(html).not.toContain("0 Tokens");
 });
 

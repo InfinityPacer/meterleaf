@@ -72,6 +72,8 @@ async function main() {
       write: (id, archived) => store.setAccountArchived(id, archived),
       hidden: () => store.hiddenAccounts(),
       hide: (id) => store.hideAccount(id),
+      aliases: () => store.accountAliases(),
+      setAlias: (id, alias) => store.setAccountAlias(id, alias),
     } : undefined,
     view: reports
       ? (query, basis = config.METERLEAF_USD_BASIS, refresh = true) =>

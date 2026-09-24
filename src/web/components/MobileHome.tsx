@@ -1,4 +1,5 @@
 import { ChevronRight, Wallet } from "lucide-react";
+import { planBadge } from "../lib/plan";
 import type { LedgerView } from "../../shared/ledger-view";
 import type { AccountLifetime, LedgerAccount } from "../../shared/report";
 import {
@@ -101,17 +102,6 @@ function formatRequests(value: number | null | undefined) {
   return value !== null && value !== undefined && Number.isFinite(value)
     ? value.toLocaleString("en-US")
     : "N/A";
-}
-
-function planLabel(account: LedgerAccount) {
-  const plan = account.plan?.trim();
-  if (plan && !["unknown", "未提供"].includes(plan.toLowerCase())) {
-    return plan.replace(
-      /\b(pro|plus)\b/gi,
-      (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
-    );
-  }
-  return account.kind === "api" ? "API" : null;
 }
 
 function QuotaSummary({
@@ -406,7 +396,7 @@ export function MobileHome({
           {accounts.map((account) => {
             const quotas = visibleQuotaWindows(account, asOf);
             const hasQuota = Boolean(account.fiveHour || account.sevenDay);
-            const plan = planLabel(account);
+            const plan = planBadge(account);
             const open = () =>
               hasQuota ? onAccount(account) : onRequests(account);
             return (
@@ -421,13 +411,21 @@ export function MobileHome({
                   <span className="mobile-home-account-head">
                     <span
                       className="mobile-home-account-avatar"
+                      data-kind={account.kind}
                       aria-hidden="true"
                     >
                       <Wallet size={quotas.length === 1 ? 20 : 18} />
                     </span>
                     <span className="mobile-home-account-name">
-                      <strong>{account.name}</strong>
-                      {plan && <small>{plan}</small>}
+                      <strong title={account.name}>{account.name}</strong>
+                      {plan && (
+                        <span
+                          className="plan-chip"
+                          data-tier={plan.tier ?? undefined}
+                        >
+                          {plan.label}
+                        </span>
+                      )}
                     </span>
                     <ChevronRight
                       className="mobile-home-account-chevron"
@@ -449,7 +447,9 @@ export function MobileHome({
                       ))}
                     </div>
                   ) : hasQuota ? (
-                    <div className="mobile-home-quota-unavailable">N/A</div>
+                    <div className="mobile-home-quota-unavailable">
+                      暂无有效额度
+                    </div>
                   ) : (
                     <UsageSummary
                       account={account}
