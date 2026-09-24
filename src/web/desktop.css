@@ -759,9 +759,9 @@
   .app-shell .account-row {
     min-height: 0;
     grid-template-columns:
-      minmax(180px, 0.72fr) minmax(0, 1fr) minmax(0, 1fr)
-      minmax(155px, 0.53fr) 44px;
-    gap: 14px;
+      minmax(200px, 1.05fr) minmax(0, 1.2fr) minmax(0, 1.2fr)
+      minmax(150px, 0.8fr) 44px;
+    gap: 24px;
   }
   .app-shell .account-row .account-window {
     align-self: center;

@@ -8,7 +8,8 @@ import type { EChartsCoreOption } from "echarts/core";
 import type { LedgerView, UnitView } from "../../shared/ledger-view";
 import { selectUsdView } from "../../shared/ledger-view";
 import type { UsdBasis } from "../../domain/pricing";
-import { compact, localTime } from "../lib/report";
+import { compact, continuousPoints, localTime } from "../lib/report";
+import type { Granularity } from "../../shared/report";
 import { type ThemeColors, useThemeColors } from "../lib/theme-colors";
 import { useLiveUpdates } from "../lib/use-live-updates";
 import {
@@ -53,6 +54,8 @@ export interface MiniTrendProps {
   metric?: MiniTrendMetric;
   variant?: TrendVariant;
   label: string;
+  /** 提供时间粒度时补齐首尾之间没有请求的时间桶，横轴按真实时间等距。 */
+  granularity?: Granularity;
   hideCaption?: boolean;
   /** 独立阅读的趋势显示数值刻度；指标旁的微图保持无轴。 */
   showScale?: boolean;
@@ -248,6 +251,7 @@ export function MiniTrend({
   metric = "tokens",
   variant = "area",
   label,
+  granularity,
   hideCaption = false,
   showScale = false,
 }: MiniTrendProps) {
@@ -255,8 +259,10 @@ export function MiniTrend({
   const instance = useRef<ReturnType<typeof echarts.init> | null>(null);
   const displayPoints = useMemo(
     () =>
-      points.map((point) => ({ ...point, value: displayValue(point, metric) })),
-    [points, metric],
+      (granularity ? continuousPoints(points, granularity) : points).map(
+        (point) => ({ ...point, value: displayValue(point, metric) }),
+      ),
+    [points, metric, granularity],
   );
   const hasKnownPoint = hasKnownValue(displayPoints, metric);
   const showChart = displayPoints.length > 0 && hasKnownPoint;
@@ -379,6 +385,7 @@ export function AccountTrend({
       metric={metric}
       variant={variant}
       label={hasReportError ? `${label} · 更新失败` : label}
+      granularity="hour"
       hideCaption={hideCaption}
     />
   );

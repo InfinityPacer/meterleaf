@@ -96,9 +96,12 @@ export function amount(value: number | null, unit: ReportUnit) {
 
 function decimalValue(value: string | null) {
   // Decimal 的字符串输出可使用科学计数法；很小的已知金额不能因此被标记为未知。
-  if (value === null || !/^\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value)) return null;
+  if (value === null || !/^\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value))
+    return null;
   const amount = new Decimal(value);
-  return amount.isFinite() && Number.isFinite(amount.toNumber()) ? amount : null;
+  return amount.isFinite() && Number.isFinite(amount.toNumber())
+    ? amount
+    : null;
 }
 
 /** 返回字符串金额的数值表示；未知或非法金额保持未知，不能变成 NaN。 */
@@ -251,6 +254,51 @@ export function series(
         incomplete: summary.incompleteRows,
       };
     });
+}
+
+type TrendPoint = ReturnType<typeof series>[number];
+
+const bucketSpan: Record<Granularity, number> = {
+  hour: 3600000,
+  day: 86400000,
+  week: 7 * 86400000,
+};
+
+/**
+ * 趋势只返回有请求的时间桶；绘图前在首尾两个已有桶之间补上没有请求的桶，横轴才按
+ * 真实时间等距。账本在这段时间内持续采集，没有记录就是确实没有请求，因此补为 0；
+ * 首个桶之前和末个桶之后可能超出账本覆盖范围，属于未知，不向外补。上海时区没有
+ * 夏令时，桶宽固定。
+ */
+export function continuousPoints<T extends TrendPoint>(
+  points: readonly T[],
+  granularity: Granularity,
+  limit = 10_000,
+): (T | TrendPoint)[] {
+  if (points.length < 2) return [...points];
+  const span = bucketSpan[granularity];
+  const first = points[0]!.at;
+  const last = points[points.length - 1]!.at;
+  // 未按时间递增或不在同一组桶边界上的点无法判断空档，保持原样。
+  if (
+    last <= first ||
+    (last - first) / span + 1 > limit ||
+    points.some(
+      (point, index) =>
+        (point.at - first) % span !== 0 ||
+        (index > 0 && point.at <= points[index - 1]!.at),
+    )
+  )
+    return [...points];
+  const filled: (T | TrendPoint)[] = [];
+  let index = 0;
+  for (let at = first; at <= last; at += span) {
+    if (points[index]?.at === at) {
+      filled.push(points[index]!);
+      index += 1;
+    } else filled.push({ at, value: 0, count: 0, incomplete: 0 });
+  }
+  return filled;
 }
 
 export function localTime(
