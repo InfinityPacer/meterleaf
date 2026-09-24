@@ -100,12 +100,13 @@ try {
           .getBoundingClientRect();
         return nav.top - brand.bottom;
       });
-      expect(gap).toBe(16);
+      // 桌面外壳在品牌与主导航之间保留 24px（desktop.css）。
+      expect(gap).toBe(24);
     }
     await page.getByRole("button", { name: "数据同步", exact: true }).click();
     await expect(page.getByText("自动同步", { exact: true })).toBeVisible();
     await expect(page.getByText("自动刷新", { exact: true })).toHaveCount(0);
-    await page.screenshot({ path: `/tmp/meterleaf-sync-${width}.png` });
+    await page.screenshot({ path: `test-results/sync-refresh-${width}.png` });
     await page.keyboard.press("Escape");
     expect(
       await page.evaluate(

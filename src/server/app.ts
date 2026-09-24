@@ -13,6 +13,7 @@ import { z } from "zod";
 import {
   createLedgerView,
   type LedgerView,
+  type ReportBuilding,
   type ViewQuery,
 } from "../shared/ledger-view";
 
@@ -23,6 +24,8 @@ interface AppOptions {
     write(id: string, archived: boolean): string[];
     hidden(): string[];
     hide(id: string): string[];
+    aliases(): Record<string, string>;
+    setAlias(id: string, alias: string | null): Record<string, string>;
   };
   snapshot: (
     days: number,
@@ -45,6 +48,17 @@ interface AppOptions {
     updatePresence?(id: string, visible: boolean): void;
   };
 }
+function isReportBuilding(
+  error: unknown,
+): error is { code: "ERR_REPORT_BUILDING"; since: string } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "ERR_REPORT_BUILDING" &&
+    typeof (error as { since?: unknown }).since === "string"
+  );
+}
+
 /** 服务读写本地账本状态；上游保持只读，认证由外部反代负责。 */
 export function createApp({
   snapshot,
@@ -87,37 +101,54 @@ export function createApp({
   });
   app.get("/api/health", () => ({ status: "ok" }));
   if (ingest) registerIngestRoutes(app, ingest, diagnostics);
-  app.get("/api/accounts/archive", () => ({
+  const displayState = () => ({
     archived: accountArchive?.read() ?? [],
     hidden: accountArchive?.hidden() ?? [],
+    aliases: accountArchive?.aliases() ?? {},
     writable: Boolean(accountArchive),
-  }));
+  });
+  app.get("/api/accounts/archive", displayState);
   app.put("/api/accounts/archive", (request, reply) => {
     const id = z.string().min(1).max(512);
     const parsed = z
       .union([
         z.object({ id, archived: z.boolean() }).strict(),
         z.object({ id, hidden: z.literal(true) }).strict(),
+        // 空白别名等同于清除，恢复上游名称。
+        z
+          .object({
+            id,
+            alias: z
+              .string()
+              .trim()
+              .max(40)
+              .transform((value) => value || null)
+              .nullable(),
+          })
+          .strict(),
       ])
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "归档参数无效" });
     if (!accountArchive)
       return reply.code(503).send({ error: "当前账本不支持归档" });
-    if ("hidden" in parsed.data) accountArchive.hide(parsed.data.id);
-    else accountArchive.write(parsed.data.id, parsed.data.archived);
+    const change = parsed.data;
+    if ("hidden" in change) accountArchive.hide(change.id);
+    else if ("alias" in change)
+      accountArchive.setAlias(change.id, change.alias ?? null);
+    else accountArchive.write(change.id, change.archived);
     diagnostics.info("account.display_updated", {
       action:
-        "hidden" in parsed.data
+        "hidden" in change
           ? "hide"
-          : parsed.data.archived
-            ? "archive"
-            : "restore",
+          : "alias" in change
+            ? change.alias
+              ? "rename"
+              : "reset-name"
+            : change.archived
+              ? "archive"
+              : "restore",
     });
-    return {
-      archived: accountArchive.read(),
-      hidden: accountArchive.hidden(),
-      writable: true,
-    };
+    return displayState();
   });
   app.get("/api/view", async (request, reply) => {
     const parsed = z
@@ -190,6 +221,12 @@ export function createApp({
             snapshot(query.filter.days, q.usdBasis, dateRange),
             query,
           );
+    } catch (error) {
+      if (isReportBuilding(error)) {
+        const body: ReportBuilding = { status: "building", since: error.since };
+        return reply.code(202).send(body);
+      }
+      throw error;
     } finally {
       // 包括视图缓存读取或 worker 等待，但不包括响应编码、压缩和网络传输。
       reply.header(

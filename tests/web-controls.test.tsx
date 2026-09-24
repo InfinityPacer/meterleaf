@@ -66,13 +66,15 @@ test("FilterSelect renders Base UI options without a native select", () => {
 test("ThemeControl keeps appearance and palette contracts independent", () => {
   const storage = new Map<string, string>([
     [THEME_STORAGE_KEY, "system"],
-    [PALETTE_STORAGE_KEY, "natural"],
+    [PALETTE_STORAGE_KEY, "mono"],
   ]);
   const readOnlyStorage = {
     getItem: (key: string) => storage.get(key) ?? null,
   };
   expect(readStoredThemeMode(readOnlyStorage)).toBe("system");
-  expect(readStoredPalette(readOnlyStorage)).toBe("natural");
+  expect(readStoredPalette(readOnlyStorage)).toBe("mono");
+  // 旧版本的「默认」「自然」配色已不存在，回到翠绿。
+  expect(readStoredPalette({ getItem: () => "natural" })).toBe("green");
   expect(resolveThemeDark("system", true)).toBe(true);
   expect(resolveThemeDark("system", false)).toBe(false);
   expect(resolveThemeDark("light", true)).toBe(false);

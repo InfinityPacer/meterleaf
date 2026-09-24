@@ -40,6 +40,33 @@ test("account lifetime uses cached hour aggregates and invalidates revisions, mo
   } finally { index.close(); }
 });
 
+test("full replacement restores every secondary index and rolls back on failure", () => {
+  const index = new ReportIndex(":memory:");
+  const indexes = () =>
+    index.db
+      .query<{ name: string; sql: string }, []>(
+        "SELECT name, sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name",
+      )
+      .all();
+  try {
+    const before = indexes();
+    expect(before.length).toBeGreaterThan(20);
+    index.replace([row("a", "2026-08-01T00:00:00Z"), row("b", "2026-09-01T00:00:00Z")]);
+    expect(indexes()).toEqual(before);
+    expect(index.accountLifetime("account-a", "subscription").count).toBe(2);
+    expect(() =>
+      index.replace(
+        (function* () {
+          yield row("c", "2026-09-02T00:00:00Z");
+          throw new Error("source read failed");
+        })(),
+      ),
+    ).toThrow("source read failed");
+    expect(indexes()).toEqual(before);
+    expect(index.accountLifetime("account-a", "subscription").count).toBe(2);
+  } finally { index.close(); }
+});
+
 test("account lifetime preserves unknown token and price boundaries", () => {
   const index = new ReportIndex(":memory:");
   try {

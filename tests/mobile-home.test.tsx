@@ -157,10 +157,11 @@ test("home renders both valid quota windows with explicit period labels", () => 
   const estimate = estimateMarkup(html);
   expect(estimate).toContain('title="7d 预估"');
   expect(estimate).toContain('aria-label="7d 预估');
-  expect(estimate.replace(/<[^>]+>/g, "")).toBe("$1,481.58");
+  // 可见标签「预估」只为视觉说明，读屏以 aria-label 为准。
+  expect(estimate.replace(/<[^>]+>/g, "")).toBe("预估$1,481.58");
 });
 
-test("home hides an unavailable five-hour window instead of rendering an N/A placeholder", () => {
+test("home keeps an unavailable five-hour window as a waiting slot without old values", () => {
   const account = accountFixture({
     fiveHour: quotaWindow({ percent: null }),
     sevenDay: quotaWindow({ percent: 64 }),
@@ -168,9 +169,9 @@ test("home hides an unavailable five-hour window instead of rendering an N/A pla
   const html = renderHome([], [account]);
   const card = accountCard(html);
 
-  expect((card.match(/class="mobile-home-quota"/g) ?? []).length).toBe(1);
-  expect(card).toContain("7d");
-  expect(card).not.toContain("5h");
+  expect((card.match(/class="mobile-home-quota"/g) ?? []).length).toBe(2);
+  expect(card).toContain('data-waiting="true"');
+  expect(card).toContain("等待新采样");
   expect(card).not.toContain("N/A");
 });
 
@@ -210,7 +211,7 @@ test("home omits the estimate group without a valid seven-day quota", () => {
   expect(html).not.toContain("mobile-home-quota-estimate");
 });
 
-test("home keeps unavailable subscription windows as N/A and preserves account entry", () => {
+test("home marks unavailable subscription windows and preserves account entry", () => {
   const expired = accountFixture({
     id: "expired",
     name: "Expired Pro",
@@ -222,6 +223,7 @@ test("home keeps unavailable subscription windows as N/A and preserves account e
   const unknown = accountFixture({
     id: "unknown",
     name: "Unknown Pro",
+    sampledAt: null,
     fiveHour: null,
     sevenDay: quotaWindow({ percent: null, state: "unknown" }),
   });
@@ -230,7 +232,9 @@ test("home keeps unavailable subscription windows as N/A and preserves account e
   expect(html).toContain('aria-label="查看 Expired Pro 账户额度"');
   expect(html).toContain('aria-label="查看 Unknown Pro 账户额度"');
   expect(html).not.toContain("请求用量");
-  expect((html.match(/>N\/A<\/div>/g) ?? []).length).toBe(2);
+  // 有过采样的账户给出最近采样时刻，从未采样的账户不暗示存在旧值。
+  expect(html).toContain("额度快照已过期，最近一次采样");
+  expect(html).toContain("上游暂未提供额度");
   expect(html).not.toContain("0 Tokens");
 });
 

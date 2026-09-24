@@ -6,14 +6,14 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
-    <meta name="theme-color" content="#f7f8fa" />
+    <meta name="theme-color" content="#f7f7f8" />
     <style>
       :root {
-        background: #f7f8fa;
+        background: #f7f7f8;
         color-scheme: light;
       }
       :root.dark {
-        background: #171b20;
+        background: #0f0f11;
         color-scheme: dark;
       }
       body {
@@ -25,7 +25,7 @@
         display: grid;
         place-items: center;
         padding: 24px;
-        color: #17201d;
+        color: #18181b;
         font:
           500 15px/1.5 -apple-system,
           BlinkMacSystemFont,
@@ -40,13 +40,13 @@
       .boot-shell__mark {
         width: 34px;
         height: 34px;
-        border: 3px solid color-mix(in srgb, #07594f 22%, transparent);
-        border-top-color: #07594f;
+        border: 3px solid color-mix(in srgb, #0e8a55 22%, transparent);
+        border-top-color: #0e8a55;
         border-radius: 50%;
         animation: boot-shell-spin 900ms linear infinite;
       }
       .dark .boot-shell {
-        color: #eef3f0;
+        color: #f2f2f3;
       }
       @keyframes boot-shell-spin {
         to {
@@ -63,13 +63,11 @@
       // 在样式和应用模块加载前恢复外观，避免刷新时先绘制浅色页面。
       (() => {
         let mode = "system";
-        let palette = "default";
+        let palette = "green";
         try {
           mode = localStorage.getItem("meterleaf-theme") || "system";
-          palette =
-            localStorage.getItem("meterleaf-palette") === "natural"
-              ? "natural"
-              : "default";
+          const saved = localStorage.getItem("meterleaf-palette");
+          if (saved === "indigo" || saved === "mono") palette = saved;
         } catch {}
         const dark =
           mode === "dark" ||
@@ -78,8 +76,8 @@
         document.documentElement.classList.toggle("dark", dark);
         document.documentElement.dataset.palette = palette;
         document.querySelector('meta[name="theme-color"]').content = dark
-          ? "#171b20"
-          : "#f7f8fa";
+          ? "#0f0f11"
+          : "#f7f7f8";
       })();
     </script>
     <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg" />

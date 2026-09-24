@@ -18,6 +18,8 @@ export const priceBookSchema = z
   .object({
     schemaVersion: z.literal(1),
     id: z.string().regex(/^[a-zA-Z0-9_-]+$/),
+    /** 本价格表接替的旧标识。改名不是换一套价格，旧结果可作为过渡结果继续显示。 */
+    supersedes: z.array(z.string().regex(/^[a-zA-Z0-9_-]+$/)).optional(),
     version: z.string().min(1),
     unit: z.literal("per_million_tokens"),
     publishedAt: z.iso.datetime({ offset: true }),

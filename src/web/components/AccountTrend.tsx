@@ -8,8 +8,15 @@ import type { EChartsCoreOption } from "echarts/core";
 import type { LedgerView, UnitView } from "../../shared/ledger-view";
 import { selectUsdView } from "../../shared/ledger-view";
 import type { UsdBasis } from "../../domain/pricing";
-import { compact, localTime } from "../lib/report";
+import { compact, continuousPoints, localTime } from "../lib/report";
+import type { Granularity } from "../../shared/report";
+import { type ThemeColors, useThemeColors } from "../lib/theme-colors";
 import { useLiveUpdates } from "../lib/use-live-updates";
+import {
+  isReportBuilding,
+  reportRefetchInterval,
+  reportRetry,
+} from "../lib/report-building";
 import "./account-trend.css";
 
 echarts.use([
@@ -24,7 +31,6 @@ export type AccountTrendMetric = "tokens" | "requests" | "usd";
 export type MiniTrendMetric =
   "tokens" | "requests" | "usd" | "credits" | "percent";
 export type TrendVariant = "line" | "area" | "bar";
-export type TrendTone = "teal" | "blue" | "purple";
 
 /** 查询函数提供近 7 天逐小时报表，并保留原始美元双变体。 */
 export type AccountTrendLoad = (
@@ -39,6 +45,8 @@ export interface AccountTrendProps {
   metric?: AccountTrendMetric;
   variant?: TrendVariant;
   usdBasis?: UsdBasis;
+  /** 所在位置已有标题时隐藏趋势说明，完整说明仍保留在 title 与读屏标签中。 */
+  hideCaption?: boolean;
 }
 
 export interface MiniTrendProps {
@@ -46,8 +54,9 @@ export interface MiniTrendProps {
   metric?: MiniTrendMetric;
   variant?: TrendVariant;
   label: string;
+  /** 提供时间粒度时补齐首尾之间没有请求的时间桶，横轴按真实时间等距。 */
+  granularity?: Granularity;
   hideCaption?: boolean;
-  tone?: TrendTone;
   /** 独立阅读的趋势显示数值刻度；指标旁的微图保持无轴。 */
   showScale?: boolean;
 }
@@ -60,34 +69,6 @@ const metricLabels: Record<MiniTrendMetric, string> = {
   usd: "USD",
   credits: "Credits",
   percent: "%",
-};
-
-const tonePalettes: Record<
-  TrendTone,
-  { stroke: string; areaTop: string; areaBottom: string }
-> = {
-  teal: {
-    stroke: "#15998c",
-    areaTop: "rgba(21, 153, 140, 0.3)",
-    areaBottom: "rgba(21, 153, 140, 0.02)",
-  },
-  blue: {
-    stroke: "#3779d5",
-    areaTop: "rgba(55, 121, 213, 0.28)",
-    areaBottom: "rgba(55, 121, 213, 0.02)",
-  },
-  purple: {
-    stroke: "#8064b8",
-    areaTop: "rgba(128, 100, 184, 0.28)",
-    areaBottom: "rgba(128, 100, 184, 0.02)",
-  },
-};
-const metricDefaultTones: Record<MiniTrendMetric, TrendTone> = {
-  tokens: "teal",
-  requests: "blue",
-  usd: "purple",
-  credits: "blue",
-  percent: "blue",
 };
 
 const tooltipDateOptions: Intl.DateTimeFormatOptions = {
@@ -149,10 +130,9 @@ function buildMiniTrendOption(
   points: TrendPoint[],
   metric: MiniTrendMetric,
   variant: TrendVariant,
-  tone: TrendTone,
+  colors: ThemeColors,
   showScale: boolean,
 ): EChartsCoreOption {
-  const palette = tonePalettes[tone];
   const areaColor = {
     type: "linear",
     x: 0,
@@ -160,13 +140,13 @@ function buildMiniTrendOption(
     x2: 0,
     y2: 1,
     colorStops: [
-      { offset: 0, color: palette.areaTop },
-      { offset: 1, color: palette.areaBottom },
+      { offset: 0, color: colors.accentAlpha(0.24) },
+      { offset: 1, color: colors.accentAlpha(0.02) },
     ],
   };
   return {
     animation: false,
-    textStyle: { fontFamily: "system-ui, sans-serif" },
+    textStyle: { fontFamily: colors.fontFamily },
     grid: {
       left: 0,
       right: 2,
@@ -174,16 +154,17 @@ function buildMiniTrendOption(
       bottom: 2,
       containLabel: showScale,
     },
+    // 微图只有几十像素高，外层还会裁切溢出；提示挂到 body 上才能完整显示。
     tooltip: {
       trigger: "axis",
-      confine: true,
-      backgroundColor: "rgba(20, 28, 36, 0.95)",
-      borderWidth: 0,
-      textStyle: { color: "#ffffff", fontSize: 11 },
+      appendTo: "body",
+      backgroundColor: colors.surface,
+      borderColor: colors.line,
+      textStyle: { color: colors.ink, fontSize: 12 },
       formatter: (params: unknown) => {
         const point = tooltipPoint(params, points);
         if (!point) return "";
-        return `${localTime(point.at, tooltipDateOptions)}\n${formatMetricValue(displayValue(point, metric), metric)}`;
+        return `${localTime(point.at, tooltipDateOptions)}<br/>${formatMetricValue(displayValue(point, metric), metric)}`;
       },
     },
     xAxis: {
@@ -201,13 +182,13 @@ function buildMiniTrendOption(
         ? (range: { max: number }) => (range.max > 0 ? range.max * 1.12 : 1)
         : undefined,
       axisLabel: {
-        color: "#7c8a99",
+        color: colors.faint,
         fontSize: 10,
         formatter: compact,
         showMaxLabel: !showScale,
       },
       splitLine: {
-        lineStyle: { color: "rgba(124, 138, 153, 0.16)", type: "dashed" },
+        lineStyle: { color: colors.lineSoft },
       },
     },
     series: [
@@ -216,9 +197,9 @@ function buildMiniTrendOption(
         data: points.map((point) => displayValue(point, metric)),
         connectNulls: false,
         showSymbol: false,
-        lineStyle: { color: palette.stroke, width: showScale ? 2 : 1.5 },
+        lineStyle: { color: colors.accent, width: showScale ? 2 : 1.5 },
         itemStyle: {
-          color: palette.stroke,
+          color: colors.accent,
           borderRadius: variant === "bar" ? [2, 2, 0, 0] : undefined,
         },
         areaStyle: variant === "area" ? { color: areaColor } : undefined,
@@ -242,14 +223,19 @@ function TrendState({
   label,
   text,
   error = false,
+  hideCaption = false,
 }: {
   label: string;
   text: string;
   error?: boolean;
+  hideCaption?: boolean;
 }) {
   return (
-    <div className="mini-trend" title={label}>
-      <TrendCaption label={label} />
+    <div
+      className={`mini-trend${hideCaption ? " is-caption-hidden" : ""}`}
+      title={label}
+    >
+      <TrendCaption label={label} hideCaption={hideCaption} />
       <div
         className={`mini-trend-state${error ? " is-error" : ""}`}
         role={error ? "alert" : "status"}
@@ -266,20 +252,22 @@ export function MiniTrend({
   metric = "tokens",
   variant = "area",
   label,
+  granularity,
   hideCaption = false,
-  tone,
   showScale = false,
 }: MiniTrendProps) {
   const container = useRef<HTMLDivElement>(null);
   const instance = useRef<ReturnType<typeof echarts.init> | null>(null);
   const displayPoints = useMemo(
     () =>
-      points.map((point) => ({ ...point, value: displayValue(point, metric) })),
-    [points, metric],
+      (granularity ? continuousPoints(points, granularity) : points).map(
+        (point) => ({ ...point, value: displayValue(point, metric) }),
+      ),
+    [points, metric, granularity],
   );
   const hasKnownPoint = hasKnownValue(displayPoints, metric);
   const showChart = displayPoints.length > 0 && hasKnownPoint;
-  const resolvedTone = tone ?? metricDefaultTones[metric];
+  const colors = useThemeColors();
   const ariaLabel = `${label}，真实报表趋势，非预测曲线`;
 
   useEffect(() => {
@@ -301,23 +289,16 @@ export function MiniTrend({
     const chart = instance.current;
     if (!chart || !showChart) return;
     chart.setOption(
-      buildMiniTrendOption(
-        displayPoints,
-        metric,
-        variant,
-        resolvedTone,
-        showScale,
-      ),
+      buildMiniTrendOption(displayPoints, metric, variant, colors, showScale),
       true,
     );
-  }, [displayPoints, metric, variant, resolvedTone, showChart, showScale]);
+  }, [displayPoints, metric, variant, colors, showChart, showScale]);
 
   return (
     <div
       className={`mini-trend${hideCaption ? " is-caption-hidden" : ""}`}
       data-metric={metric}
       data-variant={variant}
-      data-tone={resolvedTone}
       data-show-scale={showScale || undefined}
       title={label}
     >
@@ -345,6 +326,7 @@ export function AccountTrend({
   metric = "tokens",
   variant = "area",
   usdBasis = "subscription",
+  hideCaption = false,
 }: AccountTrendProps) {
   const { paused } = useLiveUpdates();
   const queryKey = ["ledger", "account-trend", accountId] as const;
@@ -359,15 +341,8 @@ export function AccountTrend({
         failed || !cached?.reportStatus?.refreshing,
       );
     },
-    refetchInterval: (current) => {
-      if (
-        paused ||
-        current.state.status === "error" ||
-        current.state.fetchFailureCount
-      )
-        return false;
-      return current.state.data?.reportStatus?.refreshing ? 1000 : false;
-    },
+    refetchInterval: (current) => reportRefetchInterval(current, paused),
+    retry: reportRetry,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
@@ -392,11 +367,18 @@ export function AccountTrend({
     query.isError || selectedView?.reportStatus?.lastError,
   );
 
-  if (query.isPending) return <TrendState label={label} text="读取中…" />;
-  if (hasReportError && !hasUsableData)
-    return <TrendState label={label} text="读取失败" error />;
-  if (!selectedView)
-    return <TrendState label={label} text="暂无真实趋势数据" />;
+  const state = (text: string, error = false) => (
+    <TrendState
+      label={label}
+      text={text}
+      error={error}
+      hideCaption={hideCaption}
+    />
+  );
+  if (query.isPending) return state("读取中…");
+  if (!selectedView && isReportBuilding(query.error)) return state("计算中…");
+  if (hasReportError && !hasUsableData) return state("读取失败", true);
+  if (!selectedView) return state("暂无真实趋势数据");
 
   return (
     <MiniTrend
@@ -404,6 +386,8 @@ export function AccountTrend({
       metric={metric}
       variant={variant}
       label={hasReportError ? `${label} · 更新失败` : label}
+      granularity="hour"
+      hideCaption={hideCaption}
     />
   );
 }

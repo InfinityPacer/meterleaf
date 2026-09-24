@@ -28,9 +28,11 @@ import {
   ArchiveRestore,
   Trash2,
   MoreHorizontal,
+  PencilLine,
   BarChart3,
   Coins,
   Database,
+  LogIn,
   FileText,
   Info,
   Layers3,
@@ -58,15 +60,12 @@ import {
   withUsdVariants,
   selectUsdView,
   type LedgerView,
+  type ReportBuilding,
   type ViewQuery,
 } from "../shared/ledger-view";
 import { SyncControl } from "./components/SyncControl";
 import { FilterSelect } from "./components/FilterSelect";
-import {
-  ThemeControl,
-  readStoredThemeMode,
-  resolveThemeDark,
-} from "./components/ThemeControl";
+import { ThemeControl } from "./components/ThemeControl";
 import {
   accountQuotaExhausted,
   estimateAmount,
@@ -75,6 +74,7 @@ import {
   quotaState,
   showQuotaEstimate,
   visibleQuotaWindows,
+  quotaWaitingReset,
 } from "./lib/quota-display";
 import { useQuotaClock } from "./lib/use-quota-clock";
 import { useReportFilters } from "./lib/report-preferences";
@@ -86,6 +86,8 @@ import {
 } from "./lib/preferences";
 import { orderedAccounts, moveAccount } from "./lib/account-order";
 import { useAccountArchive } from "./lib/use-account-archive";
+import { accountInitial, withAccountAliases } from "./lib/account-aliases";
+import { planBadge } from "./lib/plan";
 import { Segmented } from "./components/Segmented";
 import {
   amount,
@@ -94,6 +96,7 @@ import {
   modelColor,
   modelLabel,
   numericAmount,
+  quotaUnavailableNote,
   summarize,
 } from "./lib/report";
 import { LedgerTable } from "./components/LedgerTable";
@@ -103,10 +106,24 @@ import { ModelDistribution } from "./components/ModelDistribution";
 import { MobileFilters } from "./components/MobileFilters";
 import { MobileHome } from "./components/MobileHome";
 import { AboutPage } from "./components/AboutPage";
+import {
+  AccountRenameDialog,
+  type RenameTarget,
+} from "./components/AccountRenameDialog";
+import {
+  ReportBuildingPanel,
+  ReportRebuildingNotice,
+} from "./components/ReportBuilding";
 import { AccountTrend, MiniTrend } from "./components/AccountTrend";
 import { ChartStyleControl } from "./components/ChartStyleControl";
 import { useMobileLayout } from "./lib/use-mobile-layout";
 import { useLiveUpdates } from "./lib/use-live-updates";
+import {
+  isReportBuilding,
+  ReportBuildingError,
+  reportRefetchInterval,
+  reportRetry,
+} from "./lib/report-building";
 import type { ChartStyle } from "./components/UsageChart";
 import type { ReportDimension } from "./lib/report";
 import { Button } from "./components/ui/button";
@@ -117,6 +134,11 @@ import {
   SheetHeader,
   SheetTitle,
 } from "./components/ui/sheet";
+import {
+  SessionExpiredError,
+  isLoginRedirect,
+  isSessionExpired,
+} from "./lib/session";
 
 const UsageChart = lazy(() =>
   import("./components/UsageChart").then((m) => ({ default: m.UsageChart })),
@@ -141,15 +163,6 @@ const initialFilter: ReportFilter = {
 };
 
 /** 套餐名首字母大写；Claude 的 max-5x 这类档位显示为 Max 5x，未知套餐保留原文。 */
-function formatPlan(plan: string | null | undefined) {
-  return plan
-    ?.replace(/^max-(\d+x)$/i, "max $1")
-    .replace(
-      /\b(pro|plus|max)\b/gi,
-      (value) => value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
-    );
-}
-
 function readStoredUsdBasis(): UsdBasis | null {
   try {
     const value = localStorage.getItem("meterleaf-usd-basis");
@@ -190,7 +203,13 @@ async function readLedger(
   ] as const)
     params.set(key, String(viewQuery[key]));
   try {
-    const response = await fetch(`/api/view?${params.toString()}`, { signal });
+    const response = await fetch(`/api/view?${params.toString()}`, {
+      signal,
+      redirect: "manual",
+    });
+    if (isLoginRedirect(response)) throw new SessionExpiredError();
+    if (response.status === 202)
+      throw new ReportBuildingError((await response.json()) as ReportBuilding);
     if (!response.ok) {
       const reason =
         response.status === 408 || response.status === 504
@@ -209,6 +228,7 @@ async function readLedger(
     }
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") throw error;
+    if (isReportBuilding(error) || isSessionExpired(error)) throw error;
     if (error instanceof Error && error.message.startsWith("报表读取失败："))
       throw error;
     throw new Error("报表读取失败：网络连接异常", { cause: error });
@@ -273,15 +293,17 @@ function QuotaBar({
   label,
   asOf,
   reset,
+  waiting = false,
 }: {
   window: AccountWindow | null;
   label: string;
   asOf: string;
   reset?: React.ReactNode;
+  waiting?: boolean;
 }) {
   const state = quotaState(window, asOf);
-  const percent = quotaPercent(window, asOf);
-  const suffix = quotaLabel(window, asOf);
+  const percent = waiting ? null : quotaPercent(window, asOf);
+  const suffix = waiting ? "等待新采样" : quotaLabel(window, asOf);
   return (
     <div
       className="quota-bar"
@@ -315,12 +337,35 @@ function QuotaPeriod({
   label,
   asOf,
   compactEstimate = false,
+  waiting = false,
 }: {
   window: AccountWindow | null;
   label: string;
   asOf: string;
   compactEstimate?: boolean;
+  waiting?: boolean;
 }) {
+  if (waiting && window) {
+    const ended = quotaWaitingReset(window, asOf);
+    return (
+      <span className="quota-period" data-waiting="true">
+        <QuotaBar
+          window={window}
+          label={label}
+          asOf={asOf}
+          waiting
+          reset={
+            ended ? (
+              <span className="quota-period-reset">{ended}</span>
+            ) : undefined
+          }
+        />
+        <span className="quota-period-usage">
+          <span className="quota-period-volume">上游下次上报后更新</span>
+        </span>
+      </span>
+    );
+  }
   const showEstimate =
     compactEstimate && label === "7d" && showQuotaEstimate(window, asOf);
   const estimated = showEstimate ? estimateAmount(window, "usd", asOf) : null;
@@ -410,7 +455,7 @@ function AccountRow({
   const windows = visibleQuotaWindows(account, asOf, compactUsage);
   const exhausted = accountQuotaExhausted(account, asOf);
   const status = archived ? "已归档" : exhausted ? null : "使用中";
-  const plan = formatPlan(account.plan);
+  const plan = account.kind === "api" ? null : planBadge(account);
   const accountKind =
     account.kind === "api"
       ? "API 接入"
@@ -430,26 +475,25 @@ function AccountRow({
     >
       <span className="account-identity">
         <span
-          className={`account-avatar ${account.id}`}
+          className="account-avatar"
           data-kind={account.kind}
-          data-plan={account.plan?.toLowerCase()}
+          aria-hidden="true"
         >
-          <Wallet size={18} />
+          {accountInitial(account.name)}
         </span>
         <span className="account-name">
-          <strong>{account.name}</strong>
-          <small>
-            {plan && !["未提供", "unknown"].includes(plan) && (
-              <span
-                className="plan-chip"
-                data-plan={account.plan?.toLowerCase()}
-              >
-                {plan}
+          <span className="account-name-line">
+            <strong title={account.name}>{account.name}</strong>
+            {plan && (
+              <span className="plan-chip" data-tier={plan.tier ?? undefined}>
+                {plan.label}
               </span>
             )}
+          </span>
+          <small>
             <span>{accountKind}</span>
           </small>
-          {status && (
+          {archived && (
             <span className="desktop-account-status" data-archived={archived}>
               <span aria-hidden="true" />
               {status}
@@ -462,7 +506,7 @@ function AccountRow({
       )}
       {hasQuota ? (
         <>
-          {windows.map(({ key, label, window }) => (
+          {windows.map(({ key, label, window, waiting }) => (
             <span
               key={key}
               className={`account-window ${key === "fiveHour" ? "account-five-hour" : "account-seven-day"}`}
@@ -472,18 +516,26 @@ function AccountRow({
                 label={label}
                 asOf={asOf}
                 compactEstimate={compactUsage}
+                waiting={waiting}
               />
             </span>
           ))}
           {!windows.length && (
             <span className="account-window account-window-unavailable">
-              额度 N/A
+              {account.sampledAt
+                ? `${quotaUnavailableNote(account)}，上报后自动恢复。`
+                : quotaUnavailableNote(account)}
             </span>
           )}
-          {!compactUsage && (
+          {!compactUsage && windows.length > 0 && (
             <span className="account-capacity">
               <small>7d 预估</small>
-              <AccountTrend accountId={account.id} load={readAccountTrend} />
+              <AccountTrend
+                accountId={account.id}
+                load={readAccountTrend}
+                variant="line"
+                hideCaption
+              />
               <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
             </span>
           )}
@@ -545,7 +597,53 @@ function AccountRow({
   );
 }
 
-/** 订阅账户按独立额度窗口展示；无额度账户使用当前报表筛选后的用量。 */
+/**
+ * 全历史累计。三个数只来自 lifetimeTotals，不受页面筛选影响；附注说明口径，
+ * 缺少依据时不显示，不用 0 代替未知。
+ */
+function LedgerStrip({
+  totals,
+  usdBasis,
+}: {
+  totals: NonNullable<LedgerView["lifetimeTotals"]>;
+  usdBasis: UsdBasis;
+}) {
+  const { total, cacheRead } = totals.tokens;
+  const cacheShare =
+    total && cacheRead !== null && total > 0
+      ? `缓存读取占 ${((cacheRead / total) * 100).toFixed(1)}%`
+      : null;
+  const apiUsd = numericAmount(totals.apiUsd);
+  const usdNote =
+    usdBasis === "subscription"
+      ? `订阅等价${apiUsd !== null ? ` · 标准 API ${amount(apiUsd, "usd")}` : ""}`
+      : "标准 API";
+  return (
+    <section className="lifetime-summary" aria-label="历史累计">
+      <dl>
+        <div>
+          <dt>Tokens</dt>
+          <dd>{compact(total)}</dd>
+          {cacheShare && <small>{cacheShare}</small>}
+        </div>
+        <div>
+          <dt>费用</dt>
+          <dd>{formatUsd(totals.usd)}</dd>
+          <small>{usdNote}</small>
+        </div>
+        <div>
+          <dt>请求</dt>
+          <dd>{totals.count.toLocaleString()}</dd>
+          {totals.from && (
+            <small>{localTime(totals.from, { year: "numeric" })} 起</small>
+          )}
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+/** 总览沿用账户页的行布局，所有账户排在同一个面板里。 */
 function OverviewQuotas({
   accounts,
   asOf,
@@ -576,105 +674,28 @@ function OverviewQuotas({
           全部账户 <ArrowRight size={16} />
         </Button>
       </div>
-      <div
-        className="quota-preview-list"
-        role="region"
-        aria-label="账户额度摘要"
-        tabIndex={0}
-      >
-        {accounts.map((account) => {
-          const hasQuota = Boolean(account.fiveHour || account.sevenDay);
-          const windows = visibleQuotaWindows(account, asOf, compactUsage);
-          const usage = accountUsage?.[account.id];
-          const plan = formatPlan(account.plan);
-          return (
-            <button
-              className="quota-preview"
-              data-has-quota={hasQuota}
-              data-quota-count={windows.length}
-              data-quota-exhausted={accountQuotaExhausted(account, asOf)}
-              data-has-estimate={
-                !compactUsage || showQuotaEstimate(account.sevenDay, asOf)
-              }
-              key={account.id}
-              onClick={() => (hasQuota ? onOpen(account) : onRequests(account))}
-              aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
-            >
-              <span className="quota-preview-heading">
-                <span
-                  className="account-avatar"
-                  data-kind={account.kind}
-                  data-plan={account.plan?.toLowerCase()}
-                >
-                  <Wallet size={22} />
-                </span>
-                <strong>{account.name}</strong>
-                {plan && !["未提供", "unknown"].includes(plan) && (
-                  <span
-                    className="plan-chip"
-                    data-plan={account.plan?.toLowerCase()}
-                  >
-                    {plan}
-                  </span>
-                )}
-                <ArrowRight size={16} />
-              </span>
-              {hasQuota ? (
-                <>
-                  {windows.map(({ key, label, window }) => (
-                    <QuotaPeriod
-                      key={key}
-                      window={window}
-                      label={label}
-                      asOf={asOf}
-                      compactEstimate={compactUsage}
-                    />
-                  ))}
-                  {!windows.length && <span className="muted">额度 N/A</span>}
-                  {!compactUsage && (
-                    <span className="quota-preview-estimate">
-                      <span>7d 预估</span>
-                      <strong>
-                        {estimateAmount(account.sevenDay, "usd", asOf)}
-                      </strong>
-                    </span>
-                  )}
-                </>
-              ) : (
-                <span className="quota-preview-usage">
-                  <span className="quota-preview-period-label">时间段用量</span>
-                  <span>
-                    <span>
-                      <Activity size={16} aria-hidden="true" /> Tokens
-                    </span>
-                    <strong>{usage ? compact(usage.tokens) : "N/A"}</strong>
-                  </span>
-                  <span>
-                    <span>
-                      <Zap size={16} aria-hidden="true" /> 请求
-                    </span>
-                    <strong>
-                      {usage ? usage.count.toLocaleString() : "N/A"}
-                    </strong>
-                  </span>
-                  <span>
-                    <span>
-                      <Coins size={16} aria-hidden="true" /> 费用
-                    </span>
-                    <strong>{usage ? formatUsd(usage.usd) : "N/A"}</strong>
-                  </span>
-                  <AccountTrend
-                    accountId={account.id}
-                    load={readAccountTrend}
-                    usdBasis={usdBasis}
-                  />
-                </span>
-              )}
-            </button>
-          );
-        })}
-        {!accounts.length && <p className="muted">暂无账户</p>}
-      </div>
+      {accounts.length ? (
+        <div className="account-list" aria-label="账户额度摘要">
+          {accounts.map((account) => (
+            <div className="account-list-item" key={account.id}>
+              <AccountRow
+                account={account}
+                asOf={asOf}
+                usdBasis={usdBasis}
+                compactUsage={compactUsage}
+                usage={accountUsage?.[account.id]}
+                onOpen={() =>
+                  account.fiveHour || account.sevenDay
+                    ? onOpen(account)
+                    : onRequests(account)
+                }
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="muted">暂无账户</p>
+      )}
     </section>
   );
 }
@@ -690,6 +711,9 @@ export function App() {
   const [editingAccountOrder, setEditingAccountOrder] = useState(false);
   const accountArchive = useAccountArchive();
   const [accountToHide, setAccountToHide] = useState<LedgerAccount | null>(
+    null,
+  );
+  const [accountToRename, setAccountToRename] = useState<RenameTarget | null>(
     null,
   );
   const [archiveView, setArchiveView] = usePreference(
@@ -820,12 +844,6 @@ export function App() {
     id: "occurredAt",
     desc: true,
   });
-  const [dark, setDark] = useState(() => {
-    return resolveThemeDark(
-      readStoredThemeMode(localStorage),
-      matchMedia("(prefers-color-scheme: dark)").matches,
-    );
-  });
   const viewQuery: ViewQuery = {
     filter: { ...filter, search: searchForQuery },
     unit: "usd",
@@ -851,13 +869,9 @@ export function App() {
         failed || !cached?.reportStatus?.refreshing,
       );
     },
-    // 仅在报表后台重算期间读取结果；同步完成由公共同步控件使所有报表缓存失效。
-    refetchInterval: (query) => {
-      if (liveUpdatesPaused) return false;
-      if (query.state.status === "error" || query.state.fetchFailureCount)
-        return false;
-      return query.state.data?.reportStatus?.refreshing ? 1000 : false;
-    },
+    // 仅在报表后台计算期间读取结果；同步完成由公共同步控件使所有报表缓存失效。
+    refetchInterval: (query) => reportRefetchInterval(query, liveUpdatesPaused),
+    retry: reportRetry,
     refetchOnWindowFocus: false,
   });
   useEffect(() => {
@@ -868,7 +882,7 @@ export function App() {
   useEffect(() => {
     document.title = `${pages.find((item) => item.id === page)?.name} · Meterleaf`;
   }, [page]);
-  const snapshot = useMemo(
+  const selectedView = useMemo(
     () =>
       query.data
         ? selectUsdView(
@@ -878,19 +892,31 @@ export function App() {
         : undefined,
     [query.data, usdBasisOverride],
   );
+  const accountAliases = accountArchive.data?.aliases;
+  const snapshot = useMemo(
+    () => selectedView && withAccountAliases(selectedView, accountAliases),
+    [selectedView, accountAliases],
+  );
   // 切换报表查询时保留额度摘要，不能让独立订阅窗口随报表加载状态消失。
   const [lastSnapshot, setLastSnapshot] = useState<LedgerView>();
   useEffect(() => {
-    if (snapshot) setLastSnapshot(snapshot);
-  }, [snapshot]);
+    if (selectedView) setLastSnapshot(selectedView);
+  }, [selectedView]);
   const quotaSnapshot =
     snapshot ??
     (lastSnapshot
-      ? selectUsdView(
-          lastSnapshot,
-          usdBasisOverride ?? lastSnapshot.usdBasis ?? "subscription",
+      ? withAccountAliases(
+          selectUsdView(
+            lastSnapshot,
+            usdBasisOverride ?? lastSnapshot.usdBasis ?? "subscription",
+          ),
+          accountAliases,
         )
       : undefined);
+  /** 重命名对话框需要上游原名作为默认值，别名清空后恢复它。 */
+  const upstreamAccountName = (id: string) =>
+    (selectedView ?? lastSnapshot)?.accounts.find((item) => item.id === id)
+      ?.name;
   const quotaAsOf = useQuotaClock(quotaSnapshot);
   // 首页总量不随时段筛选变化，微型趋势同样固定为全账户近 30 天。
   const homeTrendQuery: ViewQuery = {
@@ -916,15 +942,8 @@ export function App() {
         failed || !cached?.reportStatus?.refreshing,
       );
     },
-    refetchInterval: (query) => {
-      if (
-        liveUpdatesPaused ||
-        query.state.status === "error" ||
-        query.state.fetchFailureCount
-      )
-        return false;
-      return query.state.data?.reportStatus?.refreshing ? 1000 : false;
-    },
+    refetchInterval: (query) => reportRefetchInterval(query, liveUpdatesPaused),
+    retry: reportRetry,
     enabled: page === "overview",
   });
   const hiddenIds = new Set(accountArchive.data?.hidden ?? []);
@@ -1068,10 +1087,6 @@ export function App() {
           >
             <item.icon size={17} />
             <span>{item.name}</span>
-            {(page === item.id ||
-              (page === "period" && item.id === "overview")) && (
-              <span className="nav-marker" />
-            )}
           </button>
         ))}
       </nav>
@@ -1100,17 +1115,7 @@ export function App() {
       >
         跳到主要内容
       </a>
-      <aside className="sidebar">
-        <img
-          className="sidebar-art"
-          src="/meterleaf-sidebar-leaves.png"
-          alt=""
-          width="1024"
-          height="1536"
-          aria-hidden="true"
-        />
-        {nav}
-      </aside>
+      <aside className="sidebar">{nav}</aside>
       <div className="main-shell">
         <header
           className={`topbar ${mobile ? "app-topbar" : ""} ${mobile && (page === "overview" || page === "period") ? "app-home-topbar" : ""}`}
@@ -1164,17 +1169,6 @@ export function App() {
                 <h1 id="page-title">
                   {pages.find((p) => p.id === page)?.name}
                 </h1>
-                <p className="topbar-subtitle">
-                  {page === "accounts"
-                    ? "管理账户的使用情况、额度限制与费用预估"
-                    : page === "reports"
-                      ? "多维统计分析，洞察用量与成本"
-                      : page === "ledger"
-                        ? "每一条请求，都清晰可查"
-                        : page === "settings"
-                          ? "Meterleaf · 独立 AI 用量账本"
-                          : "实时掌握 API 使用情况，洞察成本与性能"}
-                </p>
               </>
             )}
           </div>
@@ -1191,7 +1185,6 @@ export function App() {
             {page !== "settings" && (
               <ThemeControl
                 hidden={mobile}
-                onResolvedChange={setDark}
                 mobileLayout={mobileLayout}
                 onMobileLayoutChange={setMobileLayout}
               />
@@ -1245,7 +1238,6 @@ export function App() {
           {page === "settings" && (
             <AboutPage
               mode={snapshot?.mode}
-              onResolvedChange={setDark}
               mobileLayout={mobileLayout}
               onMobileLayoutChange={setMobileLayout}
             />
@@ -1253,37 +1245,10 @@ export function App() {
           {!mobile && page === "overview" && quotaSnapshot && (
             <>
               {quotaSnapshot.lifetimeTotals && (
-                <section className="lifetime-summary" aria-label="历史累计">
-                  <div className="lifetime-heading">
-                    <h2>历史累计</h2>
-                    {quotaSnapshot.lifetimeTotals.from && (
-                      <span>
-                        {localTime(quotaSnapshot.lifetimeTotals.from, {
-                          year: "numeric",
-                        })}{" "}
-                        起
-                      </span>
-                    )}
-                  </div>
-                  <dl>
-                    <div>
-                      <dt>Tokens</dt>
-                      <dd>
-                        {compact(quotaSnapshot.lifetimeTotals.tokens.total)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>费用</dt>
-                      <dd>{formatUsd(quotaSnapshot.lifetimeTotals.usd)}</dd>
-                    </div>
-                    <div>
-                      <dt>请求</dt>
-                      <dd>
-                        {quotaSnapshot.lifetimeTotals.count.toLocaleString()}
-                      </dd>
-                    </div>
-                  </dl>
-                </section>
+                <LedgerStrip
+                  totals={quotaSnapshot.lifetimeTotals}
+                  usdBasis={usdBasis}
+                />
               )}
               <OverviewQuotas
                 accounts={sortedAccounts.filter(
@@ -1327,7 +1292,6 @@ export function App() {
                     unit="tokens"
                     granularity="day"
                     chartStyle={homeChartStyle}
-                    dark={dark}
                   />
                 </Suspense>
               </section>
@@ -1541,29 +1505,57 @@ export function App() {
                   "账户归档状态读取失败，请刷新重试"}
               </p>
             )}
-          {snapshot && (query.isError || snapshot.reportStatus?.lastError) && (
-            <div role="alert" className="report-error sync-warning">
-              <span>
-                {query.isError
-                  ? `刷新失败（${query.error instanceof Error ? query.error.message : "报表读取失败"}），当前显示上次成功的数据。`
-                  : "刷新失败，当前显示上次成功的数据。"}
-              </span>
-              <Button
-                variant="ghost"
-                disabled={
-                  query.isFetching ||
-                  (!query.isError && snapshot.reportStatus?.refreshing)
-                }
-                onClick={() => void query.refetch()}
-              >
-                <RefreshCw size={14} aria-hidden="true" />
-                重试
-              </Button>
-            </div>
+          {snapshot &&
+            !query.isError &&
+            snapshot.reportStatus?.rebuilding &&
+            !snapshot.reportStatus.lastError && <ReportRebuildingNotice />}
+          {snapshot && isReportBuilding(query.error) && (
+            <ReportRebuildingNotice />
           )}
+          {snapshot &&
+            !isReportBuilding(query.error) &&
+            (query.isError || snapshot.reportStatus?.lastError) && (
+              <div role="alert" className="report-error sync-warning">
+                <span>
+                  {query.isError
+                    ? `刷新失败（${query.error instanceof Error ? query.error.message : "报表读取失败"}），当前显示上次成功的数据。`
+                    : "刷新失败，当前显示上次成功的数据。"}
+                </span>
+                {isSessionExpired(query.error) ? (
+                  <Button
+                    variant="ghost"
+                    onClick={() => window.location.reload()}
+                  >
+                    <LogIn size={14} aria-hidden="true" />
+                    重新登录
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    disabled={
+                      query.isFetching ||
+                      (!query.isError && snapshot.reportStatus?.refreshing)
+                    }
+                    onClick={() => void query.refetch()}
+                  >
+                    <RefreshCw size={14} aria-hidden="true" />
+                    重试
+                  </Button>
+                )}
+              </div>
+            )}
           {query.isPending ? (
             <div className="loading-panel" role="status">
               正在读取账本…
+            </div>
+          ) : !snapshot && isReportBuilding(query.error) ? (
+            <ReportBuildingPanel since={query.error.since} />
+          ) : !snapshot && isSessionExpired(query.error) ? (
+            <div className="empty-state" role="alert">
+              <LogIn />
+              <h2>登录已过期</h2>
+              <p>刷新页面重新登录后即可继续查看账本。</p>
+              <Button onClick={() => window.location.reload()}>重新登录</Button>
             </div>
           ) : !snapshot ? (
             <div className="empty-state" role="alert">
@@ -1578,9 +1570,6 @@ export function App() {
                   {mobile && <h2 className="app-metrics-heading">关键指标</h2>}
                   <section className="metrics" aria-label="用量摘要">
                     <div className="metric primary-metric">
-                      <span className="metric-symbol" aria-hidden="true">
-                        <img src="/favicon.svg" width="26" height="26" alt="" />
-                      </span>
                       <div className="metric-label">费用</div>
                       <div className="metric-value">
                         {amount(
@@ -1614,40 +1603,29 @@ export function App() {
                       <MiniTrend
                         points={view?.units.usd.points ?? []}
                         metric="usd"
-                        tone="teal"
                         label="所选时段费用趋势"
+                        granularity={granularity}
                         hideCaption
                       />
                     </div>
+                    {creditsSummary.hasKnown && (
+                      <div className="metric">
+                        <div className="metric-label">订阅 Credits</div>
+                        <div className="metric-value">
+                          {amount(creditsSummary.value, "credits")}
+                        </div>
+                        <div className="metric-foot" />
+                        <MiniTrend
+                          points={view?.units.credits.points ?? []}
+                          metric="credits"
+                          label="所选时段 Credits 趋势"
+                          granularity={granularity}
+                          hideCaption
+                        />
+                      </div>
+                    )}
                     <div className="metric">
-                      <span className="metric-symbol" aria-hidden="true">
-                        <Layers3 />
-                      </span>
-                      <div className="metric-label">
-                        订阅 Credits <Coins size={14} />
-                      </div>
-                      <div className="metric-value">
-                        {amount(
-                          creditsSummary.hasKnown ? creditsSummary.value : null,
-                          "credits",
-                        )}
-                      </div>
-                      <div className="metric-foot" />
-                      <MiniTrend
-                        points={view?.units.credits.points ?? []}
-                        metric="credits"
-                        tone="blue"
-                        label="所选时段 Credits 趋势"
-                        hideCaption
-                      />
-                    </div>
-                    <div className="metric">
-                      <span className="metric-symbol" aria-hidden="true">
-                        <Coins />
-                      </span>
-                      <div className="metric-label">
-                        Tokens 总量 <Activity size={14} />
-                      </div>
+                      <div className="metric-label">Tokens 总量</div>
                       <div className="metric-value">
                         {tokenSummary.hasKnown
                           ? compact(tokenSummary.value)
@@ -1661,18 +1639,13 @@ export function App() {
                       <MiniTrend
                         points={view?.units.tokens.points ?? []}
                         metric="tokens"
-                        tone="purple"
                         label="所选时段 Tokens 趋势"
+                        granularity={granularity}
                         hideCaption
                       />
                     </div>
                     <div className="metric">
-                      <span className="metric-symbol" aria-hidden="true">
-                        <Activity />
-                      </span>
-                      <div className="metric-label">
-                        缓存命中率 <Zap size={14} />
-                      </div>
+                      <div className="metric-label">缓存命中率</div>
                       <div className="metric-value">
                         {cacheRate === null ? "N/A" : cacheRate.toFixed(1)}
                         {cacheRate !== null && <small>%</small>}
@@ -1683,7 +1656,7 @@ export function App() {
                             ? compact(cacheSummary.value)
                             : "N/A"}
                         </span>
-                        <span>缓存读取 tokens</span>
+                        <span>缓存读取 Tokens</span>
                       </div>
                       {cacheRate !== null && (
                         <div className="cache-rate-track" aria-hidden="true">
@@ -1744,7 +1717,7 @@ export function App() {
                             ? "费用"
                             : unit === "credits"
                               ? "Credits"
-                              : "总 tokens"}
+                              : "总 Tokens"}
                         </span>
                         <div className="chart-controls">
                           <ChartStyleControl
@@ -1779,7 +1752,6 @@ export function App() {
                             unit={unit}
                             granularity={granularity}
                             chartStyle={chartStyle}
-                            dark={dark}
                           />
                         </Suspense>
                       ) : (
@@ -1809,7 +1781,6 @@ export function App() {
                             granularity={granularity}
                             chartStyle="pie"
                             donut
-                            dark={dark}
                           />
                         </Suspense>
                         <div className="model-donut-total" aria-hidden="true">
@@ -1917,7 +1888,7 @@ export function App() {
                     <span>7d 预估</span>
                     <span />
                   </div>
-                  <div>
+                  <div className="account-list">
                     {visibleAccounts
                       .filter(
                         (a) =>
@@ -2023,6 +1994,29 @@ export function App() {
                                         !accountArchive.data?.writable ||
                                         accountArchive.mutation.isPending
                                       }
+                                      onClick={() => {
+                                        accountArchive.mutation.reset();
+                                        setAccountToRename({
+                                          id: account.id,
+                                          name: account.name,
+                                          upstreamName:
+                                            upstreamAccountName(account.id) ??
+                                            account.name,
+                                          hasAlias: Boolean(
+                                            accountAliases?.[account.id],
+                                          ),
+                                        });
+                                      }}
+                                    >
+                                      <PencilLine size={16} />
+                                      重命名
+                                    </ActionMenu.Item>
+                                    <ActionMenu.Item
+                                      className="account-menu-item"
+                                      disabled={
+                                        !accountArchive.data?.writable ||
+                                        accountArchive.mutation.isPending
+                                      }
                                       onClick={() =>
                                         accountArchive.mutation.mutate({
                                           id: account.id,
@@ -2074,7 +2068,6 @@ export function App() {
                   {view && (
                     <ModelDistribution
                       view={view}
-                      dark={dark}
                       onModel={(model) => {
                         setFilter({ ...filter, model, search: "" }, "ledger");
                         navigate("ledger");
@@ -2113,6 +2106,23 @@ export function App() {
           )}
         </main>
       </div>
+      <AccountRenameDialog
+        target={accountToRename}
+        pending={accountArchive.mutation.isPending}
+        error={
+          accountToRename && accountArchive.mutation.isError
+            ? accountArchive.mutation.error.message
+            : null
+        }
+        onClose={() => setAccountToRename(null)}
+        onSave={(alias) => {
+          if (!accountToRename) return;
+          accountArchive.mutation.mutate(
+            { id: accountToRename.id, alias },
+            { onSuccess: () => setAccountToRename(null) },
+          );
+        }}
+      />
       <AlertDialog.Root
         open={!!accountToHide}
         onOpenChange={(open) => {
@@ -2365,11 +2375,7 @@ export function App() {
             </span>
             <SheetTitle>{selectedAccount?.name}</SheetTitle>
             <SheetDescription>
-              {selectedAccount?.plan?.replace(
-                /\b(pro|plus)\b/gi,
-                (value) =>
-                  value[0]!.toUpperCase() + value.slice(1).toLowerCase(),
-              )}
+              {selectedAccount && planBadge(selectedAccount)?.label}
             </SheetDescription>
           </SheetHeader>
           {selectedAccount && snapshot && (
@@ -2381,12 +2387,13 @@ export function App() {
                       selectedAccount,
                       quotaAsOf,
                       smallScreen,
-                    ).map(({ key, label, window }) => (
+                    ).map(({ key, label, window, waiting }) => (
                       <QuotaBar
                         key={key}
                         window={window}
                         label={`${label}窗口`}
                         asOf={quotaAsOf}
+                        waiting={waiting}
                       />
                     ))}
                     {!visibleQuotaWindows(
@@ -2423,7 +2430,9 @@ export function App() {
                       selectedAccount,
                       quotaAsOf,
                       smallScreen,
-                    ).some(({ key }) => key === "fiveHour") && (
+                    ).some(
+                      ({ key, waiting }) => key === "fiveHour" && !waiting,
+                    ) && (
                       <>
                         <dt>5h 周期费用</dt>
                         <dd>

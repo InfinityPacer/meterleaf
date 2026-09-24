@@ -157,9 +157,6 @@ export function LedgerTable({
               hour12: false,
             })}
           </span>
-          {info.row.original.sourceId && (
-            <small>{info.row.original.sourceId}</small>
-          )}
         </div>
       ),
     },
@@ -190,7 +187,7 @@ export function LedgerTable({
     {
       id: "input",
       accessorFn: requestInputTokens,
-      header: "输入 tokens",
+      header: "输入",
       cell: (info) => compact(info.getValue<number | null>()),
     },
     {
@@ -204,7 +201,7 @@ export function LedgerTable({
     },
     {
       accessorKey: "output",
-      header: "输出 tokens",
+      header: "输出",
       cell: (info) => compact(info.getValue<number | null>()),
     },
     {

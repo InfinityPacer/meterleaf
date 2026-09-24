@@ -142,7 +142,6 @@ test("pie chart screen-reader data matches positive finite pie rows", () => {
       breakdown,
       unit: "usd",
       granularity: "day",
-      dark: false,
       chartStyle: "pie",
     }),
   );

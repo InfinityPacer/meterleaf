@@ -344,11 +344,13 @@ async function ready() {
       await expect(page.locator("main .metrics")).toHaveCount(0);
       await expect(page.locator("main > .filterbar")).toHaveCount(0);
       await expect(page.locator(".overview-history-trend")).toBeVisible();
-      await expect(page.locator(".quota-preview-estimate > strong")).toHaveText(
-        ["N/A", "N/A"],
-      );
       await expect(
-        page.locator(".quota-preview-estimate").getByText(/未提供|未计价原因/),
+        page.locator(".overview-quotas .account-capacity > strong"),
+      ).toHaveText(["N/A", "N/A"]);
+      await expect(
+        page
+          .locator(".overview-quotas .account-capacity")
+          .getByText(/未提供|未计价原因/),
       ).toHaveCount(0);
     }
   }

@@ -12,11 +12,13 @@ import type { Granularity, ReportUnit } from "../../shared/report";
 import {
   amount,
   compact,
+  continuousPoints,
   localTime,
   modelColor,
   modelLabel,
 } from "../lib/report";
 import type { LedgerView } from "../../shared/ledger-view";
+import { useThemeColors } from "../lib/theme-colors";
 
 echarts.use([
   LineChart,
@@ -68,7 +70,6 @@ interface Props {
   breakdown: LedgerView["view"]["breakdown"];
   unit: ReportUnit;
   granularity: Granularity;
-  dark: boolean;
   chartStyle: ChartStyle;
   /** 独立模型报表由相邻表格提供图例与完整值。 */
   donut?: boolean;
@@ -79,13 +80,13 @@ export function UsageChart({
   breakdown,
   unit,
   granularity,
-  dark,
   chartStyle,
   donut = false,
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const instance = useRef<ReturnType<typeof echarts.init> | null>(null);
   const positivePieRows = pieRows(breakdown);
+  const colors = useThemeColors();
   useEffect(() => {
     if (!container.current) return;
     const chart = echarts.init(container.current, undefined, {
@@ -103,7 +104,7 @@ export function UsageChart({
   useEffect(() => {
     const chart = instance.current;
     if (!chart) return;
-    const data = points;
+    const data = continuousPoints(points, granularity);
     const labels = data.map((point) =>
       localTime(
         point.at,
@@ -114,15 +115,15 @@ export function UsageChart({
     );
     const option: EChartsCoreOption = {
       animation: false,
-      textStyle: { fontFamily: "system-ui, sans-serif" },
+      textStyle: { fontFamily: colors.fontFamily },
       grid: { left: 6, right: 12, top: 32, bottom: 8, containLabel: true },
       tooltip: {
         trigger: "axis",
         confine: true,
         renderMode: "richText",
-        backgroundColor: dark ? "#252b32" : "#ffffff",
-        borderColor: dark ? "#404953" : "#dce1e7",
-        textStyle: { color: dark ? "#edf0f4" : "#20242b", fontSize: 14 },
+        backgroundColor: colors.surface,
+        borderColor: colors.line,
+        textStyle: { color: colors.ink, fontSize: 13 },
         formatter: (params: unknown) => {
           const values = params as { dataIndex: number }[];
           const point = data[values[0]?.dataIndex ?? 0];
@@ -137,8 +138,8 @@ export function UsageChart({
         axisLine: { show: false },
         axisTick: { show: false },
         axisLabel: {
-          color: dark ? "#c1c9d2" : "#414a55",
-          fontSize: 13,
+          color: colors.muted,
+          fontSize: 12,
           hideOverlap: true,
           margin: 18,
         },
@@ -147,30 +148,45 @@ export function UsageChart({
         type: "value",
         splitNumber: 4,
         axisLabel: {
-          color: dark ? "#c1c9d2" : "#414a55",
-          fontSize: 13,
+          color: colors.muted,
+          fontSize: 12,
           formatter: (v: number) =>
             unit === "usd" ? `$${compact(v)}` : compact(v),
         },
         splitLine: {
-          lineStyle: { color: dark ? "#303841" : "#e9edf2", type: "dashed" },
+          lineStyle: { color: colors.lineSoft },
         },
       },
       series: [
         {
           name: "用量",
           type: chartStyle === "bar" ? "bar" : "line",
-          showSymbol: true,
+          showSymbol: false,
           symbolSize: 6,
-          lineStyle: { width: 2.5 },
-          areaStyle: chartStyle === "area" ? { opacity: 0.16 } : undefined,
+          lineStyle: { width: 2 },
+          areaStyle:
+            chartStyle === "area"
+              ? {
+                  color: {
+                    type: "linear",
+                    x: 0,
+                    y: 0,
+                    x2: 0,
+                    y2: 1,
+                    colorStops: [
+                      { offset: 0, color: colors.accentAlpha(0.22) },
+                      { offset: 1, color: colors.accentAlpha(0.02) },
+                    ],
+                  },
+                }
+              : undefined,
           data: data.map((point) => point.value),
           barMaxWidth: 42,
           itemStyle: {
-            color: dark ? "#619be7" : "#3779d5",
-            borderRadius: [4, 4, 0, 0],
+            color: colors.accent,
+            borderRadius: [3, 3, 0, 0],
           },
-          emphasis: { itemStyle: { color: "#168579" } },
+          emphasis: { itemStyle: { color: colors.accent } },
         },
       ],
     };
@@ -183,14 +199,14 @@ export function UsageChart({
       chart.setOption(
         {
           animation: false,
-          textStyle: { fontFamily: "system-ui, sans-serif" },
+          textStyle: { fontFamily: colors.fontFamily },
           tooltip: {
             trigger: "item",
             confine: true,
             renderMode: "richText",
-            backgroundColor: dark ? "#252b32" : "#ffffff",
-            borderColor: dark ? "#404953" : "#dce1e7",
-            textStyle: { color: dark ? "#edf0f4" : "#20242b", fontSize: 14 },
+            backgroundColor: colors.surface,
+            borderColor: colors.line,
+            textStyle: { color: colors.ink, fontSize: 13 },
             formatter: (params: unknown) => {
               const point = params as {
                 name: string;
@@ -211,7 +227,7 @@ export function UsageChart({
             left: "center",
             itemWidth: 12,
             itemHeight: 12,
-            textStyle: { color: dark ? "#edf0f4" : "#20242b", fontSize: 13 },
+            textStyle: { color: colors.ink, fontSize: 12 },
           },
           series: [
             {
@@ -222,14 +238,14 @@ export function UsageChart({
               label: {
                 show: !donut,
                 position: "outside",
-                color: dark ? "#edf0f4" : "#20242b",
-                fontSize: 14,
+                color: colors.ink,
+                fontSize: 12,
                 formatter: (params: { percent?: number }) =>
                   (params.percent ?? 0) >= 5 ? `${params.percent}%` : "",
               },
               labelLayout: { hideOverlap: true },
               itemStyle: {
-                borderColor: dark ? "#20262d" : "#ffffff",
+                borderColor: colors.surface,
                 borderWidth: 2,
               },
               data: pieData,
@@ -239,7 +255,7 @@ export function UsageChart({
         true,
       );
     } else chart.setOption(option, true);
-  }, [points, breakdown, unit, granularity, dark, chartStyle, donut]);
+  }, [points, breakdown, unit, granularity, colors, chartStyle, donut]);
   return (
     <>
       <div
