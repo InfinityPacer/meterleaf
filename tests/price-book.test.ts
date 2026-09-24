@@ -43,7 +43,9 @@ test("bundled JSON contains separate USD branches with unchanged credits", () =>
   expect(api.usd.amount).toBe("6.075");
   expect(subscription.credits).toEqual(api.credits);
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-09-25.1");
+  expect(subscription.version).toBe("meterleaf@2026-09-25.2");
+  // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
+  expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
 
 test("GPT-5.4 prices cached input at the exact long-context boundary without changing subscription estimates", () => {
@@ -64,6 +66,20 @@ test("GPT-5.4 prices cached input at the exact long-context boundary without cha
   expect(over.apiUsd.amount).toBe("1.3825005");
   expect(over.credits.amount).toBe("17.37500625");
   expect(over.subscriptionUsd.reason).toBe("current-rate-applied-to-history");
+});
+
+test("GPT-6 Sol and Luna use the 2026-09-22 rates with long context only in API USD", () => {
+  for (const [model, subscriptionUsd, apiUsd, credits] of [
+    ["gpt-6-sol", "0.61", "1.215", "15.25"],
+    ["gpt-6-luna", "0.0305", "0.06075", "0.7625"],
+  ] as const) {
+    const fact = { ...usage, model };
+    const subscription = valueUsage(fact, defaultPriceBook);
+    const api = valueUsage(fact, defaultPriceBook, "api");
+    expect(subscription.usd.amount).toBe(subscriptionUsd);
+    expect(api.usd.amount).toBe(apiUsd);
+    expect(subscription.credits.amount).toBe(credits);
+  }
 });
 
 test("GPT-5.4 mini has independent USD and credits prices without inherited long-context rates", () => {
