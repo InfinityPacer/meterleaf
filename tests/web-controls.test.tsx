@@ -73,7 +73,7 @@ test("ThemeControl keeps appearance and palette contracts independent", () => {
   };
   expect(readStoredThemeMode(readOnlyStorage)).toBe("system");
   expect(readStoredPalette(readOnlyStorage)).toBe("mono");
-  // 旧版本的「默认」「自然」配色已不存在，回到品牌绿。
+  // 旧版本的「默认」「自然」配色已不存在，回到翠绿。
   expect(readStoredPalette({ getItem: () => "natural" })).toBe("green");
   expect(resolveThemeDark("system", true)).toBe(true);
   expect(resolveThemeDark("system", false)).toBe(false);
