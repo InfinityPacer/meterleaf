@@ -438,7 +438,7 @@ try {
   await expect(page.locator("html")).not.toHaveClass(/dark/);
   await expect(page.locator("html")).toHaveAttribute("data-palette", "indigo");
   await themeTrigger.click();
-  await selectTheme("配色", "品牌绿");
+  await selectTheme("配色", "翠绿");
   await page.keyboard.press("Escape");
   await expect(page.locator("html")).toHaveAttribute("data-palette", "green");
   await page.emulateMedia({ colorScheme: null });

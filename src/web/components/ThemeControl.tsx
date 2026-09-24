@@ -13,7 +13,7 @@ import { FilterSelect } from "./FilterSelect";
 import "./controls.css";
 
 export type ThemeMode = "system" | "light" | "dark";
-/** 强调色方案，与明暗相互独立；旧版本保存的配色一律回到品牌绿。 */
+/** 强调色方案，与明暗相互独立；旧版本保存的配色一律回到翠绿。 */
 export type ThemePalette = "green" | "indigo" | "mono";
 
 export const THEME_STORAGE_KEY = "meterleaf-theme";
@@ -26,7 +26,7 @@ export const themeModeOptions = [
 ] satisfies { value: ThemeMode; label: string }[];
 
 export const themePaletteOptions = [
-  { value: "green", label: "品牌绿" },
+  { value: "green", label: "翠绿" },
   { value: "indigo", label: "靛蓝" },
   { value: "mono", label: "黑白" },
 ] satisfies { value: ThemePalette; label: string }[];

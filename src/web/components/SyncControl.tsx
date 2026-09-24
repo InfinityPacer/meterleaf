@@ -22,6 +22,28 @@ const errorLabels: Record<string, string> = {
   configuration: "连接配置错误",
   unknown: "同步处理失败",
 };
+/** 同步失败时告诉使用者哪一步出错、可以做什么；阶段代码和错误编号只留在服务端日志。 */
+const stageActions: Record<string, string> = {
+  accounts: "读取账户",
+  quotas: "读取额度",
+  incremental: "补采用量",
+  sweep: "回扫历史用量",
+};
+const errorHints: Record<string, string> = {
+  network: "请确认 Meterleaf 能连上 Sub2API 数据库，恢复后会自动继续。",
+  timeout: "请确认 Meterleaf 能连上 Sub2API 数据库，恢复后会自动继续。",
+  sql: "请确认 Sub2API 数据库可用且只读账号仍有权限。",
+  storage: "请检查数据目录的磁盘空间和写入权限。",
+  configuration: "请检查连接配置。",
+};
+
+export function syncFailureMessage(error: { stage: string; kind: string }) {
+  const action = stageActions[error.stage] ?? "同步";
+  const reason =
+    error.kind === "unknown" ? "出错" : (errorLabels[error.kind] ?? "出错");
+  const hint = errorHints[error.kind] ?? "稍后会自动重试。";
+  return `${action}时${reason}。${hint}`;
+}
 
 type SyncStatusResponse = SyncStatus & { unavailable?: boolean };
 
@@ -414,12 +436,7 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
               </div>
               {statusKnown && status?.lastError && (
                 <p className="sync-error" role="status" aria-live="polite">
-                  阶段：
-                  {stageLabels[status.lastError.stage] ??
-                    status.lastError.stage}{" "}
-                  · {errorLabels[status.lastError.kind] ?? "同步处理失败"}
-                  {status.lastError.code ? ` (${status.lastError.code})` : ""} ·
-                  错误编号 {status.lastError.id}
+                  {syncFailureMessage(status.lastError)}
                 </p>
               )}
               {queryFailed && (
