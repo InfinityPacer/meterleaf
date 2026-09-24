@@ -3,6 +3,12 @@ import { closeSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { accountFact, readClaudeJson } from "./claude-code/account";
 import { quotaSnapshot } from "./claude-code/quota";
+import {
+  readStatuslineCache,
+  statuslineQuotaSnapshot,
+} from "./claude-code/statusline-cache";
+import { attribute } from "./attribution";
+import { UNATTRIBUTED_ACCOUNT_ID } from "./claude-code/account";
 import { mayContainUsage, parseLine } from "./claude-code/usage";
 import type { CollectorState, FileCursor, FileObservation } from "./state";
 
@@ -10,6 +16,8 @@ export interface CollectSources {
   /** Claude Code 会话目录，通常是 ~/.claude/projects。 */
   projectsDir: string;
   claudeJson: string;
+  /** 可选：用户状态栏脚本写出的额度缓存 TSV。 */
+  statuslineCache?: string | null;
 }
 
 export interface CollectReport {
@@ -27,6 +35,8 @@ export interface CollectReport {
   accountUuid: string | null;
   quotaRecorded: boolean;
   quotaSkipped: string | null;
+  statuslineQuotaRecorded: boolean;
+  statuslineQuotaSkipped: string | null;
 }
 
 const chunkBytes = 4 * 1024 * 1024;
@@ -190,6 +200,8 @@ export function emptyReport(): CollectReport {
     accountUuid: null,
     quotaRecorded: false,
     quotaSkipped: null,
+    statuslineQuotaRecorded: false,
+    statuslineQuotaSkipped: null,
   };
 }
 
@@ -229,6 +241,28 @@ export function collect(
       report.quotaSkipped = "额度缓存属于未观察到的账户";
     } else {
       report.quotaRecorded = state.recordQuota(quota);
+    }
+  }
+
+  if (sources.statuslineCache) {
+    const cache = readStatuslineCache(sources.statuslineCache);
+    if (!cache) {
+      report.statuslineQuotaSkipped = "状态栏额度缓存不存在或格式无效";
+    } else {
+      // 文件不带账户，按采样时刻所在的登录区间归属；切换前后无法判断时不上报。
+      const account = attribute(
+        cache.sampledAt,
+        state.segments(),
+        state.binding(),
+      );
+      if (account === UNATTRIBUTED_ACCOUNT_ID || !state.account(account)) {
+        report.statuslineQuotaSkipped = "无法确定状态栏额度采样时的登录账户";
+      } else {
+        report.statuslineQuotaRecorded = state.recordQuota(
+          statuslineQuotaSnapshot(cache, account),
+          "statusline",
+        );
+      }
     }
   }
   return report;

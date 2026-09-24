@@ -69,13 +69,25 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
    系统每分钟以低优先级运行一次同步，「系统设置 → 通用 → 登录项与扩展」中会显示 Meterleaf。Claude Code 会删除较早的会话记录，后台任务需要保持运行，才能在删除前把用量记入账本。
 
+## 状态栏额度缓存（可选）
+
+Claude Code 每一轮都会把最新的 5 小时与 7 天额度传给状态栏命令。如果你的状态栏脚本把它写成文件，采集器可以读取这个文件，额度会比 `~/.claude.json` 里的缓存新得多。
+
+文件每行一个窗口，三列用制表符分隔，依次是窗口名 `five_hour` 或 `seven_day`、已用百分比、重置时间的 Unix 秒。例如 `five_hour	18	1790277600`。启用时提供绝对路径：
+
+```sh
+meterleaf-collector statusline-cache ~/.cache/claude-statusline/rate-limits.tsv
+```
+
+采集器同样只读这个文件。文件里没有账户和采样时间，采集器把文件修改时间当作采样时间，并按那一刻观察到的登录账户归属；切换账户前后无法判断时跳过这次采样。Meterleaf 对同一账户和窗口使用采样时间最新的一份，两个来源不会相加。停用时执行 `meterleaf-collector statusline-cache off`。
+
 ## 日常查看与排障
 
 `meterleaf-collector status` 显示同步进度、待发送数量、最近一次成功或失败的原因，以及账户归属情况，不会显示密钥。
 
 - **网络不通或 Meterleaf 暂停**：未送达的数据保存在本机，恢复后自动补发，不会重复计数。
 - **提示密钥无效**：确认 Meterleaf 的 `METERLEAF_INGEST_KEYS` 包含 `init` 输出的那一行并已重启。换电脑或重新生成密钥时，用 `init --force` 并替换服务端对应的行。
-- **额度显示为过时**：Claude Code 并不在每次请求后刷新本地额度缓存，观察到的刷新发生在打开设置中的用量面板时。采集器不会主动请求额度，打开用量面板后，下一次同步会带上新快照。
+- **额度显示为过时**：Claude Code 并不在每次请求后刷新 `~/.claude.json` 里的额度缓存，观察到的刷新发生在打开设置中的用量面板时。采集器不会主动请求额度，可以启用下面的状态栏额度缓存获得更新的数据。
 - **切换过登录账户**：切换前后正在进行的请求可能无法确定属于哪个账户，会保留在「未归属」下，不会被算到当前账户。
 
 停用时执行 `meterleaf-collector uninstall-launchd`。采集器的数据目录位于 `~/Library/Application Support/Meterleaf Collector`，其中保存写入密钥、读取进度和账户归属记录。不要删除它，否则归属记录丢失后，重新读取的历史会改记到「未归属」。

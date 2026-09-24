@@ -9,6 +9,8 @@ const configSchema = z.object({
   sourceId: sourceIdSchema,
   key: z.string().startsWith(INGEST_KEY_PREFIX),
   createdAt: z.string(),
+  /** 可选额度来源：用户状态栏脚本写出的 rate_limits TSV 绝对路径。 */
+  statuslineCache: z.string().startsWith("/").optional(),
 });
 
 export type CollectorConfig = z.infer<typeof configSchema>;
