@@ -37,8 +37,12 @@ export interface ViewServiceOptions {
 }
 
 interface WorkerMessage {
+  /** index-rebuilt 表示后台重建结束（成功或放弃），此前的过渡结果需要重新计算。 */
+  type?: "index-rebuilt";
   id: number;
   result?: LedgerView;
+  /** 结果来自后台重建期间保留的旧索引，可能使用旧价格表或缺少最新事实。 */
+  transitional?: boolean;
   error?: string;
   /** 分段耗时仅用于诊断，不写入缓存或用户账本。 */
   timings?: {
@@ -171,6 +175,8 @@ export class ViewService {
   private failed = false;
   private closed = false;
   private pending = new Map<number, PendingRequest>();
+  /** 报表线程正在后台重建索引；期间所有结果都按刷新中展示。 */
+  private indexRebuilding = false;
   private active = new Map<string, Promise<LedgerView>>();
   private cache = new Map<string, CacheEntry>();
   private cacheWriter: Worker | null = null;
@@ -210,6 +216,12 @@ export class ViewService {
       },
     });
     this.worker.on("message", (message: WorkerMessage) => {
+      if (message.type === "index-rebuilt") {
+        this.indexRebuilding = false;
+        this.refreshAfterRebuild();
+        return;
+      }
+      if (message.transitional) this.indexRebuilding = true;
       const request = this.pending.get(message.id);
       this.pending.delete(message.id);
       if (!request) return;
@@ -648,7 +660,7 @@ export class ViewService {
       ...result,
       ...(currentSync ? { sync: currentSync } : {}),
       reportStatus: {
-        refreshing: entry.refreshing,
+        refreshing: entry.refreshing || this.indexRebuilding,
         lastError: entry.lastError,
       },
     };
@@ -702,6 +714,13 @@ export class ViewService {
     const unref = (this.refreshTimer as unknown as { unref?: () => void })
       .unref;
     unref?.call(this.refreshTimer);
+  }
+
+  /** 等进行中的定时刷新结束后再完整刷新一轮，确保每个过渡结果都换成新索引的结果。 */
+  private refreshAfterRebuild() {
+    void (this.scheduledRefresh ?? Promise.resolve()).then(() =>
+      this.refreshCachedEntries(),
+    );
   }
 
   private refreshCachedEntries(): Promise<void> {

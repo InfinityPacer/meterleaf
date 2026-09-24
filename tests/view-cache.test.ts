@@ -105,6 +105,29 @@ test("namespace changes invalidate old source, book and format caches", () => {
   });
 });
 
+test("a renamed price book keeps transitional results only from the book it supersedes", () => {
+  fixture((path) => {
+    let cache = new ViewCache(path, "v1:source-a:openai");
+    cache.save(entry());
+    cache.close();
+    cache = new ViewCache(path, "v1:source-a:meterleaf", [
+      "v1:source-a:openai",
+    ]);
+    try {
+      expect(cache.load()).toEqual([entry()]);
+    } finally {
+      cache.close();
+    }
+    // 接替后 namespace 已改记为新标识，再换成无关价格表仍然失效。
+    cache = new ViewCache(path, "v1:source-a:custom", ["v1:source-a:openai"]);
+    try {
+      expect(cache.load()).toEqual([]);
+    } finally {
+      cache.close();
+    }
+  });
+});
+
 test("upsert and recency eviction persist at most sixteen entries", () => {
   fixture((path) => {
     let cache = new ViewCache(path, "test");

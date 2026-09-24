@@ -117,11 +117,18 @@ function validate(entry: unknown): asserts entry is CachedReport {
   }
 }
 
-/** 独立派生 SQLite 缓存；namespace 包含格式、来源身份和 book.id，不包含价格版本。 */
+/**
+ * 独立派生 SQLite 缓存；namespace 包含格式、来源身份和 book.id，不包含价格版本。
+ * previousNamespaces 列出改名前的等价 namespace，命中时保留结果并改记为当前 namespace。
+ */
 export class ViewCache {
   private readonly db: Database;
 
-  constructor(path: string, namespace: string) {
+  constructor(
+    path: string,
+    namespace: string,
+    previousNamespaces: readonly string[] = [],
+  ) {
     this.db = new Database(path, { create: true, strict: true });
     try {
       assertReadableSchema(this.db, "view-cache");
@@ -149,7 +156,8 @@ export class ViewCache {
           )
           .get();
         if (prior?.namespace !== namespace) {
-          this.db.exec("DELETE FROM view_cache");
+          if (!prior || !previousNamespaces.includes(prior.namespace))
+            this.db.exec("DELETE FROM view_cache");
           this.db
             .query(
               "INSERT INTO view_cache_namespace VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET namespace=excluded.namespace",

@@ -481,8 +481,18 @@ export class LifetimeIndex {
   }
 
   /** 返回与现有 API 相同的全历史累计契约；金额只有存在已知行时才返回字符串。 */
-  value(basis: UsdBasis, asOf: string): LifetimeTotals {
-    const state = this.loadState();
+  /**
+   * transitional 用于后台重建期间：当前价格表尚无累计值时，读取文件中已有的其他价格表
+   * 版本，调用方负责把结果标记为过渡结果。
+   */
+  value(
+    basis: UsdBasis,
+    asOf: string,
+    options: { transitional?: boolean } = {},
+  ): LifetimeTotals {
+    const state =
+      this.loadState() ??
+      (options.transitional ? this.loadAnyState() : undefined);
     if (!state) throw new Error("Lifetime index has not been built");
     const totals = state.totals;
     const selected = basis === "api" ? totals.apiUsd : totals.subscriptionUsd;
@@ -545,6 +555,38 @@ export class LifetimeIndex {
     if (!row) return undefined;
     this.state = stateFromRow(row);
     return this.state;
+  }
+
+  /** 最近写入的价格表版本；当前版本尚未建成时即旧版本。 */
+  latestPriceBookKey(): string | null {
+    return (
+      this.db
+        .query<{ price_book_key: string }, []>(
+          "SELECT price_book_key FROM lifetime_index_state ORDER BY rowid DESC LIMIT 1",
+        )
+        .get()?.price_book_key ?? null
+    );
+  }
+
+  private loadAnyState(): MutableState | undefined {
+    const row = this.db
+      .query<StateRow, []>(
+        `SELECT source_identity, source_revision, checkpoint, tracked,
+                count, from_at, to_at,
+                source_stamp,
+                input_total, input_known,
+                cache_read_total, cache_read_known,
+                cache_write_total, cache_write_known,
+                output_total, output_known,
+                token_total, token_total_known, incomplete_token_rows,
+                api_usd_total, api_usd_known,
+                subscription_usd_total, subscription_usd_known,
+                credits_total, credits_known
+           FROM lifetime_index_state
+          ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get();
+    return row ? stateFromRow(row) : undefined;
   }
 
   private observeTracked(state: MutableState): SourceObservation {
