@@ -3,7 +3,7 @@
 [返回首页](../README.md)
 
 Meterleaf 将费率保存在独立 JSON 文件中，内置文件为
-`prices/openai-2026-09-09.json`。使用自定义价格表时，设置
+`prices/meterleaf-2026-09-25.json`，同时包含 OpenAI 与 Anthropic Claude 模型。使用自定义价格表时，设置
 `METERLEAF_PRICE_BOOK=/path/to/prices.json` 并重启服务。自定义文件完整替换内置表，不进行隐式合并。
 
 ## 版本元数据
@@ -34,6 +34,8 @@ Credits 使用独立规则，不设置 `usdBasis`。两个 USD 分支与 Credits
 
 `rates` 包含 `input`、`cacheRead`、`cacheWrite` 和 `output`，各项为每百万 token 的十进制字符串费率。这些 token 桶互斥；推理 token 和缓存写入 TTL 子桶不能再次相加。
 
+可选的 `cacheWrite1h` 是 1 小时缓存写入的费率。配置后，缓存写入中属于 1 小时的部分按它计价，其余按 `cacheWrite` 计价。Claude 的 1 小时写入价是基础输入价的 2 倍，5 分钟写入是 1.25 倍，混用会明显低估费用。记录有缓存写入却没有 1 小时拆分时保留未计价；规则没有 `cacheWrite1h` 而记录含 1 小时写入时同样未计价，不按 5 分钟价凑数。
+
 `null` 表示没有可用费率，不是零价。当对应 token 数量为正但费率为 `null` 时，估值保留为未计价。缺少任一基础 token 桶或匹配规则时，也保留为未计价。
 可选的 `longContext` 指定 `threshold` 和替代 `rates`；只有总输入 Tokens 严格超过阈值才使用该档位，总输入包含普通输入、缓存读取和缓存写入。来源未声明档位时按 Standard 估值并标注为假设，不从其他档位或缺失费率推导。
 
@@ -46,7 +48,9 @@ GPT-5.6 的 Credits 使用对应模型的标准 Token 费率，不套用 API 长
 
 ### 内置价格与缺失规则
 
-具体金额、模型覆盖和来源链接以 [内置价格 JSON](../prices/openai-2026-09-09.json) 为准，文档不另行维护一份费率表。内置表是特定版本的观测快照，不保证与供应商未来价格实时一致。
+具体金额、模型覆盖和来源链接以 [内置价格 JSON](../prices/meterleaf-2026-09-25.json) 为准，文档不另行维护一份费率表。内置表是特定版本的观测快照，不保证与供应商未来价格实时一致。
+
+Claude 规则使用 Anthropic 公布的 API 价格，订阅等价 USD 与标准 API USD 使用相同基础价，它们都是估值，不是 Claude 订阅账单。只收录官方模型页列出的模型 ID 与别名，其他 Claude 模型保留未计价。Opus 5.5 与 Opus 5 的快速模式记为 `priority` 档，按快速模式基础价再叠加缓存倍率。仅限美国推理的 1.1 倍加价和网页搜索按次费用不计入。
 
 GPT-5.4 与 Mini 使用各自规则，不相互继承长上下文档位；未配置的 Fast、Flex 或缓存写入费率不会从标准档推导。内置表的促销说明只描述该版本已采用的规则，不能据此假设促销结束后的价格。
 

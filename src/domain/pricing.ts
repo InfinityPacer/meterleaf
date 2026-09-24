@@ -8,6 +8,8 @@ const rates = z
     input: rate.nullable(),
     cacheRead: rate.nullable(),
     cacheWrite: rate.nullable(),
+    /** 1 小时 TTL 写入的独立费率；配置后 cacheWrite 只对应其余写入（5 分钟）。 */
+    cacheWrite1h: rate.nullable().optional(),
     output: rate.nullable(),
   })
   .strict();
@@ -217,8 +219,29 @@ export function valueUsage(
         { count: image.output, rate: rule.imageRates.output },
       );
     }
+    // 1 小时写入是 cacheWrite 的子集；有独立费率时拆出，缺拆分或缺费率都不能按 5 分钟价凑数。
+    const cacheWrite1h = fact.tokens.cacheWrite1h;
+    const ttlCharges: { count: number; rate: string | null }[] = [];
+    if (prices.cacheWrite1h !== undefined && counts.cacheWrite > 0) {
+      if (
+        cacheWrite1h === null ||
+        !Number.isSafeInteger(cacheWrite1h) ||
+        cacheWrite1h < 0
+      )
+        return unpriced("missing-cache-ttl-split");
+      if (cacheWrite1h > counts.cacheWrite)
+        return unpriced("invalid-cache-ttl-subset");
+      counts.cacheWrite -= cacheWrite1h;
+      ttlCharges.push({ count: cacheWrite1h, rate: prices.cacheWrite1h });
+    } else if (
+      prices.cacheWrite1h === undefined &&
+      cacheWrite1h !== null &&
+      cacheWrite1h > 0
+    )
+      return unpriced("unsupported-rate-bucket");
     const charges = [
       ...keys.map((key) => ({ count: counts[key], rate: prices[key] })),
+      ...ttlCharges,
       ...imageCharges,
     ];
     if (charges.some(({ count, rate }) => count > 0 && rate === null))
