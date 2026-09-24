@@ -67,7 +67,11 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
    meterleaf-collector install-launchd
    ```
 
-   系统每分钟以低优先级运行一次同步，「系统设置 → 通用 → 登录项与扩展」中会显示 Meterleaf。Claude Code 会删除较早的会话记录，后台任务需要保持运行，才能在删除前把用量记入账本。
+   系统每分钟以低优先级运行一次同步，「系统设置 → 通用 → 登录项与扩展」中会显示带图标的 Meterleaf.app。如果命令提示等待批准，在那里打开 Meterleaf 的开关即可。那里会标注「来自身份不明的开发者」，因为构建使用的是本机临时签名，不影响运行。
+
+   Claude Code 会删除较早的会话记录，后台任务需要保持运行，才能在删除前把用量记入账本。后台任务的输出写在数据目录的 `logs` 下。
+
+   后台任务随 Meterleaf.app 注册，应用需要留在原位置。如果设置了 `METERLEAF_COLLECTOR_HOME`、`CLAUDE_CONFIG_DIR`、`METERLEAF_CLAUDE_JSON` 或 `--claude-json`，这些路径只能通过环境变量传给后台任务，命令会改为在 `~/Library/LaunchAgents` 安装普通的后台任务，登录项中显示为可执行文件名。
 
 ## 状态栏额度缓存（可选）
 
