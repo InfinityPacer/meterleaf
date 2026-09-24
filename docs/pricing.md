@@ -10,7 +10,7 @@ Meterleaf 将费率保存在独立 JSON 文件中，内置文件为
 
 - `schemaVersion`：JSON 格式版本，当前为 `1`。
 - `id` 与 `version`：价格表身份和费率修订版本。
-- `supersedes`（可选）：本价格表接替的旧 `id`。只在给同一套价格改名时使用，升级后旧结果可以在重新计算期间继续显示。
+- `supersedes`（可选）：本价格表接替的旧 `id`。只在给同一套价格改名时使用，升级后页面缓存的旧结果可以继续保留到重新计算完成。
 - `publishedAt`：UTC 观测或发布时间。
 - `unit`：计价单位，固定为 `per_million_tokens`，即每百万 token。
 - `sources`：费率依据；`notes` 可记录假设、限制和促销说明。

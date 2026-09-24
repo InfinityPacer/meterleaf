@@ -58,6 +58,7 @@ import {
   withUsdVariants,
   selectUsdView,
   type LedgerView,
+  type ReportBuilding,
   type ViewQuery,
 } from "../shared/ledger-view";
 import { SyncControl } from "./components/SyncControl";
@@ -103,10 +104,20 @@ import { ModelDistribution } from "./components/ModelDistribution";
 import { MobileFilters } from "./components/MobileFilters";
 import { MobileHome } from "./components/MobileHome";
 import { AboutPage } from "./components/AboutPage";
+import {
+  ReportBuildingPanel,
+  ReportRebuildingNotice,
+} from "./components/ReportBuilding";
 import { AccountTrend, MiniTrend } from "./components/AccountTrend";
 import { ChartStyleControl } from "./components/ChartStyleControl";
 import { useMobileLayout } from "./lib/use-mobile-layout";
 import { useLiveUpdates } from "./lib/use-live-updates";
+import {
+  isReportBuilding,
+  ReportBuildingError,
+  reportRefetchInterval,
+  reportRetry,
+} from "./lib/report-building";
 import type { ChartStyle } from "./components/UsageChart";
 import type { ReportDimension } from "./lib/report";
 import { Button } from "./components/ui/button";
@@ -191,6 +202,8 @@ async function readLedger(
     params.set(key, String(viewQuery[key]));
   try {
     const response = await fetch(`/api/view?${params.toString()}`, { signal });
+    if (response.status === 202)
+      throw new ReportBuildingError((await response.json()) as ReportBuilding);
     if (!response.ok) {
       const reason =
         response.status === 408 || response.status === 504
@@ -209,6 +222,7 @@ async function readLedger(
     }
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") throw error;
+    if (isReportBuilding(error)) throw error;
     if (error instanceof Error && error.message.startsWith("报表读取失败："))
       throw error;
     throw new Error("报表读取失败：网络连接异常", { cause: error });
@@ -851,13 +865,9 @@ export function App() {
         failed || !cached?.reportStatus?.refreshing,
       );
     },
-    // 仅在报表后台重算期间读取结果；同步完成由公共同步控件使所有报表缓存失效。
-    refetchInterval: (query) => {
-      if (liveUpdatesPaused) return false;
-      if (query.state.status === "error" || query.state.fetchFailureCount)
-        return false;
-      return query.state.data?.reportStatus?.refreshing ? 1000 : false;
-    },
+    // 仅在报表后台计算期间读取结果；同步完成由公共同步控件使所有报表缓存失效。
+    refetchInterval: (query) => reportRefetchInterval(query, liveUpdatesPaused),
+    retry: reportRetry,
     refetchOnWindowFocus: false,
   });
   useEffect(() => {
@@ -916,15 +926,8 @@ export function App() {
         failed || !cached?.reportStatus?.refreshing,
       );
     },
-    refetchInterval: (query) => {
-      if (
-        liveUpdatesPaused ||
-        query.state.status === "error" ||
-        query.state.fetchFailureCount
-      )
-        return false;
-      return query.state.data?.reportStatus?.refreshing ? 1000 : false;
-    },
+    refetchInterval: (query) => reportRefetchInterval(query, liveUpdatesPaused),
+    retry: reportRetry,
     enabled: page === "overview",
   });
   const hiddenIds = new Set(accountArchive.data?.hidden ?? []);
@@ -1541,30 +1544,41 @@ export function App() {
                   "账户归档状态读取失败，请刷新重试"}
               </p>
             )}
-          {snapshot && (query.isError || snapshot.reportStatus?.lastError) && (
-            <div role="alert" className="report-error sync-warning">
-              <span>
-                {query.isError
-                  ? `刷新失败（${query.error instanceof Error ? query.error.message : "报表读取失败"}），当前显示上次成功的数据。`
-                  : "刷新失败，当前显示上次成功的数据。"}
-              </span>
-              <Button
-                variant="ghost"
-                disabled={
-                  query.isFetching ||
-                  (!query.isError && snapshot.reportStatus?.refreshing)
-                }
-                onClick={() => void query.refetch()}
-              >
-                <RefreshCw size={14} aria-hidden="true" />
-                重试
-              </Button>
-            </div>
+          {snapshot &&
+            !query.isError &&
+            snapshot.reportStatus?.rebuilding &&
+            !snapshot.reportStatus.lastError && <ReportRebuildingNotice />}
+          {snapshot && isReportBuilding(query.error) && (
+            <ReportRebuildingNotice />
           )}
+          {snapshot &&
+            !isReportBuilding(query.error) &&
+            (query.isError || snapshot.reportStatus?.lastError) && (
+              <div role="alert" className="report-error sync-warning">
+                <span>
+                  {query.isError
+                    ? `刷新失败（${query.error instanceof Error ? query.error.message : "报表读取失败"}），当前显示上次成功的数据。`
+                    : "刷新失败，当前显示上次成功的数据。"}
+                </span>
+                <Button
+                  variant="ghost"
+                  disabled={
+                    query.isFetching ||
+                    (!query.isError && snapshot.reportStatus?.refreshing)
+                  }
+                  onClick={() => void query.refetch()}
+                >
+                  <RefreshCw size={14} aria-hidden="true" />
+                  重试
+                </Button>
+              </div>
+            )}
           {query.isPending ? (
             <div className="loading-panel" role="status">
               正在读取账本…
             </div>
+          ) : !snapshot && isReportBuilding(query.error) ? (
+            <ReportBuildingPanel since={query.error.since} />
           ) : !snapshot ? (
             <div className="empty-state" role="alert">
               <Database />

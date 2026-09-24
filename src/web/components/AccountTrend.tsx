@@ -10,6 +10,11 @@ import { selectUsdView } from "../../shared/ledger-view";
 import type { UsdBasis } from "../../domain/pricing";
 import { compact, localTime } from "../lib/report";
 import { useLiveUpdates } from "../lib/use-live-updates";
+import {
+  isReportBuilding,
+  reportRefetchInterval,
+  reportRetry,
+} from "../lib/report-building";
 import "./account-trend.css";
 
 echarts.use([
@@ -359,15 +364,8 @@ export function AccountTrend({
         failed || !cached?.reportStatus?.refreshing,
       );
     },
-    refetchInterval: (current) => {
-      if (
-        paused ||
-        current.state.status === "error" ||
-        current.state.fetchFailureCount
-      )
-        return false;
-      return current.state.data?.reportStatus?.refreshing ? 1000 : false;
-    },
+    refetchInterval: (current) => reportRefetchInterval(current, paused),
+    retry: reportRetry,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
@@ -393,6 +391,8 @@ export function AccountTrend({
   );
 
   if (query.isPending) return <TrendState label={label} text="读取中…" />;
+  if (!selectedView && isReportBuilding(query.error))
+    return <TrendState label={label} text="计算中…" />;
   if (hasReportError && !hasUsableData)
     return <TrendState label={label} text="读取失败" error />;
   if (!selectedView)

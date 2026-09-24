@@ -20,6 +20,7 @@ const DEFAULT_REFRESH_INTERVAL_MS = 300_000;
 /** 报表结果的可见同步状态；账本结果本身仍保持 shared 契约不变。 */
 export interface ReportStatus {
   refreshing: boolean;
+  rebuilding: boolean;
   lastError: SafeErrorSummary | null;
 }
 
@@ -31,6 +32,8 @@ export interface ViewServiceOptions {
   /** 成功视图独立持久化；null 禁用，默认从磁盘索引路径派生，内存索引不落盘。 */
   cachePath?: string | null;
   refreshIntervalMs?: number;
+  /** 账本事实少于此数时同步重建索引，默认 2000；测试用 0 验证后台重建。 */
+  inlineRebuildLimit?: number;
   diagnostics?: DiagnosticsLogger;
   getSyncStatus?: () => SyncStatus;
   now?: () => number;
@@ -43,6 +46,8 @@ interface WorkerMessage {
   result?: LedgerView;
   /** 结果来自后台重建期间保留的旧索引，可能使用旧价格表或缺少最新事实。 */
   transitional?: boolean;
+  /** 后台重建中且没有可用的旧索引，本次查询没有结果。 */
+  building?: { since: string };
   error?: string;
   /** 分段耗时仅用于诊断，不写入缓存或用户账本。 */
   timings?: {
@@ -83,12 +88,14 @@ interface CacheEntry {
 }
 
 type ReportErrorCode =
+  | "ERR_REPORT_BUILDING"
   | "ERR_REPORT_READ_FAILED"
   | "ERR_REPORT_WORKER_UNAVAILABLE"
   | "ERR_REPORT_QUEUE_FULL"
   | "ERR_REPORT_SYNC_UNAVAILABLE";
 
 const reportErrorMessages: Record<ReportErrorCode, string> = {
+  ERR_REPORT_BUILDING: "report-building",
   ERR_REPORT_READ_FAILED: "report-read-failed",
   ERR_REPORT_WORKER_UNAVAILABLE: "report-worker-unavailable",
   ERR_REPORT_QUEUE_FULL: "report-queue-full",
@@ -97,6 +104,14 @@ const reportErrorMessages: Record<ReportErrorCode, string> = {
 
 function reportError(code: ReportErrorCode): Error {
   return Object.assign(new Error(reportErrorMessages[code]), { code });
+}
+
+/** 报表首次计算或换账本后正在后台建立，调用方应稍后再读，而不是当作失败。 */
+export class ReportBuildingError extends Error {
+  readonly code = "ERR_REPORT_BUILDING";
+  constructor(readonly since: string) {
+    super(reportErrorMessages.ERR_REPORT_BUILDING);
+  }
 }
 
 function workerError(code: string | undefined): Error {
@@ -213,6 +228,7 @@ export class ViewService {
         path,
         book,
         indexPath,
+        inlineRebuildLimit: options.inlineRebuildLimit,
       },
     });
     this.worker.on("message", (message: WorkerMessage) => {
@@ -221,10 +237,14 @@ export class ViewService {
         this.refreshAfterRebuild();
         return;
       }
-      if (message.transitional) this.indexRebuilding = true;
+      if (message.transitional || message.building) this.indexRebuilding = true;
       const request = this.pending.get(message.id);
       this.pending.delete(message.id);
       if (!request) return;
+      if (message.building) {
+        request.reject(new ReportBuildingError(message.building.since));
+        return;
+      }
       if (message.timings) {
         const { queueMs, indexMs, readMs } = message.timings;
         this.diagnostics.log(
@@ -661,6 +681,7 @@ export class ViewService {
       ...(currentSync ? { sync: currentSync } : {}),
       reportStatus: {
         refreshing: entry.refreshing || this.indexRebuilding,
+        rebuilding: this.indexRebuilding,
         lastError: entry.lastError,
       },
     };
@@ -689,6 +710,8 @@ export class ViewService {
       })
       .catch((error: unknown) => {
         if (this.closed || this.cache.get(entry.key) !== entry) return;
+        // 重建完成后会再刷新一轮，期间保留已有结果，不算作刷新失败。
+        if (error instanceof ReportBuildingError) return;
         entry.lastError = summarizeError(error);
         this.diagnostics.warn("report.refresh_failed", {
           cacheKey: this.cacheId(entry.key),

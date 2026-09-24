@@ -16,10 +16,15 @@ const config = workerData as {
   path: string;
   book: PriceBook;
   indexPath?: string;
+  /** 账本事实少于此数时直接同步重建，耗时不到一秒，不值得启动线程。 */
+  inlineRebuildLimit?: number;
 };
 const store = new LedgerStore(config.path, config.book, { readonly: true });
 const indexPath = config.indexPath ?? ":memory:";
 const nextIndexPath = `${indexPath}.next`;
+const inlineRebuildLimit = config.inlineRebuildLimit ?? 2000;
+/** 后台重建失败后，等待这段时间再重试，避免反复启动注定失败的线程。 */
+const retryDelayMs = 60_000;
 const diagnostics = createDiagnosticsLogger();
 
 function openIndexes() {
@@ -35,32 +40,102 @@ function openIndexes() {
 
 let { projection, lifetime } = openIndexes();
 let initialized = false;
-/** 后台重建进行中时，查询沿用旧索引并标记为过渡结果。 */
+/**
+ * 后台重建进行中。previousPricing 非空时旧索引可用，查询沿用旧索引并标记为过渡结果；
+ * 为空时（首次建立、账本被替换或旧价格不明）没有可展示的结果，查询回复计算中。
+ */
 let building: {
   worker: Worker;
-  startedAt: number;
-  previousPricing: IndexedPricing;
+  since: string;
+  previousPricing: IndexedPricing | null;
 } | null = null;
-/** 后台重建失败后改回在查询中同步重建，避免反复启动失败的线程。 */
-let backgroundFailed = false;
+let retryAt = 0;
+
+/** 查询前的索引状态：已是最新、沿用旧索引，或尚无可用结果。 */
+type IndexState =
+  | { mode: "current" }
+  | { mode: "transitional"; pricing: IndexedPricing }
+  | { mode: "building"; since: string };
+
+function whileBuilding(): IndexState {
+  return building!.previousPricing
+    ? { mode: "transitional", pricing: building!.previousPricing }
+    : { mode: "building", since: building!.since };
+}
 
 /**
- * 需要全量重建且已有旧索引时，改为后台重建。价格表或账户映射变化会触发全量重建，
- * 在 NAS 上可能耗时数分钟；同步重建期间所有查询都要排队等待。
+ * 全量重建（首次建立、价格表或账户映射变化、账本替换）在 NAS 上可能耗时数分钟，
+ * 因此放到独立线程，查询期间不排队等待：旧索引属于同一账本且价格版本可知时展示旧结果，
+ * 否则回复计算中。小账本与内存索引仍同步重建。
  */
-function startBackgroundBuild(): boolean {
-  if (building) return true;
-  if (backgroundFailed || indexPath === ":memory:") return false;
-  if (projection.rebuildNeeded() !== "same-source") return false;
-  const previousPricing = indexedPricing();
-  // 说不清旧索引按哪版价格计算，或旧索引属于另一套价格表时，不能把旧金额作为过渡结果展示。
-  if (!previousPricing || !sameLineage(previousPricing.version)) return false;
-  const worker = new Worker(new URL("./index-builder.ts", import.meta.url), {
-    workerData: { path: config.path, book: config.book, target: nextIndexPath },
+function prepareIndex(): IndexState {
+  if (building) return whileBuilding();
+  const needed = projection.rebuildNeeded();
+  if (
+    needed === "none" ||
+    indexPath === ":memory:" ||
+    usageCount() < inlineRebuildLimit
+  ) {
+    ensureInline();
+    return { mode: "current" };
+  }
+  const previousPricing = needed === "same-source" ? usablePricing() : null;
+  if (Date.now() < retryAt) {
+    if (previousPricing) return { mode: "transitional", pricing: previousPricing };
+    throw new Error("Report index rebuild failed recently");
+  }
+  if (!startBackgroundBuild(previousPricing)) {
+    // 无法启动线程时只能同步重建，至少保证结果正确。
+    ensureInline();
+    return { mode: "current" };
+  }
+  return whileBuilding();
+}
+
+function ensureInline() {
+  const changed = projection.ensure();
+  lifetime.ensure({
+    ...sourceFileState(config.path),
+    dataVersion: store.reportFingerprint(),
   });
+  if (!initialized || changed) {
+    diagnostics.info("report.index_updated", { initial: !initialized });
+  }
+  initialized = true;
+}
+
+function usageCount(): number {
+  return (
+    store.db
+      .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM usage_facts")
+      .get()?.count ?? 0
+  );
+}
+
+/** 旧索引可作过渡结果的前提：价格版本可知，且累计索引至少建过一次。 */
+function usablePricing(): IndexedPricing | null {
+  if (!lifetime.latestPriceBookKey()) return null;
+  return indexedPricing();
+}
+
+function startBackgroundBuild(previousPricing: IndexedPricing | null): boolean {
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL("./index-builder.ts", import.meta.url), {
+      workerData: { path: config.path, book: config.book, target: nextIndexPath },
+    });
+  } catch (error) {
+    diagnostics.warn("report.index_rebuild_unavailable", {
+      error: summarizeError(error),
+    });
+    return false;
+  }
   const startedAt = performance.now();
-  building = { worker, startedAt, previousPricing };
-  diagnostics.info("report.index_rebuild_started", { background: true });
+  building = { worker, since: new Date().toISOString(), previousPricing };
+  diagnostics.info("report.index_rebuild_started", {
+    background: true,
+    transitional: previousPricing !== null,
+  });
   let settled = false;
   const finish = () => {
     building = null;
@@ -70,7 +145,7 @@ function startBackgroundBuild(): boolean {
   const fail = (error: unknown) => {
     if (settled) return;
     settled = true;
-    backgroundFailed = true;
+    retryAt = Date.now() + retryDelayMs;
     for (const file of indexFiles(nextIndexPath)) rmSync(file, { force: true });
     diagnostics.warn("report.index_rebuild_failed", {
       error: summarizeError(error),
@@ -86,6 +161,7 @@ function startBackgroundBuild(): boolean {
       return;
     }
     settled = true;
+    initialized = true;
     diagnostics.info("report.index_rebuild_finished", {
       durationMs: Math.round(performance.now() - startedAt),
     });
@@ -96,15 +172,6 @@ function startBackgroundBuild(): boolean {
     if (code !== 0) fail(new Error(`Index builder exited: ${code}`));
   });
   return true;
-}
-
-/** 同一价格表的其他版本，或本价格表声明接替的旧标识。 */
-function sameLineage(previousKey: string): boolean {
-  const previousId = previousKey.slice(0, previousKey.indexOf("@"));
-  return (
-    previousId === config.book.id ||
-    (config.book.supersedes ?? []).includes(previousId)
-  );
 }
 
 /** 旧索引的价格表：新版本写在索引元数据里，早期索引从累计索引和账本记录的价格表推断。 */
@@ -160,27 +227,14 @@ parentPort!.on(
     let snapshotMs = 0;
     let aggregateMs = 0;
     let materializeMs = 0;
-    let transitional = false;
+    let state = { mode: "current" } as IndexState;
     try {
       const result = store.db.transaction(() => {
         const indexStarted = performance.now();
-        transitional = startBackgroundBuild();
-        let changed = false;
-        if (!transitional) {
-          changed = projection.ensure();
-          lifetime.ensure({
-            ...sourceFileState(config.path),
-            dataVersion: store.reportFingerprint(),
-          });
-        }
+        state = prepareIndex();
         indexMs = performance.now() - indexStarted;
-        if (!transitional && (!initialized || changed)) {
-          diagnostics.info("report.index_updated", {
-            initial: !initialized,
-            durationMs: Math.round(performance.now() - started),
-          });
-        }
-        if (!transitional) initialized = true;
+        if (state.mode === "building") return null;
+        const transitional = state.mode === "transitional";
         const now = new Date().toISOString();
         const readStarted = performance.now();
         const snapshots = {
@@ -230,14 +284,18 @@ parentPort!.on(
         materializeMs = performance.now() - materializeStarted;
         readMs = performance.now() - readStarted;
         // 过渡结果的金额来自旧索引，价格版本也必须是旧的。
-        return transitional && building
-          ? { ...result, pricing: building.previousPricing }
+        return state.mode === "transitional"
+          ? { ...result, pricing: state.pricing }
           : result;
       })();
+      if (state.mode === "building") {
+        parentPort!.postMessage({ id: request.id, building: { since: state.since } });
+        return;
+      }
       parentPort!.postMessage({
         id: request.id,
         result,
-        transitional,
+        transitional: state.mode === "transitional",
         timings: { queueMs, indexMs, readMs, snapshotMs, aggregateMs, materializeMs },
       });
     } catch (error) {
