@@ -78,6 +78,13 @@ async function main() {
           reports.read(query, basis, undefined, refresh)
       : undefined,
     sync: sync ?? undefined,
+    ingest: store
+      ? {
+          keys: config.ingestKeys,
+          save: (sourceId, batch) =>
+            store.saveIngestBatch(sourceId, batch, new Date().toISOString()),
+        }
+      : undefined,
     diagnostics: logger,
     webRoot: resolve("dist/web"),
     snapshot: (

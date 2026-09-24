@@ -62,10 +62,35 @@ docker compose up -d --no-build --pull never
 | `METERLEAF_USD_BASIS`                  | `subscription` | 默认 USD 口径，也可选 `api`                |
 | `METERLEAF_PRICE_BOOK`                 | 内置价格表     | 自定义完整价格 JSON 路径                   |
 | `METERLEAF_LOG_LEVEL`                  | `info`         | `debug`、`info`、`warn`、`error`、`silent` |
+| `METERLEAF_INGEST_KEYS`                | 未启用         | 本机采集器写入密钥，见下文                 |
 
 Compose 将容器内数据目录、监听地址和端口固定为 `/app/app_data`、`0.0.0.0` 和 `4318`；`METERLEAF_DATA_DIR`、`METERLEAF_HOST`、`METERLEAF_PORT`、`METERLEAF_DEMO` 仅用于直接以 Bun 启动时的本地配置。
 
 自定义价格文件可放在挂载的 `prices` 目录，设置 `METERLEAF_PRICE_BOOK=/app/prices/custom.json`。修改后更新费率版本并重启，详见[计价说明](pricing.md)。
+
+## 接入本机采集器
+
+Claude Code 等本地直连的客户端不经过网关，需要在使用它的电脑上运行本机采集器，由采集器把用量、账户和额度快照推送到 Meterleaf。安装和日常使用见[本机采集器](collector.md)。
+
+每台电脑一个写入密钥。采集器执行 `init` 时生成密钥，并打印一行 `来源标识:摘要`。把这些行用英文逗号连接后填入 `METERLEAF_INGEST_KEYS`，重启服务即可：
+
+```dotenv
+METERLEAF_INGEST_KEYS=claude-code-macbook:<64 位十六进制摘要>,claude-code-mini:<摘要>
+```
+
+Meterleaf 只保存密钥的 SHA-256 摘要，每个密钥只能写入自己绑定的来源，不能读取报表，删除对应一行即可吊销。来源标识不能与 `METERLEAF_SOURCE_ID` 相同，已有账本不要改名。未设置该变量时不开放写入接口。
+
+采集器需要能访问 Meterleaf。若要让外网的电脑推送，只在反向代理上为 `POST /api/ingest/v1/batches` 绕过原有登录保护，其余页面照旧。这个地址用写入密钥鉴权，必须走 HTTPS。反向代理的请求体上限至少设为 8 MB，Nginx 默认 1 MB 会拒绝大批次。以 Nginx 为例：
+
+```nginx
+location = /api/ingest/v1/batches {
+    limit_except POST { deny all; }
+    client_max_body_size 8m;
+    proxy_pass http://meterleaf:4318;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
 
 ## 首次采集与自动同步
 
