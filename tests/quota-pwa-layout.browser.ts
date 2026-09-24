@@ -171,7 +171,15 @@ try {
           const pro = cards.filter({ hasText: "20x" });
           const plus = cards.filter({ hasText: "plus" });
           await expect(pro).toBeVisible();
-          await expect(pro.getByRole("progressbar")).toHaveCount(1);
+          // 7d 有效且未用满时，缺值的 5h 窗口保留位置并等待新采样，不给出百分比。
+          const proBars = pro.getByRole("progressbar");
+          await expect(proBars).toHaveCount(2);
+          await expect(proBars.first()).not.toHaveAttribute(
+            "aria-valuenow",
+            /.*/,
+          );
+          await expect(proBars.last()).toHaveAttribute("aria-valuenow", "57");
+          await expect(pro).toContainText("等待新采样");
           await expect(plus.getByRole("progressbar")).toHaveCount(
             width > 900 ? 2 : 1,
           );
@@ -179,7 +187,7 @@ try {
             "aria-valuenow",
             "100",
           );
-          await expect(pro).not.toContainText("5h");
+          await expect(pro).toContainText("5h");
           if (width > 900) await expect(plus).toContainText("5h");
           else await expect(plus).not.toContainText("5h");
           await expect(pro).toContainText("7d");
@@ -191,12 +199,15 @@ try {
             .locator(":scope > span");
           expect(
             await fill.evaluate((el) => getComputedStyle(el).backgroundColor),
-          ).toBe("rgb(217, 78, 105)");
+          ).toBe(
+            // 用满的周额度使用 --quota-alert（即各主题的 --warn）。
+            theme === "light" ? "rgb(194, 65, 12)" : "rgb(240, 138, 93)",
+          );
           expect(
             await fill.evaluate((el) => getComputedStyle(el).backgroundColor),
           ).not.toBe(
-            await pro
-              .getByRole("progressbar")
+            await proBars
+              .last()
               .locator(":scope > span")
               .evaluate((el) => getComputedStyle(el).backgroundColor),
           );
@@ -205,11 +216,14 @@ try {
               () => document.documentElement.scrollWidth <= innerWidth,
             ),
           ).toBe(true);
-          await expect(
-            plus.locator(
-              ".quota-cost-estimate, .account-capacity > small, .account-capacity > strong",
-            ),
-          ).toHaveCount(0);
+          // 紧凑金额行不给用满的周额度附带预估；Web 桌面行始终保留 7d 预估栏。
+          await expect(plus.locator(".quota-cost-estimate")).toHaveCount(0);
+          if (width <= 900)
+            await expect(
+              plus.locator(
+                ".account-capacity > small, .account-capacity > strong",
+              ),
+            ).toHaveCount(0);
           if (width > 900 && route === "accounts") {
             await expect(
               plus.locator(".account-capacity .mini-trend"),
@@ -220,6 +234,7 @@ try {
                   (await pro.boundingBox())!.height -
                     (await plus.boundingBox())!.height,
                 ),
+                `账户行等高 ${width}px ${theme} ${layout}`,
               ).toBeLessThan(2);
             }
           }
@@ -227,7 +242,8 @@ try {
             const pair = pro.locator(".quota-cost-pair").first();
             const estimate = pair.locator(".quota-cost-estimate");
             await expect(estimate).toBeVisible();
-            await expect(estimate).toHaveText("$1,481.58");
+            // 预估与当前金额以分隔点区分；手机首页在金额前另有“预估”小字。
+            await expect(estimate).toContainText("$1,481.58");
             await expect(pair.locator(".quota-cost-separator")).toHaveText("·");
             const currentBox = (await pair.locator("strong").boundingBox())!;
             const estimateBox = (await estimate.boundingBox())!;
@@ -238,28 +254,33 @@ try {
             expect(
               await pair.evaluate((el) => el.scrollWidth <= el.clientWidth),
             ).toBe(true);
-            expect(
-              await estimate.evaluate((el) => getComputedStyle(el).fontStyle),
-            ).toBe("italic");
+            if (mobileHome)
+              await expect(estimate.locator("small")).toHaveText("预估");
             if (route === "accounts") {
-              const title = (await pro
-                .locator(".quota-bar > div:first-child > span:first-child")
+              const weekBar = pro.locator(".quota-bar").last();
+              const title = (await weekBar
+                .locator(":scope > div:first-child > span:first-child")
                 .boundingBox())!;
-              const status = (await pro
-                .locator(".quota-bar .tabular")
-                .boundingBox())!;
+              const status = (await weekBar.locator(".tabular").boundingBox())!;
               expect(Math.abs(title.y - status.y)).toBeLessThan(3);
             }
           }
-          if (width >= 1200 && route === "accounts") {
+          // 1250px 以下两个窗口换到第二行，预估栏在右上角；更宽时并排在窗口右侧。
+          if (width > 1250 && route === "accounts") {
             const capacity = (await pro
               .locator(".account-capacity")
               .boundingBox())!;
             const period = (await pro
               .locator(".account-window")
+              .last()
               .boundingBox())!;
-            expect(capacity.width).toBeGreaterThan(180);
+            // 预估栏在额度窗口右侧，金额完整显示不溢出。
             expect(capacity.x).toBeGreaterThanOrEqual(period.x + period.width);
+            expect(
+              await pro
+                .locator(".account-capacity > strong")
+                .evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
+            ).toBe(true);
           }
           if ([390, 1440].includes(width))
             await page.screenshot({
@@ -269,8 +290,13 @@ try {
           await pro.click();
           const dialog = page.getByRole("dialog");
           await expect(dialog).toBeVisible();
-          await expect(dialog).not.toContainText("5h");
-          await expect(dialog.getByRole("progressbar")).toHaveCount(1);
+          await expect(
+            dialog.getByRole("progressbar", { name: "5h窗口" }),
+          ).not.toHaveAttribute("aria-valuenow", /.*/);
+          await expect(
+            dialog.getByRole("progressbar", { name: "7d窗口" }),
+          ).toHaveAttribute("aria-valuenow", "57");
+          await expect(dialog.getByRole("progressbar")).toHaveCount(2);
           await page.keyboard.press("Escape");
           states++;
         }
