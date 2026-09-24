@@ -37,6 +37,7 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
 命令:
   init --server <url> [--source-id <id>] [--force]
                       生成写入密钥与配置，并输出服务端需要添加的密钥摘要
+  server <url>        更换服务地址，写入密钥与来源 ID 保持不变
   bind-history        声明首次观察之前的历史用量属于当前登录账户
   statusline-cache <path>|off
                       （可选）读取状态栏脚本写出的额度缓存 TSV，获得比 .claude.json 更新的额度
@@ -174,6 +175,36 @@ function runInit(paths: CollectorPaths, values: Record<string, unknown>) {
   );
   console.log("  meterleaf-collector sync            推送一次");
   console.log("  meterleaf-collector install-launchd 安装每分钟运行的后台任务");
+}
+
+/** 只换服务地址，写入密钥与来源 ID 不变，服务端无需改配置。 */
+function runServer(paths: CollectorPaths, value: string | undefined) {
+  const config = loadConfig(paths.configFile);
+  if (!config) {
+    console.error("尚未初始化，请先运行 meterleaf-collector init");
+    return 2;
+  }
+  if (!value) {
+    console.error(
+      `用法: meterleaf-collector server <url>\n当前: ${config.server}`,
+    );
+    return 2;
+  }
+  const normalized = normalizeServer(value);
+  saveConfig(
+    paths.dataDir,
+    paths.configFile,
+    { ...config, server: normalized },
+    true,
+  );
+  console.log(`服务地址: ${config.server} → ${normalized}`);
+  if (normalized.startsWith("http:") && !isLoopback(normalized)) {
+    console.log("警告: 服务地址未使用 HTTPS，写入密钥与用量将以明文传输。");
+  }
+  console.log(
+    "写入密钥不变。运行 meterleaf-collector sync 确认新地址可以推送。",
+  );
+  return 0;
 }
 
 function runStatuslineCache(paths: CollectorPaths, value: string | undefined) {
@@ -513,6 +544,8 @@ export async function main(argv: string[]): Promise<number> {
     case "init":
       runInit(paths, values);
       return 0;
+    case "server":
+      return runServer(paths, positionals[1]);
     case "statusline-cache":
       return runStatuslineCache(paths, positionals[1]);
     case "bind-history":

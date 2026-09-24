@@ -80,7 +80,17 @@ METERLEAF_INGEST_KEYS=claude-code-macbook:<64 位十六进制摘要>,claude-code
 
 Meterleaf 只保存密钥的 SHA-256 摘要，每个密钥只能写入自己绑定的来源，不能读取报表，删除对应一行即可吊销。来源标识不能与 `METERLEAF_SOURCE_ID` 相同，已有账本不要改名。未设置该变量时不开放写入接口。
 
-采集器需要能访问 Meterleaf。若要让外网的电脑推送，建议只在反向代理上公开 `/api/ingest/` 路径并启用 HTTPS，其余页面继续按原有方式保护。
+采集器需要能访问 Meterleaf。若要让外网的电脑推送，只在反向代理上为 `POST /api/ingest/v1/batches` 绕过原有登录保护，其余页面照旧。这个地址用写入密钥鉴权，必须走 HTTPS。反向代理的请求体上限至少设为 8 MB，Nginx 默认 1 MB 会拒绝大批次。以 Nginx 为例：
+
+```nginx
+location = /api/ingest/v1/batches {
+    limit_except POST { deny all; }
+    client_max_body_size 8m;
+    proxy_pass http://meterleaf:4318;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
 
 ## 首次采集与自动同步
 
