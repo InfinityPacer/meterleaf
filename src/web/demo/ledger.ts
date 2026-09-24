@@ -22,6 +22,7 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
   const end = new Date(asOf).getTime();
   const records: LedgerRecord[] = [];
   const rates = [10, 4, 2, 0.2];
+  const efforts = ["medium", "high", "low", "xhigh", "high"];
   for (let h = 0; h < 24 * 60; h++) {
     const hour = (16 - (h % 24) + 24) % 24;
     const count = hour >= 8 && hour <= 22 ? 5 + (h % 7) : 1;
@@ -88,6 +89,16 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
         quality: "estimated",
         priceVersion: "demo-2026-09",
         valuation,
+        details: {
+          requestedModel: modelNames[modelIndex]!,
+          sentModel: modelNames[modelIndex]!,
+          responseModel: modelNames[modelIndex]!,
+          responseModelMismatch: false,
+          requestedReasoningEffort: efforts[(h + j) % efforts.length]!,
+          reasoningEffort: efforts[(h + j) % efforts.length]!,
+          durationMs: 1800 + ((h * 311 + j * 97) % 24000),
+          firstTokenMs: 350 + ((h * 53 + j * 29) % 1800),
+        },
       });
     }
   }
