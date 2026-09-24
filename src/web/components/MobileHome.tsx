@@ -15,6 +15,7 @@ import {
 import {
   amount,
   compact,
+  continuousPoints,
   numericAmount,
   quotaUnavailableNote,
 } from "../lib/report";
@@ -253,7 +254,7 @@ function UsageSummary({
 }
 
 function TrendStrip({
-  points,
+  points: reportedPoints,
   asOf,
   chartStyle,
   onChartStyleChange,
@@ -263,6 +264,7 @@ function TrendStrip({
   chartStyle: "line" | "area" | "bar";
   onChartStyleChange?: (style: ChartStyle) => void;
 }) {
+  const points = continuousPoints(reportedPoints, "day");
   const axisIndexes =
     points.length <= 3
       ? points.map((_, index) => index)

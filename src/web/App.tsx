@@ -1577,6 +1577,7 @@ export function App() {
                         points={view?.units.usd.points ?? []}
                         metric="usd"
                         label="所选时段费用趋势"
+                        granularity={granularity}
                         hideCaption
                       />
                     </div>
@@ -1591,6 +1592,7 @@ export function App() {
                           points={view?.units.credits.points ?? []}
                           metric="credits"
                           label="所选时段 Credits 趋势"
+                          granularity={granularity}
                           hideCaption
                         />
                       </div>
@@ -1611,6 +1613,7 @@ export function App() {
                         points={view?.units.tokens.points ?? []}
                         metric="tokens"
                         label="所选时段 Tokens 趋势"
+                        granularity={granularity}
                         hideCaption
                       />
                     </div>

@@ -12,6 +12,7 @@ import type { Granularity, ReportUnit } from "../../shared/report";
 import {
   amount,
   compact,
+  continuousPoints,
   localTime,
   modelColor,
   modelLabel,
@@ -103,7 +104,7 @@ export function UsageChart({
   useEffect(() => {
     const chart = instance.current;
     if (!chart) return;
-    const data = points;
+    const data = continuousPoints(points, granularity);
     const labels = data.map((point) =>
       localTime(
         point.at,
