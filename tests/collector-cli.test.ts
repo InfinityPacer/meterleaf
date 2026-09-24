@@ -261,7 +261,7 @@ describe("采集器命令行", () => {
     writeFileSync(
       join(
         bundle,
-        "Contents/Library/LaunchAgents/io.meterleaf.collector.sync.plist",
+        "Contents/Library/LaunchAgents/io.meterleaf.collector.background.plist",
       ),
       "",
     );
@@ -287,9 +287,14 @@ describe("采集器命令行", () => {
       }
     }
     expect(service).toContain(
-      "<key>BundleProgram</key>\n  <string>Contents/MacOS/meterleaf-collector</string>",
+      "<key>BundleProgram</key>\n  <string>Contents/MacOS/meterleaf-service</string>",
     );
-    expect(service).toContain("<string>io.meterleaf.collector.sync</string>");
+    expect(service).toContain(
+      "<string>meterleaf-service</string>\n    <string>exec</string>\n    <string>sync</string>",
+    );
+    expect(service).toContain(
+      "<string>io.meterleaf.collector.background</string>",
+    );
     expect(legacy).toContain("data &amp; more");
     if (process.platform === "darwin") {
       for (const [name, plist] of [
