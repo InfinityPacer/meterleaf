@@ -420,6 +420,7 @@ function QuotaPeriod({
                     title="7d 预估"
                     aria-label={`7d 预估 ${estimated}`}
                   >
+                    <small aria-hidden="true">预估</small>
                     {estimated}
                   </em>
                 </>
