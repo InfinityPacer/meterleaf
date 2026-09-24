@@ -73,6 +73,12 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
    后台任务随 Meterleaf.app 注册，应用需要留在原位置。如果设置了 `METERLEAF_COLLECTOR_HOME`、`CLAUDE_CONFIG_DIR`、`METERLEAF_CLAUDE_JSON` 或 `--claude-json`，这些路径只能通过环境变量传给后台任务，命令会改为在 `~/Library/LaunchAgents` 安装普通的后台任务，登录项中显示为可执行文件名。
 
+## 升级
+
+重新构建后，用新的 `dist/Meterleaf.app` 替换「应用程序」中的旧版本，再执行一次 `meterleaf-collector install-launchd`。读取进度、账户归属和写入密钥都在数据目录中，替换应用不会丢失。
+
+如果 `status` 显示后台任务已启用，但「最近成功」的时间几分钟都不更新，把问题和 `launchctl print gui/$(id -u)/io.meterleaf.collector.background` 的输出反馈给维护者。
+
 ## 状态栏额度缓存（可选）
 
 Claude Code 每一轮都会把最新的 5 小时与 7 天额度传给状态栏命令。如果你的状态栏脚本把它写成文件，采集器可以读取这个文件，额度会比 `~/.claude.json` 里的缓存新得多。

@@ -12,8 +12,8 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 export const BUNDLE_IDENTIFIER = "io.meterleaf.collector";
-/** 包内后台任务的标签，与旧式 LaunchAgent 不同名，避免系统沿用旧登记。 */
-export const SERVICE_LABEL = "io.meterleaf.collector.sync";
+/** 包内后台任务的标签。系统按标签记住被启动程序的签名，修改注册助手后需换新标签。 */
+export const SERVICE_LABEL = "io.meterleaf.collector.background";
 export const SERVICE_PLIST = `${SERVICE_LABEL}.plist`;
 export const SERVICE_HELPER = "meterleaf-service";
 /** 旧式 LaunchAgent，只在无法使用应用包注册时安装。 */
@@ -82,7 +82,8 @@ const plistHeader = `<?xml version="1.0" encoding="UTF-8"?>
 
 /**
  * 打包在 Meterleaf.app/Contents/Library/LaunchAgents 内的 plist。BundleProgram 相对
- * 应用包解析，因此应用移动后仍然有效；内容固定，不能携带环境变量。
+ * 应用包解析，因此应用移动后仍然有效；内容固定，不能携带环境变量。启动的是注册助手，
+ * 由它 exec 采集器，原因见 macos/meterleaf-service.swift。
  */
 export function renderServicePlist(): string {
   return `${plistHeader}
@@ -94,10 +95,11 @@ export function renderServicePlist(): string {
     <string>${BUNDLE_IDENTIFIER}</string>
   </array>
   <key>BundleProgram</key>
-  <string>Contents/MacOS/meterleaf-collector</string>
+  <string>Contents/MacOS/${SERVICE_HELPER}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>meterleaf-collector</string>
+    <string>${SERVICE_HELPER}</string>
+    <string>exec</string>
     <string>sync</string>
     <string>${LOG_FLAG}</string>
   </array>
@@ -190,8 +192,8 @@ function helper(
 ): { ok: boolean; status: ServiceStatus; output: string } {
   const result = spawn([
     join(bundle, "Contents", "MacOS", SERVICE_HELPER),
-    SERVICE_PLIST,
     action,
+    SERVICE_PLIST,
   ]);
   const last = result.stdout.split("\n").pop() ?? "";
   const known: ServiceStatus[] = [
@@ -241,6 +243,10 @@ export function installService(bundle: string, legacyPath: string): string[] {
   requireDarwin("install-launchd");
   const steps: string[] = [];
   removeLegacy(legacyPath, steps);
+  // 已登记时先注销再注册，让系统按当前应用包重新登记。
+  if (serviceStatus(bundle) !== "not-registered") {
+    helper(bundle, "unregister");
+  }
   const result = helper(bundle, "register");
   if (result.status === "requires-approval") {
     steps.push(
