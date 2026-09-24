@@ -43,7 +43,7 @@ test("bundled JSON contains separate USD branches with unchanged credits", () =>
   expect(api.usd.amount).toBe("6.075");
   expect(subscription.credits).toEqual(api.credits);
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf-openai@2026-09-09.3");
+  expect(subscription.version).toBe("meterleaf@2026-09-25.1");
 });
 
 test("GPT-5.4 prices cached input at the exact long-context boundary without changing subscription estimates", () => {

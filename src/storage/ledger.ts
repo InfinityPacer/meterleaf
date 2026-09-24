@@ -315,42 +315,52 @@ export class LedgerStore {
     now: string,
   ) {
     this.db.transaction(() => {
-      let changed = false;
-      for (const fact of page.records) {
-        if (fact.sourceId !== sourceId)
-          throw new Error("Connector returned a foreign source record");
-        const factWrite = this.db
-          .query(
-            `INSERT INTO usage_facts VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET account_id=excluded.account_id, occurred_at=excluded.occurred_at, payload=excluded.payload WHERE usage_facts.payload<>excluded.payload`,
-          )
-          .run(
-            sourceId,
-            fact.externalId,
-            fact.accountExternalId,
-            fact.occurredAt,
-            JSON.stringify(fact),
-            now,
-          );
-        const valuationWrite = this.db
-          .query(
-            `INSERT INTO valuations VALUES (?, ?, ?, ?) ON CONFLICT(source_id, external_id, version) DO UPDATE SET payload=excluded.payload WHERE valuations.payload<>excluded.payload`,
-          )
-          .run(
-            sourceId,
-            fact.externalId,
-            priceBookKey(this.book),
-            JSON.stringify(valueUsage(withSub2ApiImageUsage(fact), this.book)),
-          );
-        if (factWrite.changes > 0 || valuationWrite.changes > 0) {
-          changed = true;
-        }
-      }
+      const changed = this.writeFacts(sourceId, page.records, now);
       if (changed) {
         this.bumpRevision();
       }
       this.setState(`${sourceId}:${mode}:cursor`, page.nextCursor);
       this.setState(`${sourceId}:${mode}:caughtUp`, !page.hasMore);
     })();
+  }
+
+  /** 事实与当前价格表估值同步写入；内容未变的重放不产生变更。调用方负责事务。 */
+  private writeFacts(
+    sourceId: string,
+    facts: readonly UsageFact[],
+    now: string,
+  ): boolean {
+    let changed = false;
+    for (const fact of facts) {
+      if (fact.sourceId !== sourceId)
+        throw new Error("Connector returned a foreign source record");
+      const factWrite = this.db
+        .query(
+          `INSERT INTO usage_facts VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET account_id=excluded.account_id, occurred_at=excluded.occurred_at, payload=excluded.payload WHERE usage_facts.payload<>excluded.payload`,
+        )
+        .run(
+          sourceId,
+          fact.externalId,
+          fact.accountExternalId,
+          fact.occurredAt,
+          JSON.stringify(fact),
+          now,
+        );
+      const valuationWrite = this.db
+        .query(
+          `INSERT INTO valuations VALUES (?, ?, ?, ?) ON CONFLICT(source_id, external_id, version) DO UPDATE SET payload=excluded.payload WHERE valuations.payload<>excluded.payload`,
+        )
+        .run(
+          sourceId,
+          fact.externalId,
+          priceBookKey(this.book),
+          JSON.stringify(valueUsage(withSub2ApiImageUsage(fact), this.book)),
+        );
+      if (factWrite.changes > 0 || valuationWrite.changes > 0) {
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   saveAccounts(accounts: SourceAccount[]) {
@@ -409,26 +419,70 @@ export class LedgerStore {
 
   saveQuotas(quotas: QuotaFact[], collectedAt: string) {
     this.db.transaction(() => {
+      if (this.writeQuotas(quotas, collectedAt)) this.bumpRevision();
+    })();
+  }
+
+  /** 快照按内容寻址，重复上报同一采样只保留一份。调用方负责事务。 */
+  private writeQuotas(quotas: readonly QuotaFact[], collectedAt: string) {
+    let changed = false;
+    for (const fact of quotas) {
+      const id = createHash("sha256")
+        .update(JSON.stringify(fact))
+        .digest("hex");
+      const write = this.db
+        .query(
+          "INSERT OR IGNORE INTO quota_snapshots VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          id,
+          fact.sourceId,
+          fact.accountExternalId,
+          fact.window,
+          fact.sampledAt,
+          JSON.stringify(fact),
+          collectedAt,
+        );
+      changed ||= write.changes > 0;
+    }
+    return changed;
+  }
+
+  /**
+   * 推送来源的一个批次在单一事务内提交：账户按条更新（不是完整快照，不删除旧账户），
+   * 用量与估值按 externalId 幂等写入，额度快照按内容去重。成功返回后采集器才可确认送达。
+   */
+  saveIngestBatch(
+    sourceId: string,
+    batch: {
+      batchId: string;
+      collector: { name: string; version: string };
+      accounts: readonly SourceAccount[];
+      usage: readonly UsageFact[];
+      quotas: readonly QuotaFact[];
+    },
+    now: string,
+  ) {
+    for (const item of [...batch.accounts, ...batch.quotas])
+      if (item.sourceId !== sourceId)
+        throw new Error("Ingest batch contains a foreign source item");
+    this.db.transaction(() => {
       let changed = false;
-      for (const fact of quotas) {
-        const id = createHash("sha256")
-          .update(JSON.stringify(fact))
-          .digest("hex");
+      for (const account of batch.accounts) {
         const write = this.db
           .query(
-            "INSERT OR IGNORE INTO quota_snapshots VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload<>excluded.payload",
           )
-          .run(
-            id,
-            fact.sourceId,
-            fact.accountExternalId,
-            fact.window,
-            fact.sampledAt,
-            JSON.stringify(fact),
-            collectedAt,
-          );
+          .run(sourceId, account.externalId, JSON.stringify(account));
         changed ||= write.changes > 0;
       }
+      changed = this.writeFacts(sourceId, batch.usage, now) || changed;
+      changed = this.writeQuotas(batch.quotas, now) || changed;
+      this.setState(`${sourceId}:ingest:last`, {
+        at: now,
+        batchId: batch.batchId,
+        collector: batch.collector,
+      });
       if (changed) this.bumpRevision();
     })();
   }

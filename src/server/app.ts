@@ -8,6 +8,7 @@ import { silentLogger, type DiagnosticsLogger } from "./diagnostics";
 import { encodeLedger } from "../shared/ledger-wire";
 import type { SyncStatus } from "./sync";
 import { registerResponseCompression } from "./response-compression";
+import { registerIngestRoutes, type IngestTarget } from "./ingest";
 import { z } from "zod";
 import {
   createLedgerView,
@@ -35,6 +36,8 @@ interface AppOptions {
   ) => Promise<LedgerView>;
   webRoot?: string;
   diagnostics?: DiagnosticsLogger;
+  /** 本机采集器的推送入口；未配置写入密钥时不注册。 */
+  ingest?: IngestTarget;
   sync?: {
     status(): SyncStatus;
     requestSync(): unknown;
@@ -50,6 +53,7 @@ export function createApp({
   diagnostics = silentLogger,
   sync,
   accountArchive,
+  ingest,
 }: AppOptions) {
   const app = Fastify({ logger: false });
   registerResponseCompression(app);
@@ -82,6 +86,7 @@ export function createApp({
     );
   });
   app.get("/api/health", () => ({ status: "ok" }));
+  if (ingest) registerIngestRoutes(app, ingest, diagnostics);
   app.get("/api/accounts/archive", () => ({
     archived: accountArchive?.read() ?? [],
     hidden: accountArchive?.hidden() ?? [],
