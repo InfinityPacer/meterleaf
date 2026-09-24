@@ -6,6 +6,7 @@ import { Button } from "./ui/button";
 import type { SyncStatus } from "../../server/sync";
 import { useLiveUpdates } from "../lib/use-live-updates";
 import "./controls.css";
+import { isLoginRedirect } from "../lib/session";
 
 const stageLabels: Record<string, string> = {
   accounts: "账户",
@@ -60,11 +61,7 @@ export function isSyncStatusAuthenticationError(error: unknown) {
 export function isSyncStatusAuthenticationResponse(
   response: Pick<Response, "status" | "type">,
 ) {
-  return (
-    response.type === "opaqueredirect" ||
-    response.status === 401 ||
-    response.status === 403
-  );
+  return isLoginRedirect(response);
 }
 
 /** 不跟随跨域登录页，保留可区分于网络故障的认证响应。 */

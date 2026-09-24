@@ -32,6 +32,7 @@ import {
   BarChart3,
   Coins,
   Database,
+  LogIn,
   FileText,
   Info,
   Layers3,
@@ -133,6 +134,11 @@ import {
   SheetHeader,
   SheetTitle,
 } from "./components/ui/sheet";
+import {
+  SessionExpiredError,
+  isLoginRedirect,
+  isSessionExpired,
+} from "./lib/session";
 
 const UsageChart = lazy(() =>
   import("./components/UsageChart").then((m) => ({ default: m.UsageChart })),
@@ -197,7 +203,11 @@ async function readLedger(
   ] as const)
     params.set(key, String(viewQuery[key]));
   try {
-    const response = await fetch(`/api/view?${params.toString()}`, { signal });
+    const response = await fetch(`/api/view?${params.toString()}`, {
+      signal,
+      redirect: "manual",
+    });
+    if (isLoginRedirect(response)) throw new SessionExpiredError();
     if (response.status === 202)
       throw new ReportBuildingError((await response.json()) as ReportBuilding);
     if (!response.ok) {
@@ -218,7 +228,7 @@ async function readLedger(
     }
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") throw error;
-    if (isReportBuilding(error)) throw error;
+    if (isReportBuilding(error) || isSessionExpired(error)) throw error;
     if (error instanceof Error && error.message.startsWith("报表读取失败："))
       throw error;
     throw new Error("报表读取失败：网络连接异常", { cause: error });
@@ -1511,17 +1521,27 @@ export function App() {
                     ? `刷新失败（${query.error instanceof Error ? query.error.message : "报表读取失败"}），当前显示上次成功的数据。`
                     : "刷新失败，当前显示上次成功的数据。"}
                 </span>
-                <Button
-                  variant="ghost"
-                  disabled={
-                    query.isFetching ||
-                    (!query.isError && snapshot.reportStatus?.refreshing)
-                  }
-                  onClick={() => void query.refetch()}
-                >
-                  <RefreshCw size={14} aria-hidden="true" />
-                  重试
-                </Button>
+                {isSessionExpired(query.error) ? (
+                  <Button
+                    variant="ghost"
+                    onClick={() => window.location.reload()}
+                  >
+                    <LogIn size={14} aria-hidden="true" />
+                    重新登录
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    disabled={
+                      query.isFetching ||
+                      (!query.isError && snapshot.reportStatus?.refreshing)
+                    }
+                    onClick={() => void query.refetch()}
+                  >
+                    <RefreshCw size={14} aria-hidden="true" />
+                    重试
+                  </Button>
+                )}
               </div>
             )}
           {query.isPending ? (
@@ -1530,6 +1550,13 @@ export function App() {
             </div>
           ) : !snapshot && isReportBuilding(query.error) ? (
             <ReportBuildingPanel since={query.error.since} />
+          ) : !snapshot && isSessionExpired(query.error) ? (
+            <div className="empty-state" role="alert">
+              <LogIn />
+              <h2>登录已过期</h2>
+              <p>刷新页面重新登录后即可继续查看账本。</p>
+              <Button onClick={() => window.location.reload()}>重新登录</Button>
+            </div>
           ) : !snapshot ? (
             <div className="empty-state" role="alert">
               <Database />
