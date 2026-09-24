@@ -73,6 +73,7 @@ import {
   quotaState,
   showQuotaEstimate,
   visibleQuotaWindows,
+  quotaWaitingReset,
 } from "./lib/quota-display";
 import { useQuotaClock } from "./lib/use-quota-clock";
 import { useReportFilters } from "./lib/report-preferences";
@@ -282,15 +283,17 @@ function QuotaBar({
   label,
   asOf,
   reset,
+  waiting = false,
 }: {
   window: AccountWindow | null;
   label: string;
   asOf: string;
   reset?: React.ReactNode;
+  waiting?: boolean;
 }) {
   const state = quotaState(window, asOf);
-  const percent = quotaPercent(window, asOf);
-  const suffix = quotaLabel(window, asOf);
+  const percent = waiting ? null : quotaPercent(window, asOf);
+  const suffix = waiting ? "等待新采样" : quotaLabel(window, asOf);
   return (
     <div
       className="quota-bar"
@@ -324,12 +327,35 @@ function QuotaPeriod({
   label,
   asOf,
   compactEstimate = false,
+  waiting = false,
 }: {
   window: AccountWindow | null;
   label: string;
   asOf: string;
   compactEstimate?: boolean;
+  waiting?: boolean;
 }) {
+  if (waiting && window) {
+    const ended = quotaWaitingReset(window, asOf);
+    return (
+      <span className="quota-period" data-waiting="true">
+        <QuotaBar
+          window={window}
+          label={label}
+          asOf={asOf}
+          waiting
+          reset={
+            ended ? (
+              <span className="quota-period-reset">{ended}</span>
+            ) : undefined
+          }
+        />
+        <span className="quota-period-usage">
+          <span className="quota-period-volume">上游下次上报后更新</span>
+        </span>
+      </span>
+    );
+  }
   const showEstimate =
     compactEstimate && label === "7d" && showQuotaEstimate(window, asOf);
   const estimated = showEstimate ? estimateAmount(window, "usd", asOf) : null;
@@ -470,7 +496,7 @@ function AccountRow({
       )}
       {hasQuota ? (
         <>
-          {windows.map(({ key, label, window }) => (
+          {windows.map(({ key, label, window, waiting }) => (
             <span
               key={key}
               className={`account-window ${key === "fiveHour" ? "account-five-hour" : "account-seven-day"}`}
@@ -480,6 +506,7 @@ function AccountRow({
                 label={label}
                 asOf={asOf}
                 compactEstimate={compactUsage}
+                waiting={waiting}
               />
             </span>
           ))}
@@ -2330,12 +2357,13 @@ export function App() {
                       selectedAccount,
                       quotaAsOf,
                       smallScreen,
-                    ).map(({ key, label, window }) => (
+                    ).map(({ key, label, window, waiting }) => (
                       <QuotaBar
                         key={key}
                         window={window}
                         label={`${label}窗口`}
                         asOf={quotaAsOf}
+                        waiting={waiting}
                       />
                     ))}
                     {!visibleQuotaWindows(
@@ -2372,7 +2400,9 @@ export function App() {
                       selectedAccount,
                       quotaAsOf,
                       smallScreen,
-                    ).some(({ key }) => key === "fiveHour") && (
+                    ).some(
+                      ({ key, waiting }) => key === "fiveHour" && !waiting,
+                    ) && (
                       <>
                         <dt>5h 周期费用</dt>
                         <dd>

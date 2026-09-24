@@ -161,7 +161,7 @@ test("home renders both valid quota windows with explicit period labels", () => 
   expect(estimate.replace(/<[^>]+>/g, "")).toBe("预估$1,481.58");
 });
 
-test("home hides an unavailable five-hour window instead of rendering an N/A placeholder", () => {
+test("home keeps an unavailable five-hour window as a waiting slot without old values", () => {
   const account = accountFixture({
     fiveHour: quotaWindow({ percent: null }),
     sevenDay: quotaWindow({ percent: 64 }),
@@ -169,9 +169,9 @@ test("home hides an unavailable five-hour window instead of rendering an N/A pla
   const html = renderHome([], [account]);
   const card = accountCard(html);
 
-  expect((card.match(/class="mobile-home-quota"/g) ?? []).length).toBe(1);
-  expect(card).toContain("7d");
-  expect(card).not.toContain("5h");
+  expect((card.match(/class="mobile-home-quota"/g) ?? []).length).toBe(2);
+  expect(card).toContain('data-waiting="true"');
+  expect(card).toContain("等待新采样");
   expect(card).not.toContain("N/A");
 });
 

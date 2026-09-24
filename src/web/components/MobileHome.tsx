@@ -10,6 +10,7 @@ import {
   showQuotaEstimate,
   type VisibleQuotaWindow,
   visibleQuotaWindows,
+  quotaWaitingReset,
 } from "../lib/quota-display";
 import {
   amount,
@@ -117,7 +118,34 @@ function QuotaSummary({
   selection: VisibleQuotaWindow;
   asOf: string;
 }) {
-  const { key, label, window } = selection;
+  const { key, label, window, waiting } = selection;
+  if (waiting) {
+    const ended = quotaWaitingReset(window, asOf);
+    return (
+      <div className="mobile-home-quota" data-waiting="true">
+        <div className="mobile-home-quota-head">
+          <div className="mobile-home-quota-title">
+            <strong className="mobile-home-quota-label">{label}</strong>
+            <span className="mobile-home-quota-status">等待新采样</span>
+          </div>
+          {ended && <span className="mobile-home-quota-reset">{ended}</span>}
+        </div>
+        <div
+          className="mobile-home-progress"
+          role="progressbar"
+          aria-label={`${label}额度使用情况`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuetext="等待新采样"
+        >
+          <span />
+        </div>
+        <div className="mobile-home-quota-foot">
+          <span className="quota-cost-volume">上游下次上报后更新</span>
+        </div>
+      </div>
+    );
+  }
   const percent = quotaPercent(window, asOf);
   const usable = percent !== null;
   const reset = formatResetTime(window.resetsAt, asOf);
