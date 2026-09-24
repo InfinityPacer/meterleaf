@@ -96,6 +96,7 @@ meterleaf-collector statusline-cache ~/.cache/claude-statusline/rate-limits.tsv
 `meterleaf-collector status` 显示同步进度、待发送数量、最近一次成功或失败的原因，以及账户归属情况，不会显示密钥。
 
 - **网络不通或 Meterleaf 暂停**：未送达的数据保存在本机，恢复后自动补发，不会重复计数。
+- **更换服务地址**：比如从局域网地址改为公网 HTTPS 地址，执行 `meterleaf-collector server https://meterleaf.example.com`。写入密钥不变，服务端不用改。
 - **提示密钥无效**：确认 Meterleaf 的 `METERLEAF_INGEST_KEYS` 包含 `init` 输出的那一行并已重启。换电脑或重新生成密钥时，用 `init --force` 并替换服务端对应的行。
 - **额度显示为过时**：Claude Code 并不在每次请求后刷新 `~/.claude.json` 里的额度缓存，观察到的刷新发生在打开设置中的用量面板时。采集器不会主动请求额度，可以启用下面的状态栏额度缓存获得更新的数据。
 - **切换过登录账户**：切换前后正在进行的请求可能无法确定属于哪个账户，会保留在「未归属」下，不会被算到当前账户。

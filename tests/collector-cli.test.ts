@@ -228,6 +228,34 @@ describe("采集器命令行", () => {
     expect(() => statSync(dataDir)).toThrow();
   });
 
+  test("server 只换地址，密钥不变，之后推送到新地址", async () => {
+    const { env, dataDir } = setup();
+    const first = fakeServer();
+    const second = fakeServer();
+    const init = run(env, "init", "--server", first.url);
+    const digest = /METERLEAF_INGEST_KEYS=[^:]+:([0-9a-f]{64})/.exec(
+      init.stdout,
+    )![1]!;
+    second.keys.add(digest);
+    const configFile = join(dataDir, "config.json");
+    const before = JSON.parse(readFileSync(configFile, "utf8"));
+
+    const rejected = run(env, "server", "https://user:pass@example.com");
+    expect(rejected.code).not.toBe(0);
+    expect(JSON.parse(readFileSync(configFile, "utf8"))).toEqual(before);
+
+    const changed = run(env, "server", `${second.url}/`);
+    expect(changed.code).toBe(0);
+    const after = JSON.parse(readFileSync(configFile, "utf8"));
+    expect(after).toEqual({ ...before, server: second.url });
+    expect(statSync(configFile).mode & 0o777).toBe(0o600);
+    expect(run(env, "status").stdout).toContain(digest);
+
+    expect((await runAsync(env, "sync")).code).toBe(0);
+    expect(first.batches).toHaveLength(0);
+    expect(second.batches.length).toBeGreaterThan(0);
+  });
+
   test("帮助说明对 Claude Code 的只读保证", () => {
     const help = run({ PATH: process.env.PATH ?? "" }, "help");
     expect(help.stdout).toContain("只读");
