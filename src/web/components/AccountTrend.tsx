@@ -44,6 +44,8 @@ export interface AccountTrendProps {
   metric?: AccountTrendMetric;
   variant?: TrendVariant;
   usdBasis?: UsdBasis;
+  /** 所在位置已有标题时隐藏趋势说明，完整说明仍保留在 title 与读屏标签中。 */
+  hideCaption?: boolean;
 }
 
 export interface MiniTrendProps {
@@ -217,14 +219,19 @@ function TrendState({
   label,
   text,
   error = false,
+  hideCaption = false,
 }: {
   label: string;
   text: string;
   error?: boolean;
+  hideCaption?: boolean;
 }) {
   return (
-    <div className="mini-trend" title={label}>
-      <TrendCaption label={label} />
+    <div
+      className={`mini-trend${hideCaption ? " is-caption-hidden" : ""}`}
+      title={label}
+    >
+      <TrendCaption label={label} hideCaption={hideCaption} />
       <div
         className={`mini-trend-state${error ? " is-error" : ""}`}
         role={error ? "alert" : "status"}
@@ -312,6 +319,7 @@ export function AccountTrend({
   metric = "tokens",
   variant = "area",
   usdBasis = "subscription",
+  hideCaption = false,
 }: AccountTrendProps) {
   const { paused } = useLiveUpdates();
   const queryKey = ["ledger", "account-trend", accountId] as const;
@@ -352,13 +360,18 @@ export function AccountTrend({
     query.isError || selectedView?.reportStatus?.lastError,
   );
 
-  if (query.isPending) return <TrendState label={label} text="读取中…" />;
-  if (!selectedView && isReportBuilding(query.error))
-    return <TrendState label={label} text="计算中…" />;
-  if (hasReportError && !hasUsableData)
-    return <TrendState label={label} text="读取失败" error />;
-  if (!selectedView)
-    return <TrendState label={label} text="暂无真实趋势数据" />;
+  const state = (text: string, error = false) => (
+    <TrendState
+      label={label}
+      text={text}
+      error={error}
+      hideCaption={hideCaption}
+    />
+  );
+  if (query.isPending) return state("读取中…");
+  if (!selectedView && isReportBuilding(query.error)) return state("计算中…");
+  if (hasReportError && !hasUsableData) return state("读取失败", true);
+  if (!selectedView) return state("暂无真实趋势数据");
 
   return (
     <MiniTrend
@@ -366,6 +379,7 @@ export function AccountTrend({
       metric={metric}
       variant={variant}
       label={hasReportError ? `${label} · 更新失败` : label}
+      hideCaption={hideCaption}
     />
   );
 }

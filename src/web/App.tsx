@@ -485,8 +485,9 @@ function AccountRow({
           ))}
           {!windows.length && (
             <span className="account-window account-window-unavailable">
-              <strong>暂无有效额度</strong>
-              <small>{quotaUnavailableNote(account)}</small>
+              {account.sampledAt
+                ? `${quotaUnavailableNote(account)}。上游再次上报后自动恢复。`
+                : quotaUnavailableNote(account)}
             </span>
           )}
           {!compactUsage && windows.length > 0 && (
@@ -496,6 +497,7 @@ function AccountRow({
                 accountId={account.id}
                 load={readAccountTrend}
                 variant="line"
+                hideCaption
               />
               <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
             </span>
