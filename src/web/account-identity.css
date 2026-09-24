@@ -11,12 +11,12 @@
   flex: none;
   align-items: center;
   height: 20px;
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--teal) 42%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--teal) 9%, transparent);
-  color: var(--teal);
-  font-size: 12px;
+  padding: 0 7px;
+  border: 1px solid var(--accent-line);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11.5px;
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0.01em;
@@ -29,14 +29,13 @@
   color: var(--muted);
 }
 .plan-chip[data-tier="3"] {
-  border-color: var(--teal);
-  background: var(--teal);
-  color: #ffffff;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* 名称固定单行，过长时省略，完整名称放在 title 中。 */
-.account-name > strong,
-.quota-preview-heading > strong,
+.account-name-line > strong,
 .mobile-home-account-name > strong {
   display: block;
   min-width: 0;
@@ -45,6 +44,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   overflow-wrap: normal;
+}
+.account-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .account-name > small {
   flex-wrap: nowrap;
@@ -55,33 +60,31 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.quota-preview-heading {
-  min-width: 0;
-}
 .mobile-home-account-name {
   flex-wrap: nowrap;
   gap: 8px;
 }
 
-/* 头像按账户类型着色。 */
+/* 头像显示账户名首字，按账户类型区分：订阅用强调色，API 与未知用灰阶。 */
 .account-avatar,
 .mobile-home-account-avatar {
-  color: var(--teal);
-  background: color-mix(in srgb, var(--teal) 12%, var(--surface));
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
 }
 .account-avatar[data-kind="api"],
 .mobile-home-account-avatar[data-kind="api"] {
-  color: #7a4fc2;
-  background: color-mix(in srgb, #9b75ef 14%, var(--surface));
+  color: var(--ink);
+  background: var(--soft);
 }
 .account-avatar[data-kind="unknown"],
 .mobile-home-account-avatar[data-kind="unknown"] {
   color: var(--muted);
   background: var(--soft);
-}
-.dark .account-avatar[data-kind="api"],
-.dark .mobile-home-account-avatar[data-kind="api"] {
-  color: #dec5ff;
 }
 
 /* 没有有效额度时只给一行说明，不再占出与额度窗口同样大的空卡片。 */
@@ -101,52 +104,26 @@
   font-size: 13px;
   line-height: 1.5;
 }
-.quota-preview-unavailable {
-  color: var(--muted);
-  font-size: 14px;
-}
 
 @media (min-width: 901px) {
-  .app-shell .account-row {
-    min-height: 0;
+  .app-shell .account-row .account-name-line > strong {
+    font-size: 16px;
+    font-weight: 600;
   }
-  .app-shell .account-row .account-name > strong {
-    font-size: 20px;
-  }
-  .app-shell .account-row .account-avatar,
-  .app-shell .account-row[data-quota-count="1"] .account-avatar {
-    width: 56px;
-    height: 56px;
-    border-radius: 16px;
-    color: #ffffff;
-    background: linear-gradient(135deg, #a5ded4, #189b8c);
-  }
-  .app-shell .account-row .account-avatar svg,
-  .app-shell .account-row[data-quota-count="1"] .account-avatar svg {
-    width: 26px;
-    height: 26px;
-  }
-  .app-shell .account-row .account-avatar[data-kind="api"] {
-    background: linear-gradient(135deg, #d6c0ff, #9b75ef);
-  }
-  .app-shell .account-row .account-avatar[data-kind="unknown"] {
-    background: linear-gradient(135deg, #c3ccd4, #7d8b97);
+  .app-shell .account-row .account-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    font-size: 17px;
   }
   .app-shell .account-capacity strong {
-    font-size: clamp(19px, 1.6vw, 25px);
+    font-size: clamp(19px, 1.6vw, 24px);
     white-space: nowrap;
     overflow-wrap: normal;
   }
   .app-shell .account-row .account-window-unavailable {
     min-height: 0;
     align-items: flex-start;
-    border-style: dashed;
-  }
-  .app-shell .quota-preview-heading .plan-chip {
-    margin-right: auto;
-  }
-  .app-shell .quota-preview-heading > strong {
-    flex: 0 1 auto;
   }
 }
 

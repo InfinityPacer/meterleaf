@@ -1,4 +1,5 @@
-import { ChevronRight, Wallet } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import { accountInitial } from "../lib/account-aliases";
 import { planBadge } from "../lib/plan";
 import type { LedgerView } from "../../shared/ledger-view";
 import type { AccountLifetime, LedgerAccount } from "../../shared/report";
@@ -10,7 +11,12 @@ import {
   type VisibleQuotaWindow,
   visibleQuotaWindows,
 } from "../lib/quota-display";
-import { amount, compact, numericAmount } from "../lib/report";
+import {
+  amount,
+  compact,
+  numericAmount,
+  quotaUnavailableNote,
+} from "../lib/report";
 import "./mobile-home.css";
 import { MiniTrend } from "./AccountTrend";
 import { ChartStyleControl } from "./ChartStyleControl";
@@ -159,6 +165,7 @@ function QuotaSummary({
                 title="7d 预估"
                 aria-label={`7d 预估 ${estimated}`}
               >
+                <small aria-hidden="true">预估</small>
                 {estimated}
               </em>
             </>
@@ -327,14 +334,14 @@ function LifetimeSummary({
           <span>{source}</span>
         </div>
       </div>
+      <div className="mobile-home-summary-hero">
+        <small>历史费用 · {source}</small>
+        <strong>{formatUsd(lifetime?.usd)}</strong>
+      </div>
       <div className="mobile-home-summary-metrics">
         <span>
           <small>Tokens</small>
           <strong>{formatTokens(lifetime?.tokens.total)}</strong>
-        </span>
-        <span>
-          <small>费用</small>
-          <strong>{formatUsd(lifetime?.usd)}</strong>
         </span>
         <span>
           <small>请求</small>
@@ -414,7 +421,7 @@ export function MobileHome({
                       data-kind={account.kind}
                       aria-hidden="true"
                     >
-                      <Wallet size={quotas.length === 1 ? 20 : 18} />
+                      {accountInitial(account.name)}
                     </span>
                     <span className="mobile-home-account-name">
                       <strong title={account.name}>{account.name}</strong>
@@ -448,7 +455,7 @@ export function MobileHome({
                     </div>
                   ) : hasQuota ? (
                     <div className="mobile-home-quota-unavailable">
-                      暂无有效额度
+                      {quotaUnavailableNote(account)}
                     </div>
                   ) : (
                     <UsageSummary

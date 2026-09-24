@@ -5,9 +5,6 @@
 }
 
 @media (max-width: 900px) {
-  .sidebar-art {
-    display: none;
-  }
   .topbar-subtitle {
     display: none;
   }
@@ -21,7 +18,15 @@
     margin-left: auto;
   }
   .overview-tabs {
-    margin-bottom: 12px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    margin-bottom: 16px;
+    border-radius: 12px;
+  }
+  .overview-tabs button {
+    min-height: 40px;
+    border-radius: 9px;
   }
   .account-lifetime {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -47,15 +52,9 @@
     .account-row[data-has-quota="true"][data-quota-count="0"] {
     grid-template-areas: "identity identity" "single single";
   }
-  .quota-preview {
-    min-height: 0;
-  }
-  .quota-preview .quota-bar > div:first-child > span:first-child {
-    flex-basis: auto;
-  }
   .account-row .quota-bar > div:first-child > span:first-child {
     flex-basis: auto;
-    font-weight: 650;
+    font-weight: 600;
   }
   .account-row .quota-bar > div:first-child > span:first-child::after {
     content: "·";
@@ -69,8 +68,7 @@
 @media (max-width: 900px) {
   :root[data-mobile-layout="app"] {
     --app-card-radius: 16px;
-    --app-shadow: 0 6px 24px #23374a06;
-    --canvas: #f5f8fa;
+    --app-shadow: var(--shadow);
     --mobile-bar-height: 56px;
     /* 导航内容位于系统手势区上方，背景延伸到屏幕底部；无安全区时不预留高度。 */
     --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -80,7 +78,6 @@
       var(--mobile-bar-height) + var(--mobile-safe-bottom) + 16px
     );
     &.dark {
-      --canvas: #151b20;
       --app-shadow: none;
     }
     .app-shell {
@@ -131,8 +128,8 @@
       display: none;
     }
     .mobile-brand {
-      font-size: 20px;
-      font-weight: 650;
+      font-size: 18px;
+      font-weight: 600;
       gap: 10px;
       line-height: 1.3;
       min-height: 44px;
@@ -157,18 +154,6 @@
         calc(var(--mobile-bar-height) + var(--mobile-safe-bottom) + 24px)
         max(20px, env(safe-area-inset-left));
     }
-    .dark .app-shell .account-avatar {
-      color: var(--blue);
-      background: #283c50;
-    }
-    .dark .app-shell .account-avatar.studio {
-      color: #a4e2d1;
-      background: #234239;
-    }
-    .dark .app-shell .account-avatar[data-kind="api"] {
-      color: #dec5ff;
-      background: #403448;
-    }
 
     .mobile-tabbar {
       position: fixed;
@@ -186,7 +171,7 @@
       border-radius: 0;
       background: color-mix(in srgb, var(--surface) 96%, transparent);
       backdrop-filter: blur(24px);
-      box-shadow: 0 -4px 24px #23374a05;
+      box-shadow: none;
     }
     .mobile-tabbar button {
       display: flex;
@@ -221,7 +206,7 @@
     h2,
     .section-heading h2 {
       font-size: 16px;
-      font-weight: 650;
+      font-weight: 600;
     }
     .section-heading .muted {
       font-size: 12px;
@@ -518,6 +503,12 @@
       gap: 12px;
       padding: 0;
     }
+    /* 没有 Credits 卡片时只剩三张，费用卡独占一行。 */
+    .app-period
+      .metrics:has(> .metric:nth-child(3):last-child)
+      > .primary-metric {
+      grid-column: 1 / -1;
+    }
     .app-period .metric {
       position: relative;
       overflow: hidden;
@@ -540,7 +531,7 @@
     }
     .app-period .metric-value {
       font-size: 23px;
-      font-weight: 650;
+      font-weight: 600;
       line-height: 1.3;
       margin-top: 8px;
       overflow-wrap: anywhere;

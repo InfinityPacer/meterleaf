@@ -43,9 +43,9 @@ try {
   await page.getByRole("radio", { name: "近 7 天", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(card).toContainText("8.4K");
-  await expect(page.locator('.quota-preview [aria-label="5h重置时间"]').first()).toBeVisible();
+  await expect(page.locator('.overview-quotas .account-row [aria-label="5h重置时间"]').first()).toBeVisible();
   await expect(page.getByRole("button", { name: `查看 ${subscriptionAccount.name} 账户额度`, exact: true }).locator(".quota-period-volume").first()).toHaveText("129.6K Tokens·12 次");
-  await expect(page.locator(".quota-preview .quota-period-requests")).toHaveCount(0);
+  await expect(page.locator(".overview-quotas .quota-period-requests")).toHaveCount(0);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

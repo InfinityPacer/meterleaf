@@ -304,7 +304,7 @@ try {
       if (key.startsWith("meterleaf-")) localStorage.removeItem(key);
     localStorage.removeItem("meterleaf-usd-basis");
     localStorage.setItem("meterleaf-theme", "light");
-    localStorage.setItem("meterleaf-palette", "default");
+    localStorage.setItem("meterleaf-palette", "green");
     // 该套检查覆盖可选侧栏布局；App 的五导航与手机筛选由独立浏览器套件覆盖。
     localStorage.setItem(
       "meterleaf-pref-mobile-layout",
@@ -413,17 +413,17 @@ try {
   await page.emulateMedia({ colorScheme: "light" });
   await themeTrigger.click();
   await selectTheme("外观", "跟随系统");
-  await selectTheme("配色", "自然");
+  await selectTheme("配色", "靛蓝");
   await page.keyboard.press("Escape");
   await expect(themeTrigger).toBeFocused();
-  await expect(page.locator("html")).toHaveAttribute("data-palette", "natural");
+  await expect(page.locator("html")).toHaveAttribute("data-palette", "indigo");
   await expect(page.locator("html")).not.toHaveClass(/dark/);
   await page.emulateMedia({ colorScheme: "dark" });
   await expect(page.locator("html")).toHaveClass(/dark/);
-  await expect(page.locator("html")).toHaveAttribute("data-palette", "natural");
+  await expect(page.locator("html")).toHaveAttribute("data-palette", "indigo");
   await page.reload();
   await expect(page.locator("html")).toHaveClass(/dark/);
-  await expect(page.locator("html")).toHaveAttribute("data-palette", "natural");
+  await expect(page.locator("html")).toHaveAttribute("data-palette", "indigo");
   await themeTrigger.click();
   await expect(
     page.getByRole("combobox", { name: "外观", exact: true }),
@@ -436,11 +436,11 @@ try {
   await expect(page.locator("html")).not.toHaveClass(/dark/);
   await page.reload();
   await expect(page.locator("html")).not.toHaveClass(/dark/);
-  await expect(page.locator("html")).toHaveAttribute("data-palette", "natural");
+  await expect(page.locator("html")).toHaveAttribute("data-palette", "indigo");
   await themeTrigger.click();
-  await selectTheme("配色", "默认");
+  await selectTheme("配色", "品牌绿");
   await page.keyboard.press("Escape");
-  await expect(page.locator("html")).toHaveAttribute("data-palette", "default");
+  await expect(page.locator("html")).toHaveAttribute("data-palette", "green");
   await page.emulateMedia({ colorScheme: null });
   await page.getByRole("button", { name: "时间段用量", exact: true }).click();
   await expect(page).toHaveURL(`${baseUrl}#period`);

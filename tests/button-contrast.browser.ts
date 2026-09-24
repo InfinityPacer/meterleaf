@@ -143,7 +143,7 @@ async function setState(theme: "light" | "dark", layout: "app" | "sidebar") {
   await taskPage.evaluate(
     ({ theme, layout }) => {
       localStorage.setItem("meterleaf-theme", theme);
-      localStorage.setItem("meterleaf-palette", "default");
+      localStorage.setItem("meterleaf-palette", "green");
       localStorage.setItem(
         "meterleaf-pref-mobile-layout",
         JSON.stringify(layout),

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MotionConfig } from "motion/react";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { App } from "./App";
+import "@fontsource-variable/geist";
 import "./styles.css";
 import "./mobile.css";
 import "./desktop.css";
