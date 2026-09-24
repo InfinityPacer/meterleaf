@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import { readClaudeJson } from "./claude-code/account";
+import { readStatuslineCache } from "./claude-code/statusline-cache";
 import { collect, type CollectReport } from "./collect";
 import {
   defaultSourceId,
@@ -32,6 +34,8 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
   init --server <url> [--source-id <id>] [--force]
                       生成写入密钥与配置，并输出服务端需要添加的密钥摘要
   bind-history        声明首次观察之前的历史用量属于当前登录账户
+  statusline-cache <path>|off
+                      （可选）读取状态栏脚本写出的额度缓存 TSV，获得比 .claude.json 更新的额度
   scan [--json]       只在本地解析并汇总，不联网、不改变同步进度
   sync                增量采集并推送；供后台任务每分钟运行，已有实例运行时直接退出
   status              查看同步进度、待发送数量与最近结果（不显示密钥）
@@ -166,10 +170,61 @@ function runInit(paths: CollectorPaths, values: Record<string, unknown>) {
   console.log("  meterleaf-collector install-launchd 安装每分钟运行的后台任务");
 }
 
+function runStatuslineCache(paths: CollectorPaths, value: string | undefined) {
+  const config = loadConfig(paths.configFile);
+  if (!config) {
+    console.error("尚未初始化，请先运行 meterleaf-collector init");
+    return 2;
+  }
+  if (!value) {
+    console.error(
+      "用法: meterleaf-collector statusline-cache <绝对路径>|off\n" +
+        `当前: ${config.statuslineCache ?? "未启用"}`,
+    );
+    return 2;
+  }
+  const next = { ...config };
+  if (value === "off") {
+    delete next.statuslineCache;
+  } else {
+    if (!isAbsolute(value)) {
+      console.error("请提供绝对路径");
+      return 2;
+    }
+    next.statuslineCache = value;
+  }
+  saveConfig(paths.dataDir, paths.configFile, next, true);
+  if (value === "off") {
+    console.log("已停用状态栏额度缓存。");
+    return 0;
+  }
+  const cache = readStatuslineCache(value);
+  console.log(`已启用状态栏额度缓存: ${value}`);
+  console.log(
+    cache
+      ? `当前内容可读取，采样于 ${cache.sampledAt}。`
+      : "警告: 文件暂不存在或格式无效，下次状态栏更新后再试。",
+  );
+  console.log(
+    "每行为「窗口名<TAB>已用百分比<TAB>重置时间 Unix 秒」，窗口名为 five_hour 或 seven_day；采样时间取文件修改时间。",
+  );
+  return 0;
+}
+
+function collectSources(paths: CollectorPaths) {
+  let statuslineCache: string | null = null;
+  try {
+    statuslineCache = loadConfig(paths.configFile)?.statuslineCache ?? null;
+  } catch {
+    statuslineCache = null;
+  }
+  return { ...paths, statuslineCache };
+}
+
 function runScan(paths: CollectorPaths, json: boolean) {
   const state = new CollectorState(":memory:");
   try {
-    const report = collect(state, paths);
+    const report = collect(state, collectSources(paths));
     const totals = state.usageTotals();
     const quotas = state
       .pending<{ window: string; percent: number | null; sampledAt: string }>(
@@ -201,6 +256,8 @@ function runScan(paths: CollectorPaths, json: boolean) {
       );
     }
     if (report.quotaSkipped) console.log(`额度: ${report.quotaSkipped}`);
+    if (report.statuslineQuotaSkipped)
+      console.log(`状态栏额度: ${report.statuslineQuotaSkipped}`);
     console.log("");
     printTotals(totals);
     console.log("");
@@ -222,7 +279,10 @@ async function runSync(paths: CollectorPaths): Promise<number> {
   let state: CollectorState | null = null;
   try {
     state = openState(paths);
-    const report = collect(state, paths);
+    const report = collect(state, {
+      ...paths,
+      statuslineCache: config.statuslineCache,
+    });
     const result = await pushOutbox(state, config);
     const now = new Date().toISOString();
     if (result.error) {
@@ -304,6 +364,8 @@ function runStatus(paths: CollectorPaths) {
   } else {
     console.log("配置: 尚未初始化");
   }
+  if (config)
+    console.log(`状态栏额度缓存: ${config.statuslineCache ?? "未启用"}`);
   console.log(`后台任务: ${existsSync(plistPath()) ? "已安装" : "未安装"}`);
   if (!existsSync(paths.stateFile)) {
     console.log("同步状态: 尚未运行 sync");
@@ -370,6 +432,8 @@ export async function main(argv: string[]): Promise<number> {
     case "init":
       runInit(paths, values);
       return 0;
+    case "statusline-cache":
+      return runStatuslineCache(paths, positionals[1]);
     case "bind-history":
       return runBindHistory(paths);
     case "scan":

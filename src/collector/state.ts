@@ -387,8 +387,16 @@ export class CollectorState {
   }
 
   /** 同一次上游采样只上报一次；每次采样各自保留，离线期间的历史采样不会被覆盖。 */
-  recordQuota(snapshot: QuotaSnapshot): boolean {
-    if (this.getMeta("last_quota_hash") === snapshot.hash) return false;
+  /** 每个额度来源分别记住最近一次上报的内容，同一采样重复读取时不再入队。 */
+  recordQuota(
+    snapshot: QuotaSnapshot,
+    source: "claude-json" | "statusline" = "claude-json",
+  ): boolean {
+    const metaKey =
+      source === "claude-json"
+        ? "last_quota_hash"
+        : `last_quota_hash:${source}`;
+    if (this.getMeta(metaKey) === snapshot.hash) return false;
     this.db.transaction(() => {
       for (const quota of snapshot.quotas) {
         this.enqueue(
@@ -397,7 +405,7 @@ export class CollectorState {
           quota,
         );
       }
-      this.setMeta("last_quota_hash", snapshot.hash);
+      this.setMeta(metaKey, snapshot.hash);
     })();
     return true;
   }
