@@ -9,16 +9,22 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import packageJson from "../package.json";
+import {
+  BUNDLE_IDENTIFIER,
+  renderServicePlist,
+  SERVICE_HELPER,
+  SERVICE_PLIST,
+} from "../src/collector/launchd";
 
 /**
  * 构建采集器：dist/meterleaf-collector 是通用命令行可执行文件；在 macOS 上另外打包
- * dist/Meterleaf.app，让后台任务在“登录项与后台”中显示 Meterleaf 名称与图标。
+ * dist/Meterleaf.app。包内带 SMAppService 注册助手与后台任务 plist，
+ * 让后台任务在“登录项与扩展”中显示 Meterleaf 名称与图标。
  */
 const root = resolve(import.meta.dir, "..");
 const dist = join(root, "dist");
 const binary = join(dist, "meterleaf-collector");
 const bundle = join(dist, "Meterleaf.app");
-const bundleIdentifier = "io.meterleaf.collector";
 
 function run(command: string[]) {
   const result = Bun.spawnSync(command, {
@@ -50,7 +56,7 @@ function infoPlist(): string {
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>${bundleIdentifier}</string>
+  <string>${BUNDLE_IDENTIFIER}</string>
   <key>CFBundleName</key>
   <string>Meterleaf</string>
   <key>CFBundleDisplayName</key>
@@ -132,12 +138,37 @@ run([
 if (process.platform === "darwin") {
   rmSync(bundle, { recursive: true, force: true });
   const contents = join(bundle, "Contents");
-  mkdirSync(join(contents, "MacOS"), { recursive: true });
+  const macos = join(contents, "MacOS");
+  const agents = join(contents, "Library", "LaunchAgents");
+  mkdirSync(macos, { recursive: true });
   mkdirSync(join(contents, "Resources"), { recursive: true });
+  mkdirSync(agents, { recursive: true });
   writeFileSync(join(contents, "Info.plist"), infoPlist());
-  copyFileSync(binary, join(contents, "MacOS", "meterleaf-collector"));
+  copyFileSync(binary, join(macos, "meterleaf-collector"));
+  writeFileSync(join(agents, SERVICE_PLIST), renderServicePlist());
+  // SMAppService 需要 macOS 13；目标版本与 Info.plist 的 LSMinimumSystemVersion 一致。
+  const arch = process.arch === "arm64" ? "arm64" : "x86_64";
+  run([
+    "/usr/bin/xcrun",
+    "swiftc",
+    "-O",
+    "-target",
+    `${arch}-apple-macos13.0`,
+    "src/collector/macos/meterleaf-service.swift",
+    "-o",
+    join(macos, SERVICE_HELPER),
+  ]);
   buildIcon(join(contents, "Resources", "AppIcon.icns"));
-  // 临时签名把 Info.plist 与图标封入包内，系统据此识别包标识与图标。
+  // 临时签名：先签包内助手，再签整个包，把 Info.plist、plist 与图标封入签名。
+  runQuiet([
+    "/usr/bin/codesign",
+    "--force",
+    "--sign",
+    "-",
+    "--identifier",
+    `${BUNDLE_IDENTIFIER}.service`,
+    join(macos, SERVICE_HELPER),
+  ]);
   runQuiet(["/usr/bin/codesign", "--force", "--sign", "-", bundle]);
   console.log(`已生成 ${bundle}`);
 }

@@ -15,8 +15,12 @@ import {
   saveConfig,
 } from "./config";
 import {
+  appBundleOf,
+  appendLog,
   installLaunchd,
+  installService,
   plistPath,
+  serviceStatus,
   syncProgramArguments,
   uninstallLaunchd,
 } from "./launchd";
@@ -40,10 +44,12 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
   sync                增量采集并推送；供后台任务每分钟运行，已有实例运行时直接退出
   status              查看同步进度、待发送数量与最近结果（不显示密钥）
   install-launchd     安装 macOS 后台任务，每 60 秒以低优先级运行 sync
+                      从 Meterleaf.app 运行时以应用身份注册，登录项中显示 Meterleaf
   uninstall-launchd   停止并删除 macOS 后台任务
 
 通用选项:
   --claude-json <path>  指定 .claude.json 位置（默认 ~/.claude.json，也可用 METERLEAF_CLAUDE_JSON）
+  --log                 输出追加到数据目录 logs 下的日志文件，供后台任务使用
 
 对 Claude Code 的保证:
   - 只以只读方式打开 ~/.claude/projects 下的 JSONL 与 ~/.claude.json，
@@ -352,6 +358,79 @@ function runBindHistory(paths: CollectorPaths): number {
   }
 }
 
+const serviceStatusLabels = {
+  enabled: "已启用（Meterleaf.app）",
+  "requires-approval": "等待在「登录项与扩展」中批准",
+  "not-registered": "未安装",
+  "not-found": "应用包内缺少后台任务",
+  unknown: "状态未知",
+} as const;
+
+function backgroundTaskStatus(): string {
+  if (existsSync(plistPath())) return "已安装（旧式 LaunchAgent）";
+  if (process.platform !== "darwin") return "未安装";
+  const bundle = appBundleOf();
+  return bundle ? serviceStatusLabels[serviceStatus(bundle)] : "未安装";
+}
+
+/** 自定义路径只能通过环境变量传给后台任务，应用包内的固定 plist 无法携带。 */
+function customEnvironment(
+  paths: CollectorPaths,
+  claudeJsonOption: string | undefined,
+): Record<string, string> | null {
+  const environment: Record<string, string> = {};
+  if (process.env.METERLEAF_COLLECTOR_HOME) {
+    environment.METERLEAF_COLLECTOR_HOME = paths.dataDir;
+  }
+  if (process.env.CLAUDE_CONFIG_DIR) {
+    environment.CLAUDE_CONFIG_DIR = paths.claudeRoot;
+  }
+  if (claudeJsonOption || process.env.METERLEAF_CLAUDE_JSON) {
+    environment.METERLEAF_CLAUDE_JSON = paths.claudeJson;
+  }
+  return Object.keys(environment).length > 0 ? environment : null;
+}
+
+function runInstall(
+  paths: CollectorPaths,
+  claudeJsonOption: string | undefined,
+): number {
+  if (!loadConfig(paths.configFile)) {
+    throw new Error("尚未初始化，请先运行 meterleaf-collector init");
+  }
+  mkdirSync(paths.logDir, { recursive: true, mode: 0o700 });
+  const environment = customEnvironment(paths, claudeJsonOption);
+  const bundle = appBundleOf();
+  let steps: string[];
+  if (bundle && !environment) {
+    steps = installService(bundle, plistPath());
+  } else {
+    if (bundle) {
+      console.log(
+        "使用了自定义路径，改为安装旧式 LaunchAgent；登录项中会显示为可执行文件名。",
+      );
+    }
+    steps = installLaunchd({
+      plistPath: plistPath(),
+      programArguments: syncProgramArguments(),
+      environment: environment ?? {},
+    });
+  }
+  for (const step of steps) console.log(step);
+  console.log(`日志: ${paths.logDir}`);
+  return 0;
+}
+
+/** 后台任务没有终端，把标准输出与错误分别追加到日志目录。 */
+function redirectToLog(paths: CollectorPaths) {
+  mkdirSync(paths.logDir, { recursive: true, mode: 0o700 });
+  const out = `${paths.logDir}/collector.log`;
+  const err = `${paths.logDir}/collector.err.log`;
+  const text = (items: unknown[]) => items.map(String).join(" ");
+  console.log = (...items: unknown[]) => appendLog(out, text(items));
+  console.error = (...items: unknown[]) => appendLog(err, text(items));
+}
+
 function runStatus(paths: CollectorPaths) {
   const config = loadConfig(paths.configFile);
   console.log(`数据目录: ${paths.dataDir}`);
@@ -366,7 +445,7 @@ function runStatus(paths: CollectorPaths) {
   }
   if (config)
     console.log(`状态栏额度缓存: ${config.statuslineCache ?? "未启用"}`);
-  console.log(`后台任务: ${existsSync(plistPath()) ? "已安装" : "未安装"}`);
+  console.log(`后台任务: ${backgroundTaskStatus()}`);
   if (!existsSync(paths.stateFile)) {
     console.log("同步状态: 尚未运行 sync");
     return;
@@ -417,6 +496,7 @@ export async function main(argv: string[]): Promise<number> {
       force: { type: "boolean" },
       json: { type: "boolean" },
       "claude-json": { type: "string" },
+      log: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -428,6 +508,7 @@ export async function main(argv: string[]): Promise<number> {
   const paths = resolvePaths(process.env, {
     claudeJson: values["claude-json"],
   });
+  if (values.log) redirectToLog(paths);
   switch (command) {
     case "init":
       runInit(paths, values);
@@ -444,31 +525,12 @@ export async function main(argv: string[]): Promise<number> {
     case "status":
       runStatus(paths);
       return 0;
-    case "install-launchd": {
-      if (!loadConfig(paths.configFile)) {
-        throw new Error("尚未初始化，请先运行 meterleaf-collector init");
-      }
-      const environment: Record<string, string> = {
-        METERLEAF_COLLECTOR_HOME: paths.dataDir,
-      };
-      if (process.env.CLAUDE_CONFIG_DIR) {
-        environment.CLAUDE_CONFIG_DIR = paths.claudeRoot;
-      }
-      if (values["claude-json"] || process.env.METERLEAF_CLAUDE_JSON) {
-        environment.METERLEAF_CLAUDE_JSON = paths.claudeJson;
-      }
-      const steps = installLaunchd({
-        plistPath: plistPath(),
-        programArguments: syncProgramArguments(),
-        logDir: paths.logDir,
-        environment,
-      });
-      for (const step of steps) console.log(step);
-      console.log(`日志: ${paths.logDir}`);
-      return 0;
-    }
+    case "install-launchd":
+      return runInstall(paths, values["claude-json"]);
     case "uninstall-launchd":
-      for (const step of uninstallLaunchd(plistPath())) console.log(step);
+      for (const step of uninstallLaunchd(appBundleOf(), plistPath())) {
+        console.log(step);
+      }
       return 0;
     default:
       console.error(`未知命令: ${command}\n`);

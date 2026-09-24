@@ -5,6 +5,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -17,7 +19,13 @@ import {
   type IngestBatch,
 } from "../src/shared/ingest";
 import { keyDigest } from "../src/collector/config";
-import { renderPlist, syncProgramArguments } from "../src/collector/launchd";
+import {
+  appBundleOf,
+  appendLog,
+  renderPlist,
+  renderServicePlist,
+  syncProgramArguments,
+} from "../src/collector/launchd";
 import { FIXTURE_ACCOUNT_UUID } from "./fixtures/claude-code/lines";
 
 const repoRoot = join(import.meta.dir, "..");
@@ -228,10 +236,8 @@ describe("采集器命令行", () => {
 
   test("后台任务以包内可执行文件低优先级运行并关联 Meterleaf 包标识", () => {
     const { root } = setup();
-    const executable = join(
-      root,
-      "Meterleaf.app/Contents/MacOS/meterleaf-collector",
-    );
+    const bundle = join(root, "Meterleaf.app");
+    const executable = join(bundle, "Contents/MacOS/meterleaf-collector");
     mkdirSync(join(executable, ".."), { recursive: true });
     writeFileSync(executable, "");
     const programArguments = syncProgramArguments(
@@ -243,29 +249,79 @@ describe("采集器命令行", () => {
         /Meterleaf\.app\/Contents\/MacOS\/meterleaf-collector$/,
       ),
       "sync",
+      "--log",
     ]);
-    const plist = renderPlist({
+
+    // 包内缺少注册助手或 plist 时不按应用包注册。
+    expect(appBundleOf(executable)).toBeNull();
+    writeFileSync(join(bundle, "Contents/MacOS/meterleaf-service"), "");
+    mkdirSync(join(bundle, "Contents/Library/LaunchAgents"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(
+        bundle,
+        "Contents/Library/LaunchAgents/io.meterleaf.collector.sync.plist",
+      ),
+      "",
+    );
+    expect(appBundleOf(executable)).toBe(realpathSync(bundle));
+
+    const service = renderServicePlist();
+    const legacy = renderPlist({
       plistPath: join(root, "io.meterleaf.collector.plist"),
       programArguments,
-      logDir: join(root, "logs"),
       environment: { METERLEAF_COLLECTOR_HOME: join(root, "data & more") },
     });
-    for (const fragment of [
-      "<key>AssociatedBundleIdentifiers</key>",
-      "<string>io.meterleaf.collector</string>",
-      "<key>ProcessType</key>\n  <string>Background</string>",
-      "<key>LowPriorityIO</key>\n  <true/>",
-      "<key>Nice</key>\n  <integer>10</integer>",
-      "<key>StartInterval</key>\n  <integer>60</integer>",
-      "data &amp; more",
-    ]) {
-      expect(plist).toContain(fragment);
+    for (const plist of [service, legacy]) {
+      for (const fragment of [
+        "<key>AssociatedBundleIdentifiers</key>",
+        "<string>io.meterleaf.collector</string>",
+        "<string>--log</string>",
+        "<key>ProcessType</key>\n  <string>Background</string>",
+        "<key>LowPriorityIO</key>\n  <true/>",
+        "<key>Nice</key>\n  <integer>10</integer>",
+        "<key>StartInterval</key>\n  <integer>60</integer>",
+      ]) {
+        expect(plist).toContain(fragment);
+      }
     }
-    const plistFile = join(root, "check.plist");
-    writeFileSync(plistFile, plist);
+    expect(service).toContain(
+      "<key>BundleProgram</key>\n  <string>Contents/MacOS/meterleaf-collector</string>",
+    );
+    expect(service).toContain("<string>io.meterleaf.collector.sync</string>");
+    expect(legacy).toContain("data &amp; more");
     if (process.platform === "darwin") {
-      const lint = Bun.spawnSync(["/usr/bin/plutil", "-lint", plistFile]);
-      expect(lint.exitCode).toBe(0);
+      for (const [name, plist] of [
+        ["service.plist", service],
+        ["legacy.plist", legacy],
+      ] as const) {
+        const file = join(root, name);
+        writeFileSync(file, plist);
+        const lint = Bun.spawnSync(["/usr/bin/plutil", "-lint", file]);
+        expect(lint.exitCode).toBe(0);
+      }
     }
+  });
+
+  test("sync --log 把输出写入日志目录并在过大时轮换", async () => {
+    const { env, dataDir, root } = setup();
+    const server = fakeServer();
+    const init = run(env, "init", "--server", server.url);
+    server.keys.add(
+      /METERLEAF_INGEST_KEYS=[^:]+:([0-9a-f]{64})/.exec(init.stdout)![1]!,
+    );
+    const synced = await runAsync(env, "sync", "--log");
+    expect(synced.code).toBe(0);
+    expect(synced.stdout + synced.stderr).toBe("");
+    expect(readFileSync(join(dataDir, "logs/collector.log"), "utf8")).toContain(
+      "已推送",
+    );
+
+    const log = join(root, "rotate.log");
+    writeFileSync(log, "x".repeat(1024 * 1024 + 1));
+    appendLog(log, "新的一行");
+    expect(readFileSync(log, "utf8")).toBe("新的一行\n");
+    expect(statSync(`${log}.1`).size).toBe(1024 * 1024 + 1);
   });
 });
