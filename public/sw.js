@@ -1,7 +1,9 @@
-const CACHE_NAME = "meterleaf-offline-v4";
+const CACHE_NAME = "meterleaf-offline-v5";
 const OFFLINE_URL = "/offline.html";
 const PRECACHE_URLS = [
   OFFLINE_URL,
+  // 品牌图标在登录过期时也要可读，否则认证网关的重定向会让页面显示破图。
+  "/favicon.svg",
   "/manifest.webmanifest",
   "/icons/meterleaf-leaf-180.png",
   "/icons/meterleaf-leaf-192.png",

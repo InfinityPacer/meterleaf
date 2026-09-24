@@ -67,12 +67,13 @@ test("service worker only precaches independent offline resources", async () => 
   const worker = await readFile(join(root, "public/sw.js"), "utf8");
   expect(worker).toContain("/offline.html");
   expect(worker).toContain("/manifest.webmanifest");
+  expect(worker).toContain('"/favicon.svg"');
   expect(worker).toContain("/icons/meterleaf-leaf-180.png");
   expect(worker).toContain("/icons/meterleaf-leaf-192.png");
   expect(worker).toContain("/icons/meterleaf-leaf-512.png");
   expect(worker).toContain("/icons/meterleaf-192.png");
   expect(worker).toContain("/icons/meterleaf-512.png");
-  expect(worker).toContain('const CACHE_NAME = "meterleaf-offline-v4"');
+  expect(worker).toContain('const CACHE_NAME = "meterleaf-offline-v5"');
   expect(worker).toContain("navigationPreload.enable");
   expect(worker).toContain("event.preloadResponse");
   expect(worker).toContain('event.request.mode !== "navigate"');

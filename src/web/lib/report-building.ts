@@ -1,4 +1,5 @@
 import type { LedgerView, ReportBuilding } from "../../shared/ledger-view";
+import { isSessionExpired } from "./session";
 
 /** 报表正在后台首次计算或重建，暂时没有结果；不是读取失败，稍后会自动可用。 */
 export class ReportBuildingError extends Error {
@@ -16,7 +17,9 @@ export function isReportBuilding(error: unknown): error is ReportBuildingError {
 
 /** 计算中不算失败，不走指数退避重试，交给轮询继续等待。 */
 export function reportRetry(failureCount: number, error: unknown) {
-  return !isReportBuilding(error) && failureCount < 1;
+  return (
+    !isReportBuilding(error) && !isSessionExpired(error) && failureCount < 1
+  );
 }
 
 /**
