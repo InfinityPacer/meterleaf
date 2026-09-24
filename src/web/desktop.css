@@ -1548,6 +1548,13 @@
 }
 
 @media (min-width: 1001px) {
+  /* 基础样式在 1250px 以下按两行排列区域，桌面五列网格要显式覆盖，否则两套规则叠加。 */
+  .app-shell .account-row[data-quota-count="2"] {
+    grid-template-areas: "identity five seven capacity arrow";
+  }
+  .app-shell .account-row[data-quota-count="2"] .row-arrow {
+    grid-area: arrow;
+  }
   .app-shell .account-row[data-quota-count="1"],
   .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
     grid-template-columns:
@@ -1586,5 +1593,33 @@
   .app-shell .model-distribution,
   .app-shell .ledger-section {
     transition: none;
+  }
+}
+
+@media (min-width: 1001px) and (max-width: 1250px) {
+  /* 两个额度窗口在这个宽度放不下完整数值，沿用 1000px 以下的两行排列。 */
+  .app-shell .account-row[data-quota-count="2"] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "identity capacity"
+      "five seven";
+    gap: 20px 18px;
+  }
+  .app-shell .account-row[data-quota-count="2"] .row-arrow {
+    display: none;
+  }
+  .app-shell
+    .account-list-item:has(> .account-row[data-quota-count="2"])
+    .account-menu-trigger {
+    top: 20px;
+    transform: none;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1000px) {
+  /* 两行排列时管理菜单放在右上角，不与预估金额重叠。 */
+  .app-shell .account-menu-trigger {
+    top: 20px;
+    transform: none;
   }
 }
