@@ -111,6 +111,8 @@ export type Granularity = "hour" | "day" | "week";
 export interface ReportFilter {
   days: number;
   dateRange?: DateRange;
+  /** 历史至今；仅在界面偏好中保留，查询前换算为自然日范围，服务端不识别。 */
+  all?: boolean;
   model: string;
   account: string;
   search: string;

@@ -5,10 +5,17 @@ import { dateRangeSchema, type DateRange } from "../../shared/date-range";
 import type { ReportFilter } from "../../shared/report";
 import { Button } from "./ui/button";
 
-type Selection = Pick<ReportFilter, "days" | "dateRange">;
+type Selection = Pick<ReportFilter, "days" | "dateRange" | "all">;
+type Preset = {
+  id: string;
+  label: string;
+  days: number;
+  dateRange: DateRange | undefined;
+  all?: true;
+};
 
 /** 自然日快捷范围固定使用报表时区，不随浏览器所在地变化；滚动范围保留小时精度。 */
-export function datePresets(asOf: string) {
+export function datePresets(asOf: string): Preset[] {
   const clock = new Date(Date.parse(asOf) + 8 * 3600_000);
   const date = (dayOffset: number) => {
     const shifted = new Date(clock);
@@ -24,6 +31,7 @@ export function datePresets(asOf: string) {
   month.setUTCDate(1);
   const lastMonthStart = month.toISOString().slice(0, 10);
   return [
+    { id: "all", label: "历史至今", days: 30, dateRange: undefined, all: true },
     {
       id: "today",
       label: "今天",
@@ -64,10 +72,13 @@ export function datePresets(asOf: string) {
 export function DateRangePicker({
   value,
   asOf,
+  allRange,
   onChange,
 }: {
   value: Selection;
   asOf: string;
+  /** 历史至今换算出的实际日期，仅用于预填自定义起止。 */
+  allRange?: DateRange;
   onChange: (selection: Selection) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -75,22 +86,28 @@ export function DateRangePicker({
   const [presetId, setPresetId] = useState<string | null>(null);
   const presets = datePresets(asOf);
   const selected = presets.find((preset) =>
-    value.dateRange
-      ? preset.dateRange?.from === value.dateRange.from &&
-        preset.dateRange.to === value.dateRange.to
-      : !preset.dateRange && preset.days === value.days,
+    value.all
+      ? preset.all
+      : preset.all
+        ? false
+        : value.dateRange
+          ? preset.dateRange?.from === value.dateRange.from &&
+            preset.dateRange.to === value.dateRange.to
+          : !preset.dateRange && preset.days === value.days,
   );
   const title =
     selected?.label ??
     (value.dateRange
-      ? `${value.dateRange.from} ~ ${value.dateRange.to}`
+      ? value.dateRange.from === value.dateRange.to
+        ? value.dateRange.from
+        : `${value.dateRange.from} ~ ${value.dateRange.to}`
       : `近 ${value.days} 天`);
   const valid = dateRangeSchema.safeParse(draft).success;
   const updateDates = (next: DateRange) => {
     setPresetId(null);
     setDraft(next);
     if (dateRangeSchema.safeParse(next).success)
-      onChange({ days: value.days, dateRange: next });
+      onChange({ days: value.days, dateRange: next, all: undefined });
   };
   const changeOpen = (next: boolean) => {
     if (next) {
@@ -103,7 +120,10 @@ export function DateRangePicker({
       )
         .toISOString()
         .slice(0, 10);
-      setDraft(value.dateRange ?? { from, to });
+      setDraft(
+        (value.all ? allRange : value.dateRange) ??
+          value.dateRange ?? { from, to },
+      );
     }
     setOpen(next);
   };
@@ -165,10 +185,16 @@ export function DateRangePicker({
                       )
                         .toISOString()
                         .slice(0, 10);
-                      setDraft(preset.dateRange ?? { from, to });
+                      setDraft(
+                        (preset.all ? allRange : preset.dateRange) ?? {
+                          from,
+                          to,
+                        },
+                      );
                       onChange({
                         days: preset.days,
                         dateRange: preset.dateRange,
+                        all: preset.all,
                       });
                       setOpen(false);
                     }}

@@ -78,7 +78,8 @@ export function useScopedPreference<T>(
 }
 
 export const preferenceSchemas = {
-  homeChart: z.enum(["line", "area", "bar"]),
+  /** 账本首条记录时间，用于首屏立即换算历史至今，响应返回后按最新值校正。 */
+  ledgerStart: z.string().min(10).max(40).nullable(),
   mobileLayout: z.enum(["sidebar", "app"]),
   accountOrder: z.array(z.string().min(1).max(512)).max(10000),
   accountArchiveView: z.enum(["active", "archived", "all"]),
@@ -122,6 +123,7 @@ export const preferenceSchemas = {
           "cacheRead",
           "cacheWrite",
           "output",
+          "cacheRate",
           "requests",
           "usd",
           "credits",

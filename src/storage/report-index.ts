@@ -1192,6 +1192,8 @@ export class ReportIndex {
         creditsSummary: totals.credits,
         tokenSummary: totals.tokens,
         previousUsdSummary: metricSummary(previousTotal, "usd", basis),
+        previousTokenSummary: metricSummary(previousTotal, "tokens", basis),
+        previousCount: previousTotal.count,
         cacheSummary: this.cacheSummary(currentTotal),
         cacheRate: currentTotal.completeCacheInput
           ? (currentTotal.completeCacheRead / currentTotal.completeCacheInput) *

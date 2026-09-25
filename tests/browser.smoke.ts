@@ -138,7 +138,6 @@ page.setDefaultTimeout(10_000);
 const errors: string[] = [];
 const ledgerRequests: string[] = [];
 const mainLedgerRequests: string[] = [];
-const homeTrendRequests: string[] = [];
 const accountTrendRequests: string[] = [];
 
 function isAccountTrendRequest(url: URL) {
@@ -152,18 +151,16 @@ function isAccountTrendRequest(url: URL) {
   );
 }
 
-function isHomeTrendRequest(url: URL) {
-  const query = url.searchParams;
-  return (
-    query.get("days") === "30" &&
-    query.get("granularity") === "day" &&
-    query.get("pageSize") === "1" &&
-    query.get("account") === "all"
-  );
+function isMainLedgerRequest(url: URL) {
+  return !isAccountTrendRequest(url);
 }
 
-function isMainLedgerRequest(url: URL) {
-  return !isAccountTrendRequest(url) && !isHomeTrendRequest(url);
+// 总览与统计报表共用同一个摘要条；四格依次为 Tokens、费用、请求、缓存命中率。
+function summaryCell(currentPage: Page, index: number) {
+  return currentPage
+    .locator("section.usage-summary dl > div")
+    .nth(index)
+    .locator("dd");
 }
 
 // 交互断言与截图通道独立；截图被禁用时必须在验证结果中明示。
@@ -315,7 +312,6 @@ try {
     const url = new URL(route.request().url());
     ledgerRequests.push(url.toString());
     if (isAccountTrendRequest(url)) accountTrendRequests.push(url.toString());
-    else if (isHomeTrendRequest(url)) homeTrendRequests.push(url.toString());
     else mainLedgerRequests.push(url.toString());
     if (
       holdDateResponse &&
@@ -353,18 +349,48 @@ try {
     page.getByRole("heading", { name: "用量总览", exact: true }),
   ).toBeVisible();
   expect(mainLedgerRequests[0]).not.toContain("usdBasis=");
-  await expect(
-    page.getByRole("region", { name: "历史累计", exact: true }),
-  ).toBeVisible();
+  // 总览默认看历史至今：日期入口、摘要条和趋势副标题使用同一范围名称。
+  const overviewDate = page.getByRole("button", {
+    name: "日期范围",
+    exact: true,
+  });
+  await expect(overviewDate).toContainText("历史至今");
+  const lifetimeSummary = page.getByRole("region", {
+    name: "历史至今用量摘要",
+    exact: true,
+  });
+  await expect(lifetimeSummary).toBeVisible();
+  await expect(lifetimeSummary).toContainText("日均");
+  await expect(lifetimeSummary).toContainText(/\d{4}\/\d{2}\/\d{2} 起/);
+  await expect(lifetimeSummary).not.toContainText("环比");
+  await expect(lifetimeSummary.locator(".token-composition-bar")).toBeVisible();
   // 总览账户额度沿用账户页的行组件，按区块标题识别。
   const overviewAccounts = page.getByRole("region", {
     name: "账户额度",
     exact: true,
   });
   await expect(overviewAccounts).toBeVisible();
-  await expect(page.locator(".overview-history-trend canvas")).toBeVisible();
-  await expect(page.getByRole("region", { name: "用量摘要" })).toHaveCount(0);
-  await expect(page.locator(".filterbar")).toHaveCount(0);
+  const overviewTrendNote = page.locator(
+    ".trend-panel .section-heading .muted",
+  );
+  await expect(overviewTrendNote).toHaveText("历史至今 · 按天汇总");
+  await expect(
+    page.locator(".desktop-period .trend-panel canvas"),
+  ).toBeVisible();
+  await expect(page.locator("dl.trend-insights")).toContainText("峰值天");
+  await expect(page.locator("dl.trend-insights")).toContainText("活跃天数");
+  // 旧的累计/时间段分页、固定 30 天趋势和时段指标卡都已并入总览。
+  await expect(page.getByRole("navigation", { name: "总览视图" })).toHaveCount(
+    0,
+  );
+  await expect(page.locator(".overview-history-trend")).toHaveCount(0);
+  await expect(page.locator('[aria-label="用量摘要"] .metric')).toHaveCount(0);
+  await expect(
+    page.getByRole("combobox", { name: "模型筛选", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("combobox", { name: "账户筛选", exact: true }),
+  ).toHaveCount(0);
   await expect.poll(() => accountTrendRequests.length).toBeGreaterThan(0);
   expect(
     accountTrendRequests.every((request) => {
@@ -382,17 +408,31 @@ try {
       new URL(request).searchParams.get("account"),
     ),
   ).toContain("api");
+  // 总览只按时间查询：不带模型、账户筛选，也只取一行明细。
   expect(
-    homeTrendRequests.every((request) => {
+    mainLedgerRequests.every((request) => {
       const url = new URL(request);
       return (
-        url.searchParams.get("days") === "30" &&
-        url.searchParams.get("granularity") === "day" &&
         url.searchParams.get("pageSize") === "1" &&
-        url.searchParams.get("account") === "all"
+        url.searchParams.get("account") === "all" &&
+        (url.searchParams.get("model") ?? "all") === "all"
       );
     }),
   ).toBe(true);
+  // 历史至今在查询前换算为从账本首日开始的自然日范围。
+  const demoStart = createDemoLedger()
+    .records.map((row) => row.occurredAt)
+    .sort()[0]!;
+  const demoStartDay = new Date(Date.parse(demoStart) + 8 * 3600_000)
+    .toISOString()
+    .slice(0, 10);
+  await expect
+    .poll(() =>
+      mainLedgerRequests.some(
+        (request) => new URL(request).searchParams.get("from") === demoStartDay,
+      ),
+    )
+    .toBe(true);
   // 无额度账户在总览中展示累计用量，而不是额度窗口。
   const overviewDevelopment = overviewAccounts.getByRole("button", {
     name: /^Development API 接入/,
@@ -445,11 +485,24 @@ try {
   await page.keyboard.press("Escape");
   await expect(page.locator("html")).toHaveAttribute("data-palette", "green");
   await page.emulateMedia({ colorScheme: null });
-  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
-  await expect(page).toHaveURL(`${baseUrl}#period`);
+  // 旧「时间段用量」链接回到合并后的总览，侧栏仍标记总览为当前页。
+  await page.goto(`${baseUrl}#period`);
+  await expect(
+    page.getByRole("heading", { name: "用量总览", exact: true }),
+  ).toBeVisible();
+  await expect(lifetimeSummary).toBeVisible();
+  await expect(page.locator(".desktop-period .trend-panel")).toBeVisible();
+  await expect(
+    page
+      .locator(".sidebar")
+      .getByRole("button", { name: "用量总览", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
   await expect(
     page.getByRole("button", { name: "标准 API", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
+  // 模型筛选只留在统计报表；下拉的键盘行为在那里检查。
+  await page.getByRole("button", { name: "统计报表", exact: true }).click();
+  await expect(page).toHaveURL(`${baseUrl}#reports`);
   const modelSelect = page.getByRole("combobox", {
     name: "模型筛选",
     exact: true,
@@ -486,7 +539,7 @@ try {
   await page.keyboard.press("Escape");
   await expect(modelSelect).toBeFocused();
   await expect(page.getByRole("listbox")).toHaveCount(0);
-  await page.getByRole("button", { name: "累计总览", exact: true }).click();
+  await page.getByRole("button", { name: "用量总览", exact: true }).click();
   await expect(page).toHaveURL(`${baseUrl}#overview`);
   await overviewDevelopment.click();
   await expect(page).toHaveURL(`${baseUrl}#ledger`);
@@ -497,7 +550,6 @@ try {
   await expect(page.locator("tbody tr").first()).toContainText("Development");
   await page.getByRole("button", { name: "清除筛选", exact: true }).click();
   await page.getByRole("button", { name: "用量总览", exact: true }).click();
-  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
   await page.setViewportSize({ width: 320, height: 256 });
   for (const [name, selector, control] of [
     [
@@ -525,35 +577,22 @@ try {
   await expectWithinViewport(compactTheme);
   await compactTheme.click();
   await page.goto(`${baseUrl}#overview`);
-  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
   await page.setViewportSize({ width: 1440, height: 1000 });
-  const periodMetrics = page.locator('[aria-label="用量摘要"] .metric');
-  const apiUsd = await periodMetrics
-    .nth(0)
-    .locator(".metric-value")
-    .innerText();
-  const apiCredits = await periodMetrics
-    .nth(1)
-    .locator(".metric-value")
-    .innerText();
-  const apiRequests = await periodMetrics
-    .nth(2)
-    .locator(".metric-value")
-    .innerText();
+  const summaryCredits = page.locator("section.usage-summary .summary-credits");
+  const apiTokens = await summaryCell(page, 0).innerText();
+  const apiUsd = await summaryCell(page, 1).innerText();
+  const apiCredits = await summaryCredits.innerText();
+  const apiRequests = await summaryCell(page, 2).innerText();
   const beforeBasisSwitch = mainLedgerRequests.length;
   await page.getByRole("button", { name: "订阅等价", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "订阅等价", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
-  await expect
-    .poll(() => periodMetrics.nth(0).locator(".metric-value").innerText())
-    .not.toBe(apiUsd);
-  expect(await periodMetrics.nth(1).locator(".metric-value").innerText()).toBe(
-    apiCredits,
-  );
-  expect(await periodMetrics.nth(2).locator(".metric-value").innerText()).toBe(
-    apiRequests,
-  );
+  await expect.poll(() => summaryCell(page, 1).innerText()).not.toBe(apiUsd);
+  await expect(page.locator("section.usage-summary")).toContainText("订阅等价");
+  expect(await summaryCredits.innerText()).toBe(apiCredits);
+  expect(await summaryCell(page, 0).innerText()).toBe(apiTokens);
+  expect(await summaryCell(page, 2).innerText()).toBe(apiRequests);
   expect(
     mainLedgerRequests.some((request) => request.includes("usdBasis=")),
   ).toBe(false);
@@ -564,7 +603,9 @@ try {
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const c = document.querySelector("canvas")!;
+        const c = document.querySelector<HTMLCanvasElement>(
+          ".trend-panel canvas",
+        )!;
         const pixels = c
           .getContext("2d")!
           .getImageData(0, 0, c.width, c.height).data;
@@ -595,7 +636,9 @@ try {
     await expect
       .poll(() =>
         page.evaluate(() => {
-          const canvas = document.querySelector("canvas")!;
+          const canvas = document.querySelector<HTMLCanvasElement>(
+            ".trend-panel canvas",
+          )!;
           const pixels = canvas
             .getContext("2d")!
             .getImageData(0, 0, canvas.width, canvas.height).data;
@@ -611,13 +654,6 @@ try {
       fullPage: false,
     });
   }
-  await page.getByRole("combobox", { name: "模型筛选" }).click();
-  await page.getByRole("option", { name: "GPT 5.6 Sol", exact: true }).click();
-  await expect(page.getByRole("combobox", { name: "模型筛选" })).toContainText(
-    "GPT 5.6 Sol",
-  );
-  await expect(page.locator("tbody tr")).toHaveCount(0);
-  await expect(page.locator(".metric").nth(2)).not.toContainText("1,215");
   const requestsBeforeUnitSwitch = mainLedgerRequests.length;
   await page.getByRole("button", { name: "Tokens", exact: true }).click();
   await expect(
@@ -626,9 +662,24 @@ try {
   await page.waitForTimeout(100);
   expect(mainLedgerRequests.length).toBe(requestsBeforeUnitSwitch);
   await page.getByRole("button", { name: "周", exact: true }).click();
+  await expect(overviewTrendNote).toHaveText("历史至今 · 自然周，周一起始");
+  // 模型分布不再原地筛选总览，而是带着同一时间范围打开统计报表。
+  await page
+    .locator(".model-panel .model-breakdown button")
+    .filter({ hasText: "GPT 5.6 Sol" })
+    .click();
+  await expect(page).toHaveURL(`${baseUrl}#reports`);
+  await expect(page.getByRole("combobox", { name: "模型筛选" })).toContainText(
+    "GPT 5.6 Sol",
+  );
   await expect(
-    page.getByText("自然周，周一起始", { exact: true }),
+    page.getByRole("button", { name: "日期范围", exact: true }),
+  ).toContainText("历史至今");
+  await expect(
+    page.getByRole("region", { name: "历史至今报表摘要", exact: true }),
   ).toBeVisible();
+  await expect(page.locator(".report-section tbody tr").first()).toBeVisible();
+  await expect(summaryCell(page, 2)).not.toHaveText(apiRequests);
   await page.getByRole("button", { name: "清除筛选" }).click();
   await page.getByRole("button", { name: "账户额度", exact: true }).click();
   await page.getByRole("button", { name: /^Development API/ }).click();
@@ -710,11 +761,35 @@ try {
   await page.getByRole("button", { name: "用量总览", exact: true }).click();
   await page.getByRole("button", { name: "统计报表", exact: true }).click();
   await expect(page.getByRole("heading", { name: "分组汇总" })).toBeVisible();
-  for (const name of ["总 Tokens", "输入", "缓存读取", "缓存写入", "输出"]) {
+  for (const name of [
+    "总 Tokens",
+    "输入",
+    "缓存读取",
+    "缓存写入",
+    "输出",
+    "缓存命中率",
+  ]) {
     await expect(
       page.getByRole("columnheader", { name, exact: true }),
     ).toBeVisible();
   }
+  // 统计报表同样以摘要条开头，区间有上一等长时段可比时给出环比。
+  const reportSummary = page.getByRole("region", {
+    name: "近 7 天报表摘要",
+    exact: true,
+  });
+  await expect(reportSummary).toBeVisible();
+  await expect(reportSummary).toContainText("环比");
+  await expect(reportSummary.locator(".token-composition-bar")).toBeVisible();
+  const reportTotals = page.locator(".report-section tfoot tr");
+  await expect(reportTotals).toHaveCount(1);
+  await expect(
+    reportTotals.getByRole("rowheader", { name: "合计", exact: true }),
+  ).toBeVisible();
+  await expect(reportTotals).toContainText(
+    (await summaryCell(page, 2).innerText()).trim(),
+  );
+  await expect(reportTotals).toContainText(/\d+\.\d%/);
   await expect(page.getByRole("columnheader", { name: "完整性" })).toHaveCount(
     0,
   );
@@ -780,8 +855,8 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("button", { name: "用量总览", exact: true }).click();
   const quotaPreview = overviewAccounts;
-  const lifetime = page.getByRole("region", { name: "历史累计", exact: true });
-  await expect(lifetime).toBeVisible();
+  const lifetime = page.locator("section.usage-summary");
+  await expect(lifetimeSummary).toBeVisible();
   const quotaWindows = quotaPreview.locator(
     '.account-row[data-has-quota="true"]',
   );
@@ -794,9 +869,7 @@ try {
     (await page.locator("main h2").allTextContents()).map((text) =>
       text.trim(),
     ),
-  ).toEqual(["账户额度", "Tokens 趋势"]);
-  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
-  await expect(page).toHaveURL(`${baseUrl}#period`);
+  ).toEqual(["账户额度", "消耗趋势", "模型分布"]);
   await expect(
     page.getByRole("heading", { name: "消耗趋势", exact: true }),
   ).toBeVisible();
@@ -873,7 +946,6 @@ try {
 
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("button", { name: "用量总览", exact: true }).click();
-  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
   await page.getByRole("button", { name: "日期范围", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "应用", exact: true }),
@@ -886,9 +958,9 @@ try {
   await page.evaluate(() => {
     (
       window as unknown as { previousDateCanvas: Element | null }
-    ).previousDateCanvas = document.querySelector("canvas");
+    ).previousDateCanvas = document.querySelector(".trend-panel canvas");
   });
-  const previousMetrics = await page.locator(".metrics").textContent();
+  const previousRequests = await summaryCell(page, 2).textContent();
   holdDateResponse = true;
   const customResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -908,11 +980,11 @@ try {
     await expect(page.getByText("正在读取账本…", { exact: true })).toHaveCount(
       0,
     );
-    await expect(page.locator(".metrics")).toHaveText(previousMetrics!);
+    await expect(summaryCell(page, 2)).toHaveText(previousRequests!);
     expect(
       await page.evaluate(
         () =>
-          document.querySelector("canvas") ===
+          document.querySelector(".trend-panel canvas") ===
           (window as unknown as { previousDateCanvas: Element | null })
             .previousDateCanvas,
       ),
@@ -922,6 +994,16 @@ try {
     releaseDateResponse?.();
   }
   await customResponse;
+  // 换成自定义范围后，摘要条、趋势副标题和粒度随之更新并给出环比。
+  const customTitle = "2026-09-02 ~ 2026-09-04";
+  const customSummary = page.getByRole("region", {
+    name: `${customTitle}用量摘要`,
+    exact: true,
+  });
+  await expect(customSummary).toBeVisible();
+  await expect(customSummary).toContainText("环比");
+  await expect(customSummary).not.toContainText("日均");
+  await expect(overviewTrendNote).toHaveText(`${customTitle} · 按天汇总`);
   await capture({
     path: "test-results/date-range-desktop.png",
     fullPage: false,
@@ -936,16 +1018,13 @@ try {
     fullPage: false,
   });
   await page.getByRole("button", { name: "关闭日期选择" }).click();
-  await page.getByRole("button", { name: "累计总览", exact: true }).click();
   await expect(page).toHaveURL(`${baseUrl}#overview`);
-  // 额度行在窄屏改用紧凑布局；在记录基准的同一宽度下比较。额度与无额度账户的累计用量都不随日期筛选变化。
+  // 额度行在窄屏改用紧凑布局；在记录基准的同一宽度下比较。额度与无额度账户的累计用量都不随日期筛选变化，摘要条随范围变化。
   await page.setViewportSize({ width: 1440, height: 1000 });
   await expect(quotaWindows).toHaveText(quotasBeforeDate);
   await expect(periodAccount).toHaveText(periodBeforeDate!);
-  await expect(lifetime).toHaveText(lifetimeBeforeDate!);
+  await expect(lifetime).not.toHaveText(lifetimeBeforeDate!);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
-  await expect(page).toHaveURL(`${baseUrl}#period`);
   const customRows = filterRecords(
     createDemoLedger().records,
     {
@@ -957,18 +1036,36 @@ try {
     },
     createDemoLedger().asOf,
   );
-  await expect(page.locator(".metric").nth(2)).toContainText(
-    String(customRows.length),
+  await expect(summaryCell(page, 2)).toHaveText(
+    customRows.length.toLocaleString("en-US"),
   );
   await expect(page.getByRole("button", { name: "导出 CSV" })).toHaveCount(0);
   await page.getByRole("button", { name: "日期范围", exact: true }).click();
   await page.getByLabel("开始日期", { exact: true }).fill("");
   await expect(page.getByRole("alert")).toBeVisible();
-  await expect(page.locator(".metric").nth(2)).toContainText(
-    String(customRows.length),
+  await expect(summaryCell(page, 2)).toHaveText(
+    customRows.length.toLocaleString("en-US"),
   );
   await page.getByRole("radio", { name: "近 7 天", exact: true }).click();
-  await expect(page.locator(".metric").nth(2)).toContainText("1,215");
+  await expect(summaryCell(page, 2)).toHaveText("1,215");
+  await expect(
+    page.getByRole("region", { name: "近 7 天用量摘要", exact: true }),
+  ).toBeVisible();
+  // 回到历史至今后，摘要重新读取全历史累计，且范围写入首页专属偏好。
+  await page.getByRole("button", { name: "日期范围", exact: true }).click();
+  await page.getByRole("radio", { name: "历史至今", exact: true }).click();
+  await expect(lifetimeSummary).toBeVisible();
+  await expect(summaryCell(page, 2)).toHaveText(
+    createDemoLedger().records.length.toLocaleString("en-US"),
+  );
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("meterleaf-report-filter-home"),
+    ),
+  ).toBe('{"days":30,"all":true,"model":"all","account":"all"}');
+  await page.getByRole("button", { name: "日期范围", exact: true }).click();
+  await page.getByRole("radio", { name: "近 7 天", exact: true }).click();
+  await expect(summaryCell(page, 2)).toHaveText("1,215");
   await page.setViewportSize({ width: 1440, height: 1000 });
 
   await page.unroute("**/api/view**");
@@ -1007,12 +1104,10 @@ try {
   await page.evaluate(() => localStorage.removeItem("meterleaf-usd-basis"));
   await page.goto(`${baseUrl}#overview`);
   await page.reload();
-  await page.getByRole("button", { name: "时间段用量", exact: true }).click();
-  await expect(page).toHaveURL(`${baseUrl}#period`);
   await expect(page.getByText("实时数据", { exact: true })).toHaveCount(0);
   await expect(
     page
-      .getByRole("region", { name: "用量摘要", exact: true })
+      .getByRole("region", { name: "近 7 天用量摘要", exact: true })
       .getByText("费用", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("已计价费用", { exact: true })).toHaveCount(0);
@@ -1192,7 +1287,7 @@ try {
     `${baseUrl}#period`,
   );
   await page.reload();
-  await expect(page.locator(".metric").nth(2)).toContainText("901");
+  await expect(summaryCell(page, 2)).toHaveText("901");
   await expect.poll(() => refreshRequests).toEqual([true, false]);
   await page.waitForTimeout(1500);
   expect(refreshRequests).toEqual([true, false]);
@@ -1227,27 +1322,27 @@ try {
     .getByRole("button", { name: "重试", exact: true })
     .click();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(page.locator(".metric").nth(2)).toContainText("901");
+  await expect(summaryCell(page, 2)).toHaveText("901");
 
   refreshFailure = true;
   await signalSyncComplete();
   await expect(page.getByRole("alert")).toContainText(
     "刷新失败，当前显示上次成功的数据",
   );
-  await expect(page.locator(".metric").nth(2)).toContainText("901");
+  await expect(summaryCell(page, 2)).toHaveText("901");
   refreshFailure = false;
   await page
     .getByRole("alert")
     .getByRole("button", { name: "重试", exact: true })
     .click();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(page.locator(".metric").nth(2)).toContainText("901");
+  await expect(summaryCell(page, 2)).toHaveText("901");
   transportFailure = true;
   await signalSyncComplete();
   await expect(page.getByRole("alert")).toContainText(
     "刷新失败（报表读取失败：网关不可用（HTTP 503）），当前显示上次成功的数据",
   );
-  await expect(page.locator(".metric").nth(2)).toContainText("901");
+  await expect(summaryCell(page, 2)).toHaveText("901");
   page.off("requestfinished", recordRefresh);
   await page.unroute("**/api/view**");
   let expiryReads = 0;
@@ -1311,7 +1406,11 @@ try {
           ? "screenshots skipped"
           : "screenshots captured",
         "canvas pixels",
-        "model filter",
+        "overview defaults to all-time summary",
+        "overview range updates summary and trend but not quotas",
+        "legacy #period opens the merged overview",
+        "model distribution opens filtered reports",
+        "report summary, cache hit rate column and totals row",
         "chart unit",
         "week buckets",
         "pagination",

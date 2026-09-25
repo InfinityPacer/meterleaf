@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { dateRangeSchema, reportBounds } from "../src/shared/date-range";
+import {
+  allTimeRange,
+  dateRangeSchema,
+  reportBounds,
+  shanghaiDate,
+} from "../src/shared/date-range";
 
 const day = 86_400_000;
 
@@ -75,5 +80,32 @@ describe("date range contract", () => {
       endInclusive: false,
     });
     expect(previous.end).toBe(current.start);
+  });
+});
+
+describe("all-history range", () => {
+  test("spans Shanghai natural days from the first record to the sample day", () => {
+    expect(shanghaiDate("2026-08-14T16:30:00.000Z")).toBe("2026-08-15");
+    expect(
+      allTimeRange("2026-08-14T16:30:00.000Z", "2026-09-25T20:00:00.000Z"),
+    ).toEqual({ from: "2026-08-15", to: "2026-09-26" });
+    const bounds = reportBounds(
+      {
+        days: 30,
+        dateRange: allTimeRange(
+          "2026-08-14T16:30:00.000Z",
+          "2026-09-25T20:00:00.000Z",
+        ),
+      },
+      "2026-09-25T20:00:00.000Z",
+    );
+    expect(bounds.start).toBe(Date.parse("2026-08-15T00:00:00+08:00"));
+    expect(bounds.end).toBe(Date.parse("2026-09-27T00:00:00+08:00"));
+  });
+
+  test("never produces a descending range when the clock trails the ledger", () => {
+    expect(
+      allTimeRange("2026-09-26T03:00:00.000Z", "2026-09-25T03:00:00.000Z"),
+    ).toEqual({ from: "2026-09-25", to: "2026-09-25" });
   });
 });
