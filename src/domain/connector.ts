@@ -59,7 +59,8 @@ export interface SourceAccount extends SourceRef {
 /** 快照时间与本地采集时间分离。无 resetAt 时仍可展示百分比，但不得推断周期。 */
 export interface QuotaFact extends SourceRef {
   accountExternalId: string;
-  window: "five-hour" | "seven-day";
+  /** seven-day-fable 是只计 Fable 请求的独立周额度，与账户整体周额度分开消耗。 */
+  window: "five-hour" | "seven-day" | "seven-day-fable";
   percent: number | null;
   sampledAt: string | null;
   resetsAt: string | null;

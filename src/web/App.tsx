@@ -74,7 +74,7 @@ import {
   quotaState,
   showQuotaEstimate,
   visibleQuotaWindows,
-  quotaWaitingReset,
+  withFableQuotaWindow,
 } from "./lib/quota-display";
 import { useQuotaClock } from "./lib/use-quota-clock";
 import { useReportFilters } from "./lib/report-preferences";
@@ -104,6 +104,7 @@ import { DateRangePicker } from "./components/DateRangePicker";
 import { ReportTable } from "./components/ReportTable";
 import { ModelDistribution } from "./components/ModelDistribution";
 import { MobileFilters } from "./components/MobileFilters";
+import { QuotaWindow } from "./components/QuotaWindow";
 import { MobileHome } from "./components/MobileHome";
 import { AboutPage } from "./components/AboutPage";
 import {
@@ -311,7 +312,7 @@ function QuotaBar({
 }) {
   const state = quotaState(window, asOf);
   const percent = waiting ? null : quotaPercent(window, asOf);
-  const suffix = waiting ? "等待新采样" : quotaLabel(window, asOf);
+  const suffix = waiting ? "等待更新" : quotaLabel(window, asOf);
   return (
     <div
       className="quota-bar"
@@ -339,107 +340,6 @@ function QuotaBar({
   );
 }
 
-/** 周期统计跟随额度窗口；缺失和到期窗口不展示旧统计或虚构零值。 */
-function QuotaPeriod({
-  window,
-  label,
-  asOf,
-  compactEstimate = false,
-  waiting = false,
-}: {
-  window: AccountWindow | null;
-  label: string;
-  asOf: string;
-  compactEstimate?: boolean;
-  waiting?: boolean;
-}) {
-  if (waiting && window) {
-    const ended = quotaWaitingReset(window, asOf);
-    return (
-      <span className="quota-period" data-waiting="true">
-        <QuotaBar
-          window={window}
-          label={label}
-          asOf={asOf}
-          waiting
-          reset={
-            ended ? (
-              <span className="quota-period-reset">{ended}</span>
-            ) : undefined
-          }
-        />
-        <span className="quota-period-usage">
-          <span className="quota-period-volume">上游下次上报后更新</span>
-        </span>
-      </span>
-    );
-  }
-  const showEstimate =
-    compactEstimate && label === "7d" && showQuotaEstimate(window, asOf);
-  const estimated = showEstimate ? estimateAmount(window, "usd", asOf) : null;
-  const available =
-    window && quotaPercent(window, asOf) !== null && window.state !== "unknown";
-  const reset =
-    available && window.resetsAt ? (
-      <span className="quota-period-reset" aria-label={`${label}重置时间`}>
-        {label === "5h"
-          ? new Intl.DateTimeFormat("zh-CN", {
-              timeZone: "Asia/Shanghai",
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: false,
-            }).format(new Date(window.resetsAt))
-          : localTime(window.resetsAt, {
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: false,
-            })}{" "}
-        重置
-      </span>
-    ) : undefined;
-  return (
-    <span className="quota-period">
-      <QuotaBar window={window} label={label} asOf={asOf} reset={reset} />
-      {available && (
-        <>
-          <span
-            className="quota-period-usage"
-            data-with-estimate={showEstimate}
-          >
-            <span className="quota-cost-pair">
-              <strong aria-label={`${label}费用`}>
-                {windowAmount(window, "usd", asOf)}
-              </strong>
-              {showEstimate && (
-                <>
-                  <span className="quota-cost-separator" aria-hidden="true">
-                    ·
-                  </span>
-                  <em
-                    className="quota-cost-estimate"
-                    title="7d 预估"
-                    aria-label={`7d 预估 ${estimated}`}
-                  >
-                    <small aria-hidden="true">预估</small>
-                    {estimated}
-                  </em>
-                </>
-              )}
-            </span>
-            <span className="quota-period-volume quota-cost-volume">
-              <span>{compact(window.periodTokens ?? null)} Tokens</span>
-              <span aria-hidden="true">·</span>
-              <span>
-                {window.periodRequests?.toLocaleString("en-US") ?? "N/A"} 次
-              </span>
-            </span>
-          </span>
-        </>
-      )}
-    </span>
-  );
-}
-
 function AccountRow({
   account,
   asOf,
@@ -460,8 +360,14 @@ function AccountRow({
   usage?: AccountLifetime;
 }) {
   const accountUsage = account.lifetime ?? usage;
-  const hasQuota = Boolean(account.fiveHour || account.sevenDay);
-  const windows = visibleQuotaWindows(account, asOf, compactUsage);
+  const hasQuota = Boolean(
+    account.fiveHour || account.sevenDay || account.sevenDayFable,
+  );
+  const windows = withFableQuotaWindow(
+    visibleQuotaWindows(account, asOf, compactUsage),
+    account,
+    asOf,
+  );
   const exhausted = accountQuotaExhausted(account, asOf);
   const status = archived ? "已归档" : exhausted ? null : "使用中";
   const plan = account.kind === "api" ? null : planBadge(account);
@@ -515,27 +421,23 @@ function AccountRow({
       )}
       {hasQuota ? (
         <>
-          {windows.map(({ key, label, window, waiting }) => (
-            <span
-              key={key}
-              className={`account-window ${key === "fiveHour" ? "account-five-hour" : "account-seven-day"}`}
-            >
-              <QuotaPeriod
-                window={window}
-                label={label}
+          <span className="account-windows quota-window-list">
+            {windows.map((selection) => (
+              <QuotaWindow
+                key={selection.key}
+                selection={selection}
                 asOf={asOf}
-                compactEstimate={compactUsage}
-                waiting={waiting}
+                estimate={compactUsage}
               />
-            </span>
-          ))}
-          {!windows.length && (
-            <span className="account-window account-window-unavailable">
-              {account.sampledAt
-                ? `${quotaUnavailableNote(account)}，上报后自动恢复。`
-                : quotaUnavailableNote(account)}
-            </span>
-          )}
+            ))}
+            {!windows.length && (
+              <span className="account-window-unavailable">
+                {account.sampledAt
+                  ? `${quotaUnavailableNote(account)}，收到新数据后自动恢复。`
+                  : quotaUnavailableNote(account)}
+              </span>
+            )}
+          </span>
           {!compactUsage && windows.length > 0 && (
             <span className="account-capacity">
               <small>7d 预估</small>
@@ -1890,13 +1792,6 @@ export function App() {
                       {editingAccountOrder ? "完成" : "排序"}
                     </Button>
                   </div>
-                  <div className="account-list-heading" aria-hidden="true">
-                    <span>账户</span>
-                    <span>5h</span>
-                    <span>7d</span>
-                    <span>7d 预估</span>
-                    <span />
-                  </div>
                   <div className="account-list">
                     {visibleAccounts
                       .filter(
@@ -2392,15 +2287,23 @@ export function App() {
               {selectedAccount.fiveHour || selectedAccount.sevenDay ? (
                 <>
                   <div className="account-detail-windows">
-                    {visibleQuotaWindows(
+                    {withFableQuotaWindow(
+                      visibleQuotaWindows(
+                        selectedAccount,
+                        quotaAsOf,
+                        smallScreen,
+                      ),
                       selectedAccount,
                       quotaAsOf,
-                      smallScreen,
                     ).map(({ key, label, window, waiting }) => (
                       <QuotaBar
                         key={key}
                         window={window}
-                        label={`${label}窗口`}
+                        label={
+                          key === "sevenDayFable"
+                            ? "Fable 周额度"
+                            : `${label}窗口`
+                        }
                         asOf={quotaAsOf}
                         waiting={waiting}
                       />
@@ -2412,7 +2315,7 @@ export function App() {
                     ).length && <span className="muted">额度 N/A</span>}
                   </div>
                   <dl className="details-list">
-                    <dt>快照时间</dt>
+                    <dt>额度更新于</dt>
                     <dd>
                       {localTime(selectedAccount.sampledAt, {
                         hour: "2-digit",
@@ -2497,10 +2400,52 @@ export function App() {
                         </dd>
                       </>
                     )}
+                    {withFableQuotaWindow(
+                      visibleQuotaWindows(
+                        selectedAccount,
+                        quotaAsOf,
+                        smallScreen,
+                      ),
+                      selectedAccount,
+                      quotaAsOf,
+                    ).some(({ key }) => key === "sevenDayFable") &&
+                      selectedAccount.sevenDayFable && (
+                        <>
+                          <dt>Fable 重置</dt>
+                          <dd>
+                            {selectedAccount.sevenDayFable.resetsAt
+                              ? localTime(
+                                  selectedAccount.sevenDayFable.resetsAt,
+                                  {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                    hour12: false,
+                                  },
+                                )
+                              : "N/A"}
+                          </dd>
+                          <dt>Fable 周期费用</dt>
+                          <dd>
+                            {windowAmount(
+                              selectedAccount.sevenDayFable,
+                              "usd",
+                              quotaAsOf,
+                            )}
+                          </dd>
+                          <dt>Fable 预估费用</dt>
+                          <dd>
+                            {estimateAmount(
+                              selectedAccount.sevenDayFable,
+                              "usd",
+                              quotaAsOf,
+                            )}
+                          </dd>
+                        </>
+                      )}
                   </dl>
                 </>
               ) : (
-                <p>上游尚未提供额度快照。</p>
+                <p>还没有收到这个账户的额度数据。</p>
               )}
               <Button
                 variant="outline"

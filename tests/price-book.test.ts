@@ -43,7 +43,7 @@ test("bundled JSON contains separate USD branches with unchanged credits", () =>
   expect(api.usd.amount).toBe("6.075");
   expect(subscription.credits).toEqual(api.credits);
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-09-25.3");
+  expect(subscription.version).toBe("meterleaf@2026-09-25.4");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });

@@ -4,13 +4,8 @@ import { planBadge } from "../lib/plan";
 import type { LedgerView } from "../../shared/ledger-view";
 import type { AccountLifetime, LedgerAccount } from "../../shared/report";
 import {
-  estimateAmount,
-  quotaLabel,
-  quotaPercent,
-  showQuotaEstimate,
-  type VisibleQuotaWindow,
   visibleQuotaWindows,
-  quotaWaitingReset,
+  withFableQuotaWindow,
 } from "../lib/quota-display";
 import {
   amount,
@@ -21,6 +16,7 @@ import {
 } from "../lib/report";
 import "./mobile-home.css";
 import { MiniTrend } from "./AccountTrend";
+import { QuotaWindow } from "./QuotaWindow";
 import { ChartStyleControl } from "./ChartStyleControl";
 import type { ChartStyle } from "./UsageChart";
 
@@ -79,15 +75,6 @@ function sameShanghaiDay(left: Date, right: Date) {
   return dayKeyFormatter.format(left) === dayKeyFormatter.format(right);
 }
 
-function formatResetTime(value: string | null, asOf: string) {
-  const reset = validDate(value);
-  const sample = validDate(asOf);
-  if (!reset) return "重置未知";
-  return sample && sameShanghaiDay(reset, sample)
-    ? `${clockFormatter.format(reset)} 重置`
-    : `${dateTimeFormatter.format(reset)} 重置`;
-}
-
 function formatTrendLabel(value: number, asOf: string, isLast: boolean) {
   const point = validDate(value);
   const sample = validDate(asOf);
@@ -110,102 +97,6 @@ function formatRequests(value: number | null | undefined) {
   return value !== null && value !== undefined && Number.isFinite(value)
     ? value.toLocaleString("en-US")
     : "N/A";
-}
-
-function QuotaSummary({
-  selection,
-  asOf,
-}: {
-  selection: VisibleQuotaWindow;
-  asOf: string;
-}) {
-  const { key, label, window, waiting } = selection;
-  if (waiting) {
-    const ended = quotaWaitingReset(window, asOf);
-    return (
-      <div className="mobile-home-quota" data-waiting="true">
-        <div className="mobile-home-quota-head">
-          <div className="mobile-home-quota-title">
-            <strong className="mobile-home-quota-label">{label}</strong>
-            <span className="mobile-home-quota-status">等待新采样</span>
-          </div>
-          {ended && <span className="mobile-home-quota-reset">{ended}</span>}
-        </div>
-        <div
-          className="mobile-home-progress"
-          role="progressbar"
-          aria-label={`${label}额度使用情况`}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuetext="等待新采样"
-        >
-          <span />
-        </div>
-        <div className="mobile-home-quota-foot">
-          <span className="quota-cost-volume">上游下次上报后更新</span>
-        </div>
-      </div>
-    );
-  }
-  const percent = quotaPercent(window, asOf);
-  const usable = percent !== null;
-  const reset = formatResetTime(window.resetsAt, asOf);
-  const amountValue = usable ? formatUsd(window.periodUsd) : "N/A";
-  const showEstimate = key === "sevenDay" && showQuotaEstimate(window, asOf);
-  const estimated = showEstimate ? estimateAmount(window, "usd", asOf) : null;
-  const tokens = usable ? formatTokens(window.periodTokens) : "N/A";
-  const requests = usable ? formatRequests(window.periodRequests) : "N/A";
-
-  return (
-    <div
-      className="mobile-home-quota"
-      data-exhausted={usable && percent >= 100}
-    >
-      <div className="mobile-home-quota-head">
-        <div className="mobile-home-quota-title">
-          <strong className="mobile-home-quota-label">{label}</strong>
-          <span className="mobile-home-quota-status">
-            {usable ? quotaLabel(window, asOf) : "N/A"}
-          </span>
-        </div>
-        <span className="mobile-home-quota-reset">{reset}</span>
-      </div>
-      <div
-        className="mobile-home-progress"
-        role="progressbar"
-        aria-label={`${label}额度使用情况`}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={usable ? percent : undefined}
-        aria-valuetext={usable ? quotaLabel(window, asOf) : "N/A"}
-      >
-        <span style={usable ? { width: `${percent}%` } : undefined} />
-      </div>
-      <div className="mobile-home-quota-foot" data-with-estimate={showEstimate}>
-        <span className="quota-cost-pair">
-          <strong>{amountValue}</strong>
-          {showEstimate && (
-            <>
-              <span className="quota-cost-separator" aria-hidden="true">
-                ·
-              </span>
-              <em
-                className="mobile-home-quota-estimate quota-cost-estimate"
-                title="7d 预估"
-                aria-label={`7d 预估 ${estimated}`}
-              >
-                <small aria-hidden="true">预估</small>
-                {estimated}
-              </em>
-            </>
-          )}
-        </span>
-        <span className="quota-cost-volume">
-          {tokens} Tokens <i aria-hidden="true">·</i> {requests} 次
-        </span>
-      </div>
-    </div>
-  );
 }
 
 function UsageSummary({
@@ -431,7 +322,11 @@ export function MobileHome({
         </div>
         <ul className="mobile-home-account-list" aria-label="账户额度摘要">
           {accounts.map((account) => {
-            const quotas = visibleQuotaWindows(account, asOf);
+            const quotas = withFableQuotaWindow(
+              visibleQuotaWindows(account, asOf),
+              account,
+              asOf,
+            );
             const hasQuota = Boolean(account.fiveHour || account.sevenDay);
             const plan = planBadge(account);
             const open = () =>
@@ -471,18 +366,18 @@ export function MobileHome({
                     />
                   </span>
                   {quotas.length ? (
-                    <div
-                      className="mobile-home-quota-list"
+                    <span
+                      className="quota-window-list"
                       data-count={quotas.length}
                     >
                       {quotas.map((quota) => (
-                        <QuotaSummary
+                        <QuotaWindow
                           key={quota.key}
                           selection={quota}
                           asOf={asOf}
                         />
                       ))}
-                    </div>
+                    </span>
                   ) : hasQuota ? (
                     <div className="mobile-home-quota-unavailable">
                       {quotaUnavailableNote(account)}
