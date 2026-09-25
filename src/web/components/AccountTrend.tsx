@@ -105,8 +105,13 @@ export function selectAccountTrendPoints(
   return view.view.units[metric].points;
 }
 
-function formatMetricValue(value: number | null, metric: MiniTrendMetric) {
+/** Tokens 与桌面趋势图一致使用缩写，请求数等计数保留完整数字。 */
+export function formatMetricValue(
+  value: number | null,
+  metric: MiniTrendMetric,
+) {
   if (value === null || !Number.isFinite(value)) return "N/A";
+  if (metric === "tokens") return `${compact(value)} ${metricLabels[metric]}`;
   if (metric === "usd")
     return new Intl.NumberFormat("en-US", {
       style: "currency",

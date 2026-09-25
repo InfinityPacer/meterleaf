@@ -999,3 +999,34 @@ describe("ReportIndex", () => {
     }
   });
 });
+
+test("model-scoped quota windows sum only the scoped models across full hours and boundaries", () => {
+  const index = new ReportIndex(":memory:");
+  try {
+    const scoped = (id: string, at: string, model: string) =>
+      row(id, at, { accountId: "quota-account", model });
+    index.replace([
+      // 边界小时走明细，整小时走汇总；两条路径都要按模型筛选。
+      scoped("fable-boundary", "2026-09-08T00:30:00.000Z", "claude-fable-5-1"),
+      scoped("opus-boundary", "2026-09-08T00:40:00.000Z", "claude-opus-5"),
+      scoped("fable-hour", "2026-09-08T01:10:00.000Z", "claude-fable-5-1"),
+      scoped("opus-hour", "2026-09-08T01:20:00.000Z", "claude-opus-5"),
+    ]);
+    const fable = (model: string) => model.startsWith("claude-fable-");
+    const window = [
+      "quota-account",
+      "2026-09-08T00:30:00.000Z",
+      "2026-09-08T02:00:00.000Z",
+      "subscription",
+    ] as const;
+    expect(index.sumWindow(...window, fable)).toEqual({
+      count: 2,
+      tokens: 200,
+      usd: "0.2",
+      credits: "2",
+    });
+    expect(index.sumWindow(...window).count).toBe(4);
+  } finally {
+    index.close();
+  }
+});

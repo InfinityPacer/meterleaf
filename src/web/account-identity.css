@@ -128,9 +128,9 @@
   }
 }
 
-@media (min-width: 1001px) {
+@media (min-width: 1361px) {
   .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
-    grid-template-areas: "identity single single arrow";
+    grid-template-areas: "identity windows windows arrow";
   }
   .app-shell
     .account-row[data-has-quota="true"][data-quota-count="0"]
@@ -141,6 +141,6 @@
 
 @media (min-width: 901px) and (max-width: 1000px) {
   .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
-    grid-template-areas: "identity identity" "single single";
+    grid-template-areas: "identity identity" "windows windows";
   }
 }

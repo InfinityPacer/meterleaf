@@ -83,11 +83,13 @@ try {
     .locator(".overview-quotas .account-row")
     .filter({ hasText: subscriptionAccount.name });
   await expect(
-    subscriptionRow.locator('[aria-label="5h重置时间"]'),
+    subscriptionRow.locator(
+      '.quota-window[data-window="fiveHour"] .quota-window-reset',
+    ),
   ).toBeVisible();
   await expect(
-    subscriptionRow.locator(".quota-period-volume").first(),
-  ).toHaveText("129.6K Tokens·12 次");
+    subscriptionRow.locator(".quota-window-volume").first(),
+  ).toHaveText("129.6K Tokens · 12 次");
 
   withLifetime = true;
   await page.reload();
@@ -104,7 +106,7 @@ try {
     if (width > 900) {
       // 额度窗口标题行（名称·用量与重置时间）在桌面各宽度保持一行。
       const heights = await subscriptionRow
-        .locator(".quota-bar > div:first-child")
+        .locator(".quota-window-head")
         .evaluateAll((items) =>
           items.map((item) => item.getBoundingClientRect().height),
         );

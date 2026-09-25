@@ -1024,6 +1024,7 @@ export class ReportIndex {
     startInclusive: string,
     endInclusive: string,
     usdBasis: UsdBasis,
+    modelScope: ((model: string) => boolean) | null = null,
   ): {
     count: number;
     tokens: number | null;
@@ -1040,7 +1041,9 @@ export class ReportIndex {
       { start, end, startInclusive: true, endInclusive: true },
       { model: "all", account: accountId, search: "", days: 1 },
     ).reduce((total, contribution) => {
-      addAggregate(total, contribution.aggregate);
+      // 小时汇总与边界明细都保留模型，按模型计量的额度窗口在此筛选。
+      if (!modelScope || modelScope(contribution.model))
+        addAggregate(total, contribution.aggregate);
       return total;
     }, emptyAggregate());
     if (!aggregate.count)

@@ -88,7 +88,7 @@ function accountCard(html: string) {
 function estimateMarkup(html: string) {
   return (
     html.match(
-      /<([a-z]+)\b[^>]*mobile-home-quota-estimate[^>]*>[\s\S]*?<\/\1>/,
+      /<([a-z]+)\b[^>]*quota-window-estimate[^>]*>[\s\S]*?<\/\1>/,
     )?.[0] ?? ""
   );
 }
@@ -128,7 +128,7 @@ test("home hides the seven-day estimate when the quota is exhausted", () => {
   expect(html).not.toContain("7d已用尽");
   expect(html).toContain('data-exhausted="true"');
   expect(html).toContain('data-quota-count="1"');
-  expect((html.match(/mobile-home-quota-estimate/g) ?? []).length).toBe(0);
+  expect((html.match(/quota-window-estimate/g) ?? []).length).toBe(0);
   expect(html).toContain("$844.50");
   expect(html).not.toContain("$1,481.58");
   expect(html).not.toContain('title="7d 预估"');
@@ -146,19 +146,19 @@ test("home renders both valid quota windows with explicit period labels", () => 
   });
   const html = renderHome([], [account]);
 
-  expect((html.match(/class="mobile-home-quota"/g) ?? []).length).toBe(2);
+  expect((html.match(/class="quota-window"/g) ?? []).length).toBe(2);
   expect(html).toContain("5h");
   expect(html).toContain("7d");
   expect(html).toContain('data-count="2"');
-  expect((html.match(/mobile-home-quota-estimate/g) ?? []).length).toBe(1);
+  expect((html.match(/quota-window-estimate/g) ?? []).length).toBe(1);
   expect(html).toContain("$844.50");
   expect(html).toContain("$1,481.58");
 
   const estimate = estimateMarkup(html);
   expect(estimate).toContain('title="7d 预估"');
-  expect(estimate).toContain('aria-label="7d 预估');
-  // 可见标签「预估」只为视觉说明，读屏以 aria-label 为准。
-  expect(estimate.replace(/<[^>]+>/g, "")).toBe("预估$1,481.58");
+  // 预估单独成行，费用行只保留金额与 Tokens、请求数，窄屏不会把用量挤到第二行。
+  expect(estimate.replace(/<[^>]+>/g, "")).toBe("本周预估 $1,481.58");
+  expect(html).not.toContain("quota-cost-pair");
 });
 
 test("home keeps an unavailable five-hour window as a waiting slot without old values", () => {
@@ -169,9 +169,9 @@ test("home keeps an unavailable five-hour window as a waiting slot without old v
   const html = renderHome([], [account]);
   const card = accountCard(html);
 
-  expect((card.match(/class="mobile-home-quota"/g) ?? []).length).toBe(2);
+  expect((card.match(/class="quota-window"/g) ?? []).length).toBe(2);
   expect(card).toContain('data-waiting="true"');
-  expect(card).toContain("等待新采样");
+  expect(card).toContain("等待更新");
   expect(card).not.toContain("N/A");
 });
 
@@ -181,9 +181,8 @@ test("home shows N/A when a valid seven-day quota has no estimate", () => {
   });
   const card = accountCard(renderHome([], [account]));
 
-  expect(card).toContain("mobile-home-quota-estimate");
+  expect(card).toContain("quota-window-estimate");
   expect(card).toContain('title="7d 预估"');
-  expect(card).toContain('aria-label="7d 预估');
   expect(card).toContain("N/A");
 });
 
@@ -208,7 +207,7 @@ test("home omits the estimate group without a valid seven-day quota", () => {
   });
   const html = renderHome([], [fiveHourOnly, expiredSevenDay, api]);
 
-  expect(html).not.toContain("mobile-home-quota-estimate");
+  expect(html).not.toContain("quota-window-estimate");
 });
 
 test("home marks unavailable subscription windows and preserves account entry", () => {
@@ -233,8 +232,8 @@ test("home marks unavailable subscription windows and preserves account entry", 
   expect(html).toContain('aria-label="查看 Unknown Pro 账户额度"');
   expect(html).not.toContain("请求用量");
   // 有过采样的账户给出最近采样时刻，从未采样的账户不暗示存在旧值。
-  expect(html).toContain("额度快照已过期，最近一次采样");
-  expect(html).toContain("上游暂未提供额度");
+  expect(html).toContain("额度数据已过期，最近更新于");
+  expect(html).toContain("暂未收到额度数据");
   expect(html).not.toContain("0 Tokens");
 });
 
@@ -249,4 +248,45 @@ test("home keeps a quota-less API account on the request entry", () => {
 
   expect(html).toContain('aria-label="查看 API 请求用量"');
   expect(html).toContain("API");
+});
+
+test("home adds the Fable weekly quota as its own row with a Fable-only estimate", () => {
+  const account = accountFixture({
+    fiveHour: quotaWindow({ percent: 10 }),
+    sevenDay: quotaWindow({ percent: 36 }),
+    sevenDayFable: quotaWindow({
+      percent: 12,
+      periodUsd: "40",
+      estimate: quotaEstimate({ usd: "333.33" }),
+    }),
+  });
+  const card = accountCard(renderHome([], [account]));
+
+  expect((card.match(/class="quota-window"/g) ?? []).length).toBe(3);
+  expect(card).toContain('data-quota-count="3"');
+  expect(card).toContain('aria-label="Fable额度使用情况"');
+  expect(card).toContain('title="Fable 预估"');
+  expect(card).toContain("$333.33");
+});
+
+test("home hides the Fable row when upstream reports none or the whole week is exhausted", () => {
+  const withoutFable = accountCard(
+    renderHome([], [accountFixture({ sevenDay: quotaWindow() })]),
+  );
+  expect(withoutFable).not.toContain("Fable");
+
+  const exhausted = accountCard(
+    renderHome(
+      [],
+      [
+        accountFixture({
+          fiveHour: quotaWindow({ percent: 10 }),
+          sevenDay: quotaWindow({ percent: 100 }),
+          sevenDayFable: quotaWindow({ percent: 12 }),
+        }),
+      ],
+    ),
+  );
+  expect(exhausted).toContain('data-quota-count="1"');
+  expect(exhausted).not.toContain("Fable");
 });

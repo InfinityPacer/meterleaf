@@ -243,8 +243,14 @@ parentPort!.on(
             { status: () => request.sync },
             now,
             "subscription",
-            (accountId, from, to, selectedBasis) =>
-              projection.index.sumWindow(accountId, from, to, selectedBasis),
+            (accountId, from, to, selectedBasis, modelScope) =>
+              projection.index.sumWindow(
+                accountId,
+                from,
+                to,
+                selectedBasis,
+                modelScope,
+              ),
             projection.accountIds(),
           ),
           api: indexedSnapshot(
@@ -252,8 +258,14 @@ parentPort!.on(
             { status: () => request.sync },
             now,
             "api",
-            (accountId, from, to, selectedBasis) =>
-              projection.index.sumWindow(accountId, from, to, selectedBasis),
+            (accountId, from, to, selectedBasis, modelScope) =>
+              projection.index.sumWindow(
+                accountId,
+                from,
+                to,
+                selectedBasis,
+                modelScope,
+              ),
             projection.accountIds(),
           ),
         } as const;

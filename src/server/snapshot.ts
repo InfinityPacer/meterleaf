@@ -1,5 +1,5 @@
 import type { SourceAccount, UsageFact } from "../domain/connector";
-import { quotaView } from "../domain/quota";
+import { quotaView, type QuotaChargeReader } from "../domain/quota";
 import { priceBookKey } from "../domain/pricing";
 import { reportBounds, type DateRange } from "../shared/date-range";
 import type {
@@ -246,6 +246,11 @@ export function liveSnapshot(
       periodAccountUsage,
       now,
     );
+    const sevenDayFable = quotaView(
+      quotaHistory.filter((row) => row.fact.window === "seven-day-fable"),
+      periodAccountUsage,
+      now,
+    );
     return {
       id,
       name: account.name,
@@ -255,6 +260,7 @@ export function liveSnapshot(
       sampledAt: sevenDay?.sampledAt ?? fiveHour?.sampledAt ?? null,
       fiveHour,
       sevenDay,
+      sevenDayFable,
     };
   });
   const resets = [
@@ -332,6 +338,7 @@ export function indexedSnapshot(
     startInclusive: string,
     endInclusive: string,
     basis: UsdBasis,
+    modelScope: ((model: string) => boolean) | null,
   ) => { usd: string | null; credits: string | null; count?: number; tokens?: number | null },
   observedAccountIds: string[] = [],
 ): Omit<LedgerSnapshot, "records"> {
@@ -376,8 +383,8 @@ export function indexedSnapshot(
   }
   const accounts = [...canonical].map(([id, account]) => {
     const quotaHistory = quotaByAccount.get(id) ?? [];
-    const reader = (startInclusive: string, endInclusive: string) =>
-      sumWindow(id, startInclusive, endInclusive, usdBasis);
+    const reader: QuotaChargeReader = (startInclusive, endInclusive, scope) =>
+      sumWindow(id, startInclusive, endInclusive, usdBasis, scope);
     const fiveHour = quotaView(
       quotaHistory.filter((row) => row.fact.window === "five-hour"),
       reader,
@@ -385,6 +392,11 @@ export function indexedSnapshot(
     );
     const sevenDay = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day"),
+      reader,
+      now,
+    );
+    const sevenDayFable = quotaView(
+      quotaHistory.filter((row) => row.fact.window === "seven-day-fable"),
       reader,
       now,
     );
@@ -397,6 +409,7 @@ export function indexedSnapshot(
       sampledAt: sevenDay?.sampledAt ?? fiveHour?.sampledAt ?? null,
       fiveHour,
       sevenDay,
+      sevenDayFable,
     };
   });
   const nowTime = Date.parse(now);
