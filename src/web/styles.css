@@ -2112,73 +2112,11 @@ button[data-size="icon-sm"],
   font-size: 13px;
   font-weight: 400;
 }
-/* 两个标签等宽，切换时选中块的大小和位置保持不变。 */
-.overview-tabs {
-  display: inline-grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px;
-  margin: 0 0 24px;
-  padding: 3px;
-  border-radius: 999px;
-  background: var(--soft);
-}
-.overview-tabs button {
-  position: relative;
-  min-height: 34px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 500;
-  /* 全局按钮样式为 flex，text-align 不生效；两段等宽时要用 justify-content 让短标签居中。 */
-  justify-content: center;
-  align-items: center;
-}
-.overview-tabs button[aria-current="page"] {
-  background: var(--elevated);
-  color: var(--ink);
-  font-weight: 600;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
-}
-.overview-history-trend {
-  padding: 20px 0 0;
-}
 .model-sort-control {
   flex: 0 0 auto;
 }
 .model-chart-tool > .section-heading h2 {
   margin-right: auto;
-}
-@media (max-width: 900px) {
-  .overview-history-trend > .section-heading {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 3px 8px;
-    margin-bottom: 8px;
-  }
-  .overview-history-trend > .section-heading h2 {
-    font-size: 15px;
-  }
-  .overview-history-trend > .section-heading .muted {
-    grid-column: 1;
-    font-size: 11px;
-  }
-  .overview-history-trend .chart-style-control {
-    grid-column: 2;
-    grid-row: 1 / 3;
-  }
-  .overview-history-trend .chart-style-control button {
-    width: 36px;
-    height: 36px;
-    min-width: 36px;
-    min-height: 36px;
-  }
-  .overview-history-trend .usage-chart {
-    height: 180px;
-    min-height: 180px;
-  }
 }
 .account-metric-icon {
   width: 30px;
@@ -2192,18 +2130,97 @@ button[data-size="icon-sm"],
   --mini-trend-height: 36px;
   margin-top: 8px;
 }
-.cache-rate-track {
+/* 摘要四格：命中率格用输入侧堆叠条展示构成，输出只作数值附注。 */
+.token-composition {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+.token-composition-bar {
+  display: flex;
+  gap: 2px;
   height: 6px;
-  margin-top: 26px;
   overflow: hidden;
   border-radius: 6px;
   background: var(--soft);
 }
-.cache-rate-track > span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--teal);
+.token-composition-bar > span {
+  min-width: 3px;
+  flex-basis: 0;
+}
+[data-segment="cacheRead"] {
+  --segment: var(--accent);
+}
+[data-segment="input"] {
+  --segment: color-mix(in srgb, var(--accent) 50%, var(--muted));
+}
+[data-segment="cacheWrite"] {
+  --segment: var(--faint);
+}
+.token-composition-bar > span {
+  background: var(--segment);
+}
+.token-composition-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--faint);
+  font-size: 12px;
+}
+.token-composition-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.token-composition-legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--segment);
+}
+/* 输出不参与命中率，单独一行列出数量，避免被读成构成的一段。 */
+.token-composition-legend li[data-segment="output"] {
+  flex-basis: 100%;
+}
+.token-composition-legend span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.summary-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.summary-change.higher {
+  color: var(--warn);
+}
+.usage-summary[aria-busy="true"] dd,
+.usage-summary[aria-busy="true"] small,
+.mobile-home-summary[aria-busy="true"] strong {
+  opacity: 0.45;
+  transition: opacity 120ms ease;
+}
+.trend-insights {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.trend-insights dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.trend-insights dd {
+  margin: 4px 0 0;
+  font-size: 14px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 .account-menu-positioner {
   z-index: 80;
@@ -2465,5 +2482,66 @@ button[data-size="icon-sm"],
   }
   .metrics .metric + .metric {
     border-top: 1px solid var(--line);
+  }
+}
+/* 窄屏摘要按两列排布；命中率格带构成条，独占一整行。 */
+@media (max-width: 900px) {
+  .usage-summary {
+    display: block;
+  }
+  /* 与手机首页一致，费用独占首行，其后 Tokens 与请求并排，命中率收尾。 */
+  .usage-summary dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "usd usd"
+      "tokens requests"
+      "cache cache";
+    gap: 16px 20px;
+  }
+  .usage-summary dl > div:nth-child(1) {
+    grid-area: tokens;
+  }
+  .usage-summary dl > div:nth-child(2) {
+    grid-area: usd;
+  }
+  .usage-summary dl > div:nth-child(3) {
+    grid-area: requests;
+  }
+  .usage-summary dl > div:nth-child(2) dd {
+    font-size: 30px;
+  }
+  .usage-summary dl > div {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .usage-summary dl > .usage-summary-cache {
+    grid-area: cache;
+  }
+  .usage-summary dd {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .usage-summary dd small {
+    margin-left: 1px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .usage-summary dl > div > small {
+    display: block;
+    color: var(--faint);
+    font-size: 12px;
+  }
+  :root[data-mobile-layout="app"] .usage-summary {
+    margin-bottom: 16px;
+    padding: 16px;
+    border: 0;
+    border-radius: var(--app-card-radius, 16px);
+    background: var(--surface);
+    box-shadow: var(--app-shadow, none);
   }
 }

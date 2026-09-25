@@ -51,6 +51,7 @@ const reportSortOptions = [
   { value: "cacheRead", label: "缓存读取" },
   { value: "cacheWrite", label: "缓存写入" },
   { value: "output", label: "输出" },
+  { value: "cacheRate", label: "缓存命中率" },
   { value: "requests", label: "请求数" },
   { value: "usd", label: "费用" },
   { value: "credits", label: "Credits" },
@@ -63,6 +64,38 @@ const features = tableFeatures({
   sortFns: { alphanumeric: sortFn_alphanumeric, basic: sortFn_basic },
 });
 type Row = ReturnType<typeof aggregateReport>[number];
+
+/** 命中率 = 缓存读取 ÷ 输入侧三个桶，均按分组内已知值求和；任一桶未知时不给比例。 */
+export function cacheHitRate(
+  row: Pick<Row, "input" | "cacheRead" | "cacheWrite">,
+) {
+  if (row.input === null || row.cacheRead === null || row.cacheWrite === null)
+    return null;
+  const total = row.input + row.cacheRead + row.cacheWrite;
+  return total > 0 ? (row.cacheRead / total) * 100 : null;
+}
+
+function percent(value: number | null) {
+  return value === null ? "N/A" : `${value.toFixed(1)}%`;
+}
+
+/** 合计沿用各列的未知语义：整列都未知才显示 N/A，金额保留已知部分。 */
+function totalRow(data: Row[]) {
+  const sum = (values: (number | null)[]) =>
+    values.some((value) => value !== null)
+      ? values.reduce<number>((total, value) => total + (value ?? 0), 0)
+      : null;
+  return {
+    tokens: sum(data.map((row) => row.tokens)),
+    input: sum(data.map((row) => row.input)),
+    cacheRead: sum(data.map((row) => row.cacheRead)),
+    cacheWrite: sum(data.map((row) => row.cacheWrite)),
+    output: sum(data.map((row) => row.output)),
+    requests: data.reduce((total, row) => total + row.requests, 0),
+    usd: sum(data.map((row) => numericAmount(row.usd))),
+    credits: sum(data.map((row) => numericAmount(row.credits))),
+  };
+}
 
 function reportRowLabel(
   key: string,
@@ -135,6 +168,12 @@ export function ReportTable({
       accessorKey: "output",
       header: "输出",
       cell: (info) => compact(info.getValue<number | null>()),
+    },
+    {
+      id: "cacheRate",
+      accessorFn: (row) => cacheHitRate(row),
+      header: "缓存命中率",
+      cell: (info) => percent(info.getValue<number | null>()),
     },
     {
       accessorKey: "requests",
@@ -322,6 +361,38 @@ export function ReportTable({
               </tr>
             ))}
           </tbody>
+          {data.length > 1 && (
+            <tfoot>
+              <tr>
+                {(() => {
+                  const totals = totalRow(data);
+                  const cells: Record<string, string | null> = {
+                    key: "合计",
+                    tokens: compact(totals.tokens),
+                    input: compact(totals.input),
+                    cacheRead: compact(totals.cacheRead),
+                    cacheWrite: compact(totals.cacheWrite),
+                    output: compact(totals.output),
+                    cacheRate: percent(cacheHitRate(totals)),
+                    requests: totals.requests.toLocaleString(),
+                    usd: amount(totals.usd, "usd"),
+                    credits: amount(totals.credits, "credits"),
+                  };
+                  return table.getAllLeafColumns().map((column) =>
+                    column.id === "key" ? (
+                      <th key={column.id} scope="row">
+                        {cells.key}
+                      </th>
+                    ) : (
+                      <td key={column.id} className="numeric">
+                        {cells[column.id]}
+                      </td>
+                    ),
+                  );
+                })()}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
       <div
@@ -413,6 +484,10 @@ export function ReportTable({
                 <div>
                   <dt>输出</dt>
                   <dd>{compact(item.output)}</dd>
+                </div>
+                <div>
+                  <dt>缓存命中率</dt>
+                  <dd>{percent(cacheHitRate(item))}</dd>
                 </div>
                 <div>
                   <dt>请求数</dt>

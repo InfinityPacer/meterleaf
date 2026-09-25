@@ -96,6 +96,9 @@ export interface LedgerView extends Omit<LedgerSnapshot, "records"> {
     creditsSummary: MetricSummary;
     tokenSummary: MetricSummary;
     previousUsdSummary: MetricSummary;
+    /** 上一个等长时段；旧缓存结果可能缺少，界面应显示为暂无对比。 */
+    previousTokenSummary?: MetricSummary;
+    previousCount?: number;
     cacheSummary: MetricSummary;
     cacheRate: number | null;
     completeCacheCount: number;
@@ -375,6 +378,8 @@ export function createLedgerView(
       creditsSummary: totals.credits,
       tokenSummary: totals.tokens,
       previousUsdSummary: summarize(previous, "usd"),
+      previousTokenSummary: summarize(previous, "tokens"),
+      previousCount: previous.length,
       cacheSummary: tokenFieldSummary(current, "cacheRead"),
       cacheRate: allInput ? (cache / allInput) * 100 : null,
       completeCacheCount: completeCacheRows.length,

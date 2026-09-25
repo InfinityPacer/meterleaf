@@ -62,3 +62,20 @@ export function reportBounds(
       }
     : { start: currentStart, end: currentEnd, endInclusive: true };
 }
+
+/** 上海自然日；账本首条记录与采样时刻都按这个时区折成日期。 */
+export function shanghaiDate(timestamp: string) {
+  return new Date(asOfTime(timestamp) + 8 * 3600_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * 「历史至今」只是客户端的范围写法：服务端仍收到普通自然日范围，
+ * 从账本首条记录所在日到采样当日，因此不会与其它自定义范围混淆缓存。
+ */
+export function allTimeRange(firstAt: string, asOf: string): DateRange {
+  const from = shanghaiDate(firstAt);
+  const to = shanghaiDate(asOf);
+  return { from: from <= to ? from : to, to };
+}

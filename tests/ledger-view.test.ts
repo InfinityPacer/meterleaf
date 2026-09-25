@@ -157,6 +157,10 @@ describe("shared ledger view", () => {
     expect(view.view.creditsSummary).toEqual(summarize(current, "credits"));
     expect(view.view.tokenSummary).toEqual(summarize(current, "tokens"));
     expect(view.view.previousUsdSummary).toEqual(summarize(previous, "usd"));
+    expect(view.view.previousTokenSummary).toEqual(
+      summarize(previous, "tokens"),
+    );
+    expect(view.view.previousCount).toBe(previous.length);
     expect(view.view.cacheSummary).toEqual(
       tokenFieldSummary(current, "cacheRead"),
     );

@@ -106,3 +106,41 @@ test("invalid and unavailable storage falls back without blocking reports", () =
     }),
   ).not.toThrow();
 });
+
+test("home opens on all history and keeps it as a symbolic range", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+  };
+  expect(readReportPreference(storage, "home")).toEqual({
+    ...defaults,
+    days: 30,
+    all: true,
+  });
+  saveReportPreference({ ...defaults, days: 7 }, storage, "home");
+  expect(readReportPreference(storage, "home")).toEqual(defaults);
+  saveReportPreference(
+    { ...defaults, days: 30, all: true },
+    storage,
+    "reports",
+  );
+  // 保存的是「历史至今」本身，而不是某一天换算出的固定日期。
+  expect(values.get("meterleaf-report-filter-reports")).not.toContain("from");
+  expect(readReportPreference(storage, "reports")).toEqual({
+    ...defaults,
+    days: 30,
+    all: true,
+  });
+  values.set(
+    "meterleaf-report-filter-reports",
+    JSON.stringify({
+      ...defaults,
+      all: true,
+      dateRange: { from: "2026-08-01", to: "2026-08-31" },
+    }),
+  );
+  expect(readReportPreference(storage, "reports")).toEqual(defaults);
+});

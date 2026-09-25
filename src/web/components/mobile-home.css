@@ -138,6 +138,23 @@
   border-bottom: 1px solid var(--line);
 }
 
+.mobile-home-summary-metrics[data-count="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mobile-home-summary-metrics[data-count="3"] strong {
+  font-size: 19px;
+}
+
+.mobile-home-summary .token-composition {
+  margin-top: 12px;
+}
+
+.mobile-home-summary-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .mobile-home-summary-metrics > span {
   display: grid;
   align-content: start;

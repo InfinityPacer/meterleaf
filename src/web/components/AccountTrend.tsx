@@ -8,7 +8,12 @@ import type { EChartsCoreOption } from "echarts/core";
 import type { LedgerView, UnitView } from "../../shared/ledger-view";
 import { selectUsdView } from "../../shared/ledger-view";
 import type { UsdBasis } from "../../domain/pricing";
-import { compact, continuousPoints, localTime } from "../lib/report";
+import {
+  compact,
+  compactAxis,
+  continuousPoints,
+  localTime,
+} from "../lib/report";
 import type { Granularity } from "../../shared/report";
 import { type ThemeColors, useThemeColors } from "../lib/theme-colors";
 import { useLiveUpdates } from "../lib/use-live-updates";
@@ -189,7 +194,7 @@ function buildMiniTrendOption(
       axisLabel: {
         color: colors.faint,
         fontSize: 10,
-        formatter: compact,
+        formatter: compactAxis,
         showMaxLabel: !showScale,
       },
       splitLine: {

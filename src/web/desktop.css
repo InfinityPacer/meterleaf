@@ -299,7 +299,7 @@
 
   .app-shell .lifetime-summary dl {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 32px;
     margin: 0;
   }
@@ -325,7 +325,7 @@
   .app-shell .lifetime-summary dd {
     margin: 0;
     color: var(--desktop-ink);
-    font-size: clamp(34px, 3.2vw, 46px);
+    font-size: clamp(30px, 2.7vw, 44px);
     line-height: 1;
     font-weight: 500;
     letter-spacing: -0.02em;
@@ -336,6 +336,20 @@
   .app-shell .lifetime-summary small {
     color: var(--faint);
     font-size: 12.5px;
+  }
+
+  .app-shell .lifetime-summary dl > div > small + small {
+    margin-top: -4px;
+  }
+
+  .app-shell .lifetime-summary dd small {
+    margin-left: 2px;
+    font-size: 0.45em;
+    color: var(--desktop-muted);
+  }
+
+  .app-shell .usage-summary.loading-panel {
+    min-height: 144px;
   }
 
   /* 账户页与总览共用：所有账户在一个面板里，行间用细线分隔。 */
@@ -369,15 +383,6 @@
 
   .app-shell .account-list > .account-list-item:only-child .account-row {
     border-radius: 11px;
-  }
-
-  .app-shell .overview-history-trend > .section-heading {
-    justify-content: flex-start;
-    gap: 10px;
-  }
-
-  .app-shell .overview-history-trend > .section-heading > :last-child {
-    margin-left: auto;
   }
 
   .app-shell .overview-quotas {
@@ -449,12 +454,12 @@
     font-size: 14px;
   }
 
-  .app-shell[data-page="period"] .metrics .metric {
+  .app-shell[data-page="overview"] .metrics .metric {
     position: relative;
     overflow: hidden;
     background: var(--desktop-panel);
   }
-  .dark .app-shell[data-page="period"] .metrics .metric {
+  .dark .app-shell[data-page="overview"] .metrics .metric {
     background: var(--desktop-panel);
   }
 
@@ -496,7 +501,7 @@
     border-left: 1px solid var(--desktop-line);
   }
 
-  .app-shell[data-page="period"] .analysis-section {
+  .app-shell[data-page="overview"] .analysis-section {
     grid-template-columns: minmax(0, 1fr) minmax(300px, 0.38fr);
     gap: 16px;
     padding: 0;
@@ -505,8 +510,8 @@
     background: transparent;
     box-shadow: none;
   }
-  .app-shell[data-page="period"] .trend-panel,
-  .app-shell[data-page="period"] .model-panel {
+  .app-shell[data-page="overview"] .trend-panel,
+  .app-shell[data-page="overview"] .model-panel {
     padding: 20px;
     border: 1px solid var(--desktop-line);
     border-radius: 12px;
@@ -846,12 +851,6 @@
     color: var(--desktop-muted);
     background: transparent;
   }
-  .app-shell .overview-history-trend {
-    padding: 20px 22px;
-    border: 1px solid var(--desktop-line);
-    border-radius: 12px;
-    background: var(--desktop-panel);
-  }
   .app-shell .account-lifetime strong {
     font-size: 22px;
     font-weight: 500;
@@ -997,6 +996,22 @@
     background: var(--desktop-panel);
     color: var(--desktop-ink);
     font-weight: 500;
+  }
+
+  /* 合计行用较粗的顶线收尾，与普通数据行区分；各列同一条线，不留缺口。 */
+  .app-shell .report-section tfoot th,
+  .app-shell .report-section tfoot td {
+    height: 48px;
+    padding: 0 14px;
+    border-top: 2px solid var(--desktop-line);
+    border-bottom: 0;
+    background: transparent;
+    color: var(--desktop-ink);
+    font-weight: 600;
+    text-align: left;
+  }
+  .app-shell .report-section tfoot td {
+    text-align: right;
   }
 
   .app-shell .report-section td,
@@ -1157,224 +1172,18 @@
     top: 0;
     z-index: 1;
   }
+  /* 圆环旁直接放明细表；图例与表格的模型、占比完全重复，宽屏不再单列。 */
   .app-shell .model-distribution-layout {
-    grid-template-columns: minmax(220px, 0.85fr) minmax(160px, 0.55fr) minmax(
-        0,
-        2fr
-      );
-    gap: 20px;
+    grid-template-columns: minmax(220px, 0.7fr) minmax(0, 2fr);
+    gap: 28px;
   }
   .app-shell .model-distribution-layout .model-donut {
     grid-column: 1;
     grid-row: 1;
   }
   .app-shell .model-distribution-layout .model-distribution-scroll {
-    grid-column: 3;
-    grid-row: 1;
-  }
-  .app-shell .model-distribution-layout .mobile-model-list {
     grid-column: 2;
     grid-row: 1;
-    display: block;
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    max-height: 308px;
-    overflow: auto;
-  }
-  .app-shell .model-distribution-layout .mobile-model-item {
-    display: block;
-    min-height: 44px;
-    width: 100%;
-    background: transparent;
-    border: 0;
-    padding: 8px 0;
-    text-align: left;
-  }
-  .app-shell .model-distribution-layout .mobile-model-heading {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-    font-size: 13px;
-  }
-  .app-shell .model-distribution-layout .mobile-model-name {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    overflow-wrap: anywhere;
-  }
-  .app-shell .model-distribution-layout .mobile-model-name i {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-  .app-shell
-    .model-distribution-layout
-    .mobile-model-heading
-    .distribution-usd {
-    display: none;
-  }
-  .app-shell .model-distribution-layout .mobile-model-percentage {
-    color: var(--desktop-muted);
-  }
-  .app-shell .model-distribution-layout .mobile-model-incomplete {
-    display: block;
-    font-size: 11px;
-    color: var(--desktop-muted);
-  }
-  .app-shell[data-page="overview"] main {
-    display: block;
-  }
-  .app-shell[data-page="overview"] .lifetime-summary,
-  .app-shell[data-page="overview"] .overview-quotas {
-    grid-column: 1 / -1;
-  }
-  .app-shell[data-page="overview"] .desktop-period,
-  .app-shell[data-page="overview"] .analysis-section {
-    display: contents;
-  }
-  .app-shell[data-page="overview"] .period-heading {
-    grid-column: 1;
-    grid-row: 3;
-    margin: 0;
-    padding: 0 18px;
-    background: var(--desktop-panel);
-    border-radius: 16px 16px 0 0;
-  }
-  .app-shell[data-page="overview"] .filterbar {
-    grid-column: 1;
-    grid-row: 4;
-    min-height: 48px;
-    margin: 0;
-    padding: 0 18px 6px;
-    border: 0;
-    border-radius: 0;
-    box-shadow: none;
-  }
-  .app-shell[data-page="overview"] .filterbar .filters {
-    gap: 8px;
-  }
-  .app-shell[data-page="overview"] .filterbar .filter-select-trigger,
-  .app-shell[data-page="overview"] .filterbar .date-range-trigger,
-  .app-shell[data-page="overview"] .filterbar .segmented {
-    min-height: 44px;
-  }
-  .app-shell[data-page="overview"] .metrics {
-    grid-column: 1;
-    grid-row: 5;
-    gap: 10px;
-    padding: 0 18px;
-    margin: 0;
-    background: var(--desktop-panel);
-  }
-  .app-shell[data-page="overview"] .metrics .metric {
-    position: relative;
-    min-height: 96px;
-    padding: 10px 12px;
-    border-radius: 10px;
-    box-shadow: none;
-  }
-  .app-shell[data-page="overview"] .metric-label {
-    font-size: 12px;
-    min-height: 18px;
-    padding-right: 20px;
-  }
-  .app-shell[data-page="overview"] .metric-info {
-    position: absolute;
-    right: 0;
-    top: 0;
-    margin: 0;
-  }
-  .app-shell[data-page="overview"] .metric-value {
-    font-size: 23px;
-    margin-top: 4px;
-  }
-  .app-shell[data-page="overview"] .metric-foot {
-    font-size: 11px;
-    margin-top: 4px;
-    min-height: 14px;
-    gap: 4px;
-  }
-  .app-shell[data-page="overview"] .trend-panel {
-    display: contents;
-  }
-  .app-shell[data-page="overview"] .trend-panel > .section-heading {
-    display: contents;
-  }
-  .app-shell[data-page="overview"]
-    .trend-panel
-    > .section-heading
-    > div:first-child {
-    display: flex;
-    grid-column: 1;
-    grid-row: 6;
-    justify-self: end;
-    align-self: start;
-    margin: 4px 30px 0 0;
-    z-index: 1;
-    pointer-events: none;
-  }
-  .app-shell[data-page="overview"] .trend-panel > .section-heading h2 {
-    display: none;
-  }
-  .app-shell[data-page="overview"] .trend-panel > .section-heading .muted {
-    font-size: 11px;
-  }
-  .app-shell[data-page="overview"]
-    .trend-panel
-    > .section-heading
-    > .segmented {
-    grid-column: 1;
-    grid-row: 3;
-    justify-self: center;
-    align-self: center;
-    margin-left: 60px;
-  }
-  .app-shell[data-page="overview"] .chart-toolbar {
-    grid-column: 1;
-    grid-row: 3;
-    justify-self: end;
-    align-self: center;
-    margin: 0 18px 0 0;
-    justify-content: flex-end;
-  }
-  .app-shell[data-page="overview"] .chart-toolbar > span {
-    display: none;
-  }
-  .app-shell[data-page="overview"] .chart-toolbar button,
-  .app-shell[data-page="overview"]
-    .trend-panel
-    > .section-heading
-    > .segmented
-    button {
-    min-width: 36px;
-    min-height: 36px;
-    height: 36px;
-  }
-  .app-shell[data-page="overview"] .chart-toolbar .segmented,
-  .app-shell[data-page="overview"]
-    .trend-panel
-    > .section-heading
-    > .segmented {
-    min-height: 40px;
-  }
-  .app-shell[data-page="overview"] .trend-panel > .usage-chart {
-    grid-column: 1;
-    grid-row: 6;
-    height: 160px;
-    margin: 0;
-    padding: 0 18px 12px;
-    border-radius: 0 0 16px 16px;
-    background: var(--desktop-panel);
-  }
-  .app-shell[data-page="overview"] .model-panel {
-    grid-column: 2;
-    grid-row: 3 / 7;
-    padding: 16px;
-    border: 0;
-    border-radius: 12px;
-    background: var(--desktop-panel);
   }
   .app-shell .overview-donut {
     width: 180px;
@@ -1388,7 +1197,7 @@
     font-size: 21px;
   }
   .app-shell .model-breakdown {
-    max-height: 136px;
+    max-height: 272px;
     overflow: auto;
   }
   .app-shell .model-breakdown button {
@@ -1424,8 +1233,18 @@
     padding-inline: 16px;
   }
 
+  .app-shell .lifetime-summary dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 24px;
+  }
+
   .app-shell .lifetime-summary dl > div + div {
     padding-left: 20px;
+  }
+
+  .app-shell .lifetime-summary dl > div:nth-child(odd) {
+    padding-left: 0;
+    border-left: 0;
   }
 
   .app-shell .metrics {
@@ -1504,6 +1323,13 @@
     padding-left: 0;
     border-top: 1px solid var(--desktop-line);
     border-left: 0;
+  }
+
+  /* 总览的趋势与模型分布是两张并排卡片，窄桌面也保持顶边对齐。 */
+  .app-shell[data-page="overview"] .model-panel {
+    margin-top: 0;
+    padding: 20px;
+    border: 1px solid var(--desktop-line);
   }
 
   .app-shell .account-row,

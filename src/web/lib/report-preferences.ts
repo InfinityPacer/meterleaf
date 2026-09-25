@@ -4,19 +4,27 @@ import { dateRangeSchema } from "../../shared/date-range";
 import type { ReportFilter } from "../../shared/report";
 import { readStoredPreference, writeStoredPreference } from "./preferences";
 
-type Selection = Pick<ReportFilter, "days" | "dateRange" | "model" | "account">;
+type Selection = Pick<
+  ReportFilter,
+  "days" | "dateRange" | "all" | "model" | "account"
+>;
 const key = "meterleaf-report-filter";
 const schema = z
   .object({
     days: z.union([z.literal(1), z.literal(7), z.literal(14), z.literal(30)]),
     dateRange: dateRangeSchema.optional(),
+    all: z.literal(true).optional(),
     model: z.string().min(1).max(512),
     account: z.string().min(1).max(512),
   })
   .strict()
-  .refine((value) => value.days !== 14 || !!value.dateRange);
+  .refine((value) => value.days !== 14 || !!value.dateRange)
+  .refine((value) => !value.all || !value.dateRange);
 
-/** 按视图恢复日期、模型和账户；搜索关键词不持久化。 */
+/**
+ * 按视图恢复日期、模型和账户；搜索关键词不持久化。
+ * 首页（home）第一眼看历史至今，与旧「时间段用量」保存的范围分开存放。
+ */
 export function readReportPreference(
   storage?: Pick<Storage, "getItem">,
   scope?: string,
@@ -24,7 +32,9 @@ export function readReportPreference(
   return readStoredPreference(
     scope ? `${key}-${scope}` : key,
     schema,
-    { days: scope === "overview" ? 1 : 7, model: "all", account: "all" },
+    scope === "home"
+      ? { days: 30, all: true, model: "all", account: "all" }
+      : { days: scope === "overview" ? 1 : 7, model: "all", account: "all" },
     storage,
   );
 }
@@ -41,6 +51,7 @@ export function saveReportPreference(
     {
       days: selection.days,
       dateRange: selection.dateRange,
+      ...(selection.all ? { all: true as const } : {}),
       model: selection.model,
       account: selection.account,
     },

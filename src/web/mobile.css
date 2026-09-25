@@ -17,13 +17,6 @@
   .topbar-actions {
     margin-left: auto;
   }
-  /* 只有两个短标签，保持内容宽度的胶囊；撑满整行会让标签在半宽色块里显得偏向一侧。 */
-  .overview-tabs {
-    margin-bottom: 16px;
-  }
-  .overview-tabs button {
-    min-height: 40px;
-  }
   .account-lifetime {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -428,6 +421,14 @@
     .app-period .model-panel {
       display: none;
     }
+    .app-period .trend-insights {
+      grid-column: 1 / -1;
+      order: 4;
+      gap: 8px;
+    }
+    .app-period .trend-insights dd {
+      font-size: 13px;
+    }
     .app-period .usage-chart {
       height: 164px;
     }
@@ -571,6 +572,16 @@
   }
   .mobile-filter-summary:empty {
     display: none;
+  }
+  /* 总览只有时间范围，筛选按钮与快捷范围同排，不再单独占一行。 */
+  .app-shell[data-page="overview"] .mobile-filterbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: start;
+  }
+  .app-shell[data-page="overview"] .mobile-period-presets {
+    margin-bottom: 0;
   }
   .mobile-period-presets {
     display: grid;

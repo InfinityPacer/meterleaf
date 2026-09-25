@@ -73,9 +73,20 @@ export function modelLabel(model: string) {
 
 export function compact(value: number | null) {
   if (value === null || !Number.isFinite(value)) return "N/A";
+  // 缩写后固定两位小数，同屏的 3.00B 与 2.95B 才能对齐比较；千以下保持整数。
+  const abbreviated = Math.abs(value) >= 1000;
   return new Intl.NumberFormat("en-US", {
     notation: "compact",
+    minimumFractionDigits: abbreviated ? 2 : 0,
     maximumFractionDigits: 2,
+  }).format(value);
+}
+
+/** 坐标轴刻度只需量级，不补零，避免 15.00M 这类冗长刻度。 */
+export function compactAxis(value: number) {
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
   }).format(value);
 }
 

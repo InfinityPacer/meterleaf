@@ -158,26 +158,13 @@ test("pie chart screen-reader data matches positive finite pie rows", () => {
 
 test("mobile home uses N/A for missing account and trend values", () => {
   const snapshot = viewFixture();
-  const trendPoints: LedgerView["view"]["points"] = [
-    {
-      at: Date.parse(snapshot.asOf),
-      value: null,
-      count: 1,
-      incomplete: 1,
-    },
-    {
-      at: Date.parse(snapshot.asOf) - 86400000,
-      value: Number.NaN,
-      count: 1,
-      incomplete: 1,
-    },
-  ];
   const html = renderToStaticMarkup(
     createElement(MobileHome, {
       snapshot,
       accounts: [emptyAccount],
       asOf: snapshot.asOf,
-      trendPoints,
+      summary: null,
+      rangeLabel: "近 7 天",
       onAccount: () => {},
       onRequests: () => {},
       onAllAccounts: () => {},

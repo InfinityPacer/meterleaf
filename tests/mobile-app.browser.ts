@@ -44,6 +44,7 @@ type SavedMedia = {
 
 type ViewRequest = {
   account: string;
+  from: string | null;
   days: number;
   granularity: string;
   pageSize: number;
@@ -132,6 +133,7 @@ const recordViewRequest = (request: Request) => {
   const query = url.searchParams;
   viewRequests.push({
     account: query.get("account") ?? "all",
+    from: query.get("from"),
     days: Number(query.get("days") ?? 7),
     granularity: query.get("granularity") ?? "day",
     pageSize: Number(query.get("pageSize") ?? 12),
@@ -189,7 +191,7 @@ const viewRouteHandler = async (route: Route) => {
     )[0]!;
     view.lifetimeTotals = {
       asOf: snapshot.asOf,
-      from: snapshot.records.at(-1)!.occurredAt,
+      from: snapshot.records.map((row) => row.occurredAt).sort()[0]!,
       to: snapshot.asOf,
       count: snapshot.records.length,
       tokens: {
@@ -270,6 +272,25 @@ const syncStatus: SyncStatus = {
 };
 const syncRouteHandler = (route: Route) => route.fulfill({ json: syncStatus });
 
+// 历史至今在查询前换算为从账本首条记录所在上海自然日开始的范围。
+const demoStartDay = new Date(
+  Date.parse(
+    createDemoLedger()
+      .records.map((row) => row.occurredAt)
+      .sort()[0]!,
+  ) +
+    8 * 3600_000,
+)
+  .toISOString()
+  .slice(0, 10);
+const overviewRangeRequests = () =>
+  viewRequests.filter(
+    (request) =>
+      request.pageSize === 1 &&
+      request.account === "all" &&
+      request.from === demoStartDay,
+  );
+
 let viewRouteInstalled = false;
 let archiveRouteInstalled = false;
 let syncRouteInstalled = false;
@@ -314,36 +335,52 @@ async function ready() {
       page.getByRole("navigation", { name: "底部导航" }),
     ).toBeVisible();
   }
-  if (hash === "#overview") {
-    const tabs = page.getByRole("navigation", { name: "总览视图" });
-    await expect(tabs).toBeVisible();
-    await expect(tabs.getByRole("button")).toHaveText([
-      "累计总览",
-      "时间段用量",
-    ]);
+  // #period 是旧链接：地址保留原样，但展示的是合并后的用量总览。
+  if (hash === "#overview" || hash === "#period") {
+    await expect(
+      page.getByRole("navigation", { name: "总览视图" }),
+    ).toHaveCount(0);
     await expect(page.locator(".mobile-home-title")).toHaveCount(0);
     await expect(page.locator(".mobile-home-period-link")).toHaveCount(0);
+    await expect(page.locator(".overview-history-trend")).toHaveCount(0);
+    await expect(page.locator('[aria-label="用量摘要"] .metric')).toHaveCount(
+      0,
+    );
+    await expect(
+      page.getByRole("combobox", { name: "模型筛选", exact: true }),
+    ).toHaveCount(0);
     if (mobileApp) {
       await expect(page.locator(".mobile-home")).toBeVisible();
       await expect(page.locator(".mobile-home-trend-bars")).toHaveCount(0);
       await expect(
-        page.locator(".mobile-home .mini-trend-chart"),
-      ).toBeVisible();
-      await expect(
         page.getByRole("group", { name: "近 30 天 Tokens 趋势" }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole("list", { name: "Tokens 趋势数据" }),
+      ).toHaveCount(0);
+      await expect(page.locator(".mobile-home-summary")).toBeVisible();
+      await expect(
+        page.locator(
+          ".mobile-period-presets > button:not(.date-range-trigger)",
+        ),
+      ).toHaveText(["全部", "7 天", "30 天"]);
+      await expect(
+        page.getByRole("button", { name: "筛选与计价" }),
       ).toBeVisible();
-      const trendData = page.getByRole("list", {
-        name: "Tokens 趋势数据",
-      });
-      await expect(trendData).toHaveCount(1);
-      expect(await trendData.locator("li").count()).toBeGreaterThan(0);
+      await expect(page.locator(".app-period .trend-panel")).toBeVisible();
+      await expect(page.locator(".app-period .model-panel")).toBeHidden();
       await expect(
         page.getByRole("list", { name: "账户额度摘要" }),
       ).toBeVisible();
+      await expect(
+        page
+          .getByRole("navigation", { name: "底部导航" })
+          .getByRole("button", { name: "用量总览", exact: true }),
+      ).toHaveAttribute("aria-current", "page");
     } else {
       await expect(page.locator("main .metrics")).toHaveCount(0);
-      await expect(page.locator("main > .filterbar")).toHaveCount(0);
-      await expect(page.locator(".overview-history-trend")).toBeVisible();
+      await expect(page.locator("section.usage-summary")).toBeVisible();
+      await expect(page.locator(".desktop-period .trend-panel")).toBeVisible();
       await expect(
         page.locator(".overview-quotas .account-capacity > strong"),
       ).toHaveText(["N/A", "N/A"]);
@@ -353,11 +390,6 @@ async function ready() {
           .getByText(/未提供|未计价原因/),
       ).toHaveCount(0);
     }
-  }
-  if (hash === "#period") {
-    await expect(
-      page.getByRole("navigation", { name: "总览视图" }),
-    ).toBeVisible();
   }
   if (hash === "#settings")
     await expect(page.locator(".about-page")).toBeVisible();
@@ -395,17 +427,11 @@ async function ready() {
       await expect(button).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     }
   }
-  if (
-    hash === "#period" ||
-    hash === "#reports" ||
-    (hash === "#overview" && !mobileApp)
-  ) {
+  if (hash === "#period" || hash === "#reports" || hash === "#overview") {
     const selector =
       hash === "#reports"
         ? ".model-donut .usage-chart canvas"
-        : hash === "#period"
-          ? ".trend-panel .usage-chart canvas"
-          : ".overview-history-trend .usage-chart canvas";
+        : ".trend-panel .usage-chart canvas";
     const canvas = page.locator(selector).first();
     await expect(canvas).toBeVisible();
     await expectChartPainted(canvas, "chart has painted data pixels");
@@ -468,51 +494,65 @@ async function chooseSetting(label: string, option: string) {
   await page.keyboard.press("Escape");
 }
 
-async function assertHomeChartControl(scope: Locator, mobile: boolean) {
-  const control = scope.getByRole("group", {
-    name: "图表样式",
-    exact: true,
-  });
-  await expect(control).toBeVisible();
-  await expect(control.getByRole("button")).toHaveCount(3);
-  expect(
-    await control
-      .getByRole("button")
-      .evaluateAll((buttons) =>
-        buttons.map((button) => button.getAttribute("aria-label")),
-      ),
-  ).toEqual(["折线图", "面积图", "柱状图"]);
+/**
+ * 总览默认历史至今；换到 7 天后摘要和趋势副标题跟随，账户额度不随范围变化，
+ * 范围写入首页专属偏好。检查结束后回到历史至今，不改变后续截图的状态。
+ */
+async function assertOverviewRange(mobile: boolean) {
+  const quotas = mobile
+    ? page.getByRole("list", { name: "账户额度摘要" })
+    : page.locator(".overview-quotas");
+  const trendNote = page.locator(".trend-panel .section-heading .muted");
+  const expectSummary = async (title: string, note: RegExp) => {
+    if (mobile) {
+      await expect(page.locator("#mobile-home-summary-title")).toHaveText(
+        `${title}用量`,
+      );
+      await expect(
+        page.locator(".mobile-home-summary .mobile-home-summary-note"),
+      ).toContainText(note);
+    } else {
+      const summary = page.getByRole("region", {
+        name: `${title}用量摘要`,
+        exact: true,
+      });
+      await expect(summary).toBeVisible();
+      await expect(summary).toContainText(note);
+    }
+    await expect(trendNote).toHaveText(`${title} · 按天汇总`);
+  };
+  const choose = async (chip: string, preset: string) => {
+    if (mobile) {
+      const button = page
+        .locator(".mobile-period-presets > button:not(.date-range-trigger)")
+        .filter({ hasText: chip });
+      await button.click();
+      await expect(button).toHaveAttribute("aria-pressed", "true");
+      return;
+    }
+    await page.getByRole("button", { name: "日期范围", exact: true }).click();
+    await page.getByRole("radio", { name: preset, exact: true }).click();
+  };
+  const readStoredRange = () =>
+    page.evaluate(() => localStorage.getItem("meterleaf-report-filter-home"));
 
-  const readStoredChart = () =>
-    page.evaluate(() => {
-      const raw = localStorage.getItem("meterleaf-pref-home-chart");
-      return raw ? JSON.parse(raw) : null;
-    });
-  await expect.poll(readStoredChart).toBe("line");
   await expect(
-    control.getByRole("button", { name: "折线图", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
-
-  for (const [label, value] of [
-    ["面积图", "area"],
-    ["柱状图", "bar"],
-    ["折线图", "line"],
-  ] as const) {
-    const button = control.getByRole("button", { name: label, exact: true });
-    await button.click();
-    await expect(button).toHaveAttribute("aria-pressed", "true");
-    await expect.poll(readStoredChart).toBe(value);
-    if (mobile)
-      await expect(scope.locator(".mini-trend")).toHaveAttribute(
-        "data-variant",
-        value,
-      );
-    else
-      await expect(scope.locator(".usage-chart")).toHaveAttribute(
-        "data-chart-style",
-        value,
-      );
-  }
+    page.getByRole("button", { name: "日期范围", exact: true }),
+  ).toContainText("历史至今");
+  await expectSummary("历史至今", / 起/);
+  const quotasBefore = await quotas.textContent();
+  await choose("7 天", "近 7 天");
+  await expectSummary("近 7 天", /环比|暂无对比/);
+  await expect(quotas).toHaveText(quotasBefore!);
+  await expect
+    .poll(readStoredRange)
+    .toBe('{"days":7,"model":"all","account":"all"}');
+  await choose("全部", "历史至今");
+  await expectSummary("历史至今", / 起/);
+  await expect(quotas).toHaveText(quotasBefore!);
+  await expect
+    .poll(readStoredRange)
+    .toBe('{"days":30,"all":true,"model":"all","account":"all"}');
 }
 
 try {
@@ -533,33 +573,17 @@ try {
   );
   await page.reload();
   await ready();
-  await assertHomeChartControl(page.locator(".mobile-home-summary"), true);
 
-  const homeTrendRequests = () =>
-    viewRequests.filter(
-      (request) =>
-        request.pageSize === 1 &&
-        request.days === 30 &&
-        request.account === "all" &&
-        request.granularity === "day",
-    );
+  // 历史至今的区间查询同样是后台报表：只轮询一次结果，不能重复触发重算。
   await expect
-    .poll(() => homeTrendRequests().map((request) => request.refresh))
+    .poll(() => overviewRangeRequests().map((request) => request.refresh))
     .toEqual([true, false]);
   await page.waitForTimeout(1500);
-  expect(homeTrendRequests().map((request) => request.refresh)).toEqual([
+  expect(overviewRangeRequests().map((request) => request.refresh)).toEqual([
     true,
     false,
   ]);
-  expect(
-    homeTrendRequests().every(
-      (request) =>
-        request.pageSize === 1 &&
-        request.days === 30 &&
-        request.account === "all" &&
-        request.granularity === "day",
-    ),
-  ).toBe(true);
+  await assertOverviewRange(true);
 
   const navigation = page.getByRole("navigation", { name: "底部导航" });
   await expect(navigation).toBeVisible();
@@ -576,28 +600,8 @@ try {
     "scrollWidth",
     await accounts.evaluate((element) => element.clientWidth),
   );
-  const overviewTabStart = await page
-    .getByRole("navigation", { name: "总览视图" })
-    .getByRole("button")
-    .first()
-    .boundingBox();
-  await page
-    .getByRole("navigation", { name: "总览视图" })
-    .getByRole("button", { name: "时间段用量", exact: true })
-    .click();
-  await expect(page).toHaveURL(/#period$/);
+  await page.goto(`${base}#period`);
   await ready();
-  const periodTabStart = await page
-    .getByRole("navigation", { name: "总览视图" })
-    .getByRole("button")
-    .first()
-    .boundingBox();
-  expect(overviewTabStart, "overview tab geometry").not.toBeNull();
-  expect(periodTabStart, "period tab geometry").not.toBeNull();
-  expect(
-    Math.abs((overviewTabStart?.x ?? 0) - (periodTabStart?.x ?? 0)),
-    "overview tabs keep the same starting x coordinate",
-  ).toBeLessThanOrEqual(1);
   await expect(page.locator(".app-period")).toBeVisible();
   await expect(
     navigation.getByRole("button", { name: "用量总览", exact: true }),
@@ -633,17 +637,8 @@ try {
   await navigation
     .getByRole("button", { name: "用量总览", exact: true })
     .click();
-  await page
-    .getByRole("navigation", { name: "总览视图" })
-    .getByRole("button", { name: "累计总览", exact: true })
-    .click();
   await ready();
-  await expect(page.getByRole("button", { name: "筛选与计价" })).toBeHidden();
-  await page
-    .getByRole("navigation", { name: "总览视图" })
-    .getByRole("button", { name: "时间段用量", exact: true })
-    .click();
-  await ready();
+  // 总览的筛选面板只放计价口径和时间粒度；模型与账户拆分交给统计报表。
   await page.getByRole("button", { name: "筛选与计价" }).click();
   const filterDialog = page.getByRole("dialog");
   await expect(filterDialog).toBeVisible();
@@ -660,6 +655,33 @@ try {
     filterBox?.height ?? viewport.height,
     "mobile filter sheet height",
   ).toBeLessThan(viewport.height);
+  await expect(
+    filterDialog.getByRole("group", { name: "计价口径", exact: true }),
+  ).toBeVisible();
+  await expect(
+    filterDialog.getByRole("group", { name: "时间粒度", exact: true }),
+  ).toBeVisible();
+  await expect(filterDialog.getByRole("combobox")).toHaveCount(0);
+  await filterDialog
+    .getByRole("button", { name: "标准 API", exact: true })
+    .click();
+  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(page.locator(".mobile-filter-summary")).toHaveText(
+    "历史至今 · 标准 API",
+  );
+  await expect(page.getByRole("button", { name: "筛选与计价" })).toBeFocused();
+  await expect(page.locator(".mobile-home-summary")).toContainText("标准 API");
+  await page.getByRole("button", { name: "筛选与计价" }).click();
+  await filterDialog
+    .getByRole("button", { name: "订阅等价", exact: true })
+    .click();
+  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await navigation
+    .getByRole("button", { name: "统计报表", exact: true })
+    .click();
+  await ready();
+  await page.getByRole("button", { name: "筛选与计价" }).click();
+  await expect(filterDialog).toBeVisible();
   await page.getByRole("combobox", { name: "模型筛选" }).click();
   await page.getByRole("option", { name: "GPT 6 Astra", exact: true }).click();
   await page.getByRole("button", { name: "完成", exact: true }).click();
@@ -667,6 +689,13 @@ try {
     "GPT 6 Astra",
   );
   await expect(page.getByRole("button", { name: "筛选与计价" })).toBeFocused();
+  await page.getByRole("button", { name: "筛选与计价" }).click();
+  await page.getByRole("combobox", { name: "模型筛选" }).click();
+  await page.getByRole("option", { name: "全部模型", exact: true }).click();
+  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(page.locator(".mobile-filter-summary")).not.toContainText(
+    "GPT 6 Astra",
+  );
   await page
     .getByRole("navigation", { name: "底部导航" })
     .getByRole("button", { name: "请求明细", exact: true })
@@ -720,19 +749,8 @@ try {
       for (const tab of views) {
         await page.goto(`${base}#${tab}`);
         await ready();
-        if (tab === "overview") {
-          const mobileApp = await page.evaluate(
-            () =>
-              innerWidth <= 900 &&
-              document.documentElement.dataset.mobileLayout === "app",
-          );
-          await assertHomeChartControl(
-            mobileApp
-              ? page.locator(".mobile-home-summary")
-              : page.locator(".overview-history-trend"),
-            mobileApp,
-          );
-        }
+        if (tab === "overview" && width === 1440 && !dark)
+          await assertOverviewRange(false);
         if (width === 844 && height === 390 && tab === "reports") {
           const donut = page.locator(".model-donut").first();
           await expect(donut).toBeVisible();
@@ -832,12 +850,12 @@ try {
   const summary = {
     status: "passed",
     checks:
-      "five navigation items, overview tabs, standalone period, about route, mode persistence, drawer border/focus, filter focus, detail focus/trap, pagination, reflow, text spacing, reduced motion, home chart preference, line micro trends, N/A estimates, transparent actions, tab geometry, compact filter sheet, home and account pageSize=1 query bounds",
+      "five navigation items, merged overview, legacy #period redirect, overview range chips and date picker, range-scoped summary and trend, quotas independent of range, about route, mode persistence, drawer border/focus, overview and report filter sheets, filter focus, detail focus/trap, pagination, reflow, text spacing, reduced motion, line micro trends, N/A estimates, transparent actions, compact filter sheet, overview and account pageSize=1 query bounds",
     screens,
     errors,
     a11y: axeSource ? "executed" : "skipped: METERLEAF_AXE_PATH not provided",
     a11yViolations: results.filter((result: any) => result.violations.length),
-    homeTrendRequests: homeTrendRequests(),
+    overviewRangeRequests: overviewRangeRequests(),
     accountTrendRequests: viewRequests.filter(
       (request) => request.pageSize === 1 && request.account !== "all",
     ),
@@ -878,13 +896,7 @@ try {
         a11y: axeSource
           ? "executed"
           : "skipped: METERLEAF_AXE_PATH not provided",
-        homeTrendRequests: viewRequests.filter(
-          (request) =>
-            request.pageSize === 1 &&
-            request.days === 30 &&
-            request.account === "all" &&
-            request.granularity === "day",
-        ),
+        overviewRangeRequests: overviewRangeRequests(),
         accountTrendRequests: viewRequests.filter(
           (request) => request.pageSize === 1 && request.account !== "all",
         ),
