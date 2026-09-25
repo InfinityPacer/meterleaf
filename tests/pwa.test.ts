@@ -97,7 +97,7 @@ test("HTML exposes the manifest and Apple touch icon for native browser install"
     'rel="manifest" href="/manifest.webmanifest"',
   );
   expect(normalizedHtml).toContain(
-    'name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"',
+    'name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, viewport-fit=cover"',
   );
   expect(normalizedHtml).toContain(
     'rel="apple-touch-icon" sizes="180x180" href="/icons/meterleaf-leaf-180.png"',

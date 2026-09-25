@@ -695,7 +695,7 @@ test("view API validates bounds and returns summaries with a bounded page", asyn
     const result = await app.inject("/api/view?days=7&pageSize=5");
     expect(result.statusCode).toBe(200);
     expect(result.json().records).toHaveLength(5);
-    expect(result.json().view.count).toBe(900);
+    expect(result.json().view.count).toBe(1215);
     for (const suffix of [
       "pageSize=101",
       "page=-1",

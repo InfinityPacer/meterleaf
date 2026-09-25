@@ -499,10 +499,10 @@ export function csv(
 
 /**
  * 没有有效额度窗口时的说明。快照过期仍给出最近一次采样时刻，让人判断数据
- * 停在哪里；从未采样过则说明上游尚未提供，不暗示存在旧值。
+ * 停在哪里；从未采样过则说明尚未收到，不暗示存在旧值。
  */
 export function quotaUnavailableNote(account: { sampledAt: string | null }) {
   return account.sampledAt
-    ? `额度快照已过期，最近一次采样 ${localTime(account.sampledAt, { hour: "2-digit", minute: "2-digit", hour12: false })}`
-    : "上游暂未提供额度";
+    ? `额度数据已过期，最近更新于 ${localTime(account.sampledAt, { hour: "2-digit", minute: "2-digit", hour12: false })}`
+    : "暂未收到额度数据";
 }

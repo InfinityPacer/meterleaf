@@ -65,7 +65,8 @@ demo.accounts = [
     sevenDay: window(100),
   },
   {
-    ...demo.accounts[2]!,
+    // 按接入类型取演示 API 账户；账户顺序会随演示数据增减而变化。
+    ...demo.accounts.find((account) => account.kind === "api")!,
     name: "API",
     kind: "api",
     fiveHour: null,
@@ -179,7 +180,7 @@ try {
             /.*/,
           );
           await expect(proBars.last()).toHaveAttribute("aria-valuenow", "57");
-          await expect(pro).toContainText("等待新采样");
+          await expect(pro).toContainText("等待更新");
           await expect(plus.getByRole("progressbar")).toHaveCount(
             width > 900 ? 2 : 1,
           );
@@ -217,7 +218,7 @@ try {
             ),
           ).toBe(true);
           // 紧凑金额行不给用满的周额度附带预估；Web 桌面行始终保留 7d 预估栏。
-          await expect(plus.locator(".quota-cost-estimate")).toHaveCount(0);
+          await expect(plus.locator(".quota-window-estimate")).toHaveCount(0);
           if (width <= 900)
             await expect(
               plus.locator(
@@ -239,40 +240,37 @@ try {
             }
           }
           if (width <= 900) {
-            const pair = pro.locator(".quota-cost-pair").first();
-            const estimate = pair.locator(".quota-cost-estimate");
+            // 费用行固定为左费用、右 Tokens 与请求数；周额度预估单独成行，不与费用挤在一起。
+            const week = pro.locator('.quota-window[data-window="sevenDay"]');
+            const foot = week.locator(".quota-window-foot");
+            const estimate = week.locator(".quota-window-estimate");
             await expect(estimate).toBeVisible();
-            // 预估与当前金额以分隔点区分；手机首页在金额前另有“预估”小字。
+            await expect(estimate).toContainText("本周预估");
             await expect(estimate).toContainText("$1,481.58");
-            await expect(pair.locator(".quota-cost-separator")).toHaveText("·");
-            const currentBox = (await pair.locator("strong").boundingBox())!;
-            const estimateBox = (await estimate.boundingBox())!;
-            expect(estimateBox.x).toBeGreaterThan(
-              currentBox.x + currentBox.width,
+            const amountBox = (await foot.locator("strong").boundingBox())!;
+            const volumeBox = (await foot
+              .locator(".quota-window-volume")
+              .boundingBox())!;
+            expect(Math.abs(volumeBox.y - amountBox.y)).toBeLessThan(8);
+            expect((await estimate.boundingBox())!.y).toBeGreaterThan(
+              amountBox.y + amountBox.height - 1,
             );
-            expect(Math.abs(estimateBox.y - currentBox.y)).toBeLessThan(4);
-            expect(
-              await pair.evaluate((el) => el.scrollWidth <= el.clientWidth),
-            ).toBe(true);
-            if (mobileHome)
-              await expect(estimate.locator("small")).toHaveText("预估");
-            if (route === "accounts") {
-              const weekBar = pro.locator(".quota-bar").last();
-              const title = (await weekBar
-                .locator(":scope > div:first-child > span:first-child")
-                .boundingBox())!;
-              const status = (await weekBar.locator(".tabular").boundingBox())!;
-              expect(Math.abs(title.y - status.y)).toBeLessThan(3);
-            }
+            const head = week.locator(".quota-window-head");
+            const title = (await head
+              .locator(".quota-window-label")
+              .boundingBox())!;
+            const status = (await head
+              .locator(".quota-window-status")
+              .boundingBox())!;
+            expect(Math.abs(title.y - status.y)).toBeLessThan(3);
           }
-          // 1250px 以下两个窗口换到第二行，预估栏在右上角；更宽时并排在窗口右侧。
+          // 1250px 以下额度窗口换到第二行，预估栏在右上角；更宽时预估栏在窗口右侧。
           if (width > 1250 && route === "accounts") {
             const capacity = (await pro
               .locator(".account-capacity")
               .boundingBox())!;
             const period = (await pro
-              .locator(".account-window")
-              .last()
+              .locator(".account-windows")
               .boundingBox())!;
             // 预估栏在额度窗口右侧，金额完整显示不溢出。
             expect(capacity.x).toBeGreaterThanOrEqual(period.x + period.width);

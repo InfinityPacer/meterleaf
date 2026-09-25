@@ -102,6 +102,65 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
       });
     }
   }
+  // Claude 演示账户单独生成，Fable 与 Opus 混用，用来展示只计 Fable 请求的独立周额度。
+  const claudeModels = ["claude-fable-5-1", "claude-opus-5"] as const;
+  const claudeRates = { "claude-fable-5-1": 10, "claude-opus-5": 5 } as const;
+  for (let h = 0; h < 24 * 14; h++) {
+    const hour = (16 - (h % 24) + 24) % 24;
+    if (hour < 9 || hour > 23) continue;
+    for (let j = 0; j < 3; j++) {
+      const model = claudeModels[(h + j) % 3 === 0 ? 0 : 1];
+      const input = 40 + ((h * 131 + j * 617) % 900);
+      const cacheRead = 20_000 + ((h * 3571 + j * 7919) % 180_000);
+      const cacheWrite = 800 + ((h * 97 + j * 389) % 6000);
+      const output = 300 + ((h * 89 + j * 233) % 4200);
+      const weighted = new Decimal(input)
+        .add(new Decimal(cacheRead).mul(0.1))
+        .add(new Decimal(cacheWrite).mul(1.25))
+        .add(new Decimal(output).mul(5));
+      const usd = weighted.mul(claudeRates[model]).div(1e6).toFixed(6);
+      const charge = (value: string | null): Charge => ({
+        amount: value,
+        basis: value === null ? "unpriced" : "estimated",
+        reason: value === null ? "demo-no-credits" : "demo-rate",
+        assumedStandard: true,
+      });
+      const valuation: Valuation = {
+        version: "demo-2026-09",
+        usdBasis,
+        usd: charge(usd),
+        apiUsd: charge(usd),
+        subscriptionUsd: charge(usd),
+        credits: charge(null),
+      };
+      records.push({
+        id: `demo-claude-${String(h * 3 + j + 1).padStart(5, "0")}`,
+        occurredAt: new Date(end - h * 3600000 - j * 911000).toISOString(),
+        accountId: "claude",
+        model,
+        input,
+        cacheRead,
+        cacheWrite,
+        output,
+        usd,
+        credits: null,
+        tier: "standard",
+        quality: "estimated",
+        priceVersion: "demo-2026-09",
+        valuation,
+        details: {
+          requestedModel: model,
+          sentModel: model,
+          responseModel: model,
+          responseModelMismatch: false,
+          requestedReasoningEffort: efforts[(h + j) % efforts.length]!,
+          reasoningEffort: efforts[(h + j) % efforts.length]!,
+          durationMs: 4200 + ((h * 271 + j * 131) % 60000),
+          firstTokenMs: 600 + ((h * 41 + j * 17) % 2400),
+        },
+      });
+    }
+  }
   const lifetime = (accountId?: string): AccountLifetime =>
     usage(records.filter((row) => !accountId || row.accountId === accountId));
   // 演示额度沿用服务端口径，周期用量从窗口起点累计到采样时刻，7d 预估按用量占百分比外推。
@@ -110,20 +169,21 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
     percent: number,
     resetsAt: string,
     hours: number,
+    modelPrefix?: string,
   ): AccountWindow => {
     const start = Date.parse(resetsAt) - hours * 3600000;
-    const period = usage(
-      records.filter(
-        (row) =>
-          row.accountId === accountId && Date.parse(row.occurredAt) >= start,
-      ),
+    const rows = records.filter(
+      (row) =>
+        row.accountId === accountId &&
+        Date.parse(row.occurredAt) >= start &&
+        (!modelPrefix || row.model.startsWith(modelPrefix)),
     );
-    const credits = records
-      .filter(
-        (row) =>
-          row.accountId === accountId && Date.parse(row.occurredAt) >= start,
-      )
-      .reduce((sum, row) => sum.add(row.credits ?? 0), new Decimal(0));
+    const period = usage(rows);
+    const hasCredits = rows.some((row) => row.credits !== null);
+    const credits = rows.reduce(
+      (sum, row) => sum.add(row.credits ?? 0),
+      new Decimal(0),
+    );
     const project = (value: Decimal.Value) =>
       new Decimal(value).mul(100).div(percent).toFixed(6);
     return {
@@ -132,14 +192,14 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
       sampledAt: asOf,
       state: "active",
       periodUsd: period.usd,
-      periodCredits: credits.toFixed(6),
+      periodCredits: hasCredits ? credits.toFixed(6) : null,
       periodRequests: period.count,
       periodTokens: period.tokens,
       ...(hours === 168
         ? {
             estimate: {
               usd: project(period.usd ?? 0),
-              credits: project(credits),
+              credits: hasCredits ? project(credits) : null,
               deltaPercent: null,
               reason: "eligible" as const,
             },
@@ -174,6 +234,28 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
         fiveHour: window("studio", 12, "2026-09-08T20:10:00+08:00", 5),
         sevenDay: window("studio", 21, "2026-09-14T14:00:00+08:00", 168),
         lifetime: lifetime("studio"),
+      },
+      {
+        id: "claude",
+        name: "Claude Code",
+        plan: "max-5x",
+        platform: "anthropic",
+        kind: "subscription",
+        sampledAt: asOf,
+        // 5h 刚重置、尚未收到新周期数据，用来展示等待状态。
+        fiveHour: {
+          ...window("claude", 88, "2026-09-08T15:20:00+08:00", 5),
+          state: "expired",
+        },
+        sevenDay: window("claude", 36, "2026-09-12T16:00:00+08:00", 168),
+        sevenDayFable: window(
+          "claude",
+          18,
+          "2026-09-12T16:00:00+08:00",
+          168,
+          "claude-fable-",
+        ),
+        lifetime: lifetime("claude"),
       },
       {
         id: "api",

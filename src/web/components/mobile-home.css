@@ -326,120 +326,10 @@
   color: var(--muted);
 }
 
-.mobile-home-quota,
 .mobile-home-account-usage {
   min-width: 0;
   padding-top: 0;
   border: 0;
-}
-
-.mobile-home-quota-list {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-
-.mobile-home-quota-list[data-count="2"]
-  > .mobile-home-quota
-  + .mobile-home-quota {
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-}
-
-.mobile-home-quota-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: baseline;
-  gap: 7px;
-  min-width: 0;
-}
-
-.mobile-home-quota-title {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 7px;
-  min-width: 0;
-}
-
-.mobile-home-quota-label {
-  color: var(--ink);
-  font-size: 13px;
-  line-height: 1.35;
-  font-weight: 600;
-}
-.mobile-home-quota-label::after {
-  content: "·";
-  margin-left: 7px;
-  color: var(--muted);
-  font-weight: 400;
-}
-
-.mobile-home-quota-status {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-  font-weight: 400;
-}
-
-.mobile-home-quota[data-exhausted="true"] .mobile-home-quota-status {
-  color: var(--quota-alert);
-}
-
-.mobile-home-quota-reset {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-  text-align: right;
-}
-
-.mobile-home-progress {
-  height: 6px;
-  margin-top: 9px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--track);
-}
-
-.mobile-home-progress > span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--teal);
-}
-
-.mobile-home-quota[data-exhausted="true"] .mobile-home-progress > span {
-  background: var(--quota-alert);
-}
-
-.mobile-home-quota-foot {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  margin-top: 9px;
-}
-
-.mobile-home-quota-foot strong {
-  font-size: 17px;
-  line-height: 1.25;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-}
-
-.mobile-home-quota-foot span {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
-
-.mobile-home-quota-foot i {
-  font-style: normal;
 }
 
 .mobile-home-account-usage {
@@ -593,10 +483,6 @@
   .mobile-home-account-card {
     border-color: var(--ink);
     box-shadow: none;
-  }
-
-  .mobile-home-progress {
-    outline: 1px solid var(--ink);
   }
 }
 

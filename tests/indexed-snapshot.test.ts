@@ -228,3 +228,41 @@ test("indexed snapshot aggregates child quotas without reading usage and keeps o
     sources: defaultPriceBook.sources,
   });
 });
+
+test("the Fable weekly window reads only Fable usage and still estimates its budget", () => {
+  const scopes: (((model: string) => boolean) | null)[] = [];
+  const reader: QuotaChargeReader = (_start, _end, modelScope) => {
+    scopes.push(modelScope);
+    return { usd: "2", credits: null };
+  };
+  const view = quotaView(
+    [quota("seven-day-fable", 20, { windowMinutes: 10080 })],
+    reader,
+    now,
+  )!;
+  expect(scopes.every((scope) => scope !== null)).toBe(true);
+  expect(scopes[0]!("claude-fable-5-1")).toBe(true);
+  expect(scopes[0]!("claude-fable-5")).toBe(true);
+  expect(scopes[0]!("claude-opus-5")).toBe(false);
+  expect(view.estimate).toMatchObject({ usd: "10", reason: "eligible" });
+
+  quotaView([quota("seven-day", 20)], reader, now);
+  expect(scopes.at(-1)).toBeNull();
+});
+
+test("row-based quota views exclude other models from the Fable window", () => {
+  const priced = (model: string) => {
+    const base = usage();
+    const fact = { ...base.fact, externalId: model, model };
+    return { fact, valuation: valueUsage(fact, defaultPriceBook) };
+  };
+  const rows = [priced("claude-fable-5-1"), priced("claude-opus-5")];
+  const fable = quotaView(
+    [quota("seven-day-fable", 20, { windowMinutes: 10080 })],
+    rows,
+    now,
+  )!;
+  const week = quotaView([quota("seven-day", 20)], rows, now)!;
+  expect(fable.periodRequests).toBe(1);
+  expect(week.periodRequests).toBe(2);
+});

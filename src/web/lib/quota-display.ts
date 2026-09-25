@@ -25,8 +25,8 @@ export function showQuotaEstimate(window: AccountWindow | null, asOf: string) {
 }
 
 export interface VisibleQuotaWindow {
-  key: "fiveHour" | "sevenDay";
-  label: "5h" | "7d";
+  key: "fiveHour" | "sevenDay" | "sevenDayFable";
+  label: "5h" | "7d" | "Fable";
   window: AccountWindow;
   /** 上游报过这个窗口，但当前快照已过期或缺值；只占位，不展示旧用量。 */
   waiting?: boolean;
@@ -67,6 +67,30 @@ export function visibleQuotaWindows(
       week,
     ];
   return windows;
+}
+
+/**
+ * Fable 周额度只计 Fable 请求，排在共享窗口之后。账户整体周额度用尽时所有模型都不可用，
+ * 紧凑视图只保留用尽的周额度；上游未上报 Fable 额度时不显示，不按套餐推断有无。
+ */
+export function withFableQuotaWindow(
+  windows: VisibleQuotaWindow[],
+  account: Pick<LedgerAccount, "sevenDayFable">,
+  asOf: string,
+): VisibleQuotaWindow[] {
+  const window = account.sevenDayFable ?? null;
+  if (
+    !window ||
+    quotaState(window, asOf) !== "active" ||
+    quotaPercent(window, asOf) === null
+  )
+    return windows;
+  const exhaustedWeekOnly =
+    windows.length === 1 &&
+    windows[0]!.key === "sevenDay" &&
+    quotaPercent(windows[0]!.window, asOf) === 100;
+  if (exhaustedWeekOnly) return windows;
+  return [...windows, { key: "sevenDayFable", label: "Fable", window }];
 }
 
 /** 等待新采样的窗口只说明上一周期何时结束，不给出百分比或金额。 */

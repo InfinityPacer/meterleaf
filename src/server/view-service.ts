@@ -155,6 +155,7 @@ function expireCachedQuotas(value: LedgerView, now: number): LedgerView {
       ...account,
       fiveHour: expireWindow(account.fiveHour, now),
       sevenDay: expireWindow(account.sevenDay, now),
+      sevenDayFable: expireWindow(account.sevenDayFable ?? null, now),
     }));
   return {
     ...value,

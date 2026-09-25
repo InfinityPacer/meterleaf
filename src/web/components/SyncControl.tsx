@@ -490,7 +490,7 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
                   if (statusKnown && !running && !requestPending)
                     trigger.mutate();
                 }}
-                title="立即同步上游用量"
+                title="立即从 Sub2API 同步用量"
               >
                 <RefreshCw size={15} aria-hidden="true" />
                 {requestPending

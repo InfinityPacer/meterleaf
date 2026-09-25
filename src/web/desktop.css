@@ -579,10 +579,6 @@
     border: 0;
   }
 
-  .app-shell .account-list-heading {
-    display: none;
-  }
-
   .app-shell .account-list-item,
   .app-shell .account-list-item + .account-list-item {
     margin-bottom: 12px;
@@ -656,26 +652,6 @@
     color: var(--desktop-muted);
   }
 
-  .app-shell .account-row .account-window {
-    width: auto;
-    max-width: none;
-    margin: 0;
-  }
-
-  .app-shell .account-row .quota-period {
-    gap: 11px;
-  }
-
-  .app-shell .account-row .quota-bar > div:first-child {
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 4px 10px;
-    margin-bottom: 8px;
-    color: var(--desktop-ink);
-    font-size: 14px;
-  }
-
-  .app-shell .account-row .quota-bar > div:first-child > span:first-child,
   .app-shell .account-row .account-capacity small,
   .app-shell .account-row .account-cost small {
     position: static;
@@ -687,37 +663,94 @@
     font-size: 13px;
   }
 
-  .app-shell .account-row .quota-bar > div:first-child > span:nth-child(2),
-  .app-shell .account-row .quota-period-reset {
-    color: var(--desktop-muted);
-  }
-
-  .app-shell .account-row .progress-track {
-    height: 6px;
-    border-radius: 999px;
-    background: var(--track);
-  }
-
-  .app-shell .account-row .progress-track > span {
-    border-radius: 999px;
+  .app-shell .account-windows .quota-window-progress > span {
     background: var(--desktop-teal);
   }
 
-  .app-shell .account-row .progress-track > span.high {
+  .app-shell
+    .account-windows
+    .quota-window[data-exhausted="true"]
+    .quota-window-progress
+    > span {
     background: var(--quota-alert);
   }
 
-  .app-shell .account-row .quota-period-usage {
-    gap: 8px 14px;
-  }
-
-  .app-shell .account-row .quota-period-usage strong {
+  .app-shell .account-windows .quota-window-foot strong {
     color: var(--desktop-ink);
     font-size: 18px;
   }
 
-  .app-shell .account-row .quota-period-volume {
-    color: var(--desktop-muted);
+  /*
+   * 桌面账户行里每个额度窗口占一行，5h、7d、Fable 纵向排列：
+   * 左侧窗口名与重置时间，中间进度条，右侧使用比例和费用、Tokens 与请求数。
+   * 列宽固定，同一列在不同账户间对齐；窗口区太窄时退回卡片堆叠。
+   */
+  .app-shell .account-windows {
+    container-type: inline-size;
+  }
+  .app-shell .account-windows.quota-window-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  @container (min-width: 460px) {
+    .app-shell .account-windows.quota-window-list {
+      gap: 16px;
+    }
+    .app-shell .account-windows .quota-window {
+      grid-template-columns: 104px minmax(60px, 1fr) 76px 150px;
+      grid-template-areas:
+        "label bar status amount"
+        "reset bar status volume";
+      /* 两行高度固定，等待更新或缺少重置时间的窗口与其他窗口等高。 */
+      grid-template-rows: minmax(20px, auto) minmax(17px, auto);
+      align-items: center;
+      column-gap: 18px;
+      row-gap: 2px;
+    }
+    .app-shell .account-windows .quota-window-head,
+    .app-shell .account-windows .quota-window-title,
+    .app-shell .account-windows .quota-window-foot {
+      display: contents;
+    }
+    .app-shell .account-windows .quota-window-label {
+      grid-area: label;
+    }
+    .app-shell .account-windows .quota-window-label::after {
+      content: none;
+    }
+    .app-shell .account-windows .quota-window-reset {
+      grid-area: reset;
+      text-align: left;
+      white-space: nowrap;
+    }
+    .app-shell .account-windows .quota-window-progress {
+      grid-area: bar;
+      margin-top: 0;
+    }
+    .app-shell .account-windows .quota-window-status {
+      grid-area: status;
+      text-align: right;
+      white-space: nowrap;
+    }
+    .app-shell .account-windows .quota-window-foot strong {
+      grid-area: amount;
+      justify-self: end;
+      font-size: 16px;
+    }
+    .app-shell .account-windows .quota-window-volume {
+      grid-area: volume;
+      margin-left: 0;
+      text-align: right;
+    }
+    .app-shell
+      .account-windows
+      .quota-window[data-waiting="true"]
+      .quota-window-volume {
+      grid-row: 1 / 3;
+      white-space: normal;
+    }
+    .app-shell .account-windows .quota-window-estimate {
+      display: none;
+    }
   }
 
   .app-shell .account-capacity {
@@ -763,44 +796,15 @@
       minmax(150px, 0.8fr) 44px;
     gap: 24px;
   }
-  .app-shell .account-row .account-window {
+  /* 账户 | 额度窗口 | 7d 预估 | 箭头；窗口区列数由宽度决定，见 styles.css 的 .account-windows。 */
+  .app-shell .account-row[data-has-quota="true"] {
+    grid-template-columns:
+      minmax(220px, 1.05fr) minmax(0, 2.8fr) minmax(150px, 0.8fr)
+      44px;
+    grid-template-areas: "identity windows capacity arrow";
+  }
+  .app-shell .account-windows {
     align-self: center;
-    min-height: 0;
-    padding: 0 8px;
-    border: 0;
-    border-radius: 0;
-    display: flex;
-    align-items: center;
-  }
-  .app-shell .account-row .quota-period {
-    width: 100%;
-  }
-  .app-shell .account-row .quota-bar > div:first-child {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-  }
-  .app-shell .account-row .quota-bar > div:first-child > span:first-child {
-    margin: 0;
-    color: var(--desktop-ink);
-    font-size: 13px;
-    font-weight: 600;
-  }
-  .app-shell
-    .account-row
-    .quota-bar
-    > div:first-child
-    > span:first-child::after {
-    content: "·";
-    margin-left: 7px;
-    color: var(--desktop-muted);
-    font-weight: 400;
-  }
-  .app-shell .account-row .quota-period-reset {
-    margin-left: auto;
-  }
-  .app-shell .account-row .quota-period-usage {
-    margin-top: 10px;
   }
   .app-shell .account-avatar {
     width: 48px;
@@ -1438,6 +1442,12 @@
     padding-inline: 18px;
   }
 
+  .app-shell .account-row[data-has-quota="true"] {
+    grid-template-columns:
+      minmax(150px, 0.9fr) minmax(0, 2.2fr) minmax(110px, 0.7fr)
+      30px;
+  }
+
   .app-shell .account-capacity {
     padding-inline: 13px;
   }
@@ -1494,11 +1504,12 @@
     border-left: 0;
   }
 
-  .app-shell .account-row {
+  .app-shell .account-row,
+  .app-shell .account-row[data-has-quota="true"] {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas:
       "identity capacity"
-      "five seven";
+      "windows windows";
     gap: 20px 18px;
     min-height: 0;
     padding: 20px;
@@ -1511,14 +1522,6 @@
   .app-shell .account-capacity {
     grid-area: capacity;
     min-height: 82px;
-  }
-
-  .app-shell .account-five-hour {
-    grid-area: five;
-  }
-
-  .app-shell .account-seven-day {
-    grid-area: seven;
   }
 
   .app-shell .account-row .row-arrow {
@@ -1547,46 +1550,6 @@
   }
 }
 
-@media (min-width: 1001px) {
-  /* 基础样式在 1250px 以下按两行排列区域，桌面五列网格要显式覆盖，否则两套规则叠加。 */
-  .app-shell .account-row[data-quota-count="2"] {
-    grid-template-areas: "identity five seven capacity arrow";
-  }
-  .app-shell .account-row[data-quota-count="2"] .row-arrow {
-    grid-area: arrow;
-  }
-  .app-shell .account-row[data-quota-count="1"],
-  .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
-    grid-template-columns:
-      minmax(160px, 0.7fr) minmax(0, 1.1fr) minmax(180px, 1fr)
-      32px;
-    grid-template-areas: "identity single capacity arrow";
-  }
-  .app-shell .account-row[data-quota-count="1"] .account-identity {
-    grid-area: identity;
-  }
-  .app-shell .account-row[data-quota-count="1"] .account-window,
-  .app-shell .account-row .account-window-unavailable {
-    grid-area: single;
-  }
-  .app-shell .account-row[data-quota-count="1"] .account-capacity {
-    grid-area: capacity;
-  }
-  .app-shell .account-row[data-quota-count="1"] .row-arrow {
-    grid-area: arrow;
-  }
-}
-@media (min-width: 901px) and (max-width: 1000px) {
-  .app-shell .account-row[data-quota-count="1"],
-  .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
-    grid-template-areas: "identity capacity" "single single";
-  }
-  .app-shell .account-row[data-quota-count="1"] .account-window,
-  .app-shell .account-row .account-window-unavailable {
-    grid-area: single;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) and (min-width: 901px) {
   .app-shell .account-list-item,
   .app-shell .metric,
@@ -1596,23 +1559,31 @@
   }
 }
 
-@media (min-width: 1001px) and (max-width: 1250px) {
-  /* 两个额度窗口在这个宽度放不下完整数值，沿用 1000px 以下的两行排列。 */
-  .app-shell .account-row[data-quota-count="2"] {
+@media (min-width: 1001px) and (max-width: 1360px) {
+  /* 这个宽度放不下账户、多个额度窗口和预估并排，额度窗口换到第二行占满整行。 */
+  .app-shell .account-row[data-has-quota="true"] {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas:
       "identity capacity"
-      "five seven";
+      "windows windows";
     gap: 20px 18px;
   }
-  .app-shell .account-row[data-quota-count="2"] .row-arrow {
+  .app-shell .account-row[data-has-quota="true"] .row-arrow {
     display: none;
   }
+  /* 没有可显示的窗口时，说明文字占满账户右侧，不留预估栏。 */
+  .app-shell .account-row[data-has-quota="true"][data-quota-count="0"] {
+    grid-template-areas: "identity windows";
+  }
   .app-shell
-    .account-list-item:has(> .account-row[data-quota-count="2"])
+    .account-list-item:has(> .account-row[data-has-quota="true"])
     .account-menu-trigger {
     top: 20px;
     transform: none;
+  }
+  /* 右上角留给管理菜单，预估栏向左让出位置。 */
+  .app-shell .account-row[data-has-quota="true"] .account-capacity {
+    margin-right: 48px;
   }
 }
 
@@ -1621,5 +1592,8 @@
   .app-shell .account-menu-trigger {
     top: 20px;
     transform: none;
+  }
+  .app-shell .account-row .account-capacity {
+    margin-right: 48px;
   }
 }

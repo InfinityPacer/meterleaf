@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   AccountTrend,
   MiniTrend,
+  formatMetricValue,
   accountTrendCaption,
   selectAccountTrendPoints,
 } from "../src/web/components/AccountTrend";
@@ -124,4 +125,10 @@ test("AccountTrend does not render another account's cached trend while loading"
 
   expect(html).toContain("读取中…");
   expect(html).not.toContain('data-metric="tokens"');
+});
+
+test("mini trend tooltips abbreviate tokens but keep request counts exact", () => {
+  expect(formatMetricValue(2_312_345_678, "tokens")).toBe("2.31B Tokens");
+  expect(formatMetricValue(16_588, "requests")).toBe("16,588 Requests");
+  expect(formatMetricValue(null, "tokens")).toBe("N/A");
 });

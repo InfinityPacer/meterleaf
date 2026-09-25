@@ -70,7 +70,7 @@ export const ingestAccountSchema = z
 export const ingestQuotaSchema = z
   .object({
     accountExternalId: externalIdSchema,
-    window: z.enum(["five-hour", "seven-day"]),
+    window: z.enum(["five-hour", "seven-day", "seven-day-fable"]),
     percent: z.number().finite().min(0).max(1000).nullable(),
     /** 上游采样时间，不是采集器读取或上传时间。 */
     sampledAt: timestampSchema.nullable(),

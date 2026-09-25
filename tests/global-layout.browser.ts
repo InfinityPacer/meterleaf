@@ -23,24 +23,25 @@ try {
         // 账户页只有列表标题一个二级标题，页面主标题仍在顶栏 h1。
         await expect(page.locator("main h2")).toHaveCount(1);
         await expect(page.locator("main .account-actions-heading h2")).toContainText("账户");
-        const heading = page.locator(".account-list-heading");
-        if (width > 1250) {
-          // 桌面外壳不显示列标题（desktop.css 在 901px 以上隐藏），这里只核对两个额度窗口仍按列对齐。
-          const row = page.locator('.account-row[data-has-quota="true"]').first();
-          if (await row.count()) {
-            const five = await row.locator(".account-five-hour .progress-track").boundingBox();
-            const seven = await row.locator(".account-seven-day .progress-track").boundingBox();
-            expect(five!.y).toBe(seven!.y);
+        if (width > 900) {
+          // 桌面每个额度窗口占一行纵向排列，各账户的进度条左端对齐。
+          const bars = page.locator(".account-row .account-windows .quota-window-progress");
+          const boxes = [];
+          for (const bar of await bars.all()) boxes.push((await bar.boundingBox())!);
+          for (let i = 1; i < boxes.length; i++) expect(Math.abs(boxes[i]!.x - boxes[0]!.x)).toBeLessThan(1);
+          const windows = page.locator('.account-row[data-has-quota="true"]').first().locator(".account-windows > .quota-window");
+          if (await windows.count() >= 2) {
+            const first = (await windows.nth(0).boundingBox())!;
+            const second = (await windows.nth(1).boundingBox())!;
+            expect(second.y).toBeGreaterThanOrEqual(first.y + first.height);
           }
-        } else {
-          await expect(heading).toBeHidden();
         }
-        for (const reset of await page.locator(".account-row .quota-period-reset").all()) {
+        for (const reset of await page.locator(".account-row .quota-window-reset").all()) {
           await expect(reset).toBeVisible();
         }
         if (width <= 650) {
-          const windows = page.locator(".account-row").filter({ has: page.locator(".account-window") }).first().locator(".account-window");
-          if (await windows.count() === 2) {
+          const windows = page.locator(".account-row .account-windows").first().locator(":scope > .quota-window");
+          if (await windows.count() >= 2) {
             const first = await windows.nth(0).boundingBox();
             const second = await windows.nth(1).boundingBox();
             expect(second!.y).toBeGreaterThanOrEqual(first!.y + first!.height);
@@ -51,7 +52,7 @@ try {
       await page.screenshot({ path: `test-results/global-${width}-${tab}.png`, fullPage: true });
     }
   }
-  console.log(JSON.stringify({ tabs: 4, widths: [1440, 1200, 768, 390, 320], uniqueTitle: true, overflow: false, resetsVisible: true, quotaColumnsAligned: true }));
+  console.log(JSON.stringify({ tabs: 4, widths: [1440, 1200, 768, 390, 320], uniqueTitle: true, overflow: false, resetsVisible: true, quotaBarsAligned: true }));
 } finally {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(base);

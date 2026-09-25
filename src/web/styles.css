@@ -738,9 +738,16 @@ h3 {
   width: 10px;
   border-top: 1px dashed var(--teal);
 }
+/*
+ * 视口变窄后 ECharts 要等尺寸监听回调才缩小画布，期间旧宽度不能把页面撑宽：
+ * 手机旋转或切换设备模式时，浏览器会按撑宽的内容缩小页面，之后停在错误的缩放比例上。
+ * 提示框用 richText 并限制在图表内，裁掉溢出不影响它显示。
+ */
 .usage-chart {
   height: 220px;
   width: 100%;
+  min-width: 0;
+  overflow: hidden;
   margin-top: 2px;
 }
 .model-panel {
@@ -859,11 +866,6 @@ h3 {
   width: 2px;
   background: var(--muted);
   border-radius: 50%;
-}
-.account-window {
-  width: 24%;
-  max-width: 215px;
-  margin-right: 10px;
 }
 .quota-bar > div:first-child {
   display: flex;
@@ -1434,9 +1436,6 @@ footer > span {
   .account-reset {
     display: none;
   }
-  .account-window {
-    width: 30%;
-  }
   .chart-toolbar .chart-legend-reset {
     display: none;
   }
@@ -1627,13 +1626,6 @@ footer > span {
   .account-avatar {
     width: 31px;
     height: 31px;
-  }
-  .account-window {
-    order: 5;
-    width: 100%;
-    max-width: none;
-    padding-left: 40px;
-    margin-right: 0;
   }
   .account-cost {
     margin-left: auto;
@@ -1902,23 +1894,8 @@ button[data-size="icon-sm"],
 .overview-quotas {
   margin-bottom: 32px;
 }
-.quota-period {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
 .account-window-unavailable {
   color: var(--muted);
-}
-@media (max-width: 1250px) {
-  .account-row[data-quota-count="1"],
-  .account-row[data-has-quota="true"][data-quota-count="0"] {
-    grid-template-areas: "identity capacity" "single single";
-  }
-  .account-row[data-quota-count="1"] .account-window,
-  .account-row .account-window-unavailable {
-    grid-area: single;
-  }
 }
 .repository-link {
   display: inline-flex;
@@ -1928,74 +1905,6 @@ button[data-size="icon-sm"],
   overflow-wrap: anywhere;
   text-decoration: underline;
   text-underline-offset: 3px;
-}
-.quota-period-usage {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 12px;
-  justify-content: space-between;
-  font-size: 14px;
-  color: var(--muted);
-}
-.quota-period-usage strong {
-  color: var(--ink);
-  font-size: 16px;
-  font-variant-numeric: tabular-nums;
-}
-.quota-period-volume {
-  display: inline-flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
-}
-.quota-period-volume > span {
-  white-space: nowrap;
-}
-.quota-cost-pair {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.quota-cost-pair strong {
-  color: var(--ink);
-}
-.quota-cost-pair .quota-cost-separator {
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 400;
-}
-.quota-cost-pair .quota-cost-estimate {
-  color: var(--ink);
-  font-size: 15px;
-  font-weight: 500;
-  font-style: normal;
-}
-.quota-cost-pair .quota-cost-estimate small {
-  margin-right: 4px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 400;
-}
-[data-with-estimate="true"] > .quota-cost-pair,
-[data-with-estimate="true"] > .quota-cost-volume {
-  flex-basis: 100%;
-}
-[data-with-estimate="true"] > .quota-cost-volume {
-  text-align: right;
-}
-.quota-period-reset {
-  color: var(--muted);
-  font-size: 13px;
-}
-.quota-period .quota-bar > div:first-child {
-  flex-wrap: wrap;
-  gap: 6px 8px;
 }
 .period-heading {
   font-size: 18px;
@@ -2052,7 +1961,6 @@ button[data-size="icon-sm"],
   scrollbar-gutter: stable;
   padding-inline: 4px;
 }
-.account-list-heading,
 .account-row {
   display: grid;
   grid-template-columns:
@@ -2060,15 +1968,35 @@ button[data-size="icon-sm"],
     minmax(130px, 0.8fr) 16px;
   column-gap: 24px;
 }
-.account-list-heading {
-  padding: 12px 12px 16px;
-  border-bottom: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 14px;
+/*
+ * 有额度的账户：账户 | 额度窗口 | 7d 预估 | 箭头。窗口区按可用宽度自动决定并排几个，
+ * 放不下时换到下一行；不按窗口个数写死列，新增按模型计量的额度也不需要改布局。
+ */
+.account-row[data-has-quota="true"] {
+  grid-template-columns:
+    minmax(170px, 1.1fr) minmax(0, 2.6fr) minmax(130px, 0.8fr)
+    16px;
+  grid-template-areas: "identity windows capacity arrow";
 }
-.account-list-heading > :nth-child(4),
-.account-list-heading > :nth-child(5) {
-  text-align: right;
+.account-row[data-has-quota="true"] .account-identity {
+  grid-area: identity;
+}
+.account-row[data-has-quota="true"] .account-capacity {
+  grid-area: capacity;
+}
+.account-row[data-has-quota="true"] .row-arrow {
+  grid-area: arrow;
+}
+.account-windows {
+  grid-area: windows;
+}
+.account-windows.quota-window-list {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 16px 28px;
+}
+.account-windows.quota-window-list > .quota-window + .quota-window {
+  padding-top: 0;
+  border-top: 0;
 }
 .account-row {
   padding: 24px 12px;
@@ -2090,14 +2018,9 @@ button[data-size="icon-sm"],
 .account-row .account-name small {
   flex-wrap: wrap;
 }
-.account-row .account-name,
-.account-row .account-window {
+.account-row .account-name {
   width: auto;
   min-width: 0;
-}
-.account-row .account-window {
-  max-width: none;
-  margin-right: 0;
 }
 .account-row .account-reset {
   display: flex;
@@ -2106,13 +2029,6 @@ button[data-size="icon-sm"],
   margin-top: 10px;
   white-space: normal;
   font-size: 13px;
-}
-.account-row .quota-bar > div:first-child > span:first-child {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
 }
 .account-row .account-cost,
 .account-capacity {
@@ -2216,6 +2132,9 @@ button[data-size="icon-sm"],
   color: var(--muted);
   font-size: 13px;
   font-weight: 500;
+  /* 全局按钮样式为 flex，text-align 不生效；两段等宽时要用 justify-content 让短标签居中。 */
+  justify-content: center;
+  align-items: center;
 }
 .overview-tabs button[aria-current="page"] {
   background: var(--elevated);
@@ -2457,12 +2376,10 @@ button[data-size="icon-sm"],
   }
 }
 @media (max-width: 1250px) {
-  .account-list-heading {
-    display: none;
-  }
-  .account-row {
+  .account-row,
+  .account-row[data-has-quota="true"] {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-areas: "identity capacity" "five seven";
+    grid-template-areas: "identity capacity" "windows windows";
     gap: 22px 24px;
   }
   .account-identity {
@@ -2471,23 +2388,12 @@ button[data-size="icon-sm"],
   .account-row .account-name {
     min-width: 0;
   }
-  .account-row .account-window {
-    order: 0;
-    padding: 0;
-  }
-  .account-five-hour {
-    grid-area: five;
-  }
-  .account-seven-day {
-    grid-area: seven;
-  }
   .account-row .account-cost {
     grid-area: cost;
   }
   .account-capacity {
     grid-area: capacity;
   }
-  .account-row .quota-bar > div:first-child > span:first-child,
   .account-row .account-cost small,
   .account-capacity small {
     position: static;
@@ -2511,9 +2417,10 @@ button[data-size="icon-sm"],
   .timezone-label {
     font-size: 12px;
   }
-  .account-row {
+  .account-row,
+  .account-row[data-has-quota="true"] {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-areas: "identity identity" "five five" "seven seven" "capacity capacity";
+    grid-template-areas: "identity identity" "windows windows" "capacity capacity";
     gap: 20px;
     padding: 24px 0;
   }

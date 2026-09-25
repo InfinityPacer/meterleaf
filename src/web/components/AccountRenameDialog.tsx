@@ -58,7 +58,7 @@ export function AccountRenameDialog({
               onChange={(event) => setValue(event.target.value)}
             />
             <Dialog.Description className="account-rename-hint">
-              只在 Meterleaf 中显示，不影响上游账户。留空则使用原名「
+              只在 Meterleaf 中显示，不会改动原账户名。留空则使用原名「
               {target?.upstreamName}」。
             </Dialog.Description>
             {error && <p role="alert">{error}</p>}

@@ -257,6 +257,18 @@ test("Claude valuation prices 1-hour cache writes separately and never guesses a
   ).toBe(String(4 + 0.2 + 20));
 });
 
+test("Opus 4.8 uses its own standard and fast-mode rates", () => {
+  // Opus 4.8 官方价与 Opus 5 相同：标准档 5 / 6.25 / 10 / 0.5 / 25，快速模式 10 / 50 再叠加缓存倍率。
+  const opus48 = { ...fact({}), model: "claude-opus-4-8" };
+  expect(valueUsage(opus48, defaultPriceBook, "api").apiUsd.amount).toBe(
+    String(5 + 0.5 + 6.25 + 2 * 10 + 25),
+  );
+  const fast = { ...fact({}, "fast"), model: "claude-opus-4-8" };
+  expect(valueUsage(fast, defaultPriceBook, "api").apiUsd.amount).toBe(
+    String(10 + 1 + 12.5 + 2 * 20 + 50),
+  );
+});
+
 test("models without a 1-hour rate stay unpriced instead of using the 5-minute price", () => {
   const openai = {
     ...fact({ cacheWrite: 0, cacheWrite5m: null, cacheWrite1h: 5 }),
@@ -265,7 +277,7 @@ test("models without a 1-hour rate stay unpriced instead of using the 5-minute p
   expect(valueUsage(openai, defaultPriceBook, "api").apiUsd.reason).toBe(
     "unsupported-rate-bucket",
   );
-  const unknownModel = { ...fact({}), model: "claude-opus-4-8" };
+  const unknownModel = { ...fact({}), model: "claude-opus-4-7" };
   expect(valueUsage(unknownModel, defaultPriceBook, "api").apiUsd.reason).toBe(
     "missing-rate",
   );

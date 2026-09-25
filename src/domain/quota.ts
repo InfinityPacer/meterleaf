@@ -12,10 +12,24 @@ export interface CollectedQuota {
   collectedAt: string;
 }
 
+/** modelScope 非空时只汇总满足条件的模型；读取器必须遵守，否则按模型计量的窗口会混入其他请求。 */
 export type QuotaChargeReader = (
   startInclusive: string,
   endInclusive: string,
+  modelScope: ((model: string) => boolean) | null,
 ) => { usd: string | null; credits: string | null; count?: number; tokens?: number | null };
+
+/**
+ * 按模型单独计量的额度窗口只累计对应模型的请求；返回 null 表示窗口覆盖账户全部请求。
+ * Fable 周额度与账户整体周额度分开消耗，混入其他模型会高估本期费用和推算额度。
+ */
+export function quotaModelScope(
+  window: QuotaFact["window"],
+): ((model: string) => boolean) | null {
+  if (window === "seven-day-fable")
+    return (model) => model.startsWith("claude-fable-");
+  return null;
+}
 
 /** 到期等待新快照时仅展示已重置状态，旧百分比不能带入下一周期。 */
 export interface QuotaView {
@@ -57,12 +71,16 @@ function sumCharges(rows: readonly PricedUsage[], unit: "usd" | "credits") {
 }
 
 function rowsChargeReader(rows: readonly PricedUsage[]): QuotaChargeReader {
-  return (startInclusive, endInclusive) => {
+  return (startInclusive, endInclusive, modelScope) => {
     const start = Date.parse(startInclusive);
     const end = Date.parse(endInclusive);
     const selected = rows.filter((row) => {
       const occurredAt = Date.parse(row.fact.occurredAt);
-      return occurredAt >= start && occurredAt <= end;
+      return (
+        occurredAt >= start &&
+        occurredAt <= end &&
+        (!modelScope || modelScope(row.fact.model))
+      );
     });
     return {
       usd: sumCharges(selected, "usd"),
@@ -109,10 +127,13 @@ export function quotaView(
     ? new Date(reset - fact.windowMinutes! * 60_000).toISOString()
     : null;
   const start = startsAt ? Date.parse(startsAt) : NaN;
-  const readCharges =
+  const modelScope = quotaModelScope(fact.window);
+  const readSource =
     typeof rowsOrSumReader === "function"
       ? rowsOrSumReader
       : rowsChargeReader(rowsOrSumReader);
+  const readCharges = (startInclusive: string, endInclusive: string) =>
+    readSource(startInclusive, endInclusive, modelScope);
   const periodCharges =
     known && !expired
       ? start <= time
@@ -150,7 +171,7 @@ export function quotaView(
     expired ||
     fact.percent === null ||
     fact.percent <= 0 ||
-    fact.window !== "seven-day"
+    fact.window === "five-hour"
   )
     return result;
   // 单点按本周期累计消费外推；分子截止到百分比的采样时刻，不能混入采样后的费用。

@@ -17,16 +17,12 @@
   .topbar-actions {
     margin-left: auto;
   }
+  /* 只有两个短标签，保持内容宽度的胶囊；撑满整行会让标签在半宽色块里显得偏向一侧。 */
   .overview-tabs {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    width: 100%;
     margin-bottom: 16px;
-    border-radius: 12px;
   }
   .overview-tabs button {
     min-height: 40px;
-    border-radius: 9px;
   }
   .account-lifetime {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -45,22 +41,8 @@
     width: 100%;
   }
   :root[data-mobile-layout="sidebar"] .account-row[data-has-quota="true"] {
-    grid-template-areas: "identity identity" "five five" "seven seven";
-  }
-  :root[data-mobile-layout="sidebar"] .account-row[data-quota-count="1"],
-  :root[data-mobile-layout="sidebar"]
-    .account-row[data-has-quota="true"][data-quota-count="0"] {
-    grid-template-areas: "identity identity" "single single";
-  }
-  .account-row .quota-bar > div:first-child > span:first-child {
-    flex-basis: auto;
-    font-weight: 600;
-  }
-  .account-row .quota-bar > div:first-child > span:first-child::after {
-    content: "·";
-    margin-left: 7px;
-    color: var(--muted);
-    font-weight: 400;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "identity" "windows";
   }
 }
 
@@ -262,7 +244,7 @@
       position: relative;
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto 16px;
-      grid-template-areas: "identity status arrow" "five five five" "seven seven seven";
+      grid-template-areas: "identity status arrow" "windows windows windows";
       gap: 16px 8px;
       padding: 18px;
       background: var(--surface);
@@ -321,25 +303,16 @@
       align-self: center;
       margin: 0;
     }
-    .account-row .account-window {
-      border: 0;
-      padding: 0;
+    /* 手机端额度窗口纵向堆叠，窗口间用分隔线区分，数量变化不需要额外布局。 */
+    .account-row[data-has-quota="true"] {
+      grid-template-columns: minmax(0, 1fr) auto 16px;
+      grid-template-areas: "identity status arrow" "windows windows windows";
     }
-    .account-row .account-five-hour {
-      grid-area: five;
+    .account-windows.quota-window-list {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 14px;
     }
-    .account-row .account-seven-day {
-      grid-area: seven;
-    }
-    .account-row[data-quota-count="1"],
-    .account-row[data-has-quota="true"][data-quota-count="0"] {
-      grid-template-areas: "identity status arrow" "single single single";
-    }
-    .account-row[data-quota-count="1"] .account-window,
-    .account-row .account-window-unavailable {
-      grid-area: single;
-    }
-    .account-row[data-quota-count="2"] .account-seven-day {
+    .account-windows.quota-window-list > .quota-window + .quota-window {
       padding-top: 14px;
       border-top: 1px solid var(--line);
     }
@@ -351,46 +324,9 @@
       width: 24px;
       height: 24px;
     }
-    .account-row .quota-period {
-      gap: 9px;
-    }
-    .account-row .quota-bar > div:first-child {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 3px 8px;
-      font-size: 13px;
-      margin-bottom: 7px;
-    }
-    .account-row .quota-bar > div:first-child > span:first-child {
-      flex-basis: auto;
-    }
-    .account-row .quota-bar .tabular {
-      font-size: 13px;
-      color: var(--muted);
-      font-weight: 400;
-    }
-    .quota-period-reset {
-      margin-left: auto;
-      font-size: 12px;
-    }
     .progress-track {
       height: 6px;
       border-radius: 4px;
-    }
-    .quota-period-usage {
-      flex-direction: row;
-      align-items: baseline;
-      font-size: 12px;
-      gap: 4px 8px;
-    }
-    .quota-period-usage strong {
-      font-size: 18px;
-      font-weight: 600;
-    }
-    .quota-period-volume {
-      margin-left: auto;
-      justify-content: flex-end;
-      font-size: 12px;
     }
     .account-row[data-has-quota="false"] {
       grid-template-areas: "identity status arrow" "empty empty empty";

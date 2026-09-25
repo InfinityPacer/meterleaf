@@ -393,12 +393,12 @@ try {
       );
     }),
   ).toBe(true);
-  // 无额度账户在总览中展示所选时段用量，而不是额度窗口。
+  // 无额度账户在总览中展示累计用量，而不是额度窗口。
   const overviewDevelopment = overviewAccounts.getByRole("button", {
     name: /^Development API 接入/,
   });
-  await expect(overviewDevelopment).toContainText("时段 Tokens");
-  await expect(overviewDevelopment).toContainText("时段请求");
+  await expect(overviewDevelopment).toContainText("累计 Tokens");
+  await expect(overviewDevelopment).toContainText("累计请求");
   await openAboutPage(page);
   await expect(page).toHaveURL(`${baseUrl}#settings`);
   await expect(page.locator(".about-page")).toBeVisible();
@@ -617,7 +617,7 @@ try {
     "GPT 5.6 Sol",
   );
   await expect(page.locator("tbody tr")).toHaveCount(0);
-  await expect(page.locator(".metric").nth(2)).not.toContainText("900");
+  await expect(page.locator(".metric").nth(2)).not.toContainText("1,215");
   const requestsBeforeUnitSwitch = mainLedgerRequests.length;
   await page.getByRole("button", { name: "Tokens", exact: true }).click();
   await expect(
@@ -651,7 +651,7 @@ try {
     page.getByRole("button", { name: "第 2 页", exact: true }),
   ).toHaveAttribute("aria-current", "page");
   await expect(
-    page.getByRole("button", { name: "第 75 页", exact: true }),
+    page.getByRole("button", { name: "第 102 页", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "费用", exact: true }).click();
   await expect(
@@ -700,7 +700,7 @@ try {
   );
   await page.getByRole("button", { name: /^Personal Pro/ }).click();
   await expect(
-    page.getByRole("dialog").getByText("N/A", { exact: true }).first(),
+    page.getByRole("dialog").getByText("7d 预估费用", { exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "查看账户请求" }).click();
   await expect(page.getByRole("combobox", { name: "账户筛选" })).toContainText(
@@ -750,10 +750,10 @@ try {
     .getByRole("group", { name: "汇总维度", exact: true })
     .getByRole("button", { name: "模型", exact: true })
     .click();
-  await expect(page.locator(".report-section tbody tr")).toHaveCount(4);
+  await expect(page.locator(".report-section tbody tr")).toHaveCount(6);
   await expect(page.getByRole("button", { name: "导出 CSV" })).toHaveCount(0);
   await page.getByRole("button", { name: "账户", exact: true }).click();
-  await expect(page.locator(".report-section tbody tr")).toHaveCount(3);
+  await expect(page.locator(".report-section tbody tr")).toHaveCount(4);
   await page.getByRole("button", { name: "小时", exact: true }).click();
   await expect(page.locator(".report-section tbody tr")).toHaveCount(12);
   await page.getByRole("button", { name: "下一页" }).click();
@@ -785,7 +785,7 @@ try {
   const quotaWindows = quotaPreview.locator(
     '.account-row[data-has-quota="true"]',
   );
-  await expect(quotaWindows).toHaveCount(2);
+  await expect(quotaWindows).toHaveCount(3);
   const quotasBeforeDate = await quotaWindows.allTextContents();
   const periodAccount = overviewDevelopment;
   const periodBeforeDate = await periodAccount.textContent();
@@ -938,10 +938,10 @@ try {
   await page.getByRole("button", { name: "关闭日期选择" }).click();
   await page.getByRole("button", { name: "累计总览", exact: true }).click();
   await expect(page).toHaveURL(`${baseUrl}#overview`);
-  // 额度行在窄屏改用紧凑布局；在记录基准的同一宽度下比较，只检验日期筛选的影响。
+  // 额度行在窄屏改用紧凑布局；在记录基准的同一宽度下比较。额度与无额度账户的累计用量都不随日期筛选变化。
   await page.setViewportSize({ width: 1440, height: 1000 });
   await expect(quotaWindows).toHaveText(quotasBeforeDate);
-  await expect(periodAccount).not.toHaveText(periodBeforeDate!);
+  await expect(periodAccount).toHaveText(periodBeforeDate!);
   await expect(lifetime).toHaveText(lifetimeBeforeDate!);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "时间段用量", exact: true }).click();
@@ -968,7 +968,7 @@ try {
     String(customRows.length),
   );
   await page.getByRole("radio", { name: "近 7 天", exact: true }).click();
-  await expect(page.locator(".metric").nth(2)).toContainText("900");
+  await expect(page.locator(".metric").nth(2)).toContainText("1,215");
   await page.setViewportSize({ width: 1440, height: 1000 });
 
   await page.unroute("**/api/view**");

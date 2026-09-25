@@ -9,7 +9,7 @@
 采集器只以只读方式打开两处文件。
 
 - `~/.claude/projects` 下的会话记录，从中读取每次请求的模型与 Token 用量。
-- `~/.claude.json`，从中读取登录账户的 UUID、组织类型、套餐档位，以及 Claude Code 缓存的最近一次额度数据。
+- `~/.claude.json`，从中读取登录账户的 UUID、组织类型、套餐档位，以及 Claude Code 缓存的最近一次额度数据，包括 5 小时、7 天和 Fable 独立周额度。
 
 它不会在 Claude Code 的目录里写入、改名、加锁或改权限，不改设置、hooks 或状态栏，不读取 OAuth 令牌、钥匙串或凭据文件，也不调用任何 Anthropic 接口。上传内容只有计量数字、模型、时间和账户标识，不包含对话、工具输出、文件路径、工作目录、邮箱或显示名。
 
@@ -74,6 +74,8 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
    后台任务随 Meterleaf.app 注册，应用需要留在原位置。如果设置了 `METERLEAF_COLLECTOR_HOME`、`CLAUDE_CONFIG_DIR`、`METERLEAF_CLAUDE_JSON` 或 `--claude-json`，这些路径只能通过环境变量传给后台任务，命令会改为在 `~/Library/LaunchAgents` 安装普通的后台任务，登录项中显示为可执行文件名。
 
 ## 升级
+
+先升级 Meterleaf 服务端，再升级采集器。新版采集器可能推送旧服务端不认识的额度类型（例如 Fable 周额度），旧服务端会拒收整批数据；数据留在采集器的待发送队列里，服务端升级后自动补推，不会丢失。
 
 重新构建后，用新的 `dist/Meterleaf.app` 替换「应用程序」中的旧版本，再执行一次 `meterleaf-collector install-launchd`。读取进度、账户归属和写入密钥都在数据目录中，替换应用不会丢失。
 
