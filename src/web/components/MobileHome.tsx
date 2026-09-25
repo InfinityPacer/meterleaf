@@ -10,15 +10,12 @@ import {
 import {
   amount,
   compact,
-  continuousPoints,
   numericAmount,
   quotaUnavailableNote,
 } from "../lib/report";
 import "./mobile-home.css";
-import { MiniTrend } from "./AccountTrend";
 import { QuotaWindow } from "./QuotaWindow";
-import { ChartStyleControl } from "./ChartStyleControl";
-import type { ChartStyle } from "./UsageChart";
+import { CompositionBar, type UsageSummaryData } from "./UsageSummary";
 
 const TIME_ZONE = "Asia/Shanghai";
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -34,30 +31,20 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   month: "numeric",
   day: "numeric",
 });
-const clockFormatter = new Intl.DateTimeFormat("zh-CN", {
-  timeZone: TIME_ZONE,
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
-const dayKeyFormatter = new Intl.DateTimeFormat("en-CA", {
-  timeZone: TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
 
-/** 首页累计、独立额度窗口与固定日趋势的展示契约。 */
+/** 首页所选范围的摘要与独立额度窗口；趋势和模型分布由总览在账户之后展示。 */
 export interface MobileHomeProps {
   snapshot: LedgerView;
   accounts: LedgerAccount[];
   asOf: string;
+  /** 尚未取得所选范围时为 null，显示占位而不是零。 */
+  summary: UsageSummaryData | null;
+  rangeLabel: string;
+  /** 所选范围仍在读取，摘要暂时是上一次的结果。 */
+  summaryUpdating?: boolean;
   onAccount: (account: LedgerAccount) => void;
   onRequests: (account: LedgerAccount) => void;
   onAllAccounts: () => void;
-  trendPoints?: LedgerView["view"]["points"];
-  chartStyle?: "line" | "area" | "bar";
-  onChartStyleChange?: (style: ChartStyle) => void;
 }
 
 function validDate(value: string | number | null | undefined) {
@@ -66,23 +53,14 @@ function validDate(value: string | number | null | undefined) {
   return Number.isFinite(date.getTime()) ? date : null;
 }
 
+function formatDate(value: string) {
+  const date = validDate(value);
+  return date ? dateFormatter.format(date) : "未知";
+}
+
 function formatAsOf(value: string) {
   const date = validDate(value);
   return date ? dateTimeFormatter.format(date) : "未知";
-}
-
-function sameShanghaiDay(left: Date, right: Date) {
-  return dayKeyFormatter.format(left) === dayKeyFormatter.format(right);
-}
-
-function formatTrendLabel(value: number, asOf: string, isLast: boolean) {
-  const point = validDate(value);
-  const sample = validDate(asOf);
-  if (!point) return "未知";
-  if (sample && sameShanghaiDay(point, sample)) {
-    return isLast ? "今天" : clockFormatter.format(point);
-  }
-  return dateFormatter.format(point);
 }
 
 function formatUsd(value: string | null | undefined) {
@@ -144,137 +122,68 @@ function UsageSummary({
   );
 }
 
-function TrendStrip({
-  points: reportedPoints,
-  asOf,
-  chartStyle,
-  onChartStyleChange,
+function RangeSummary({
+  summary,
+  rangeLabel,
+  updating,
 }: {
-  points: LedgerView["view"]["points"];
-  asOf: string;
-  chartStyle: "line" | "area" | "bar";
-  onChartStyleChange?: (style: ChartStyle) => void;
+  summary: UsageSummaryData | null;
+  rangeLabel: string;
+  updating: boolean;
 }) {
-  const points = continuousPoints(reportedPoints, "day");
-  const axisIndexes =
-    points.length <= 3
-      ? points.map((_, index) => index)
-      : [0, Math.floor((points.length - 1) / 2), points.length - 1];
-  const axisLabels = [...new Set(axisIndexes)].map((index) => ({
-    index,
-    label: formatTrendLabel(
-      points[index]!.at,
-      asOf,
-      index === points.length - 1,
-    ),
-  }));
-
-  return (
-    <div
-      className="mobile-home-trend"
-      role="group"
-      aria-label="近 30 天 Tokens 趋势"
-    >
-      <div className="mobile-home-trend-heading">
-        <div>
-          <strong>Tokens 趋势</strong>
-          <span>近 30 天 · 按天汇总</span>
-        </div>
-        {onChartStyleChange && (
-          <ChartStyleControl
-            value={chartStyle}
-            onChange={onChartStyleChange}
-            allowPie={false}
-          />
-        )}
-      </div>
-      {points.length ? (
-        <>
-          <MiniTrend
-            points={points}
-            metric="tokens"
-            variant={chartStyle}
-            label="近30天 Tokens"
-            hideCaption
-            showScale
-          />
-          <div className="mobile-home-trend-axis" aria-hidden="true">
-            {axisLabels.map(({ index, label }) => (
-              <span key={`${index}-${label}`}>{label}</span>
-            ))}
-          </div>
-          <ol
-            className="mobile-home-visually-hidden"
-            aria-label="Tokens 趋势数据"
-          >
-            {points.map((point, index) => (
-              <li key={`${point.at}-${index}`}>
-                {formatTrendLabel(point.at, asOf, index === points.length - 1)}
-                ：
-                {point.value === null || !Number.isFinite(point.value)
-                  ? "N/A"
-                  : `${compact(point.value)} Tokens`}
-                ，{point.count.toLocaleString("en-US")} 次请求
-              </li>
-            ))}
-          </ol>
-        </>
-      ) : (
-        <p className="mobile-home-trend-empty">暂无真实趋势数据</p>
-      )}
-    </div>
-  );
-}
-
-function LifetimeSummary({
-  snapshot,
-  trendPoints,
-  chartStyle,
-  onChartStyleChange,
-}: {
-  snapshot: LedgerView;
-  trendPoints: LedgerView["view"]["points"];
-  chartStyle: "line" | "area" | "bar";
-  onChartStyleChange?: (style: ChartStyle) => void;
-}) {
-  const lifetime = snapshot.lifetimeTotals;
-  const source = lifetime
-    ? lifetime.from
-      ? `${formatAsOf(lifetime.from)} 起`
-      : "全历史快照"
-    : "暂无累计快照";
+  const since = summary?.since ? `${formatDate(summary.since)} 起` : null;
+  const change = summary?.change?.usd ?? null;
+  const note = summary?.change
+    ? change === null
+      ? "暂无对比"
+      : `${change > 0 ? "↑" : "↓"} ${Math.abs(change).toFixed(1)}% 环比`
+    : [
+        since,
+        summary?.dailyUsd != null
+          ? `日均 ${amount(summary.dailyUsd, "usd")}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
 
   return (
     <section
       className="mobile-home-summary"
       aria-labelledby="mobile-home-summary-title"
+      aria-busy={updating}
     >
       <div className="mobile-home-section-heading mobile-home-visually-hidden">
         <div>
-          <h2 id="mobile-home-summary-title">累计</h2>
-          <span>{source}</span>
+          <h2 id="mobile-home-summary-title">{rangeLabel}用量</h2>
+          <span>{note}</span>
         </div>
       </div>
       <div className="mobile-home-summary-hero">
-        <small>历史费用 · {source}</small>
-        <strong>{formatUsd(lifetime?.usd)}</strong>
+        <small>
+          {rangeLabel}费用{summary ? ` · ${summary.usdNote}` : ""}
+        </small>
+        <strong>{summary ? amount(summary.usd, "usd") : "…"}</strong>
+        {note && <small className="mobile-home-summary-note">{note}</small>}
       </div>
-      <div className="mobile-home-summary-metrics">
+      <div className="mobile-home-summary-metrics" data-count="3">
         <span>
           <small>Tokens</small>
-          <strong>{formatTokens(lifetime?.tokens.total)}</strong>
+          <strong>{formatTokens(summary?.tokens)}</strong>
         </span>
         <span>
           <small>请求</small>
-          <strong>{formatRequests(lifetime?.count)}</strong>
+          <strong>{formatRequests(summary?.requests)}</strong>
+        </span>
+        <span>
+          <small>缓存命中率</small>
+          <strong>
+            {summary?.cacheRate == null
+              ? "N/A"
+              : `${summary.cacheRate.toFixed(1)}%`}
+          </strong>
         </span>
       </div>
-      <TrendStrip
-        points={trendPoints}
-        asOf={snapshot.asOf}
-        chartStyle={chartStyle}
-        onChartStyleChange={onChartStyleChange}
-      />
+      {summary && <CompositionBar composition={summary.composition} />}
     </section>
   );
 }
@@ -286,12 +195,10 @@ export function MobileHome({
   onAccount,
   onRequests,
   onAllAccounts,
-  trendPoints,
-  chartStyle = "line",
-  onChartStyleChange,
+  summary,
+  rangeLabel,
+  summaryUpdating = false,
 }: MobileHomeProps) {
-  const points = trendPoints ?? snapshot.view.units.tokens.points;
-
   return (
     <div className="mobile-home">
       <header className="mobile-home-header">
@@ -302,11 +209,10 @@ export function MobileHome({
         </div>
       </header>
 
-      <LifetimeSummary
-        snapshot={snapshot}
-        trendPoints={points}
-        chartStyle={chartStyle}
-        onChartStyleChange={onChartStyleChange}
+      <RangeSummary
+        summary={summary}
+        rangeLabel={rangeLabel}
+        updating={summaryUpdating}
       />
 
       <section

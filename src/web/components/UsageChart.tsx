@@ -11,7 +11,7 @@ import type { EChartsCoreOption } from "echarts/core";
 import type { Granularity, ReportUnit } from "../../shared/report";
 import {
   amount,
-  compact,
+  compactAxis,
   continuousPoints,
   localTime,
   modelColor,
@@ -116,7 +116,7 @@ export function UsageChart({
     const option: EChartsCoreOption = {
       animation: false,
       textStyle: { fontFamily: colors.fontFamily },
-      grid: { left: 6, right: 12, top: 32, bottom: 8, containLabel: true },
+      grid: { left: 6, right: 20, top: 32, bottom: 8, containLabel: true },
       tooltip: {
         trigger: "axis",
         confine: true,
@@ -151,7 +151,7 @@ export function UsageChart({
           color: colors.muted,
           fontSize: 12,
           formatter: (v: number) =>
-            unit === "usd" ? `$${compact(v)}` : compact(v),
+            unit === "usd" ? `$${compactAxis(v)}` : compactAxis(v),
         },
         splitLine: {
           lineStyle: { color: colors.lineSoft },
