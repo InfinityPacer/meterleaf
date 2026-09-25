@@ -92,7 +92,7 @@
   align-items: baseline;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: 4px 8px;
   margin-top: 9px;
 }
 
@@ -122,25 +122,31 @@
   white-space: normal;
 }
 
-.quota-window-estimate {
-  display: flex;
+.quota-window-amount {
+  display: inline-flex;
   align-items: baseline;
   gap: 6px;
-  margin-top: 4px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* 整周预估以“· $X”跟在已用费用后，标签只放在 title 与读屏文字里，给手机宽度留出一行。 */
+.quota-window-estimate {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.25;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
-.quota-window-estimate small {
+.quota-window-estimate i {
+  margin-right: 2px;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.quota-window-estimate strong {
-  color: var(--ink);
-  font-size: 14px;
-  line-height: 1.35;
-  font-weight: 500;
+  font-style: normal;
+  font-weight: 400;
 }
 
 @media (prefers-contrast: more) {

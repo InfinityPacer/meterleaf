@@ -49,7 +49,7 @@ function formatRequests(value: number | null | undefined) {
 }
 
 /**
- * 首页卡片、账户列表共用的额度窗口：标题行、进度条、费用行，周额度可附预估行。
+ * 首页卡片、账户列表共用的额度窗口：标题行、进度条、费用行，周额度在费用后附整周预估。
  * 每行内容固定，窗口数量变化只增减行或列，不需要为某个数量单独写布局。
  * 整体用 span 渲染，可以放进可点击的账户按钮内。
  */
@@ -94,10 +94,13 @@ export function QuotaWindow({
   }
   const percent = quotaPercent(window, asOf);
   const usable = percent !== null;
+  // 预估未知时不写“预估 N/A”，账户详情里仍会显示 N/A。
+  const estimateText = estimateAmount(window, "usd", asOf);
   const showEstimate =
     estimate &&
     (key === "sevenDay" || key === "sevenDayFable") &&
-    showQuotaEstimate(window, asOf);
+    showQuotaEstimate(window, asOf) &&
+    estimateText !== "N/A";
   const status = usable ? quotaLabel(window, asOf) : "N/A";
 
   return (
@@ -127,23 +130,29 @@ export function QuotaWindow({
         <span style={{ width: `${usable ? percent : 0}%` }} />
       </span>
       <span className="quota-window-foot">
-        <strong aria-label={`${label}费用`}>
-          {usable
-            ? amount(numericAmount(window.periodUsd ?? null), "usd")
-            : "N/A"}
-        </strong>
+        {/* 周额度的整周预估紧跟已用费用，与右侧 Tokens、请求数同一行。 */}
+        <span className="quota-window-amount">
+          <strong aria-label={`${label}费用`}>
+            {usable
+              ? amount(numericAmount(window.periodUsd ?? null), "usd")
+              : "N/A"}
+          </strong>
+          {showEstimate && (
+            <span
+              className="quota-window-estimate"
+              title={`${label} 预估：按已用比例推算的整周额度价值`}
+            >
+              <i aria-hidden="true">·</i>
+              <span aria-label={`${label} 预估`}>{estimateText}</span>
+            </span>
+          )}
+        </span>
         <span className="quota-window-volume">
           {usable ? compact(window.periodTokens ?? null) : "N/A"} Tokens{" "}
           <i aria-hidden="true">·</i>{" "}
           {usable ? formatRequests(window.periodRequests) : "N/A"} 次
         </span>
       </span>
-      {showEstimate && (
-        <span className="quota-window-estimate" title={`${label} 预估`}>
-          <small>本周预估</small>{" "}
-          <strong>{estimateAmount(window, "usd", asOf)}</strong>
-        </span>
-      )}
     </span>
   );
 }

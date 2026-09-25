@@ -731,9 +731,11 @@
       text-align: right;
       white-space: nowrap;
     }
-    .app-shell .account-windows .quota-window-foot strong {
+    .app-shell .account-windows .quota-window-amount {
       grid-area: amount;
       justify-self: end;
+    }
+    .app-shell .account-windows .quota-window-foot strong {
       font-size: 16px;
     }
     .app-shell .account-windows .quota-window-volume {

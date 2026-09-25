@@ -240,21 +240,31 @@ try {
             }
           }
           if (width <= 900) {
-            // 费用行固定为左费用、右 Tokens 与请求数；周额度预估单独成行，不与费用挤在一起。
+            // 费用行为“已用 · 整周预估”加右侧 Tokens 与请求数；360px 起四位金额也在同一行，更窄时用量整体换到下一行靠右。
             const week = pro.locator('.quota-window[data-window="sevenDay"]');
             const foot = week.locator(".quota-window-foot");
             const estimate = week.locator(".quota-window-estimate");
             await expect(estimate).toBeVisible();
-            await expect(estimate).toContainText("本周预估");
             await expect(estimate).toContainText("$1,481.58");
+            await expect(estimate.getByLabel("7d 预估")).toHaveCount(1);
             const amountBox = (await foot.locator("strong").boundingBox())!;
+            const estimateBox = (await estimate.boundingBox())!;
             const volumeBox = (await foot
               .locator(".quota-window-volume")
               .boundingBox())!;
-            expect(Math.abs(volumeBox.y - amountBox.y)).toBeLessThan(8);
-            expect((await estimate.boundingBox())!.y).toBeGreaterThan(
-              amountBox.y + amountBox.height - 1,
+            expect(Math.abs(estimateBox.y - amountBox.y)).toBeLessThan(8);
+            expect(estimateBox.x).toBeGreaterThan(
+              amountBox.x + amountBox.width,
             );
+            if (width >= 360)
+              expect(Math.abs(volumeBox.y - amountBox.y)).toBeLessThan(8);
+            else {
+              const footBox = (await foot.boundingBox())!;
+              expect(volumeBox.x + volumeBox.width).toBeCloseTo(
+                footBox.x + footBox.width,
+                0,
+              );
+            }
             const head = week.locator(".quota-window-head");
             const title = (await head
               .locator(".quota-window-label")
