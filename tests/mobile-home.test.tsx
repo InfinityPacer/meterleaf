@@ -88,7 +88,7 @@ function accountCard(html: string) {
 function estimateMarkup(html: string) {
   return (
     html.match(
-      /<([a-z]+)\b[^>]*quota-window-estimate[^>]*>[\s\S]*?<\/\1>/,
+      /<span class="quota-window-estimate"[^>]*>(?:[^<]|<(i|span)\b[^>]*>[^<]*<\/\1>)*<\/span>/,
     )?.[0] ?? ""
   );
 }
@@ -131,7 +131,7 @@ test("home hides the seven-day estimate when the quota is exhausted", () => {
   expect((html.match(/quota-window-estimate/g) ?? []).length).toBe(0);
   expect(html).toContain("$844.50");
   expect(html).not.toContain("$1,481.58");
-  expect(html).not.toContain('title="7d 预估"');
+  expect(html).not.toContain('aria-label="7d 预估"');
   expect(html).not.toContain("quota-cost-separator");
 });
 
@@ -155,9 +155,9 @@ test("home renders both valid quota windows with explicit period labels", () => 
   expect(html).toContain("$1,481.58");
 
   const estimate = estimateMarkup(html);
-  expect(estimate).toContain('title="7d 预估"');
-  // 预估单独成行，费用行只保留金额与 Tokens、请求数，窄屏不会把用量挤到第二行。
-  expect(estimate.replace(/<[^>]+>/g, "")).toBe("本周预估 $1,481.58");
+  expect(estimate).toContain('aria-label="7d 预估"');
+  // 整周预估以“· $X”紧跟已用费用，不单独占行。
+  expect(estimate.replace(/<[^>]+>/g, "")).toBe("·$1,481.58");
   expect(html).not.toContain("quota-cost-pair");
 });
 
@@ -175,15 +175,15 @@ test("home keeps an unavailable five-hour window as a waiting slot without old v
   expect(card).not.toContain("N/A");
 });
 
-test("home shows N/A when a valid seven-day quota has no estimate", () => {
+test("home omits the fraction when a valid seven-day quota has no estimate", () => {
   const account = accountFixture({
     sevenDay: quotaWindow({ estimate: undefined }),
   });
   const card = accountCard(renderHome([], [account]));
 
-  expect(card).toContain("quota-window-estimate");
-  expect(card).toContain('title="7d 预估"');
-  expect(card).toContain("N/A");
+  // 未知预估不写成“· N/A”，也不补零；详情页仍显示 N/A。
+  expect(card).not.toContain("quota-window-estimate");
+  expect(card).not.toContain("N/A");
 });
 
 test("home omits the estimate group without a valid seven-day quota", () => {
@@ -265,7 +265,7 @@ test("home adds the Fable weekly quota as its own row with a Fable-only estimate
   expect((card.match(/class="quota-window"/g) ?? []).length).toBe(3);
   expect(card).toContain('data-quota-count="3"');
   expect(card).toContain('aria-label="Fable额度使用情况"');
-  expect(card).toContain('title="Fable 预估"');
+  expect(card).toContain('aria-label="Fable 预估"');
   expect(card).toContain("$333.33");
 });
 
