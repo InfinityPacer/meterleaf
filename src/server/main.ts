@@ -30,10 +30,13 @@ async function main() {
       resolve(config.METERLEAF_DATA_DIR, "meterleaf.sqlite"),
       book,
     );
+  }
+  // 只接收本机采集器推送时没有拉取任务，数据同步入口随之隐藏。
+  if (store && config.SUB2API_DATABASE_URL) {
     stage = "connector";
     const connector = createSub2ApiConnector({
       sourceId: config.METERLEAF_SOURCE_ID,
-      connectionString: config.SUB2API_DATABASE_URL!,
+      connectionString: config.SUB2API_DATABASE_URL,
       onBackgroundError: (error) =>
         logger.warn("source.connection_failed", {
           sourceId: config.METERLEAF_SOURCE_ID,
@@ -62,7 +65,7 @@ async function main() {
         {
           refreshIntervalMs: config.METERLEAF_REPORT_REFRESH_INTERVAL_MS,
           diagnostics: logger,
-          getSyncStatus: () => sync!.status(),
+          getSyncStatus: sync ? sync.status.bind(sync) : undefined,
         },
       )
     : null;
@@ -98,7 +101,7 @@ async function main() {
         ? createDemoLedger(basis)
         : liveSnapshot(
             store!,
-            sync!,
+            sync,
             days,
             new Date().toISOString(),
             basis,

@@ -2,7 +2,7 @@
 
 AI 用量账本，账户额度、Token 消耗、费用估算与多维统计。
 
-Meterleaf 只读采集一个 Sub2API PostgreSQL 实例，也可以接收本机采集器推送的 Claude Code 本地直连用量，将用量保存到本地 SQLite 并生成独立报表。不代理模型请求、不修改 Sub2API，也不直接请求 OpenAI 或 Anthropic；单个容器即可运行。
+Meterleaf 可以只读采集一个 Sub2API PostgreSQL 实例，也可以接收本机采集器推送的 Claude Code 本地直连用量，两种来源可单独或同时使用，用量保存到本地 SQLite 并生成独立报表。不代理模型请求、不修改 Sub2API，也不直接请求 OpenAI 或 Anthropic；单个容器即可运行。
 
 ## 能做什么
 
@@ -10,6 +10,7 @@ Meterleaf 只读采集一个 Sub2API PostgreSQL 实例，也可以接收本机�
 - **账户额度**：总览中按当前周期显示 5 小时与 7 天窗口、重置时间及七天额度预估，并可直接排序、重命名和归档账户。
 - **统计报表**：顶部是所选范围的摘要与环比，按小时、天、周、模型或账户汇总 Tokens、缓存命中率、请求数和费用，附合计行。
 - **请求明细**：查看模型、来源、推理强度、Token 拆分与计价依据。
+- **Claude Code 本地用量**：不经过网关的 Claude Code 由 Mac 上的本机采集器推送用量、套餐和 5 小时、7 天及 Fable 周额度，与网关用量在同一账本中统计。
 - **独立估值**：同时保留订阅 Credits 与 USD，美元可切换订阅等价和标准 API 口径。
 
 支持自定义日期、页面筛选、明暗主题和移动端；同步在后台进行，已有报表继续可读。
@@ -49,7 +50,10 @@ Meterleaf 只读采集一个 Sub2API PostgreSQL 实例，也可以接收本机�
 
 ## 快速开始
 
-当前支持一个 Sub2API PostgreSQL 实例。数据库账号只需读取 `public.accounts` 和 `public.usage_logs`，不需要写权限。
+Meterleaf 有两种数据来源，至少配置一种。
+
+- **Sub2API 网关**：在 `.env` 填写 `SUB2API_DATABASE_URL`。数据库账号只需读取 `public.accounts` 和 `public.usage_logs`，不需要写权限。
+- **本地直连的 Claude Code**：在 `.env` 填写本机采集器生成的 `METERLEAF_INGEST_KEYS`，见下文[接入 Claude Code](#接入-claude-code)。只用 Claude Code 时把 `SUB2API_DATABASE_URL` 留空，并先生成写入密钥再启动服务。
 
 在仓库目录中准备配置：
 
@@ -57,7 +61,7 @@ Meterleaf 只读采集一个 Sub2API PostgreSQL 实例，也可以接收本机�
 cp .env.example .env
 ```
 
-填写 `.env` 中的 `SUB2API_DATABASE_URL`，然后运行：
+按上面填写 `.env`，然后运行：
 
 ```sh
 docker compose build
@@ -66,9 +70,26 @@ docker compose run --rm --no-deps --pull never --user root --entrypoint sh meter
 docker compose up -d --pull never
 ```
 
-访问 `http://127.0.0.1:4318`，从右上角「数据同步」启动首次采集。默认不自动采集，可自行开启自动同步。
+访问 `http://127.0.0.1:4318`。连接了 Sub2API 时，从右上角「数据同步」启动首次采集，默认不自动采集，可自行开启自动同步。只用 Claude Code 时没有这个入口，采集器推送后数据自动出现。
 
 已发布镜像的拉取方式、跨主机访问、反向代理、配置项及备份恢复见[部署指南](docs/deployment.md)。应用不内置认证，可在反向代理层接入 OAuth/OIDC 认证。
+
+### 接入 Claude Code
+
+本地直连的 Claude Code 需要在使用它的 Mac 上安装本机采集器。采集器暂不提供下载，需要在 Mac 上构建，要求 Bun 与 Xcode 命令行工具：
+
+```sh
+bun install --frozen-lockfile
+bun run build:collector
+```
+
+把 `dist/Meterleaf.app` 移到「应用程序」，然后生成写入密钥。`--server` 填这台 Mac 能访问到的 Meterleaf 地址，服务端不在本机时先按[部署指南](docs/deployment.md#接入本机采集器)开放访问：
+
+```sh
+/Applications/Meterleaf.app/Contents/MacOS/meterleaf-collector init --server https://meterleaf.example.com
+```
+
+命令会打印一行 `METERLEAF_INGEST_KEYS=来源标识:摘要`。把它加到服务端的 `.env`，再执行一次 `docker compose up -d --pull never` 让配置生效（`docker compose restart` 不会读取新配置）。之后在 Mac 上依次执行 `bind-history`、`sync` 和 `install-launchd`，每一步的含义见[本机采集器](docs/collector.md)。
 
 ## 文档
 

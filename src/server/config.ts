@@ -58,7 +58,11 @@ const envSchema = z.object({
     .default("sub2api"),
   METERLEAF_PRICE_BOOK: z.string().optional(),
   METERLEAF_USD_BASIS: z.enum(["subscription", "api"]).default("subscription"),
-  SUB2API_DATABASE_URL: z.string().url().optional(),
+  // Compose 对未填写的变量传入空字符串，按未配置处理。
+  SUB2API_DATABASE_URL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional(),
+  ),
   METERLEAF_INGEST_KEYS: z.string().optional(),
 });
 /** 只有显式 demo=true 才能使用演示数据；缺配置不能静默切换运行模式。 */
@@ -69,9 +73,16 @@ export function readConfig(env: Record<string, string | undefined>) {
       `Invalid configuration keys: ${result.error.issues.map((issue) => issue.path.join(".")).join(", ")}`,
     );
   const config = result.data;
-  if (config.METERLEAF_DEMO === "false" && !config.SUB2API_DATABASE_URL)
-    throw new Error("SUB2API_DATABASE_URL is required in live mode");
   const ingestKeys = parseIngestKeys(config.METERLEAF_INGEST_KEYS);
+  // Sub2API 与本机采集器都是可选来源，但真实模式至少要有一个，否则账本永远为空。
+  if (
+    config.METERLEAF_DEMO === "false" &&
+    !config.SUB2API_DATABASE_URL &&
+    ingestKeys.length === 0
+  )
+    throw new Error(
+      "Live mode needs SUB2API_DATABASE_URL or METERLEAF_INGEST_KEYS",
+    );
   // 推送来源与拉取来源共用账本主键空间，同名会让两边互相覆盖。
   if (ingestKeys.some((key) => key.sourceId === config.METERLEAF_SOURCE_ID))
     throw new Error(

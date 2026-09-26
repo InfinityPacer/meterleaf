@@ -35,6 +35,7 @@ export interface ViewServiceOptions {
   /** 账本事实少于此数时同步重建索引，默认 2000；测试用 0 验证后台重建。 */
   inlineRebuildLimit?: number;
   diagnostics?: DiagnosticsLogger;
+  /** 配置了拉取来源时提供；未提供表示只接收推送，报表照常计算和刷新。 */
   getSyncStatus?: () => SyncStatus;
   now?: () => number;
 }
@@ -278,7 +279,12 @@ export class ViewService {
       cached.lastUsed = this.now();
       if (currentSync) cached.sync = currentSync;
       const refreshSync = currentSync ?? cached.sync;
-      if (refresh && !cached.refreshing && !this.closed && refreshSync) {
+      if (
+        refresh &&
+        !cached.refreshing &&
+        !this.closed &&
+        (refreshSync || !this.getSyncStatus)
+      ) {
         void this.refreshEntry(cached, refreshSync, "read");
       }
       return Promise.resolve(this.publicResult(cached, currentSync));
@@ -298,7 +304,7 @@ export class ViewService {
       });
     }
 
-    if (!currentSync)
+    if (!currentSync && this.getSyncStatus)
       return Promise.reject(reportError("ERR_REPORT_SYNC_UNAVAILABLE"));
     return this.dispatch(query, basis, currentSync, true).then((result) => {
       const entry = this.saveColdResult(key, query, basis, result, currentSync);
@@ -578,7 +584,7 @@ export class ViewService {
   private dispatch(
     query: ViewQuery,
     basis: UsdBasis,
-    sync: SyncStatus,
+    sync: SyncStatus | undefined,
     refresh: boolean,
   ): Promise<LedgerView> {
     const key = this.cacheKey(query, basis);
@@ -690,7 +696,7 @@ export class ViewService {
 
   private refreshEntry(
     entry: CacheEntry,
-    sync: SyncStatus,
+    sync: SyncStatus | undefined,
     trigger: "read" | "timer",
   ): Promise<void> {
     if (
@@ -705,7 +711,7 @@ export class ViewService {
       .then((result) => {
         if (this.closed || this.cache.get(entry.key) !== entry) return;
         entry.value = result;
-        entry.sync = sync;
+        if (sync) entry.sync = sync;
         entry.lastError = null;
         this.persistCache(entry);
       })
@@ -760,7 +766,7 @@ export class ViewService {
         if (this.closed) break;
         if (this.cache.get(entry.key) !== entry || entry.refreshing) continue;
         const sync = this.readSyncStatus() ?? entry.sync;
-        if (!sync) continue;
+        if (!sync && this.getSyncStatus) continue;
         await this.refreshEntry(entry, sync, "timer");
       }
     })().finally(() => {
