@@ -212,7 +212,7 @@ parentPort!.on(
     id: number;
     query: ViewQuery;
     basis: UsdBasis;
-    sync: SyncStatus;
+    sync?: SyncStatus;
     /** 与主线程共享绝对时钟；缺失或无效时队列耗时按 0 计。 */
     queuedAt?: number;
   }) => {
@@ -240,7 +240,7 @@ parentPort!.on(
         const snapshots = {
           subscription: indexedSnapshot(
             store,
-            { status: () => request.sync },
+            request.sync ? { status: () => request.sync! } : null,
             now,
             "subscription",
             (accountId, from, to, selectedBasis, modelScope) =>
@@ -255,7 +255,7 @@ parentPort!.on(
           ),
           api: indexedSnapshot(
             store,
-            { status: () => request.sync },
+            request.sync ? { status: () => request.sync! } : null,
             now,
             "api",
             (accountId, from, to, selectedBasis, modelScope) =>

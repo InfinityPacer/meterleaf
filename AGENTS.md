@@ -6,7 +6,7 @@ Meterleaf 是独立 AI 用量账本，只读采集上游用量并在本地计价
 
 ## 项目结构与架构
 
-- `src/connectors` 解释上游字段；`src/domain` 定义用量和计价规则；`src/storage` 负责持久化与汇总索引。
+- `src/connectors` 解释上游字段；`src/collector` 是 macOS 本机采集器，只读解析 Claude Code 本地记录并推送到服务端；`src/domain` 定义用量和计价规则；`src/storage` 负责持久化与汇总索引。
 - `src/server` 提供 API 和同步服务；`src/shared` 定义共享契约；`src/web` 实现 React 界面；`public` 存放静态资源。
 - `tests` 存放测试，`prices` 管理版本化费率 JSON，`docs` 存放中文文档。
 - 领域模型与报表不得依赖 Sub2API SQL 或列名。用量与额度快照是独立能力；未知值不得补零，缓存与推理 Tokens 不得重复累计，网关扣费与独立估值必须区分。
@@ -22,6 +22,7 @@ Meterleaf 是独立 AI 用量账本，只读采集上游用量并在本地计价
 - `bun run dev:server` 与 `bun run dev`：分别启动真实后端与前端。
 - `bun run typecheck`：检查 TypeScript 类型；`bun test tests`：运行测试。
 - `bun run build`：类型检查并构建前端；`bun run start`：启动应用。
+- `bun run build:collector`：构建采集器命令行与 macOS 上的 `dist/Meterleaf.app`。
 
 ## 代码风格与注释
 
@@ -57,6 +58,6 @@ Meterleaf 是独立 AI 用量账本，只读采集上游用量并在本地计价
 
 ## 配置与协作边界
 
-- 当前按 `.env.example` 通过环境变量连接一个 Sub2API 实例，来源管理、内置认证和用户角色系统不在当前产品范围。
+- 当前按 `.env.example` 通过环境变量配置来源，可连接一个 Sub2API 实例、通过 `METERLEAF_INGEST_KEYS` 接收本机采集器推送，两者至少一项；来源管理、内置认证和用户角色系统不在当前产品范围。
 - 项目采用 Apache-2.0。凭据、真实账户数据、运行数据库、机器路径及构建产物不得进入公开交付内容；真实数据失败不得静默替换为演示数据。
 - 工作台不属于产品交付内容。排查报表或同步失败先区分读取和采集阶段；清库、修改同步设置不作为默认恢复动作。
