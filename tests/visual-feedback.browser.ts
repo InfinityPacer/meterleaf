@@ -282,7 +282,7 @@ async function expectPainted(canvas: Locator, message: string) {
 async function ready() {
   await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
   const hash = new URL(page.url()).hash;
-  if (hash === "#overview" || hash === "#period") {
+  if (hash === "#overview") {
     const tabs = page.getByRole("navigation", { name: "总览视图" });
     await expect(tabs).toBeVisible();
     await expect(tabs.getByRole("button")).toHaveText([
@@ -292,7 +292,7 @@ async function ready() {
   }
   if (hash === "#settings")
     await expect(page.locator(".about-page")).toBeVisible();
-  if (hash === "#period" || hash === "#reports") {
+  if (hash === "#overview" || hash === "#reports") {
     const canvas = page
       .locator(
         hash === "#reports"
@@ -675,7 +675,7 @@ async function assertOverviewTabs(width: number) {
 }
 
 async function assertChartControls(width: number) {
-  await page.goto(`${base}#period`);
+  await page.goto(`${base}#overview`);
   await ready();
   const chartButtons = page.locator(".chart-style-control button");
   await expect(chartButtons).toHaveCount(4);
@@ -702,12 +702,30 @@ async function assertChartControls(width: number) {
   }
 }
 
+/** 账户额度与账户趋势都在总览账户区；App 布局的首页卡片不带逐账户微趋势。 */
 async function assertAccountsAndTrends() {
-  await page.goto(`${base}#accounts`);
+  await page.goto(`${base}#overview`);
   await ready();
-  const rows = page.locator(".account-list-item");
-  await expect(rows).toHaveCount(3);
-  const api = page.locator('.account-list-item[data-account-id="api"]');
+  const mobileApp = await page.evaluate(
+    () =>
+      innerWidth <= 900 &&
+      document.documentElement.dataset.mobileLayout === "app",
+  );
+  if (mobileApp) {
+    const cards = page.locator(
+      ".mobile-home-account-list > li[data-manageable]",
+    );
+    await expect(cards).toHaveCount(4);
+    await expect(
+      page.locator('.mobile-home-account-list > li[data-account-id="api"]'),
+    ).toBeVisible();
+    return;
+  }
+  const rows = page.locator(".overview-quotas .account-list-item");
+  await expect(rows).toHaveCount(4);
+  const api = page.locator(
+    '.overview-quotas .account-list-item[data-account-id="api"]',
+  );
   await expect(api).toBeVisible();
   const requestMiniTrends = rows.locator('.mini-trend[data-metric="requests"]');
   const mobile = await page.evaluate(() => innerWidth <= 900);
@@ -724,12 +742,13 @@ async function assertAccountsAndTrends() {
       "account request micro trends use line variant",
     )
     .toBe(true);
-  await expect(page.locator(".account-capacity > strong")).toHaveText([
-    "N/A",
-    "N/A",
-  ]);
   await expect(
-    page.locator(".account-capacity").getByText(/未提供|未计价原因/),
+    page.locator(".overview-quotas .account-capacity > strong"),
+  ).toHaveText(["N/A", "N/A"]);
+  await expect(
+    page
+      .locator(".overview-quotas .account-capacity")
+      .getByText(/未提供|未计价原因/),
   ).toHaveCount(0);
   await expect(api.locator(".account-lifetime > span")).toHaveCount(3);
   await expect
@@ -795,24 +814,16 @@ async function openArchiveMenu(row: Locator) {
   return menu;
 }
 
-async function selectArchiveView(label: string) {
-  const trigger = page.getByRole("combobox", { name: "归档状态", exact: true });
-  if (!(await trigger.isVisible())) {
-    await page.getByRole("button", { name: "筛选与计价", exact: true }).click();
-    await expect(page.getByRole("dialog")).toBeVisible();
-  }
-  await trigger.click();
-  await page.getByRole("option", { name: label, exact: true }).click();
-  const done = page.getByRole("button", { name: "完成", exact: true });
-  if (await done.isVisible()) await done.click();
-}
-
+/**
+ * 账户排序、只读菜单与归档删除都在总览账户区完成：归档后从使用中列表移除，
+ * 经「已归档 N」进入归档列表恢复或删除。
+ */
 async function assertSortingAndArchiveBehavior(width: number) {
-  await page.goto(`${base}#accounts`);
+  await page.goto(`${base}#overview`);
   await page.reload();
   await ready();
-  const rows = page.locator(".account-list-item");
-  await expect(rows).toHaveCount(3);
+  const rows = page.locator("[data-manageable]");
+  await expect(rows).toHaveCount(4);
   const filter = page.getByRole("button", { name: "筛选与计价", exact: true });
   if (await filter.isVisible()) {
     await filter.click();
@@ -841,7 +852,6 @@ async function assertSortingAndArchiveBehavior(width: number) {
     exact: true,
   });
   await expect(orderButton).toBeVisible();
-  await expect(orderButton).toHaveAttribute("data-variant", "ghost");
   await expect(orderButton).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   const operationButton = page.locator(".account-menu-trigger").first();
   await expect(operationButton).toHaveAttribute("data-variant", "ghost");
@@ -889,27 +899,44 @@ async function assertSortingAndArchiveBehavior(width: number) {
   archiveWrites.length = 0;
   await page.reload();
   await ready();
-  await selectArchiveView("全部状态");
   const targetId = await rows.first().getAttribute("data-account-id");
   const target = page.locator(
-    `.account-list-item[data-account-id="${targetId}"]`,
+    `[data-manageable][data-account-id="${targetId}"]`,
   );
+  const archivedEntry = page.getByRole("button", { name: "已归档 1" });
+  const activeEntry = page.getByRole("button", {
+    name: "使用中账户",
+    exact: true,
+  });
+  await expect(archivedEntry).toHaveCount(0);
   let menu = await openArchiveMenu(target);
   await menu.getByRole("menuitem", { name: "归档账户", exact: true }).click();
-  await expect(target).toContainText("已归档");
+  await expect(target).toHaveCount(0);
+  await expect(rows).toHaveCount(3);
   expect(archiveState.archived).toContain(targetId);
+  await archivedEntry.click();
+  await expect(rows).toHaveCount(1);
+  await expect(target).toBeVisible();
   menu = await openArchiveMenu(target);
   await menu.getByRole("menuitem", { name: "恢复账户", exact: true }).click();
-  await expect(target).toContainText("使用中");
+  await expect(target).toHaveCount(0);
   expect(archiveState.archived).not.toContain(targetId);
+  await activeEntry.click();
+  await expect(target).toBeVisible();
+  await expect(rows).toHaveCount(4);
   menu = await openArchiveMenu(target);
   await menu.getByRole("menuitem", { name: "归档账户", exact: true }).click();
+  await archivedEntry.click();
   menu = await openArchiveMenu(target);
   await menu.getByRole("menuitem", { name: "删除账户", exact: true }).click();
   const confirmation = page.getByRole("alertdialog");
   await expect(confirmation).toContainText("历史请求和统计仍保留");
   await confirmation.getByRole("button", { name: "删除", exact: true }).click();
   await expect(target).toHaveCount(0);
+  await expect(rows).toHaveCount(0);
+  await activeEntry.click();
+  await expect(rows).toHaveCount(3);
+  await expect(archivedEntry).toHaveCount(0);
   expect(archiveState.hidden).toContain(targetId);
   expect(
     archiveWrites.some(

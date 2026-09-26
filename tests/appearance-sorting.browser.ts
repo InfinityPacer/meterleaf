@@ -146,7 +146,9 @@ try {
   }
   await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${base}#accounts`);
+  // 账户在总览账户区管理，总览筛选栏不再提供账户或归档状态筛选。
+  await page.goto(`${base}#overview`);
+  await expect(page.locator(".overview-quotas")).toBeVisible();
   const labels = await page
     .locator(".filterbar")
     .evaluate((element) =>
@@ -154,7 +156,7 @@ try {
         (control) => control.getAttribute("aria-label"),
       ),
     );
-  expect(labels).toEqual(["账户筛选", "归档状态", "计价口径"]);
+  expect(labels).toEqual(["计价口径"]);
   await page.goto(`${base}#reports`);
   await expect(
     page.locator(".model-distribution-scroll thead button"),
@@ -252,7 +254,7 @@ try {
     JSON.stringify({
       status: "passed",
       checks:
-        "pre-React dark theme, system change, mobile sorting and persistence, model ranking, 56px square tabbar, layout label, account filter order",
+        "pre-React dark theme, system change, mobile sorting and persistence, model ranking, 56px square tabbar, layout label, overview filter controls",
     }),
   );
 } finally {

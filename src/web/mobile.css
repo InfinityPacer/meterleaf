@@ -1,6 +1,5 @@
 .mobile-tabbar,
-.mobile-about,
-.app-account-status {
+.mobile-about {
   display: none;
 }
 
@@ -135,7 +134,7 @@
       inset: auto 0 0;
       z-index: 40;
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 2px;
       height: calc(var(--mobile-bar-height) + var(--mobile-safe-bottom));
       padding: 3px max(8px, env(safe-area-inset-right))
@@ -279,16 +278,6 @@
       > span:last-child:not(.plan-chip) {
       display: none;
     }
-    .app-account-status {
-      display: inline-flex;
-      grid-area: status;
-      align-self: center;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      color: var(--teal);
-      background: var(--tint);
-    }
     .account-row .row-arrow {
       grid-area: arrow;
       display: block;
@@ -348,9 +337,6 @@
       background: transparent;
       color: var(--muted);
       border-radius: 0;
-    }
-    .account-list-item[data-manageable] .app-account-status {
-      margin-right: 24px;
     }
     .app-period {
       display: flex;

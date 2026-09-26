@@ -1,4 +1,5 @@
 import { ChevronRight } from "lucide-react";
+import type { ReactNode } from "react";
 import { accountInitial } from "../lib/account-aliases";
 import { planBadge } from "../lib/plan";
 import type { LedgerView } from "../../shared/ledger-view";
@@ -44,7 +45,12 @@ export interface MobileHomeProps {
   summaryUpdating?: boolean;
   onAccount: (account: LedgerAccount) => void;
   onRequests: (account: LedgerAccount) => void;
-  onAllAccounts: () => void;
+  /** 当前列出的是已归档账户。 */
+  showArchived?: boolean;
+  /** 账户区标题右侧的归档与排序切换。 */
+  accountHeadingActions?: ReactNode;
+  /** 每张账户卡片的排序按钮与管理菜单，与卡片按钮平级，不能嵌套在按钮里。 */
+  renderAccountActions?: (account: LedgerAccount) => ReactNode;
 }
 
 function validDate(value: string | number | null | undefined) {
@@ -194,7 +200,9 @@ export function MobileHome({
   asOf,
   onAccount,
   onRequests,
-  onAllAccounts,
+  showArchived = false,
+  accountHeadingActions,
+  renderAccountActions,
   summary,
   rangeLabel,
   summaryUpdating = false,
@@ -220,13 +228,15 @@ export function MobileHome({
         aria-labelledby="mobile-home-accounts-title"
       >
         <div className="mobile-home-section-heading">
-          <h2 id="mobile-home-accounts-title">账户额度</h2>
-          <button type="button" onClick={onAllAccounts}>
-            全部账户
-            <ChevronRight size={16} aria-hidden="true" />
-          </button>
+          <h2 id="mobile-home-accounts-title">
+            {showArchived ? "已归档账户" : "账户额度"}
+          </h2>
+          {accountHeadingActions}
         </div>
-        <ul className="mobile-home-account-list" aria-label="账户额度摘要">
+        <ul
+          className="mobile-home-account-list"
+          aria-label={showArchived ? "已归档账户列表" : "账户额度摘要"}
+        >
           {accounts.map((account) => {
             const quotas = withFableQuotaWindow(
               visibleQuotaWindows(account, asOf),
@@ -238,7 +248,11 @@ export function MobileHome({
             const open = () =>
               hasQuota ? onAccount(account) : onRequests(account);
             return (
-              <li key={account.id}>
+              <li
+                key={account.id}
+                data-account-id={account.id}
+                data-manageable={renderAccountActions ? "" : undefined}
+              >
                 <button
                   type="button"
                   className="mobile-home-account-card"
@@ -296,10 +310,15 @@ export function MobileHome({
                     />
                   )}
                 </button>
+                {renderAccountActions?.(account)}
               </li>
             );
           })}
-          {!accounts.length && <li className="mobile-home-empty">暂无账户</li>}
+          {!accounts.length && (
+            <li className="mobile-home-empty">
+              {showArchived ? "暂无归档账户" : "暂无账户"}
+            </li>
+          )}
         </ul>
       </section>
     </div>

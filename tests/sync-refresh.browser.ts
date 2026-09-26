@@ -44,7 +44,7 @@ try {
   await page.reload();
   await expect.poll(() => heartbeats).toBeGreaterThan(0);
   page.on("request", track);
-  for (const tab of ["overview", "accounts", "reports", "ledger"]) {
+  for (const tab of ["overview", "reports", "ledger"]) {
     await page.goto(base + "#" + tab);
     await expect(page.locator("main .sync-state")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "刷新账本", exact: true })).toHaveCount(0);

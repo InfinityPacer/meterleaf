@@ -364,7 +364,7 @@ try {
   await expect(lifetimeSummary).toContainText(/\d{4}\/\d{2}\/\d{2} 起/);
   await expect(lifetimeSummary).not.toContainText("环比");
   await expect(lifetimeSummary.locator(".token-composition-bar")).toBeVisible();
-  // 总览账户额度沿用账户页的行组件，按区块标题识别。
+  // 总览账户区承担额度展示和账户管理，按区块标题识别。
   const overviewAccounts = page.getByRole("region", {
     name: "账户额度",
     exact: true,
@@ -485,8 +485,8 @@ try {
   await page.keyboard.press("Escape");
   await expect(page.locator("html")).toHaveAttribute("data-palette", "green");
   await page.emulateMedia({ colorScheme: null });
-  // 旧「时间段用量」链接回到合并后的总览，侧栏仍标记总览为当前页。
-  await page.goto(`${baseUrl}#period`);
+  // 侧栏标记总览为当前页，口径切换在页面间保留。
+  await page.goto(`${baseUrl}#overview`);
   await expect(
     page.getByRole("heading", { name: "用量总览", exact: true }),
   ).toBeVisible();
@@ -681,7 +681,7 @@ try {
   await expect(page.locator(".report-section tbody tr").first()).toBeVisible();
   await expect(summaryCell(page, 2)).not.toHaveText(apiRequests);
   await page.getByRole("button", { name: "清除筛选" }).click();
-  await page.getByRole("button", { name: "账户额度", exact: true }).click();
+  await page.getByRole("button", { name: "用量总览", exact: true }).click();
   await page.getByRole("button", { name: /^Development API/ }).click();
   await expect(
     page.getByRole("heading", { name: "请求明细", level: 1, exact: true }),
@@ -745,7 +745,7 @@ try {
   ).toEqual(["not-a-real-request"]);
   await expect(page.getByRole("button", { name: "导出 CSV" })).toHaveCount(0);
   await page.getByRole("button", { name: "清除搜索" }).click();
-  await page.getByRole("button", { name: "账户额度", exact: true }).click();
+  await page.getByRole("button", { name: "用量总览", exact: true }).click();
   await expect(page.locator(".account-capacity").first()).toContainText(
     "7d 预估",
   );
@@ -923,7 +923,7 @@ try {
     await expect(page.getByRole("dialog")).toBeVisible();
     await page
       .getByRole("dialog")
-      .getByRole("button", { name: "账户额度", exact: true })
+      .getByRole("button", { name: "用量总览", exact: true })
       .click();
   } else {
     const mobileNavigation = page.getByRole("navigation", {
@@ -932,13 +932,20 @@ try {
     });
     await expect(mobileNavigation).toBeVisible();
     await mobileNavigation
-      .getByRole("button", { name: "账户", exact: true })
+      .getByRole("button", { name: "首页", exact: true })
       .click();
   }
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "账户额度", exact: true }).first(),
   ).toBeVisible();
+  // 窄屏侧栏布局仍在总览账户区提供排序和逐行管理菜单，不再有独立账户页入口。
+  await expect(
+    overviewAccounts.getByRole("button", { name: "调整账户顺序", exact: true }),
+  ).toBeVisible();
+  await expect(
+    overviewAccounts.getByRole("button", { name: /账户操作$/ }),
+  ).toHaveCount(4);
   await capture({
     path: "test-results/accounts-mobile.png",
     fullPage: false,
@@ -1284,7 +1291,7 @@ try {
   });
   await page.evaluate(
     (url) => history.replaceState(null, "", url),
-    `${baseUrl}#period`,
+    `${baseUrl}#overview`,
   );
   await page.reload();
   await expect(summaryCell(page, 2)).toHaveText("901");
@@ -1379,7 +1386,7 @@ try {
   });
   await page.evaluate(
     (url) => history.replaceState(null, "", url),
-    `${baseUrl}#accounts`,
+    `${baseUrl}#overview`,
   );
   await page.reload();
   const expiryAmount = page.locator('.account-row [aria-label="7d费用"]');
@@ -1408,7 +1415,6 @@ try {
         "canvas pixels",
         "overview defaults to all-time summary",
         "overview range updates summary and trend but not quotas",
-        "legacy #period opens the merged overview",
         "model distribution opens filtered reports",
         "report summary, cache hit rate column and totals row",
         "chart unit",
