@@ -13,6 +13,7 @@ import {
   type ViewQuery,
 } from "../src/shared/ledger-view";
 import { aggregateReport } from "../src/web/lib/report";
+import { estimateAmount } from "../src/web/lib/quota-display";
 import type { SyncStatus } from "../src/server/sync";
 
 const base = process.env.METERLEAF_TEST_URL ?? "http://127.0.0.1:4331/";
@@ -50,6 +51,7 @@ type SavedMedia = {
 
 type ViewRequest = {
   account: string;
+  from: string | null;
   days: number;
   granularity: string;
   pageSize: number;
@@ -94,6 +96,29 @@ const restoreLocalStorage = () =>
 
 await mkdir("test-results/visual-feedback", { recursive: true });
 
+// 演示账本给出 7d 整周预估；Web 账户行按来源顺序为每个有额度窗口的账户显示订阅等价 USD 预估。
+const demoLedger = createDemoLedger("subscription");
+const expectedWeeklyEstimates = demoLedger.accounts
+  .filter(
+    (account) => account.fiveHour || account.sevenDay || account.sevenDayFable,
+  )
+  .map((account) => estimateAmount(account.sevenDay, "usd", demoLedger.asOf));
+if (
+  !expectedWeeklyEstimates.length ||
+  expectedWeeklyEstimates.some((value) => !/^\$[\d,]+\.\d{2}$/.test(value))
+)
+  throw new Error(
+    `Demo weekly estimates must be amounts: ${expectedWeeklyEstimates}`,
+  );
+
+// 历史至今在查询前换算为从账本首条记录所在上海自然日开始的范围。
+const demoStartDay = new Date(
+  Date.parse(demoLedger.records.map((row) => row.occurredAt).sort()[0]!) +
+    8 * 3600_000,
+)
+  .toISOString()
+  .slice(0, 10);
+
 const viewRoutePattern = "**/api/view**";
 const archiveRoutePattern = "**/api/accounts/archive**";
 const syncRoutePattern = "**/api/sync**";
@@ -114,6 +139,7 @@ const recordViewRequest = (request: Request) => {
   const query = url.searchParams;
   viewRequests.push({
     account: query.get("account") ?? "all",
+    from: query.get("from"),
     days: Number(query.get("days") ?? 7),
     granularity: query.get("granularity") ?? "day",
     pageSize: Number(query.get("pageSize") ?? 12),
@@ -168,7 +194,8 @@ const viewRouteHandler = async (route: Route) => {
     )[0]!;
     view.lifetimeTotals = {
       asOf: snapshot.asOf,
-      from: snapshot.records.at(-1)!.occurredAt,
+      // 与服务端一致，累计范围从账本最早的一条记录开始。
+      from: snapshot.records.map((row) => row.occurredAt).sort()[0]!,
       to: snapshot.asOf,
       count: snapshot.records.length,
       tokens: {
@@ -282,14 +309,6 @@ async function expectPainted(canvas: Locator, message: string) {
 async function ready() {
   await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
   const hash = new URL(page.url()).hash;
-  if (hash === "#overview") {
-    const tabs = page.getByRole("navigation", { name: "总览视图" });
-    await expect(tabs).toBeVisible();
-    await expect(tabs.getByRole("button")).toHaveText([
-      "累计总览",
-      "时间段用量",
-    ]);
-  }
   if (hash === "#settings")
     await expect(page.locator(".about-page")).toBeVisible();
   if (hash === "#overview" || hash === "#reports") {
@@ -389,126 +408,84 @@ async function assertAboutContent() {
   ).toHaveCount(0);
 }
 
-async function assertHomeChartControl(scope: Locator, mobile: boolean) {
+/**
+ * 合并后的总览只有一个消耗趋势面板（Web 为 .desktop-period，App 为 .app-period），
+ * 图表样式按总览（home）单独保存，默认面积图。
+ */
+async function assertOverviewChartControl(mobileApp: boolean) {
+  const scope = page.locator(
+    mobileApp ? ".app-period .trend-panel" : ".desktop-period .trend-panel",
+  );
+  await expect(scope).toBeVisible();
   const control = scope.getByRole("group", {
     name: "图表样式",
     exact: true,
   });
   await expect(control).toBeVisible();
-  await expect(control.getByRole("button")).toHaveCount(3);
   expect(
     await control
       .getByRole("button")
       .evaluateAll((buttons) =>
         buttons.map((button) => button.getAttribute("aria-label")),
       ),
-  ).toEqual(["折线图", "面积图", "柱状图"]);
+  ).toEqual(["折线图", "面积图", "柱状图", "饼图"]);
 
   const readStoredChart = () =>
     page.evaluate(() => {
       const raw = localStorage.getItem("meterleaf-pref-home-chart");
       return raw ? JSON.parse(raw) : null;
     });
-  await expect.poll(readStoredChart).toBe("line");
+  const chart = scope.locator(".usage-chart");
+  await expect.poll(readStoredChart).toBeNull();
   await expect(
-    control.getByRole("button", { name: "折线图", exact: true }),
+    control.getByRole("button", { name: "面积图", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
+  await expect(chart).toHaveAttribute("data-chart-style", "area");
 
   for (const [label, value] of [
-    ["面积图", "area"],
-    ["柱状图", "bar"],
     ["折线图", "line"],
+    ["柱状图", "bar"],
+    ["饼图", "pie"],
+    ["面积图", "area"],
   ] as const) {
     const button = control.getByRole("button", { name: label, exact: true });
     await button.click();
     await expect(button).toHaveAttribute("aria-pressed", "true");
     await expect.poll(readStoredChart).toBe(value);
-    if (mobile)
-      await expect(scope.locator(".mini-trend")).toHaveAttribute(
-        "data-variant",
-        value,
-      );
-    else
-      await expect(scope.locator(".usage-chart")).toHaveAttribute(
-        "data-chart-style",
-        value,
-      );
+    await expect(chart).toHaveAttribute("data-chart-style", value);
+    // 饼图按模型汇总，不再提供时间粒度；App 布局的时间粒度在「筛选与计价」面板里。
+    await expect(
+      scope.getByRole("heading", {
+        name: value === "pie" ? "消耗占比" : "消耗趋势",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      scope.getByRole("group", { name: "时间粒度", exact: true }),
+    ).toHaveCount(value === "pie" || mobileApp ? 0 : 1);
   }
-  const persistedButton = control.getByRole("button", {
-    name: "面积图",
-    exact: true,
-  });
-  await persistedButton.click();
-  await expect(persistedButton).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(readStoredChart).toBe("area");
+  await control.getByRole("button", { name: "柱状图", exact: true }).click();
+  await expect.poll(readStoredChart).toBe("bar");
   await page.reload();
   await ready();
-  const reloadedControl = scope.getByRole("group", {
-    name: "图表样式",
-    exact: true,
-  });
-  await expect(reloadedControl).toBeVisible();
   await expect(
-    reloadedControl.getByRole("button", { name: "面积图", exact: true }),
+    control.getByRole("button", { name: "柱状图", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
+  await expect(chart).toHaveAttribute("data-chart-style", "bar");
+  await control.getByRole("button", { name: "面积图", exact: true }).click();
   await expect.poll(readStoredChart).toBe("area");
-  if (mobile)
-    await expect(scope.locator(".mini-trend")).toHaveAttribute(
-      "data-variant",
-      "area",
-    );
-  else
-    await expect(scope.locator(".usage-chart")).toHaveAttribute(
-      "data-chart-style",
-      "area",
-    );
-  const lineButton = reloadedControl.getByRole("button", {
-    name: "折线图",
-    exact: true,
-  });
-  await lineButton.click();
-  await expect(lineButton).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(readStoredChart).toBe("line");
-  if (mobile)
-    await expect(scope.locator(".mini-trend")).toHaveAttribute(
-      "data-variant",
-      "line",
-    );
-  else
-    await expect(scope.locator(".usage-chart")).toHaveAttribute(
-      "data-chart-style",
-      "line",
-    );
-  if (mobile) {
-    const trend = scope.locator(".mobile-home-trend");
-    const miniTrend = trend.locator(".mini-trend");
-    await expect(miniTrend).toHaveAttribute("data-show-scale", "true");
-    await expect(miniTrend).toHaveCSS("height", "120px");
-    await expect(miniTrend.locator(".mini-trend-chart")).toHaveCSS(
-      "height",
-      "120px",
-    );
-    const canvas = miniTrend.locator("canvas");
-    await expect(canvas).toHaveCount(1);
+
+  if (mobileApp) {
+    const canvas = chart.locator("canvas").first();
     await expect(canvas).toBeVisible();
-    await expectPainted(canvas, "mobile Tokens trend has painted data pixels");
-    const canvasSize = await canvas.evaluate((element) => {
-      const value = element as HTMLCanvasElement;
-      return { width: value.width, height: value.height };
-    });
-    expect(
-      canvasSize.width,
-      "mobile Tokens trend canvas width",
-    ).toBeGreaterThan(0);
-    expect(
-      canvasSize.height,
-      "mobile Tokens trend canvas height",
-    ).toBeGreaterThan(0);
+    await expectPainted(
+      canvas,
+      "mobile overview trend has painted data pixels",
+    );
     const geometry = await control.evaluate((element) => {
       const controlBox = element.getBoundingClientRect();
       const trendBox =
-        element.closest(".mobile-home-trend")?.getBoundingClientRect() ??
-        controlBox;
+        element.closest(".trend-panel")?.getBoundingClientRect() ?? controlBox;
       return {
         controlLeft: controlBox.left,
         controlRight: controlBox.right,
@@ -527,12 +504,13 @@ async function assertHomeChartControl(scope: Locator, mobile: boolean) {
         }),
       };
     });
+    // mobile.css 为 App 总览的图表样式按钮设定 32×36。
     expect(
       geometry.buttons.every(
         ({ width, height }) =>
-          Math.abs(width - 36) <= 0.5 && Math.abs(height - 36) <= 0.5,
+          Math.abs(width - 32) <= 0.5 && Math.abs(height - 36) <= 0.5,
       ),
-      "mobile chart buttons are 36px square",
+      "mobile chart buttons are 32x36",
     ).toBe(true);
     expect(
       geometry.controlLeft,
@@ -550,20 +528,31 @@ async function assertHomeChartControl(scope: Locator, mobile: boolean) {
       geometry.controlRight,
       "mobile chart control stays in trend",
     ).toBeLessThanOrEqual(geometry.trendRight + 0.5);
-    expect(
-      geometry.buttons.every(
-        ({ left, right }) =>
-          left >= -0.5 && right <= geometry.viewportWidth + 0.5,
-      ),
-      "mobile chart buttons stay in viewport",
-    ).toBe(true);
     expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
   }
 }
 
-async function assertOverviewTabs(width: number) {
+// 当前页导航项的图标使用强调色 --accent（绿色配色：浅色 #0e8a55，深色 #3ccb8a），其余项不用。
+async function assertCurrentNavigation(nav: Locator, theme: "light" | "dark") {
+  const accent = theme === "light" ? "rgb(14, 138, 85)" : "rgb(60, 203, 138)";
+  const current = nav.locator('button[aria-current="page"]');
+  await expect(current).toHaveCount(1);
+  await expect(current).toHaveText("用量总览");
+  await expect(current).toHaveClass(/\bactive\b/);
+  await expect(current.locator("svg")).toHaveCSS("color", accent);
+  for (const other of await nav
+    .locator("button:not([aria-current])")
+    .locator("svg")
+    .all())
+    await expect(other).not.toHaveCSS("color", accent);
+}
+
+async function assertOverview(width: number, theme: "light" | "dark") {
   await page.goto(`${base}#overview`);
   await ready();
+  await expect(page.getByRole("navigation", { name: "总览视图" })).toHaveCount(
+    0,
+  );
   await expect(page.locator(".mobile-home-title")).toHaveCount(0);
   await expect(page.locator(".mobile-home-period-link")).toHaveCount(0);
   const mobileApp = await page.evaluate(
@@ -571,33 +560,38 @@ async function assertOverviewTabs(width: number) {
       innerWidth <= 900 &&
       document.documentElement.dataset.mobileLayout === "app",
   );
-  await assertHomeChartControl(
-    mobileApp
-      ? page.locator(".mobile-home-summary")
-      : page.locator(".overview-history-trend"),
-    mobileApp,
-  );
+  await assertOverviewChartControl(mobileApp);
+  // 总览默认历史至今：摘要与趋势按账本首条记录所在日到今天查询，按天汇总。
   await expect
     .poll(
       () =>
         viewRequests.some(
           (request) =>
             request.pageSize === 1 &&
-            request.days === 30 &&
             request.account === "all" &&
+            request.from === demoStartDay &&
             request.granularity === "day",
         ),
-      "home Tokens trend uses 30 days of daily data",
+      "overview summary and trend query all history by day",
     )
     .toBe(true);
+  await expect(page.locator("main .metrics")).toHaveCount(0);
   if (!mobileApp) {
-    await expect(page.locator("main .metrics")).toHaveCount(0);
-    await expect(page.locator("main > .filterbar")).toHaveCount(0);
+    await expect(page.locator("section.usage-summary")).toBeVisible();
+    // 总览筛选栏只有日期范围和计价口径，模型与账户筛选留给统计报表和请求明细。
+    const filterbar = page.locator("main > .filterbar");
+    await expect(filterbar).toBeVisible();
+    await expect(
+      filterbar.getByRole("button", { name: "日期范围", exact: true }),
+    ).toBeVisible();
+    await expect(
+      filterbar.getByRole("group", { name: "计价口径", exact: true }),
+    ).toBeVisible();
+    await expect(filterbar.getByRole("combobox")).toHaveCount(0);
     if (width > 900) {
-      await expect(page.locator(".overview-history-trend")).toBeVisible();
       await expect(
         page.locator(".overview-quotas .account-capacity > strong"),
-      ).toHaveText(["N/A", "N/A"]);
+      ).toHaveText(expectedWeeklyEstimates);
       await expect(
         page
           .locator(".overview-quotas .account-capacity")
@@ -605,73 +599,28 @@ async function assertOverviewTabs(width: number) {
       ).toHaveCount(0);
     }
   } else {
-    await expect(page.locator(".mobile-home-trend-bars")).toHaveCount(0);
-    await expect(page.locator(".mobile-home .mini-trend-chart")).toBeVisible();
-    const mobileTrend = page.locator(".mobile-home-trend");
+    await expect(page.locator(".mobile-home-summary")).toBeVisible();
+    await expect(page.locator(".mobile-filterbar")).toBeVisible();
     await expect(
-      mobileTrend.getByText("Tokens 趋势", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      mobileTrend.getByText("近 30 天 · 按天汇总", { exact: true }),
-    ).toBeVisible();
-    const trendData = page.getByRole("list", {
-      name: "Tokens 趋势数据",
-    });
-    await expect(trendData).toHaveCount(1);
-    expect(await trendData.locator("li").count()).toBeGreaterThan(0);
+      page.locator(".mobile-period-presets > button:not(.date-range-trigger)"),
+    ).toHaveText(["全部", "7 天", "30 天"]);
   }
-  const overviewTabStart = await page
-    .getByRole("navigation", { name: "总览视图" })
-    .getByRole("button")
-    .first()
-    .boundingBox();
-  await page
-    .getByRole("navigation", { name: "总览视图" })
-    .getByRole("button", { name: "时间段用量", exact: true })
-    .click();
-  await expect(page).toHaveURL(/#period$/);
-  await ready();
-  const periodTabStart = await page
-    .getByRole("navigation", { name: "总览视图" })
-    .getByRole("button")
-    .first()
-    .boundingBox();
-  expect(overviewTabStart, "overview tab geometry").not.toBeNull();
-  expect(periodTabStart, "period tab geometry").not.toBeNull();
-  expect(
-    Math.abs((overviewTabStart?.x ?? 0) - (periodTabStart?.x ?? 0)),
-    "overview tabs keep the same starting x coordinate",
-  ).toBeLessThanOrEqual(1);
   if (width > 900) {
-    await expect(
-      page.locator(
-        '.sidebar nav[aria-label="主导航"] button[aria-current="page"] .nav-marker',
-      ),
-    ).toBeVisible();
+    await assertCurrentNavigation(
+      page.locator('.sidebar nav[aria-label="主导航"]'),
+      theme,
+    );
   } else if (!mobileApp) {
     await page.getByRole("button", { name: "打开导航", exact: true }).click();
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
-    await expect(
-      drawer.locator(
-        'nav[aria-label="主导航"] button[aria-current="page"] .nav-marker',
-      ),
-    ).toBeVisible();
+    await assertCurrentNavigation(
+      drawer.locator('nav[aria-label="主导航"]'),
+      theme,
+    );
     await page.keyboard.press("Escape");
+    await expect(drawer).toHaveCount(0);
   }
-  await expect(page.locator(".metrics")).toBeVisible();
-  if (width <= 900) {
-    await expect(
-      page.locator(mobileApp ? ".mobile-filterbar" : ".filterbar"),
-    ).toBeVisible();
-  } else {
-    await expect(page.locator("main > .filterbar")).toBeVisible();
-  }
-  await page
-    .getByRole("navigation", { name: "总览视图" })
-    .getByRole("button", { name: "累计总览", exact: true })
-    .click();
-  await expect(page).toHaveURL(/#overview$/);
 }
 
 async function assertChartControls(width: number) {
@@ -742,14 +691,27 @@ async function assertAccountsAndTrends() {
       "account request micro trends use line variant",
     )
     .toBe(true);
-  await expect(
-    page.locator(".overview-quotas .account-capacity > strong"),
-  ).toHaveText(["N/A", "N/A"]);
-  await expect(
-    page
-      .locator(".overview-quotas .account-capacity")
-      .getByText(/未提供|未计价原因/),
-  ).toHaveCount(0);
+  if (mobile) {
+    // 窄屏账户行改用紧凑布局：7d 预估跟在周额度的金额行里，不再单列预估栏。
+    await expect(
+      page.locator(".overview-quotas .account-capacity"),
+    ).toHaveCount(0);
+    const estimates = page.locator(
+      '.overview-quotas .quota-window[data-window="sevenDay"] .quota-window-estimate',
+    );
+    await expect(estimates).toHaveCount(expectedWeeklyEstimates.length);
+    for (const [index, value] of expectedWeeklyEstimates.entries())
+      await expect(estimates.nth(index)).toContainText(value);
+  } else {
+    await expect(
+      page.locator(".overview-quotas .account-capacity > strong"),
+    ).toHaveText(expectedWeeklyEstimates);
+    await expect(
+      page
+        .locator(".overview-quotas .account-capacity")
+        .getByText(/未提供|未计价原因/),
+    ).toHaveCount(0);
+  }
   await expect(api.locator(".account-lifetime > span")).toHaveCount(3);
   await expect
     .poll(() => api.locator(".mini-trend-chart canvas").count())
@@ -985,7 +947,7 @@ try {
         await page.screenshot({ path: aboutPath, fullPage: true });
         screenshots.push(aboutPath);
 
-        await assertOverviewTabs(width);
+        await assertOverview(width, theme);
         await page.goto(`${base}#overview`);
         await ready();
         const overviewPath = `test-results/visual-feedback/${key}-overview.png`;
@@ -1019,12 +981,11 @@ try {
         layouts,
         themes,
         screenshots,
-        homeTrendContract: viewRequests.filter(
+        overviewRangeContract: viewRequests.filter(
           (request) =>
             request.pageSize === 1 &&
-            request.days === 30 &&
             request.account === "all" &&
-            request.granularity === "day",
+            request.from === demoStartDay,
         ),
         accountTrendContract: viewRequests.filter(
           (request) => request.pageSize === 1 && request.account !== "all",
