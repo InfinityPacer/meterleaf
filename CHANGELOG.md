@@ -2,6 +2,8 @@
 
 ## [未发布]
 
+## [0.6.0] - 2026-09-27
+
 - Sub2API 改为可选来源。只使用本地直连 Claude Code 的用户，填写本机采集器的写入密钥即可启动 Meterleaf，不再需要网关数据库；这时页面不显示「数据同步」，采集器推送后报表自动更新。`SUB2API_DATABASE_URL` 与 `METERLEAF_INGEST_KEYS` 至少填写一项。
 - README 与部署指南补充 Claude Code 的接入步骤、写入密钥配置和采集器访问服务的方式，并说明修改 `.env` 后需要重新执行 `docker compose up -d`，`restart` 不会读取新配置。
 
