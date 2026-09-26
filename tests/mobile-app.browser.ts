@@ -13,6 +13,7 @@ import {
   type ViewQuery,
 } from "../src/shared/ledger-view";
 import { aggregateReport } from "../src/web/lib/report";
+import { estimateAmount } from "../src/web/lib/quota-display";
 import type { SyncStatus } from "../src/server/sync";
 
 const base = process.env.METERLEAF_TEST_URL ?? "http://127.0.0.1:4331/";
@@ -106,6 +107,21 @@ const axeSource = process.env.METERLEAF_AXE_PATH
 const results: unknown[] = [];
 const views = ["overview", "reports", "ledger", "settings"] as const;
 let screens = 0;
+
+// 演示账本给出 7d 整周预估；Web 账户行按来源顺序为每个有额度窗口的账户显示订阅等价 USD 预估。
+const demoLedger = createDemoLedger("subscription");
+const expectedWeeklyEstimates = demoLedger.accounts
+  .filter(
+    (account) => account.fiveHour || account.sevenDay || account.sevenDayFable,
+  )
+  .map((account) => estimateAmount(account.sevenDay, "usd", demoLedger.asOf));
+if (
+  !expectedWeeklyEstimates.length ||
+  expectedWeeklyEstimates.some((value) => !/^\$[\d,]+\.\d{2}$/.test(value))
+)
+  throw new Error(
+    `Demo weekly estimates must be amounts: ${expectedWeeklyEstimates}`,
+  );
 
 const viewRoutePattern = "**/api/view**";
 const archiveRoutePattern = "**/api/accounts/archive**";
@@ -391,7 +407,7 @@ async function ready() {
       await expect(page.locator(".desktop-period .trend-panel")).toBeVisible();
       await expect(
         page.locator(".overview-quotas .account-capacity > strong"),
-      ).toHaveText(["N/A", "N/A"]);
+      ).toHaveText(expectedWeeklyEstimates);
       await expect(
         page
           .locator(".overview-quotas .account-capacity")
@@ -708,11 +724,12 @@ try {
   await expect(page.getByRole("navigation", { name: "底部导航" })).toBeHidden();
   await page.getByRole("button", { name: "打开导航" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
+  // 抽屉边框取 --color-border，即浅色主题的 --line（#e4e4e7）。
   expect(
     await page
       .getByRole("dialog")
       .evaluate((element) => getComputedStyle(element).borderRightColor),
-  ).toBe("rgb(229, 233, 238)");
+  ).toBe("rgb(228, 228, 231)");
   await page.screenshot({ path: "test-results/mobile-sidebar.png" });
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "打开导航" })).toBeFocused();
@@ -939,7 +956,7 @@ try {
   const summary = {
     status: "passed",
     checks:
-      "four navigation items, merged overview, overview account management, overview range chips and date picker, range-scoped summary and trend, quotas independent of range, about route, mode persistence, drawer border/focus, overview and report filter sheets, filter focus, detail focus/trap, pagination, reflow, text spacing, reduced motion, line micro trends, N/A estimates, transparent actions, compact filter sheet, overview and account pageSize=1 query bounds",
+      "four navigation items, merged overview, overview account management, overview range chips and date picker, range-scoped summary and trend, quotas independent of range, about route, mode persistence, drawer border/focus, overview and report filter sheets, filter focus, detail focus/trap, pagination, reflow, text spacing, reduced motion, line micro trends, weekly estimate amounts, transparent actions, compact filter sheet, overview and account pageSize=1 query bounds",
     screens,
     errors,
     a11y: axeSource ? "executed" : "skipped: METERLEAF_AXE_PATH not provided",

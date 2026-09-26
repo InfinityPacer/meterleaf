@@ -1,4 +1,4 @@
-import { chromium, expect } from "@playwright/test";
+import { chromium, expect, type Request } from "@playwright/test";
 
 const browser = await chromium.connectOverCDP(process.env.METERLEAF_CDP_URL!);
 const base = process.env.METERLEAF_TEST_URL ?? "http://127.0.0.1:4321/";
@@ -7,26 +7,44 @@ const page = browser
   .flatMap((context) => context.pages())
   .find((page) => page.url().startsWith(base));
 if (!page) throw new Error("Existing task page required");
-const keys = [
-  "meterleaf-report-filter",
-  "meterleaf-usd-basis",
-  ...[
-    "page",
-    "unit",
-    "granularity",
-    "chart",
-    "report-dimension",
-    "record-sort",
-    "report-sort",
-    "distribution-unit",
-  ].map((key) => `meterleaf-pref-${key}`),
-];
-const before = await page.evaluate(
-  (keys) => keys.map((key) => localStorage.getItem(key)),
-  keys,
+
+// 每个页面的筛选分别保存在 meterleaf-report-filter-<视图>，总览使用 home 视图；计价口径全局共享。
+const filterKey = (scope: "home" | "reports" | "ledger") =>
+  `meterleaf-report-filter-${scope}`;
+const readJson = (key: string) =>
+  page.evaluate((key) => {
+    const value = localStorage.getItem(key);
+    return value === null ? null : JSON.parse(value);
+  }, key);
+const before = await page.evaluate(() =>
+  Object.fromEntries(
+    Object.entries(localStorage).filter(([key]) =>
+      key.startsWith("meterleaf-"),
+    ),
+  ),
 );
+const beforeViewport = page.viewportSize();
+// 主列表请求带分页大小 12；pageSize=1 是摘要与趋势查询。
+const isMainView = (request: Request) => {
+  const url = new URL(request.url());
+  return (
+    url.pathname === "/api/view" && url.searchParams.get("pageSize") !== "1"
+  );
+};
+async function reloadAndCaptureView(hash: string) {
+  const request = page!.waitForRequest(isMainView);
+  await page!.goto(base + "#" + hash);
+  await page!.reload();
+  return new URL((await request).url()).searchParams;
+}
+
 try {
-  await page.evaluate(() => localStorage.removeItem("meterleaf-report-filter"));
+  // 该套检查覆盖 Web 布局下的筛选栏与分组按钮。
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.evaluate(() => {
+    for (const key of Object.keys(localStorage))
+      if (key.startsWith("meterleaf-")) localStorage.removeItem(key);
+  });
   await page.goto(base + "#reports");
   await page.reload();
   await page.getByRole("button", { name: "日期范围", exact: true }).click();
@@ -35,43 +53,70 @@ try {
   await page.getByRole("button", { name: "关闭日期选择" }).click();
   for (const label of ["模型筛选", "账户筛选"]) {
     await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
-    await page.getByRole("combobox", { name: label }).click();
+    await page.getByRole("combobox", { name: label, exact: true }).click();
     await expect(page.getByRole("listbox")).toBeVisible();
     await page.getByRole("listbox").getByRole("option").nth(1).click();
+    await expect(page.getByRole("listbox")).toHaveCount(0);
     await expect
-      .poll(() =>
-        page.evaluate(
-          (label) =>
-            JSON.parse(localStorage.getItem("meterleaf-report-filter")!)[
-              label === "模型筛选" ? "model" : "account"
-            ],
-          label,
-        ),
-      )
+      .poll(async () => {
+        const saved = await readJson(filterKey("reports"));
+        return saved?.[label === "模型筛选" ? "model" : "account"] ?? "all";
+      })
       .not.toBe("all");
   }
   await page.getByRole("button", { name: "标准 API", exact: true }).click();
-  const saved = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem("meterleaf-report-filter")!),
-  );
+  const saved = await readJson(filterKey("reports"));
   expect(saved.dateRange).toEqual({ from: "2026-08-20", to: "2026-08-27" });
   expect(saved.model).not.toBe("all");
   expect(saved.account).not.toBe("all");
-  for (const tab of ["overview", "reports", "ledger"]) {
-    const request = page.waitForRequest(
-      (request) => new URL(request.url()).pathname === "/api/view",
-    );
-    await page.goto(base + "#" + tab);
-    await page.reload();
-    const params = new URL((await request).url()).searchParams;
-    expect(params.get("from")).toBe(saved.dateRange.from);
-    expect(params.get("to")).toBe(saved.dateRange.to);
-    expect(params.get("model")).toBe(saved.model);
-    expect(params.get("account")).toBe(saved.account);
-    await expect(
-      page.getByRole("button", { name: "标准 API", exact: true }),
-    ).toHaveAttribute("aria-pressed", "true");
-  }
+  await expect
+    .poll(() =>
+      page.evaluate(() => localStorage.getItem("meterleaf-usd-basis")),
+    )
+    .toBe("api");
+
+  // 统计报表重新载入后按保存的范围、模型和账户查询。
+  const reportParams = await reloadAndCaptureView("reports");
+  expect(reportParams.get("from")).toBe(saved.dateRange.from);
+  expect(reportParams.get("to")).toBe(saved.dateRange.to);
+  expect(reportParams.get("model")).toBe(saved.model);
+  expect(reportParams.get("account")).toBe(saved.account);
+  await expect(
+    page.getByRole("button", { name: "标准 API", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+
+  // 请求明细与总览不继承统计报表的筛选，只共享计价口径。
+  const ledgerParams = await reloadAndCaptureView("ledger");
+  expect(ledgerParams.get("from")).toBeNull();
+  expect(ledgerParams.get("days")).toBe("7");
+  expect(ledgerParams.get("model")).toBe("all");
+  expect(ledgerParams.get("account")).toBe("all");
+  await expect(
+    page.getByRole("button", { name: "标准 API", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.goto(base + "#overview");
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "日期范围", exact: true }),
+  ).toContainText("历史至今");
+  await expect(
+    page.getByRole("button", { name: "标准 API", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  expect(await readJson(filterKey("home"))).toBeNull();
+
+  // 请求明细自己的筛选同样持久化；搜索词与页码不保存；清除只重置当前页面。
+  await page.goto(base + "#ledger");
+  await page.reload();
+  await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
+  await page.getByRole("combobox", { name: "模型筛选", exact: true }).click();
+  await page.getByRole("listbox").getByRole("option").nth(1).click();
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect
+    .poll(async () => (await readJson(filterKey("ledger")))?.model ?? "all")
+    .not.toBe("all");
+  const ledgerModel = (await readJson(filterKey("ledger"))).model;
+  const ledgerReloaded = await reloadAndCaptureView("ledger");
+  expect(ledgerReloaded.get("model")).toBe(ledgerModel);
   await page
     .getByRole("textbox", { name: "搜索请求", exact: true })
     .fill("not-persisted-search");
@@ -81,16 +126,23 @@ try {
   ).toHaveValue("");
   await page.getByRole("button", { name: "清除筛选", exact: true }).click();
   await page.reload();
-  const reset = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem("meterleaf-report-filter")!),
-  );
-  expect(reset).toEqual({ days: 7, model: "all", account: "all" });
+  expect(await readJson(filterKey("ledger"))).toEqual({
+    days: 7,
+    model: "all",
+    account: "all",
+  });
+  expect(await readJson(filterKey("reports"))).toEqual(saved);
   await page.getByRole("button", { name: "下一页", exact: true }).click();
   await expect(page.locator(".pagination")).toContainText("第 2 /");
   await page.reload();
   await expect(page.locator(".pagination")).toContainText("第 1 /");
+
+  // 总览的图表单位默认 Tokens，改为 USD 后与图表样式、粒度一起按总览保存。
   await page.goto(base + "#overview");
-  await page.getByRole("button", { name: "Tokens", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Tokens", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "USD", exact: true }).click();
   await page.getByRole("button", { name: "折线图", exact: true }).click();
   await page
     .getByRole("group", { name: "时间粒度", exact: true })
@@ -98,7 +150,7 @@ try {
     .click();
   await page.reload();
   await expect(
-    page.getByRole("button", { name: "Tokens", exact: true }),
+    page.getByRole("button", { name: "USD", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect(
     page.getByRole("button", { name: "折线图", exact: true }),
@@ -108,6 +160,9 @@ try {
       .getByRole("group", { name: "时间粒度", exact: true })
       .getByRole("button", { name: "周", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
+  expect(await readJson("meterleaf-pref-home-unit")).toBe("usd");
+  expect(await readJson("meterleaf-pref-home-chart")).toBe("line");
+  expect(await readJson("meterleaf-pref-home-granularity")).toBe("week");
   await page.goto(base + "#reports");
   await page
     .getByRole("group", { name: "汇总维度" })
@@ -136,6 +191,7 @@ try {
       dates: true,
       model: true,
       account: true,
+      perViewFilters: true,
       usdBasis: true,
       chart: true,
       unit: true,
@@ -149,15 +205,13 @@ try {
     }),
   );
 } finally {
-  await page.evaluate(
-    ({ keys, before }) =>
-      keys.forEach((key, i) =>
-        before[i] === null
-          ? localStorage.removeItem(key)
-          : localStorage.setItem(key, before[i]!),
-      ),
-    { keys, before },
-  );
+  await page.evaluate((before) => {
+    for (const key of Object.keys(localStorage))
+      if (key.startsWith("meterleaf-")) localStorage.removeItem(key);
+    for (const [key, value] of Object.entries(before))
+      localStorage.setItem(key, value);
+  }, before);
+  if (beforeViewport) await page.setViewportSize(beforeViewport);
   await page.reload();
   await browser.close();
 }
