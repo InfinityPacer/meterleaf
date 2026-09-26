@@ -103,6 +103,18 @@ try {
       // 桌面外壳在品牌与主导航之间保留 24px（desktop.css）。
       expect(gap).toBe(24);
     }
+    const appLayout = await page.evaluate(
+      () =>
+        innerWidth <= 900 &&
+        document.documentElement.dataset.mobileLayout === "app",
+    );
+    if (appLayout) {
+      // App 布局只在首页顶栏放同步入口，其他页面隐藏（mobile.css 的 .app-topbar:not(.app-home-topbar) .app-sync）。
+      await expect(
+        page.getByRole("button", { name: "数据同步", exact: true }),
+      ).toBeHidden();
+      await page.goto(base + "#overview");
+    }
     await page.getByRole("button", { name: "数据同步", exact: true }).click();
     await expect(page.getByText("自动同步", { exact: true })).toBeVisible();
     await expect(page.getByText("自动刷新", { exact: true })).toHaveCount(0);

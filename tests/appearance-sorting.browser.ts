@@ -28,9 +28,10 @@ try {
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.locator(".app-shell")).toHaveCount(0);
   await expect(page.locator("html")).toHaveClass(/dark/);
+  // React 未加载时由 index.html 的首屏样式着色，深色取 .dark 的 --canvas（#0f0f11）。
   await expect(page.locator("html")).toHaveCSS(
     "background-color",
-    "rgb(23, 27, 32)",
+    "rgb(15, 15, 17)",
   );
   await page.unroute(mainScript);
   await page.reload();
