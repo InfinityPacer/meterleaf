@@ -2,7 +2,7 @@
 
 [返回首页](../README.md)
 
-Meterleaf 单容器提供前端与 API，只读访问 Sub2API PostgreSQL，使用本地 SQLite 保存账本。不代理模型请求，不修改 Sub2API，也不直接请求 OpenAI。
+Meterleaf 单容器提供前端与 API，只读访问 Sub2API PostgreSQL，也可接收本机采集器推送的 Claude Code 用量，使用本地 SQLite 保存账本。不代理模型请求，不修改 Sub2API，也不直接请求 OpenAI 或 Anthropic。
 
 ## 安装
 
@@ -72,15 +72,30 @@ Compose 将容器内数据目录、监听地址和端口固定为 `/app/app_data
 
 Claude Code 等本地直连的客户端不经过网关，需要在使用它的电脑上运行本机采集器，由采集器把用量、账户和额度快照推送到 Meterleaf。安装和日常使用见[本机采集器](collector.md)。
 
-每台电脑一个写入密钥。采集器执行 `init` 时生成密钥，并打印一行 `来源标识:摘要`。把这些行用英文逗号连接后填入 `METERLEAF_INGEST_KEYS`，重启服务即可：
+采集器是附加来源，服务端仍需要按上文配置 Sub2API。
+
+### 写入密钥
+
+每台电脑一个写入密钥。在电脑上执行采集器的 `init` 时生成密钥，并打印一行 `METERLEAF_INGEST_KEYS=来源标识:摘要`。把它加到服务端 `.env`，多台电脑的 `来源标识:摘要` 用英文逗号连接：
 
 ```dotenv
 METERLEAF_INGEST_KEYS=claude-code-macbook:<64 位十六进制摘要>,claude-code-mini:<摘要>
 ```
 
-Meterleaf 只保存密钥的 SHA-256 摘要，每个密钥只能写入自己绑定的来源，不能读取报表，删除对应一行即可吊销。来源标识不能与 `METERLEAF_SOURCE_ID` 相同，已有账本不要改名。未设置该变量时不开放写入接口。
+然后按实际使用的来源再执行一次启动命令，让容器按新配置重建。`docker compose restart` 只重启旧容器，不会读取新的 `.env`。
 
-采集器需要能访问 Meterleaf。若要让外网的电脑推送，只在反向代理上为 `POST /api/ingest/v1/batches` 绕过原有登录保护，其余页面照旧。这个地址用写入密钥鉴权，必须走 HTTPS。反向代理的请求体上限至少设为 8 MB，Nginx 默认 1 MB 会拒绝大批次。以 Nginx 为例：
+```sh
+docker compose up -d --pull never             # 源码构建
+docker compose up -d --no-build --pull never  # 已发布镜像
+```
+
+完整密钥只保存在采集器所在电脑上，服务端只保存 SHA-256 摘要，每个密钥只能写入自己绑定的来源，不能读取报表，删除对应一行即可吊销。来源标识不能与 `METERLEAF_SOURCE_ID` 相同，已有账本不要改名。未设置该变量时不开放写入接口。
+
+### 让采集器访问服务
+
+采集器需要能访问 Meterleaf。采集器与服务在同一台电脑时使用 `http://127.0.0.1:4318`。服务在 NAS 等其他主机时，随附 Compose 默认只监听回环地址，局域网访问需把 `METERLEAF_BIND_ADDRESS` 改为 `0.0.0.0` 或宿主机局域网地址，或者经由已有的反向代理访问。HTTP 下写入密钥明文传输，只在可信局域网中使用。
+
+若要让外网的电脑推送，只在反向代理上为 `POST /api/ingest/v1/batches` 绕过原有登录保护，其余页面照旧。这个地址用写入密钥鉴权，必须走 HTTPS。反向代理的请求体上限至少设为 8 MB，Nginx 默认 1 MB 会拒绝大批次。以 Nginx 为例：
 
 ```nginx
 location = /api/ingest/v1/batches {
@@ -125,7 +140,7 @@ docker compose pull
 docker compose up -d --no-build --pull never
 ```
 
-更新后用 `docker compose ps` 检查状态。
+更新后用 `docker compose ps` 检查状态。接入了本机采集器时，先升级服务端再升级采集器，见[本机采集器](collector.md#升级)。
 
 恢复前先准备备份对应的程序版本，再停止服务、保留当前数据并恢复完整备份。将下面的备份目录替换为实际名称：
 

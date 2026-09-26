@@ -21,7 +21,7 @@ Claude Code 会把一次请求按内容块拆成多行保存，每行带着同�
 
 ## 安装
 
-采集器需要 macOS，在仓库中构建。
+采集器需要 macOS 13 或更新版本，目前不提供下载，需要在这台 Mac 上从仓库构建。构建需要 Bun 1.4.2 或更新版本，以及 Xcode 命令行工具（没有时执行 `xcode-select --install`）。
 
 ```sh
 bun install --frozen-lockfile
@@ -42,7 +42,9 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
    meterleaf-collector init --server https://meterleaf.example.com
    ```
 
-   命令会打印一行 `METERLEAF_INGEST_KEYS=来源标识:摘要`。按[部署指南](deployment.md#接入本机采集器)把它加到 Meterleaf 的环境变量并重启服务。完整密钥只保存在本机配置文件中，不需要也不应转交。
+   命令会打印一行 `METERLEAF_INGEST_KEYS=来源标识:摘要`。把它加到 Meterleaf 服务端的 `.env`，多台电脑用英文逗号连接，再执行一次 `docker compose up -d` 让配置生效，细节见[部署指南](deployment.md#写入密钥)。完整密钥只保存在本机配置文件中，不需要也不应转交。
+
+   服务端在 NAS 等其他主机时，这台电脑需要能访问它，局域网访问与公网推送的设置见[部署指南](deployment.md#让采集器访问服务)。
 
 2. 声明历史归属。会话记录里没有账户信息，采集器靠每次运行时观察到的登录账户来归属用量。首次运行前的历史无法自动判断，如果这台电脑一直只登录过当前账户，在首次同步前执行下面的命令。
 
