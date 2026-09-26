@@ -275,7 +275,29 @@
 }
 
 .mobile-home-account-list > li {
+  position: relative;
   min-width: 0;
+}
+
+/* 管理菜单与卡片按钮平级，盖在箭头原来的位置上；箭头保留占位，名称不必让出空间。 */
+.mobile-home-account-list > li[data-manageable] .mobile-home-account-chevron {
+  visibility: hidden;
+}
+
+.mobile-home-account-list > li > .account-menu-trigger {
+  top: 14px;
+  right: 2px;
+  width: 44px;
+  height: 44px;
+}
+
+.mobile-home-account-list > li > .account-order-actions {
+  padding: 8px 0 0;
+}
+
+.mobile-home-accounts .account-heading-actions {
+  align-items: center;
+  gap: 12px;
 }
 
 .mobile-home-account-card {

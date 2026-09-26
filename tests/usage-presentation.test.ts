@@ -167,7 +167,6 @@ test("mobile home uses N/A for missing account and trend values", () => {
       rangeLabel: "近 7 天",
       onAccount: () => {},
       onRequests: () => {},
-      onAllAccounts: () => {},
     }),
   );
 

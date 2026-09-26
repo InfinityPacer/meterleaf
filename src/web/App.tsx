@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import {
   keepPreviousData,
@@ -20,8 +21,6 @@ import {
   ArrowRight,
   ArrowUp,
   ArrowDown,
-  ArrowUpDown,
-  Check,
   Archive,
   ArchiveRestore,
   Trash2,
@@ -64,6 +63,7 @@ import {
 import { SyncControl } from "./components/SyncControl";
 import { FilterSelect } from "./components/FilterSelect";
 import { ThemeControl } from "./components/ThemeControl";
+import { AccountHeadingActions } from "./components/AccountHeadingActions";
 import {
   accountQuotaExhausted,
   estimateAmount,
@@ -154,7 +154,6 @@ const UsageChart = lazy(() =>
 );
 const primaryPages = [
   { id: "overview", name: "用量总览", icon: Activity },
-  { id: "accounts", name: "账户额度", icon: Wallet },
   { id: "reports", name: "统计报表", icon: BarChart3 },
   { id: "ledger", name: "请求明细", icon: FileText },
 ] as const;
@@ -297,13 +296,10 @@ function windowAmount(
     : formatCredits(window.periodCredits ?? null);
 }
 
-/** 旧「时间段用量」已并入总览；旧链接与已保存的页面偏好都回到总览。 */
 function readPage(): Page {
   const id = location.hash.slice(1);
-  if (id === "period") return "overview";
   if (pages.some((p) => p.id === id)) return id as Page;
-  const stored = readPreference("page", prefs.page, "overview");
-  return stored === "period" ? "overview" : stored;
+  return readPreference("page", prefs.page, "overview");
 }
 
 function QuotaBar({
@@ -353,7 +349,6 @@ function AccountRow({
   account,
   asOf,
   onOpen,
-  compactView = false,
   archived = false,
   usdBasis,
   compactUsage = false,
@@ -362,7 +357,6 @@ function AccountRow({
   account: LedgerAccount;
   asOf: string;
   onOpen: () => void;
-  compactView?: boolean;
   archived?: boolean;
   usdBasis: UsdBasis;
   compactUsage?: boolean;
@@ -425,9 +419,6 @@ function AccountRow({
           )}
         </span>
       </span>
-      {compactView && status && (
-        <span className="app-account-status">{status}</span>
-      )}
       {hasQuota ? (
         <>
           <span className="account-windows quota-window-list">
@@ -517,22 +508,35 @@ function AccountRow({
   );
 }
 
-/** 总览沿用账户页的行布局，所有账户排在同一个面板里。 */
+/**
+ * 总览的账户区同时承担账户管理：使用中与已归档两份列表切换，每行带排序和管理菜单。
+ * 额度按各自当前周期显示，不跟随总览的日期范围。
+ */
 function OverviewQuotas({
   accounts,
+  archivedCount,
+  showArchived,
+  onShowArchived,
+  editingOrder,
+  onEditingOrder,
   asOf,
   onOpen,
-  onAll,
   onRequests,
+  renderActions,
   accountUsage,
   usdBasis,
   compactUsage = false,
 }: {
   accounts: LedgerAccount[];
+  archivedCount: number;
+  showArchived: boolean;
+  onShowArchived: (show: boolean) => void;
+  editingOrder: boolean;
+  onEditingOrder: (editing: boolean) => void;
   asOf: string;
   onOpen: (account: LedgerAccount) => void;
-  onAll: () => void;
   onRequests: (account: LedgerAccount) => void;
+  renderActions: (account: LedgerAccount) => ReactNode;
   accountUsage?: Record<string, AccountLifetime>;
   usdBasis: UsdBasis;
   compactUsage?: boolean;
@@ -543,33 +547,52 @@ function OverviewQuotas({
       aria-labelledby="overview-quotas-title"
     >
       <div className="section-heading">
-        <h2 id="overview-quotas-title">账户额度</h2>
-        <Button variant="ghost" onClick={onAll}>
-          全部账户 <ArrowRight size={16} />
-        </Button>
+        <h2 id="overview-quotas-title">
+          {showArchived ? "已归档账户" : "账户额度"}
+        </h2>
+        <AccountHeadingActions
+          archivedCount={archivedCount}
+          showArchived={showArchived}
+          onShowArchived={onShowArchived}
+          editingOrder={editingOrder}
+          onEditingOrder={onEditingOrder}
+          canSort={accounts.length > 1}
+          render={(props) => <Button variant="ghost" {...props} />}
+        />
       </div>
-      {accounts.length ? (
-        <div className="account-list" aria-label="账户额度摘要">
-          {accounts.map((account) => (
-            <div className="account-list-item" key={account.id}>
-              <AccountRow
-                account={account}
-                asOf={asOf}
-                usdBasis={usdBasis}
-                compactUsage={compactUsage}
-                usage={accountUsage?.[account.id]}
-                onOpen={() =>
-                  account.fiveHour || account.sevenDay
-                    ? onOpen(account)
-                    : onRequests(account)
-                }
-              />
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="muted">暂无账户</p>
-      )}
+      <div
+        className="account-list"
+        aria-label={showArchived ? "已归档账户列表" : "账户额度摘要"}
+      >
+        {accounts.map((account) => (
+          <div
+            className="account-list-item"
+            key={account.id}
+            data-account-id={account.id}
+            data-manageable
+          >
+            <AccountRow
+              account={account}
+              asOf={asOf}
+              archived={showArchived}
+              usdBasis={usdBasis}
+              compactUsage={compactUsage}
+              usage={accountUsage?.[account.id]}
+              onOpen={() =>
+                account.fiveHour || account.sevenDay
+                  ? onOpen(account)
+                  : onRequests(account)
+              }
+            />
+            {renderActions(account)}
+          </div>
+        ))}
+        {!accounts.length && (
+          <p className="empty-chart">
+            {showArchived ? "暂无归档账户" : "暂无账户"}
+          </p>
+        )}
+      </div>
     </section>
   );
 }
@@ -590,17 +613,8 @@ export function App() {
   const [accountToRename, setAccountToRename] = useState<RenameTarget | null>(
     null,
   );
-  const [archiveView, setArchiveView] = usePreference(
-    "account-archive-view",
-    prefs.accountArchiveView,
-    "active",
-  );
-  // 账户列表范围独立于请求明细；钻取请求不能反向改变账户页筛选。
-  const [accountFilter, setAccountFilter] = usePreference(
-    "account-filter",
-    prefs.accountFilter,
-    "all",
-  );
+  // 归档列表只是总览账户区的临时切换，重新打开应用时回到使用中的账户。
+  const [showArchived, setShowArchived] = useState(false);
   const [reportDimension, setReportDimension] = usePreference<ReportDimension>(
     "report-dimension",
     prefs.dimension,
@@ -627,11 +641,7 @@ export function App() {
     window.addEventListener("scroll", rememberScroll, { passive: true });
     return () => window.removeEventListener("scroll", rememberScroll);
   }, [page, mobile]);
-  const [, rememberPage] = usePreference<Page | "period">(
-    "page",
-    prefs.page,
-    "overview",
-  );
+  const [, rememberPage] = usePreference<Page>("page", prefs.page, "overview");
   useEffect(() => {
     rememberPage(page);
   }, [page, rememberPage]);
@@ -826,12 +836,139 @@ export function App() {
     accountOrder,
   );
   const archivedIds = new Set(accountArchive.data?.archived ?? []);
-  const visibleAccounts = sortedAccounts.filter(
-    (account) =>
-      archiveView === "all" ||
-      archivedIds.has(account.id) === (archiveView === "archived"),
+  const activeAccounts = sortedAccounts.filter(
+    (account) => !archivedIds.has(account.id),
+  );
+  const archivedAccounts = sortedAccounts.filter((account) =>
+    archivedIds.has(account.id),
   );
   const usdBasis = usdBasisOverride ?? snapshot?.usdBasis ?? "subscription";
+  const showArchivedAccounts = (show: boolean) => {
+    setEditingAccountOrder(false);
+    setShowArchived(show);
+  };
+  /** 账户区每行的排序按钮与管理菜单，Web 总览和手机首页共用。 */
+  const renderAccountActions = (account: LedgerAccount) => {
+    const position = activeAccounts.indexOf(account);
+    return (
+      <>
+        {editingAccountOrder && !showArchived && (
+          <div
+            className="account-order-actions"
+            aria-label={`${account.name} 排序`}
+          >
+            {([-1, 1] as const).map((direction) => (
+              <Button
+                key={direction}
+                variant="ghost"
+                size="icon"
+                aria-label={`${direction === -1 ? "上移" : "下移"} ${account.name}`}
+                title={direction === -1 ? "上移账户" : "下移账户"}
+                disabled={!activeAccounts[position + direction]}
+                onClick={() =>
+                  setAccountOrder(
+                    moveAccount(
+                      sortedAccounts.map((value) => value.id),
+                      account.id,
+                      direction,
+                      (id) => !archivedIds.has(id),
+                    ),
+                  )
+                }
+              >
+                {direction === -1 ? (
+                  <ArrowUp size={18} />
+                ) : (
+                  <ArrowDown size={18} />
+                )}
+              </Button>
+            ))}
+          </div>
+        )}
+        <ActionMenu.Root>
+          <ActionMenu.Trigger
+            className="account-menu-trigger"
+            render={<Button variant="ghost" size="icon" />}
+            aria-label={`${account.name} 账户操作`}
+            title="账户操作"
+          >
+            <MoreHorizontal size={18} />
+          </ActionMenu.Trigger>
+          <ActionMenu.Portal>
+            <ActionMenu.Positioner
+              side="bottom"
+              align="end"
+              sideOffset={4}
+              className="account-menu-positioner"
+            >
+              <ActionMenu.Popup className="account-menu-popup">
+                {!accountArchive.data?.writable && (
+                  <p className="account-readonly-note">
+                    {accountArchive.isError
+                      ? "账户状态读取失败"
+                      : accountArchive.isPending
+                        ? "正在读取账户状态"
+                        : "只读数据，无法修改账户"}
+                  </p>
+                )}
+                <ActionMenu.Item
+                  className="account-menu-item"
+                  disabled={
+                    !accountArchive.data?.writable ||
+                    accountArchive.mutation.isPending
+                  }
+                  onClick={() => {
+                    accountArchive.mutation.reset();
+                    setAccountToRename({
+                      id: account.id,
+                      name: account.name,
+                      upstreamName:
+                        upstreamAccountName(account.id) ?? account.name,
+                      hasAlias: Boolean(accountAliases?.[account.id]),
+                    });
+                  }}
+                >
+                  <PencilLine size={16} />
+                  重命名
+                </ActionMenu.Item>
+                <ActionMenu.Item
+                  className="account-menu-item"
+                  disabled={
+                    !accountArchive.data?.writable ||
+                    accountArchive.mutation.isPending
+                  }
+                  onClick={() =>
+                    accountArchive.mutation.mutate({
+                      id: account.id,
+                      archived: !archivedIds.has(account.id),
+                    })
+                  }
+                >
+                  {archivedIds.has(account.id) ? (
+                    <ArchiveRestore size={16} />
+                  ) : (
+                    <Archive size={16} />
+                  )}
+                  {archivedIds.has(account.id) ? "恢复账户" : "归档账户"}
+                </ActionMenu.Item>
+                <ActionMenu.Item
+                  className="account-menu-item"
+                  disabled={
+                    !accountArchive.data?.writable ||
+                    accountArchive.mutation.isPending
+                  }
+                  onClick={() => setAccountToHide(account)}
+                >
+                  <Trash2 size={16} />
+                  删除账户
+                </ActionMenu.Item>
+              </ActionMenu.Popup>
+            </ActionMenu.Positioner>
+          </ActionMenu.Portal>
+        </ActionMenu.Root>
+      </>
+    );
+  };
   useEffect(() => {
     if (!snapshot) return;
     setSelectedAccount((current) =>
@@ -1164,7 +1301,7 @@ export function App() {
               }
               primary={
                 <>
-                  {page !== "accounts" && page !== "overview" && (
+                  {page !== "overview" && (
                     <FilterSelect
                       label="快捷模型筛选"
                       value={filter.model}
@@ -1179,77 +1316,29 @@ export function App() {
                       ]}
                     />
                   )}
-                  {page === "accounts" && (
-                    <FilterSelect
-                      label="快捷账户筛选"
-                      value={
-                        page === "accounts" ? accountFilter : filter.account
-                      }
-                      onChange={(account) =>
-                        page === "accounts"
-                          ? setAccountFilter(account)
-                          : patchFilter({ account })
-                      }
-                      icon={<Wallet size={15} />}
-                      options={[
-                        { value: "all", label: "全部账户" },
-                        ...(quotaSnapshot?.accounts.map((account) => ({
-                          value: account.id,
-                          label: account.name,
-                        })) ?? []),
-                      ]}
-                    />
-                  )}
-                  {page === "accounts" && (
-                    <FilterSelect
-                      label="快捷归档状态"
-                      value={archiveView}
-                      onChange={(value) =>
-                        setArchiveView(prefs.accountArchiveView.parse(value))
-                      }
-                      options={[
-                        { value: "active", label: "使用中" },
-                        { value: "archived", label: "已归档" },
-                        { value: "all", label: "全部状态" },
-                      ]}
-                    />
-                  )}
                 </>
               }
               summary={(page === "overview"
                 ? [rangeTitle, usdNote]
                 : [
-                    page !== "accounts" && filter.model !== "all"
-                      ? modelLabel(filter.model)
-                      : null,
+                    filter.model !== "all" ? modelLabel(filter.model) : null,
                     quotaSnapshot?.accounts.find(
-                      (account) =>
-                        account.id ===
-                        (page === "accounts" ? accountFilter : filter.account),
+                      (account) => account.id === filter.account,
                     )?.name ?? "全部账户",
-                    page === "accounts"
-                      ? {
-                          active: "使用中",
-                          archived: "已归档",
-                          all: "全部状态",
-                        }[archiveView]
-                      : null,
                   ]
               )
                 .filter(Boolean)
                 .join(" · ")}
               date={
-                page !== "accounts" ? (
-                  <DateRangePicker
-                    value={filter}
-                    asOf={summaryAsOf}
-                    allRange={allRange}
-                    onChange={patchFilter}
-                  />
-                ) : undefined
+                <DateRangePicker
+                  value={filter}
+                  asOf={summaryAsOf}
+                  allRange={allRange}
+                  onChange={patchFilter}
+                />
               }
             >
-              {page !== "accounts" && page !== "overview" && (
+              {page !== "overview" && (
                 <FilterSelect
                   label="模型筛选"
                   value={filter.model}
@@ -1267,12 +1356,8 @@ export function App() {
               {page !== "overview" && (
                 <FilterSelect
                   label="账户筛选"
-                  value={page === "accounts" ? accountFilter : filter.account}
-                  onChange={(account) =>
-                    page === "accounts"
-                      ? setAccountFilter(account)
-                      : patchFilter({ account })
-                  }
+                  value={filter.account}
+                  onChange={(account) => patchFilter({ account })}
                   icon={<Wallet size={15} />}
                   options={[
                     { value: "all", label: "全部账户" },
@@ -1280,20 +1365,6 @@ export function App() {
                       value: account.id,
                       label: account.name,
                     })) ?? []),
-                  ]}
-                />
-              )}
-              {page === "accounts" && (
-                <FilterSelect
-                  label="归档状态"
-                  value={archiveView}
-                  onChange={(value) =>
-                    setArchiveView(prefs.accountArchiveView.parse(value))
-                  }
-                  options={[
-                    { value: "active", label: "使用中" },
-                    { value: "archived", label: "已归档" },
-                    { value: "all", label: "全部状态" },
                   ]}
                 />
               )}
@@ -1324,30 +1395,24 @@ export function App() {
                 </>
               )}
               {page !== "overview" &&
-                ((page === "accounts" ? accountFilter : filter.account) !==
-                  "all" ||
-                  (page !== "accounts" &&
-                    (filter.model !== "all" ||
-                      filter.search ||
-                      filter.dateRange ||
-                      filter.all))) && (
+                (filter.account !== "all" ||
+                  filter.model !== "all" ||
+                  filter.search ||
+                  filter.dateRange ||
+                  filter.all) && (
                   <Button
                     variant="ghost"
                     size="icon"
                     aria-label="清除筛选"
                     title="清除筛选"
-                    onClick={() =>
-                      page === "accounts"
-                        ? setAccountFilter("all")
-                        : setFilter(initialFilter)
-                    }
+                    onClick={() => setFilter(initialFilter)}
                   >
                     <X size={14} />
                   </Button>
                 )}
             </MobileFilters>
           )}
-          {page === "accounts" &&
+          {page === "overview" &&
             (accountArchive.isError || accountArchive.mutation.isError) && (
               <p role="alert" className="sync-warning">
                 {accountArchive.mutation.error?.message ??
@@ -1398,16 +1463,26 @@ export function App() {
             (mobile ? (
               <MobileHome
                 snapshot={quotaSnapshot}
-                accounts={sortedAccounts.filter(
-                  (account) => !archivedIds.has(account.id),
-                )}
+                accounts={showArchived ? archivedAccounts : activeAccounts}
                 asOf={quotaAsOf}
                 summary={usageSummary}
                 rangeLabel={rangeTitle}
                 summaryUpdating={summaryUpdating}
                 onAccount={setSelectedAccount}
                 onRequests={(account) => openAccountRequests(account.id)}
-                onAllAccounts={() => navigate("accounts")}
+                showArchived={showArchived}
+                renderAccountActions={renderAccountActions}
+                accountHeadingActions={
+                  <AccountHeadingActions
+                    archivedCount={archivedAccounts.length}
+                    showArchived={showArchived}
+                    onShowArchived={showArchivedAccounts}
+                    editingOrder={editingAccountOrder}
+                    onEditingOrder={setEditingAccountOrder}
+                    canSort={activeAccounts.length > 1}
+                    render={(props) => <button type="button" {...props} />}
+                  />
+                }
               />
             ) : (
               <>
@@ -1426,18 +1501,19 @@ export function App() {
                   </div>
                 )}
                 <OverviewQuotas
-                  accounts={sortedAccounts.filter(
-                    (account) => !archivedIds.has(account.id),
-                  )}
+                  accounts={showArchived ? archivedAccounts : activeAccounts}
+                  archivedCount={archivedAccounts.length}
+                  showArchived={showArchived}
+                  onShowArchived={showArchivedAccounts}
+                  editingOrder={editingAccountOrder}
+                  onEditingOrder={setEditingAccountOrder}
                   asOf={quotaAsOf}
                   accountUsage={snapshot?.view.accountUsage}
                   compactUsage={smallScreen}
                   usdBasis={usdBasis}
                   onOpen={setSelectedAccount}
-                  onAll={() => navigate("accounts")}
-                  onRequests={(account) => {
-                    openAccountRequests(account.id);
-                  }}
+                  onRequests={(account) => openAccountRequests(account.id)}
+                  renderActions={renderAccountActions}
                 />
               </>
             ))}
@@ -1707,212 +1783,6 @@ export function App() {
                   </section>
                 </div>
               )}
-              {page === "accounts" && (
-                <section className="accounts-section" aria-label="账户额度列表">
-                  <div className="account-actions-heading">
-                    <h2>
-                      账户{" "}
-                      <span>
-                        {
-                          visibleAccounts.filter(
-                            (account) =>
-                              accountFilter === "all" ||
-                              account.id === accountFilter,
-                          ).length
-                        }
-                      </span>
-                    </h2>
-                    <Button
-                      variant="ghost"
-                      aria-label={
-                        editingAccountOrder ? "完成账户排序" : "调整账户顺序"
-                      }
-                      aria-pressed={editingAccountOrder}
-                      onClick={() => setEditingAccountOrder((value) => !value)}
-                    >
-                      {editingAccountOrder ? (
-                        <Check size={16} />
-                      ) : (
-                        <ArrowUpDown size={16} />
-                      )}
-                      {editingAccountOrder ? "完成" : "排序"}
-                    </Button>
-                  </div>
-                  <div className="account-list">
-                    {visibleAccounts
-                      .filter(
-                        (a) =>
-                          accountFilter === "all" || a.id === accountFilter,
-                      )
-                      .map((account) => (
-                        <div
-                          className="account-list-item"
-                          key={account.id}
-                          data-account-id={account.id}
-                          data-manageable
-                        >
-                          <AccountRow
-                            account={account}
-                            asOf={quotaAsOf}
-                            compactView={mobile}
-                            archived={archivedIds.has(account.id)}
-                            usdBasis={usdBasis}
-                            compactUsage={smallScreen}
-                            usage={snapshot.view.accountUsage?.[account.id]}
-                            onOpen={() => {
-                              if (account.fiveHour || account.sevenDay)
-                                setSelectedAccount(account);
-                              else {
-                                openAccountRequests(account.id);
-                              }
-                            }}
-                          />
-                          {editingAccountOrder && (
-                            <div
-                              className="account-order-actions"
-                              aria-label={`${account.name} 排序`}
-                            >
-                              {editingAccountOrder &&
-                                ([-1, 1] as const).map((direction) => (
-                                  <Button
-                                    key={direction}
-                                    variant="ghost"
-                                    size="icon"
-                                    aria-label={`${direction === -1 ? "上移" : "下移"} ${account.name}`}
-                                    title={
-                                      direction === -1 ? "上移账户" : "下移账户"
-                                    }
-                                    disabled={
-                                      sortedAccounts.indexOf(account) +
-                                        direction <
-                                        0 ||
-                                      sortedAccounts.indexOf(account) +
-                                        direction >=
-                                        sortedAccounts.length
-                                    }
-                                    onClick={() =>
-                                      setAccountOrder(
-                                        moveAccount(
-                                          sortedAccounts.map(
-                                            (value) => value.id,
-                                          ),
-                                          account.id,
-                                          direction,
-                                        ),
-                                      )
-                                    }
-                                  >
-                                    {direction === -1 ? (
-                                      <ArrowUp size={18} />
-                                    ) : (
-                                      <ArrowDown size={18} />
-                                    )}
-                                  </Button>
-                                ))}
-                            </div>
-                          )}
-                          {
-                            <ActionMenu.Root>
-                              <ActionMenu.Trigger
-                                className="account-menu-trigger"
-                                render={<Button variant="ghost" size="icon" />}
-                                aria-label={`${account.name} 账户操作`}
-                                title="账户操作"
-                              >
-                                <MoreHorizontal size={18} />
-                              </ActionMenu.Trigger>
-                              <ActionMenu.Portal>
-                                <ActionMenu.Positioner
-                                  side="bottom"
-                                  align="end"
-                                  sideOffset={4}
-                                  className="account-menu-positioner"
-                                >
-                                  <ActionMenu.Popup className="account-menu-popup">
-                                    {!accountArchive.data?.writable && (
-                                      <p className="account-readonly-note">
-                                        {accountArchive.isError
-                                          ? "账户状态读取失败"
-                                          : accountArchive.isPending
-                                            ? "正在读取账户状态"
-                                            : "只读数据，无法修改账户"}
-                                      </p>
-                                    )}
-                                    <ActionMenu.Item
-                                      className="account-menu-item"
-                                      disabled={
-                                        !accountArchive.data?.writable ||
-                                        accountArchive.mutation.isPending
-                                      }
-                                      onClick={() => {
-                                        accountArchive.mutation.reset();
-                                        setAccountToRename({
-                                          id: account.id,
-                                          name: account.name,
-                                          upstreamName:
-                                            upstreamAccountName(account.id) ??
-                                            account.name,
-                                          hasAlias: Boolean(
-                                            accountAliases?.[account.id],
-                                          ),
-                                        });
-                                      }}
-                                    >
-                                      <PencilLine size={16} />
-                                      重命名
-                                    </ActionMenu.Item>
-                                    <ActionMenu.Item
-                                      className="account-menu-item"
-                                      disabled={
-                                        !accountArchive.data?.writable ||
-                                        accountArchive.mutation.isPending
-                                      }
-                                      onClick={() =>
-                                        accountArchive.mutation.mutate({
-                                          id: account.id,
-                                          archived: !archivedIds.has(
-                                            account.id,
-                                          ),
-                                        })
-                                      }
-                                    >
-                                      {archivedIds.has(account.id) ? (
-                                        <ArchiveRestore size={16} />
-                                      ) : (
-                                        <Archive size={16} />
-                                      )}
-                                      {archivedIds.has(account.id)
-                                        ? "恢复账户"
-                                        : "归档账户"}
-                                    </ActionMenu.Item>
-                                    <ActionMenu.Item
-                                      className="account-menu-item"
-                                      disabled={
-                                        !accountArchive.data?.writable ||
-                                        accountArchive.mutation.isPending
-                                      }
-                                      onClick={() => setAccountToHide(account)}
-                                    >
-                                      <Trash2 size={16} />
-                                      删除账户
-                                    </ActionMenu.Item>
-                                  </ActionMenu.Popup>
-                                </ActionMenu.Positioner>
-                              </ActionMenu.Portal>
-                            </ActionMenu.Root>
-                          }
-                        </div>
-                      ))}
-                    {!visibleAccounts.length && (
-                      <p className="empty-chart">
-                        {archiveView === "archived"
-                          ? "暂无归档账户"
-                          : "暂无账户"}
-                      </p>
-                    )}
-                  </div>
-                </section>
-              )}
               {page === "reports" && (
                 <>
                   {usageSummary && (
@@ -2021,7 +1891,7 @@ export function App() {
         {[
           { ...primaryPages[0], icon: Home },
           ...primaryPages.slice(1),
-          pages[4],
+          pages[3],
         ].map((item, index) => (
           <button
             key={item.id}
@@ -2031,7 +1901,7 @@ export function App() {
             onClick={() => navigate(item.id)}
           >
             <item.icon size={22} strokeWidth={page === item.id ? 2.2 : 1.8} />
-            <span>{["首页", "账户", "统计", "明细", "关于"][index]}</span>
+            <span>{["首页", "统计", "明细", "关于"][index]}</span>
           </button>
         ))}
       </nav>

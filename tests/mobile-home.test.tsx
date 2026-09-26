@@ -91,7 +91,6 @@ function renderHome(
       rangeLabel="历史至今"
       onAccount={() => {}}
       onRequests={() => {}}
-      onAllAccounts={() => {}}
     />,
   );
 }

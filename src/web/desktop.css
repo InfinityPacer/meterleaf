@@ -579,11 +579,6 @@
     font-size: 14px;
   }
 
-  .app-shell .accounts-section {
-    padding: 0;
-    border: 0;
-  }
-
   .app-shell .account-list-item,
   .app-shell .account-list-item + .account-list-item {
     margin-bottom: 12px;
