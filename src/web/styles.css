@@ -813,10 +813,6 @@ h3 {
   color: var(--muted);
   margin-top: 13px;
 }
-.accounts-section {
-  padding: 0 0 9px;
-  border-bottom: 1px solid var(--line);
-}
 .account-row {
   display: flex;
   gap: 13px;
@@ -2094,23 +2090,10 @@ button[data-size="icon-sm"],
   opacity: 0.5;
   cursor: default;
 }
-.account-actions-heading {
+.account-heading-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-.account-actions-heading h2 {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 17px;
-}
-.account-actions-heading h2 span {
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 400;
+  gap: 4px;
 }
 .model-sort-control {
   flex: 0 0 auto;

@@ -104,14 +104,7 @@ const axeSource = process.env.METERLEAF_AXE_PATH
   ? await readFile(process.env.METERLEAF_AXE_PATH, "utf8")
   : null;
 const results: unknown[] = [];
-const views = [
-  "overview",
-  "period",
-  "accounts",
-  "reports",
-  "ledger",
-  "settings",
-] as const;
+const views = ["overview", "reports", "ledger", "settings"] as const;
 let screens = 0;
 
 const viewRoutePattern = "**/api/view**";
@@ -335,8 +328,7 @@ async function ready() {
       page.getByRole("navigation", { name: "底部导航" }),
     ).toBeVisible();
   }
-  // #period 是旧链接：地址保留原样，但展示的是合并后的用量总览。
-  if (hash === "#overview" || hash === "#period") {
+  if (hash === "#overview") {
     await expect(
       page.getByRole("navigation", { name: "总览视图" }),
     ).toHaveCount(0);
@@ -372,6 +364,22 @@ async function ready() {
       await expect(
         page.getByRole("list", { name: "账户额度摘要" }),
       ).toBeVisible();
+      // 账户管理并入首页账户区：标题带排序入口，每张卡片旁有管理菜单，卡片箭头让位给菜单。
+      await expect(page.getByText("全部账户", { exact: true })).toHaveCount(0);
+      await expect(
+        page
+          .locator(".mobile-home-accounts .account-heading-actions")
+          .getByRole("button", { name: "调整账户顺序", exact: true }),
+      ).toBeVisible();
+      const cards = page.locator(".mobile-home-account-list > li");
+      await expect(cards.first()).toHaveAttribute("data-manageable", "");
+      expect(await cards.count()).toBeGreaterThan(0);
+      await expect(cards.locator(".account-menu-trigger")).toHaveCount(
+        await cards.count(),
+      );
+      await expect(
+        cards.first().locator(".mobile-home-account-chevron"),
+      ).toHaveCSS("visibility", "hidden");
       await expect(
         page
           .getByRole("navigation", { name: "底部导航" })
@@ -389,45 +397,38 @@ async function ready() {
           .locator(".overview-quotas .account-capacity")
           .getByText(/未提供|未计价原因/),
       ).toHaveCount(0);
+      const trends = page.locator(
+        ".overview-quotas .account-list-item .mini-trend",
+      );
+      await expect
+        .poll(
+          () =>
+            trends.evaluateAll(
+              (elements) =>
+                elements.length > 0 &&
+                elements.every((element) =>
+                  element.getAttribute("data-metric") === "requests"
+                    ? element.getAttribute("data-variant") === "line"
+                    : ["line", "area", "bar"].includes(
+                        element.getAttribute("data-variant") ?? "",
+                      ),
+                ),
+            ),
+          "account trends render with requests shown as lines",
+        )
+        .toBe(true);
+      for (const button of [
+        page.locator(".overview-quotas .account-heading-actions > button"),
+        page.locator(".overview-quotas .account-menu-trigger").first(),
+      ]) {
+        await expect(button).toHaveAttribute("data-variant", "ghost");
+        await expect(button).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+      }
     }
   }
   if (hash === "#settings")
     await expect(page.locator(".about-page")).toBeVisible();
-  if (hash === "#accounts") {
-    const trends = page.locator(".account-list-item .mini-trend");
-    await expect
-      .poll(
-        () =>
-          trends.evaluateAll(
-            (elements) =>
-              elements.length > 0 &&
-              elements.every((element) =>
-                element.getAttribute("data-metric") === "requests"
-                  ? element.getAttribute("data-variant") === "line"
-                  : ["line", "area", "bar"].includes(
-                      element.getAttribute("data-variant") ?? "",
-                    ),
-              ),
-          ),
-        "account trends render with requests shown as lines",
-      )
-      .toBe(true);
-    await expect(page.locator(".account-capacity > strong")).toHaveText([
-      "N/A",
-      "N/A",
-    ]);
-    await expect(
-      page.locator(".account-capacity").getByText(/未提供|未计价原因/),
-    ).toHaveCount(0);
-    for (const button of [
-      page.locator(".account-actions-heading > button"),
-      page.locator(".account-menu-trigger").first(),
-    ]) {
-      await expect(button).toHaveAttribute("data-variant", "ghost");
-      await expect(button).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    }
-  }
-  if (hash === "#period" || hash === "#reports" || hash === "#overview") {
+  if (hash === "#reports" || hash === "#overview") {
     const selector =
       hash === "#reports"
         ? ".model-donut .usage-chart canvas"
@@ -555,6 +556,96 @@ async function assertOverviewRange(mobile: boolean) {
     .toBe('{"days":30,"all":true,"model":"all","account":"all"}');
 }
 
+/**
+ * App 布局首页账户区的管理：归档后出现「已归档 N」入口，已归档列表可恢复，
+ * 排序在使用中账户之间调整并写入顺序偏好。结束时恢复初始顺序和归档状态。
+ */
+async function assertMobileAccountManagement() {
+  const section = page.locator(".mobile-home-accounts");
+  const title = section.locator("#mobile-home-accounts-title");
+  const cards = section.locator(
+    ".mobile-home-account-list > li[data-manageable]",
+  );
+  const ids = () =>
+    cards.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("data-account-id")),
+    );
+  const archivedEntry = section.getByRole("button", { name: /^已归档 \d+$/ });
+  const initial = await ids();
+  expect(initial.length).toBeGreaterThan(2);
+  await expect(archivedEntry).toHaveCount(0);
+
+  await cards
+    .first()
+    .getByRole("button", { name: /账户操作$/ })
+    .click();
+  await page.getByRole("menuitem", { name: "归档账户", exact: true }).click();
+  await expect.poll(ids).toEqual(initial.slice(1));
+  await expect(archivedEntry).toHaveText("已归档 1");
+  await archivedEntry.click();
+  await expect(title).toHaveText("已归档账户");
+  await expect(
+    page.getByRole("list", { name: "已归档账户列表" }),
+  ).toBeVisible();
+  await expect.poll(ids).toEqual([initial[0]]);
+  await cards
+    .first()
+    .getByRole("button", { name: /账户操作$/ })
+    .click();
+  await page.getByRole("menuitem", { name: "恢复账户", exact: true }).click();
+  await expect(cards).toHaveCount(0);
+  await expect(section.locator(".mobile-home-empty")).toHaveText(
+    "暂无归档账户",
+  );
+  // 空的已归档列表只给出一条空状态，不能同时出现「暂无账户」。
+  await expect(section.getByText("暂无账户", { exact: true })).toHaveCount(0);
+  await section
+    .getByRole("button", { name: "使用中账户", exact: true })
+    .click();
+  await expect(title).toHaveText("账户额度");
+  await expect.poll(ids).toEqual(initial);
+  expect(archiveState.archived).toEqual([]);
+
+  await section
+    .getByRole("button", { name: "调整账户顺序", exact: true })
+    .click();
+  await expect(
+    cards.first().getByRole("button", { name: /^上移 / }),
+  ).toBeDisabled();
+  await cards
+    .first()
+    .getByRole("button", { name: /^下移 / })
+    .click();
+  await expect.poll(ids).toEqual([initial[1], initial[0], ...initial.slice(2)]);
+  await cards
+    .nth(1)
+    .getByRole("button", { name: /^上移 / })
+    .click();
+  await expect.poll(ids).toEqual(initial);
+  await section
+    .getByRole("button", { name: "完成账户排序", exact: true })
+    .click();
+  await expect(section.locator(".account-order-actions")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        JSON.parse(
+          localStorage.getItem("meterleaf-pref-account-order") ?? "[]",
+        ),
+      ),
+    )
+    .toEqual(initial);
+  await expect(
+    section.locator(".account-heading-actions > button"),
+  ).toHaveCount(1);
+  expect(
+    await section.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth,
+    ),
+    "account section fits without horizontal scroll",
+  ).toBe(true);
+}
+
 try {
   await page.route(viewRoutePattern, viewRouteHandler);
   viewRouteInstalled = true;
@@ -587,10 +678,9 @@ try {
 
   const navigation = page.getByRole("navigation", { name: "底部导航" });
   await expect(navigation).toBeVisible();
-  await expect(navigation.getByRole("button")).toHaveCount(5);
+  await expect(navigation.getByRole("button")).toHaveCount(4);
   await expect(navigation.getByRole("button")).toHaveText([
     "首页",
-    "账户",
     "统计",
     "明细",
     "关于",
@@ -600,8 +690,7 @@ try {
     "scrollWidth",
     await accounts.evaluate((element) => element.clientWidth),
   );
-  await page.goto(`${base}#period`);
-  await ready();
+  await assertMobileAccountManagement();
   await expect(page.locator(".app-period")).toBeVisible();
   await expect(
     navigation.getByRole("button", { name: "用量总览", exact: true }),
@@ -850,7 +939,7 @@ try {
   const summary = {
     status: "passed",
     checks:
-      "five navigation items, merged overview, legacy #period redirect, overview range chips and date picker, range-scoped summary and trend, quotas independent of range, about route, mode persistence, drawer border/focus, overview and report filter sheets, filter focus, detail focus/trap, pagination, reflow, text spacing, reduced motion, line micro trends, N/A estimates, transparent actions, compact filter sheet, overview and account pageSize=1 query bounds",
+      "four navigation items, merged overview, overview account management, overview range chips and date picker, range-scoped summary and trend, quotas independent of range, about route, mode persistence, drawer border/focus, overview and report filter sheets, filter focus, detail focus/trap, pagination, reflow, text spacing, reduced motion, line micro trends, N/A estimates, transparent actions, compact filter sheet, overview and account pageSize=1 query bounds",
     screens,
     errors,
     a11y: axeSource ? "executed" : "skipped: METERLEAF_AXE_PATH not provided",

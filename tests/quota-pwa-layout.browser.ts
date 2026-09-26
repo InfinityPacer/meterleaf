@@ -161,11 +161,11 @@ try {
           },
           { layout, theme },
         );
-        for (const route of ["overview", "accounts"]) {
+        // 账户额度只在总览：App 布局窄屏是首页卡片，其余布局是 Web 账户行。
+        for (const route of ["overview"]) {
           await page.goto(`${base}#${route}`);
           await page.reload();
-          const mobileHome =
-            width <= 900 && layout === "app" && route === "overview";
+          const mobileHome = width <= 900 && layout === "app";
           const cards = page.locator(
             mobileHome ? ".mobile-home-account-card" : ".account-row",
           );
@@ -225,7 +225,7 @@ try {
                 ".account-capacity > small, .account-capacity > strong",
               ),
             ).toHaveCount(0);
-          if (width > 900 && route === "accounts") {
+          if (width > 900) {
             await expect(
               plus.locator(".account-capacity .mini-trend"),
             ).toBeVisible();
@@ -275,7 +275,7 @@ try {
             expect(Math.abs(title.y - status.y)).toBeLessThan(3);
           }
           // 1250px 以下额度窗口换到第二行，预估栏在右上角；更宽时预估栏在窗口右侧。
-          if (width > 1250 && route === "accounts") {
+          if (width > 1250) {
             const capacity = (await pro
               .locator(".account-capacity")
               .boundingBox())!;
@@ -323,11 +323,11 @@ try {
           ),
         layout,
       );
-      for (const route of ["overview", "accounts"]) {
+      for (const route of ["overview"]) {
         await page.goto(`${base}#${route}`);
         await page.reload();
         const cards = page.locator(
-          route === "overview" && width <= 900 && layout === "app"
+          width <= 900 && layout === "app"
             ? ".mobile-home-account-card"
             : ".account-row",
         );
@@ -385,7 +385,7 @@ try {
   }
   expect(errors).toEqual([]);
   console.log(
-    JSON.stringify({ states, twoWindowStates: 16, safeAreaStates: 3, errors }),
+    JSON.stringify({ states, twoWindowStates: 8, safeAreaStates: 3, errors }),
   );
 } catch (error) {
   console.error(await page.locator("body").innerText());

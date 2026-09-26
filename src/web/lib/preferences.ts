@@ -82,16 +82,7 @@ export const preferenceSchemas = {
   ledgerStart: z.string().min(10).max(40).nullable(),
   mobileLayout: z.enum(["sidebar", "app"]),
   accountOrder: z.array(z.string().min(1).max(512)).max(10000),
-  accountArchiveView: z.enum(["active", "archived", "all"]),
-  accountFilter: z.string().min(1).max(512),
-  page: z.enum([
-    "overview",
-    "accounts",
-    "reports",
-    "ledger",
-    "period",
-    "settings",
-  ]),
+  page: z.enum(["overview", "reports", "ledger", "settings"]),
   unit: z.enum(["usd", "credits", "tokens"]),
   distributionUnit: z.enum(["usd", "tokens"]),
   distributionSort: z.object({

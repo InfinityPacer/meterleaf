@@ -57,7 +57,7 @@ try {
   expect(saved.dateRange).toEqual({ from: "2026-08-20", to: "2026-08-27" });
   expect(saved.model).not.toBe("all");
   expect(saved.account).not.toBe("all");
-  for (const tab of ["overview", "accounts", "reports", "ledger"]) {
+  for (const tab of ["overview", "reports", "ledger"]) {
     const request = page.waitForRequest(
       (request) => new URL(request.url()).pathname === "/api/view",
     );
@@ -132,7 +132,7 @@ try {
   await expect(page.locator(".topbar h1")).toHaveText("统计报表");
   console.log(
     JSON.stringify({
-      tabs: 4,
+      tabs: 3,
       dates: true,
       model: true,
       account: true,

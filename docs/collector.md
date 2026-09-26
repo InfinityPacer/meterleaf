@@ -59,7 +59,7 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
    meterleaf-collector sync
    ```
 
-   `scan` 只在本地汇总，不联网，可用来与其他统计工具对照。`sync` 成功后，Meterleaf 的账户页会出现名为「Claude Code」的账户，套餐显示在徽标中。可以在账户菜单里改成更容易辨认的名称，见[使用与报表](reporting.md#账户管理)。
+   `scan` 只在本地汇总，不联网，可用来与其他统计工具对照。`sync` 成功后，Meterleaf 总览的账户区会出现名为「Claude Code」的账户，套餐显示在徽标中。可以在账户菜单里改成更容易辨认的名称，见[使用与报表](reporting.md#账户管理)。
 
 4. 安装后台任务。
 

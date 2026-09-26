@@ -13,3 +13,11 @@ test("account order survives storage and appends new accounts without reviving r
   expect(moveAccount(order, "missing", 1)).toEqual(order);
   expect(orderedAccounts(accounts, []).map(a => a.id)).toEqual(["a", "b", "new"]);
 });
+
+test("moving an account skips archived neighbours and leaves them in place", () => {
+  const archived = new Set(["x"]);
+  const visible = (id: string) => !archived.has(id);
+  expect(moveAccount(["a", "x", "b"], "b", -1, visible)).toEqual(["b", "x", "a"]);
+  expect(moveAccount(["a", "x", "b"], "a", 1, visible)).toEqual(["b", "x", "a"]);
+  expect(moveAccount(["x", "a", "b"], "a", -1, visible)).toEqual(["x", "a", "b"]);
+});
