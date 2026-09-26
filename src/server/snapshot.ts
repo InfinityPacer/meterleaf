@@ -157,7 +157,7 @@ function selectedUsage(row: StoredUsage, usdBasis: UsdBasis): StoredUsage {
 
 export function liveSnapshot(
   store: LedgerStore,
-  sync: Pick<SyncRunner, "status">,
+  sync: Pick<SyncRunner, "status"> | null,
   days: number,
   now: string,
   usdBasis: UsdBasis = "subscription",
@@ -287,7 +287,7 @@ export function liveSnapshot(
     accounts,
     records,
     resets,
-    sync: sync.status(),
+    sync: sync?.status(),
     pricing: {
       version: priceBookKey(store.book),
       publishedAt: store.book.publishedAt,
@@ -330,7 +330,7 @@ function unknownAccount(sourceId: string, externalId: string): SourceAccount {
 /** 只读取账户和额度快照；请求金额由外部索引按窗口提供。 */
 export function indexedSnapshot(
   store: Pick<LedgerStore, "book" | "accounts" | "quotas">,
-  sync: Pick<SyncRunner, "status">,
+  sync: Pick<SyncRunner, "status"> | null,
   now: string,
   usdBasis: UsdBasis,
   sumWindow: (
@@ -434,7 +434,7 @@ export function indexedSnapshot(
     asOf: now,
     accounts,
     resets,
-    sync: sync.status(),
+    sync: sync?.status(),
     pricing: {
       version: priceBookKey(store.book),
       publishedAt: store.book.publishedAt,

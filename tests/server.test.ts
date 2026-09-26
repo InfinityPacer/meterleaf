@@ -8,7 +8,21 @@ import type { DateRange } from "../src/shared/date-range";
 import type { UsdBasis } from "../src/shared/report";
 
 test("live config is explicit and errors never repeat credentials", () => {
-  expect(() => readConfig({})).toThrow("SUB2API_DATABASE_URL is required");
+  expect(() => readConfig({})).toThrow(
+    "Live mode needs SUB2API_DATABASE_URL or METERLEAF_INGEST_KEYS",
+  );
+  // Compose 未填写时传入空字符串，只接入采集器也能启动。
+  const pushOnly = readConfig({
+    SUB2API_DATABASE_URL: "",
+    METERLEAF_INGEST_KEYS: `claude-code-mac:${"a".repeat(64)}`,
+  });
+  expect(pushOnly.SUB2API_DATABASE_URL).toBeUndefined();
+  expect(pushOnly.ingestKeys).toEqual([
+    { sourceId: "claude-code-mac", sha256: "a".repeat(64) },
+  ]);
+  expect(() => readConfig({ SUB2API_DATABASE_URL: "" })).toThrow(
+    "Live mode needs",
+  );
   expect(readConfig({ METERLEAF_DEMO: "true" })).toMatchObject({
     METERLEAF_PORT: 4318,
     METERLEAF_REPORT_REFRESH_INTERVAL_MS: 300_000,

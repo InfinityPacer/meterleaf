@@ -1500,3 +1500,64 @@ test("lifetime totals rebuild against a new price version", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("push-only ledgers read and refresh reports without a pull sync status", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-push-only-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  const reports = new ViewService(path, book, { refreshIntervalMs: 0 });
+  try {
+    const now = new Date().toISOString();
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [viewUsage("1", now)], nextCursor: "1", hasMore: false },
+      now,
+    );
+    const first = await reports.read(query, "subscription");
+    expect(first.view.count).toBe(1);
+    expect(first.sync).toBeUndefined();
+
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [viewUsage("2", now)], nextCursor: "2", hasMore: false },
+      now,
+    );
+    await reports.read(query, "subscription");
+    const deadline = Date.now() + 2_000;
+    let result = await reports.read(query, "subscription", undefined, false);
+    while (result.view.count !== 2 && Date.now() < deadline) {
+      await Bun.sleep(10);
+      result = await reports.read(query, "subscription", undefined, false);
+    }
+    expect(result.view.count).toBe(2);
+  } finally {
+    await reports.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a configured pull source still rejects cold reports when its status is unreadable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-sync-broken-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  const reports = new ViewService(path, book, {
+    refreshIntervalMs: 0,
+    getSyncStatus: () => {
+      throw new Error("status unavailable");
+    },
+  });
+  try {
+    await expect(reports.read(query, "subscription")).rejects.toMatchObject({
+      code: "ERR_REPORT_SYNC_UNAVAILABLE",
+    });
+  } finally {
+    await reports.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

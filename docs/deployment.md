@@ -2,17 +2,17 @@
 
 [返回首页](../README.md)
 
-Meterleaf 单容器提供前端与 API，只读访问 Sub2API PostgreSQL，也可接收本机采集器推送的 Claude Code 用量，使用本地 SQLite 保存账本。不代理模型请求，不修改 Sub2API，也不直接请求 OpenAI 或 Anthropic。
+Meterleaf 单容器提供前端与 API，可以只读访问 Sub2API PostgreSQL，也可以接收本机采集器推送的 Claude Code 用量，两种来源至少配置一种，使用本地 SQLite 保存账本。不代理模型请求，不修改 Sub2API，也不直接请求 OpenAI 或 Anthropic。
 
 ## 安装
 
-需要 Docker Compose，以及从容器内可访问的 Sub2API 数据库。数据库账号需对 `public.accounts` 和 `public.usage_logs` 有 SELECT 权限，不需要写权限。
+需要 Docker Compose。连接 Sub2API 时，数据库需从容器内可访问，账号需对 `public.accounts` 和 `public.usage_logs` 有 SELECT 权限，不需要写权限。只用本机采集器时不需要数据库，但要先按[接入本机采集器](#接入本机采集器)生成写入密钥。
 
 ```sh
 cp .env.example .env
 ```
 
-填写 `SUB2API_DATABASE_URL` 后先校验配置：
+填写 `SUB2API_DATABASE_URL` 或 `METERLEAF_INGEST_KEYS`，两者都没有时服务不会启动。先校验配置：
 
 ```sh
 docker compose config -q
@@ -52,7 +52,7 @@ docker compose up -d --no-build --pull never
 
 | 变量                                   | 默认值         | 说明                                       |
 | -------------------------------------- | -------------- | ------------------------------------------ |
-| `SUB2API_DATABASE_URL`                 | 真实模式必填   | 单实例 PostgreSQL 只读连接地址             |
+| `SUB2API_DATABASE_URL`                 | 未启用         | 单实例 PostgreSQL 只读连接地址             |
 | `METERLEAF_SOURCE_ID`                  | `sub2api`      | 稳定来源标识；已有账本不要改名             |
 | `METERLEAF_BIND_ADDRESS`               | `127.0.0.1`    | Compose 对外绑定地址                       |
 | `METERLEAF_PUBLISHED_PORT`             | `4318`         | Compose 对外端口                           |
@@ -64,6 +64,8 @@ docker compose up -d --no-build --pull never
 | `METERLEAF_LOG_LEVEL`                  | `info`         | `debug`、`info`、`warn`、`error`、`silent` |
 | `METERLEAF_INGEST_KEYS`                | 未启用         | 本机采集器写入密钥，见下文                 |
 
+`SUB2API_DATABASE_URL` 与 `METERLEAF_INGEST_KEYS` 至少填写一项，未填写的来源不启用。
+
 Compose 将容器内数据目录、监听地址和端口固定为 `/app/app_data`、`0.0.0.0` 和 `4318`；`METERLEAF_DATA_DIR`、`METERLEAF_HOST`、`METERLEAF_PORT`、`METERLEAF_DEMO` 仅用于直接以 Bun 启动时的本地配置。
 
 自定义价格文件可放在挂载的 `prices` 目录，设置 `METERLEAF_PRICE_BOOK=/app/prices/custom.json`。修改后更新费率版本并重启，详见[计价说明](pricing.md)。
@@ -72,7 +74,7 @@ Compose 将容器内数据目录、监听地址和端口固定为 `/app/app_data
 
 Claude Code 等本地直连的客户端不经过网关，需要在使用它的电脑上运行本机采集器，由采集器把用量、账户和额度快照推送到 Meterleaf。安装和日常使用见[本机采集器](collector.md)。
 
-采集器是附加来源，服务端仍需要按上文配置 Sub2API。
+采集器可以与 Sub2API 同时使用，也可以单独使用。只用采集器时 `SUB2API_DATABASE_URL` 留空，页面不显示「数据同步」，采集器推送后数据自动出现。
 
 ### 写入密钥
 
@@ -109,11 +111,11 @@ location = /api/ingest/v1/batches {
 
 ## 首次采集与自动同步
 
-首次启动默认不采集。在「数据同步」中点击「立即同步」启动历史补采；服务保持在线，重复点击不会建立并发任务。自动同步默认关闭，开关会保存在本地账本并在重启后恢复。
+本节适用于 Sub2API 来源。首次启动默认不采集。在「数据同步」中点击「立即同步」启动历史补采；服务保持在线，重复点击不会建立并发任务。自动同步默认关闭，开关会保存在本地账本并在重启后恢复。
 
 同步失败时保留已成功采集的账本，手动模式可重试，自动模式按配置间隔继续尝试；重启后可继续未完成采集。源端已清理的历史记录或未保留的额度快照无法补回。
 
-账户额度来自 Sub2API 的缓存字段，新鲜度不能超过上游缓存。窗口过期后显示未知，不把上一周期消费带入新周期。
+Sub2API 账户的额度来自它的缓存字段，新鲜度不能超过上游缓存。窗口过期后显示未知，不把上一周期消费带入新周期。
 
 ## 升级与备份恢复
 
@@ -152,7 +154,7 @@ cp -a app_data.backup-YYYYMMDD-HHMMSS app_data
 docker compose up -d --no-build --pull never
 ```
 
-必须恢复整个数据目录，不要只复制运行中的 SQLite 主文件而遗漏 WAL。这些操作只针对 Meterleaf，无需停止 Sub2API。
+必须恢复整个数据目录，不要只复制运行中的 SQLite 主文件而遗漏 WAL。这些操作只针对 Meterleaf，无需停止 Sub2API 或本机采集器，停机期间采集器未送达的数据会在恢复后补推。
 
 升级会自动执行数据库迁移；遇到不兼容或无法识别的结构时服务会停止，不要通过清空数据绕过。
 

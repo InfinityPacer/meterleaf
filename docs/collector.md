@@ -2,7 +2,7 @@
 
 [返回首页](../README.md)
 
-本地直连的 Claude Code 不经过网关，它的用量只保存在使用它的电脑上。本机采集器在这台电脑上读取 Claude Code 的本地记录，把用量、账户和额度快照推送到 Meterleaf。Meterleaf 可以部署在 NAS 或另一台主机上，与这台电脑分开。
+本地直连的 Claude Code 不经过网关，它的用量只保存在使用它的电脑上。本机采集器在这台电脑上读取 Claude Code 的本地记录，把用量、账户和额度快照推送到 Meterleaf。Meterleaf 可以部署在 NAS 或另一台主机上，与这台电脑分开。没有 Sub2API 网关时，Meterleaf 也可以只接收采集器的数据。
 
 ## 它读什么、不碰什么
 
