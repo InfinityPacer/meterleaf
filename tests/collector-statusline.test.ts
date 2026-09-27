@@ -158,3 +158,25 @@ test("malformed or partial statusline files are ignored instead of guessed", () 
     { window: "five-hour", percent: 12, resetsAt: "2026-09-24T19:20:00.000Z" },
   ]);
 });
+
+test("a corrupted line does not block the valid windows beside it", () => {
+  // 状态栏脚本并发写入曾留下 "fseven_day" 这样的坏行，脚本按窗口名替换时永远删不掉它。
+  const sources = workspace();
+  const state = new CollectorState(":memory:");
+  login(sources.claudeJson, FIXTURE_ACCOUNT_UUID);
+  collect(state, sources, new Date("2026-09-24T17:00:00Z"));
+  writeCache(
+    sources.statuslineCache,
+    `fseven_day\t0\t${resets7d}\nfive_hour\t47\t${resets5h}\nfive_hour\tabc\t${resets5h}\nseven_day\t9\t${resets7d}\n`,
+    "2026-09-24T17:00:30Z",
+  );
+  const report = collect(state, sources, new Date("2026-09-24T17:01:00Z"));
+  expect(report.statuslineQuotaRecorded).toBe(true);
+  expect(report.statuslineIgnoredLines).toBe(2);
+  expect(
+    quotas(state).map(({ window, percent }) => ({ window, percent })),
+  ).toEqual([
+    { window: "five-hour", percent: 47 },
+    { window: "seven-day", percent: 9 },
+  ]);
+});

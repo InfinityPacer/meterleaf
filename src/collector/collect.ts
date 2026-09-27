@@ -37,6 +37,8 @@ export interface CollectReport {
   quotaSkipped: string | null;
   statuslineQuotaRecorded: boolean;
   statuslineQuotaSkipped: string | null;
+  /** 状态栏额度缓存中被忽略的行数；其余有效行仍会上报。 */
+  statuslineIgnoredLines: number;
 }
 
 const chunkBytes = 4 * 1024 * 1024;
@@ -202,6 +204,7 @@ export function emptyReport(): CollectReport {
     quotaSkipped: null,
     statuslineQuotaRecorded: false,
     statuslineQuotaSkipped: null,
+    statuslineIgnoredLines: 0,
   };
 }
 
@@ -249,6 +252,7 @@ export function collect(
     if (!cache) {
       report.statuslineQuotaSkipped = "状态栏额度缓存不存在或格式无效";
     } else {
+      report.statuslineIgnoredLines = cache.ignoredLines;
       // 文件不带账户，按采样时刻所在的登录区间归属；切换前后无法判断时不上报。
       const account = attribute(
         cache.sampledAt,
