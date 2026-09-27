@@ -10,6 +10,7 @@ import {
   visibleQuotaWindows,
   quotaWaitingReset,
   accountQuotaExhausted,
+  withFableQuotaWindow,
 } from "../src/web/lib/quota-display";
 
 type QuotaEstimate = NonNullable<AccountWindow["estimate"]>;
@@ -157,6 +158,31 @@ test("a reported five-hour window keeps its place while waiting for a new sample
   expect(visibleQuotaWindows({ fiveHour: null, sevenDay: null }, now)).toEqual(
     [],
   );
+});
+
+test("an expired Fable window waits for a new sample instead of disappearing", () => {
+  const week = { ...window, percent: 10 };
+  const shown = (sevenDayFable: AccountWindow, sevenDay = week) =>
+    withFableQuotaWindow(
+      visibleQuotaWindows({ fiveHour: null, sevenDay }, now),
+      { sevenDayFable },
+      now,
+    ).map((item) => [item.key, item.waiting ?? false]);
+  // Fable 快照在 4 小时前到期，Claude Code 尚未刷新用量缓存。
+  const expired = { ...window, percent: 0, resetsAt: "2026-09-08T08:00:00Z" };
+  expect(shown(expired)).toEqual([
+    ["sevenDay", false],
+    ["sevenDayFable", true],
+  ]);
+  expect(shown({ ...window, percent: 3 })).toEqual([
+    ["sevenDay", false],
+    ["sevenDayFable", false],
+  ]);
+  // 上一周期结束超过一周仍无新快照，或共享周额度本身无效时，不再占位。
+  expect(shown({ ...expired, resetsAt: "2026-08-31T08:00:00Z" })).toEqual([
+    ["sevenDay", false],
+  ]);
+  expect(shown(expired, { ...week, resetsAt: now })).toEqual([]);
 });
 
 test("weekly reset restores five-hour visibility instead of keeping an expired exhausted state", () => {

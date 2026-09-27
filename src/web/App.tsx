@@ -2223,7 +2223,10 @@ export function App() {
                       ),
                       selectedAccount,
                       quotaAsOf,
-                    ).some(({ key }) => key === "sevenDayFable") &&
+                    ).some(
+                      // 等待新快照时上一周期的重置时间和费用已不适用。
+                      ({ key, waiting }) => key === "sevenDayFable" && !waiting,
+                    ) &&
                       selectedAccount.sevenDayFable && (
                         <>
                           <dt>Fable 重置</dt>

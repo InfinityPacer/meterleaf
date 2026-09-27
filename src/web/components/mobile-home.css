@@ -2,7 +2,8 @@
   width: 100%;
   max-width: 700px;
   min-width: 0;
-  margin: 0 auto;
+  /* 下方紧接趋势卡片，与其后各卡片同样留 16px。 */
+  margin: 0 auto 16px;
   padding: 0;
   color: var(--ink);
   background: transparent;

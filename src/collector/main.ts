@@ -120,6 +120,19 @@ function printTotals(totals: UsageTotals[]) {
   }
 }
 
+/** 两个额度来源的异常合成一行；没有异常时为空字符串。 */
+function quotaIssueText(report: CollectReport) {
+  return [
+    report.quotaSkipped && `额度: ${report.quotaSkipped}`,
+    report.statuslineQuotaSkipped &&
+      `状态栏额度: ${report.statuslineQuotaSkipped}`,
+    report.statuslineIgnoredLines > 0 &&
+      `状态栏额度: 忽略 ${report.statuslineIgnoredLines} 行无法识别的内容`,
+  ]
+    .filter(Boolean)
+    .join("；");
+}
+
 function printReport(report: CollectReport) {
   console.log(
     `文件 ${format(report.files)}（读取 ${format(report.filesRead)}，重读 ${format(report.rewound)}），` +
@@ -292,9 +305,8 @@ function runScan(paths: CollectorPaths, json: boolean) {
         `额度 ${quota.window}: ${quota.percent ?? "未知"}%（采样于 ${quota.sampledAt}）`,
       );
     }
-    if (report.quotaSkipped) console.log(`额度: ${report.quotaSkipped}`);
-    if (report.statuslineQuotaSkipped)
-      console.log(`状态栏额度: ${report.statuslineQuotaSkipped}`);
+    const quotaIssue = quotaIssueText(report);
+    if (quotaIssue) console.log(quotaIssue);
     console.log("");
     printTotals(totals);
     console.log("");
@@ -331,6 +343,12 @@ async function runSync(paths: CollectorPaths): Promise<number> {
       return 1;
     }
     state.setMeta("last_success_at", now);
+    // 额度被跳过时每轮都会重复，只在情况变化时记一行，恢复时也记一行。
+    const quotaIssue = quotaIssueText(report);
+    if (quotaIssue !== (state.getMeta("last_quota_issue") ?? "")) {
+      state.setMeta("last_quota_issue", quotaIssue);
+      console.log(`${now} ${quotaIssue || "额度来源已恢复正常"}`);
+    }
     if (result.batches > 0 || report.rewound > 0 || report.malformed > 0) {
       console.log(
         `${now} 已推送 ${result.batches} 批: 用量 ${result.usage}，账户 ${result.accounts}，额度 ${result.quotas}` +

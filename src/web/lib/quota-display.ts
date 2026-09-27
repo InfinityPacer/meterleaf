@@ -69,6 +69,8 @@ export function visibleQuotaWindows(
   return windows;
 }
 
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
 /**
  * Fable 周额度只计 Fable 请求，排在共享窗口之后。账户整体周额度用尽时所有模型都不可用，
  * 紧凑视图只保留用尽的周额度；上游未上报 Fable 额度时不显示，不按套餐推断有无。
@@ -79,18 +81,28 @@ export function withFableQuotaWindow(
   asOf: string,
 ): VisibleQuotaWindow[] {
   const window = account.sevenDayFable ?? null;
-  if (
-    !window ||
-    quotaState(window, asOf) !== "active" ||
-    quotaPercent(window, asOf) === null
-  )
-    return windows;
+  if (!window) return windows;
   const exhaustedWeekOnly =
     windows.length === 1 &&
     windows[0]!.key === "sevenDay" &&
     quotaPercent(windows[0]!.window, asOf) === 100;
   if (exhaustedWeekOnly) return windows;
-  return [...windows, { key: "sevenDayFable", label: "Fable", window }];
+  if (
+    quotaState(window, asOf) === "active" &&
+    quotaPercent(window, asOf) !== null
+  )
+    return [...windows, { key: "sevenDayFable", label: "Fable", window }];
+  // Fable 额度只随 Claude Code 的用量缓存刷新，可能晚于共享周额度很久才更新。共享周额度有效时
+  // 保留占位，但上一周期结束超过一周仍无新快照，就不再推定上游还在上报这个窗口。
+  const endedAt = Date.parse(window.resetsAt ?? "");
+  const recentlyEnded =
+    Number.isFinite(endedAt) && Date.parse(asOf) - endedAt < WEEK_MS;
+  if (!recentlyEnded || !windows.some(({ key }) => key === "sevenDay"))
+    return windows;
+  return [
+    ...windows,
+    { key: "sevenDayFable", label: "Fable", window, waiting: true },
+  ];
 }
 
 /** 等待新采样的窗口只说明上一周期何时结束，不给出百分比或金额。 */
