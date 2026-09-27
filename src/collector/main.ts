@@ -332,8 +332,14 @@ async function runSync(paths: CollectorPaths): Promise<number> {
       ...paths,
       statuslineCache: config.statuslineCache,
     });
-    const result = await pushOutbox(state, config);
     const now = new Date().toISOString();
+    // 额度来源的问题与推送无关，每轮都会重复，只在情况变化时记一行，恢复时也记一行。
+    const quotaIssue = quotaIssueText(report);
+    if (quotaIssue !== (state.getMeta("last_quota_issue") ?? "")) {
+      state.setMeta("last_quota_issue", quotaIssue);
+      console.log(`${now} ${quotaIssue || "额度来源已恢复正常"}`);
+    }
+    const result = await pushOutbox(state, config);
     if (result.error) {
       state.setMeta("last_failure_at", now);
       state.setMeta("last_failure", result.error.message);
@@ -343,12 +349,6 @@ async function runSync(paths: CollectorPaths): Promise<number> {
       return 1;
     }
     state.setMeta("last_success_at", now);
-    // 额度被跳过时每轮都会重复，只在情况变化时记一行，恢复时也记一行。
-    const quotaIssue = quotaIssueText(report);
-    if (quotaIssue !== (state.getMeta("last_quota_issue") ?? "")) {
-      state.setMeta("last_quota_issue", quotaIssue);
-      console.log(`${now} ${quotaIssue || "额度来源已恢复正常"}`);
-    }
     if (result.batches > 0 || report.rewound > 0 || report.malformed > 0) {
       console.log(
         `${now} 已推送 ${result.batches} 批: 用量 ${result.usage}，账户 ${result.accounts}，额度 ${result.quotas}` +
