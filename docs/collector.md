@@ -93,7 +93,7 @@ Claude Code 每一轮都会把最新的 5 小时与 7 天额度传给状态栏�
 meterleaf-collector statusline-cache ~/.cache/claude-statusline/rate-limits.tsv
 ```
 
-采集器同样只读这个文件。文件里没有账户和采样时间，采集器把文件修改时间当作采样时间，并按那一刻观察到的登录账户归属；切换账户前后无法判断时跳过这次采样。Meterleaf 对同一账户和窗口使用采样时间最新的一份，两个来源不会相加。停用时执行 `meterleaf-collector statusline-cache off`。
+采集器同样只读这个文件。文件里没有账户和采样时间，采集器把文件修改时间当作采样时间，并按那一刻观察到的登录账户归属；切换账户前后无法判断时跳过这次采样。Meterleaf 对同一账户和窗口使用采样时间最新的一份，两个来源不会相加。格式不对或窗口名不认识的行会被跳过，其余行照常使用，跳过时采集日志会记一行说明。停用时执行 `meterleaf-collector statusline-cache off`。
 
 ## 日常查看与排障
 
@@ -102,7 +102,8 @@ meterleaf-collector statusline-cache ~/.cache/claude-statusline/rate-limits.tsv
 - **网络不通或 Meterleaf 暂停**：未送达的数据保存在本机，恢复后自动补发，不会重复计数。
 - **更换服务地址**：比如从局域网地址改为公网 HTTPS 地址，执行 `meterleaf-collector server https://meterleaf.example.com`。写入密钥不变，服务端不用改。
 - **提示密钥无效**：确认 Meterleaf 的 `METERLEAF_INGEST_KEYS` 包含 `init` 输出的那一行并已重启。换电脑或重新生成密钥时，用 `init --force` 并替换服务端对应的行。
-- **额度显示为过时**：Claude Code 并不在每次请求后刷新 `~/.claude.json` 里的额度缓存，观察到的刷新发生在打开设置中的用量面板时。采集器不会主动请求额度，可以启用下面的状态栏额度缓存获得更新的数据。
+- **额度显示为过时**：Claude Code 并不在每次请求后刷新 `~/.claude.json` 里的额度缓存，观察到的刷新发生在打开设置中的用量面板时。采集器不会主动请求额度，可以启用上面的状态栏额度缓存获得更新的数据。
+- **Fable 显示「等待更新」**：状态栏只拿得到 5 小时与 7 天额度，Fable 周额度只来自 `~/.claude.json` 的缓存。上一周期结束后，在 Claude Code 里打开一次用量面板，下一轮采集就会带上新周期的 Fable 额度。
 - **切换过登录账户**：切换前后正在进行的请求可能无法确定属于哪个账户，会保留在「未归属」下，不会被算到当前账户。
 
 停用时执行 `meterleaf-collector uninstall-launchd`。采集器的数据目录位于 `~/Library/Application Support/Meterleaf Collector`，其中保存写入密钥、读取进度和账户归属记录。不要删除它，否则归属记录丢失后，重新读取的历史会改记到「未归属」。
