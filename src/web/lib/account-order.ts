@@ -29,3 +29,23 @@ export function moveAccount(
   [next[index], next[target]] = [next[target]!, next[index]!];
   return next;
 }
+
+/**
+ * 类型未知、没有任何额度窗口且累计请求确认为 0 的账户在总览中没有可展示的内容，
+ * 例如采集器短暂建立后又全部重新归属的「未归属」账户。累计缺失表示来源尚未汇总，仍然显示。
+ */
+export function isEmptyAccount(account: {
+  kind: string;
+  fiveHour: unknown;
+  sevenDay: unknown;
+  sevenDayFable?: unknown;
+  lifetime?: { count: number };
+}): boolean {
+  return (
+    account.kind === "unknown" &&
+    !account.fiveHour &&
+    !account.sevenDay &&
+    !account.sevenDayFable &&
+    account.lifetime?.count === 0
+  );
+}
