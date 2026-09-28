@@ -274,7 +274,12 @@ function collectSources(paths: CollectorPaths) {
 function runScan(paths: CollectorPaths, json: boolean) {
   const state = new CollectorState(":memory:");
   try {
-    const report = collect(state, collectSources(paths));
+    const report = collect(
+      state,
+      collectSources(paths),
+      new Date(),
+      () => new Date(),
+    );
     const totals = state.usageTotals();
     const quotas = state
       .pending<{ window: string; percent: number | null; sampledAt: string }>(
@@ -328,10 +333,12 @@ async function runSync(paths: CollectorPaths): Promise<number> {
   let state: CollectorState | null = null;
   try {
     state = openState(paths);
-    const report = collect(state, {
-      ...paths,
-      statuslineCache: config.statuslineCache,
-    });
+    const report = collect(
+      state,
+      { ...paths, statuslineCache: config.statuslineCache },
+      new Date(),
+      () => new Date(),
+    );
     const now = new Date().toISOString();
     // 额度来源的问题与推送无关，每轮都会重复，只在情况变化时记一行，恢复时也记一行。
     const quotaIssue = quotaIssueText(report);

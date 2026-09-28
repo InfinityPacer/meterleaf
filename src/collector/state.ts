@@ -248,8 +248,14 @@ export class CollectorState {
   }
 
   private enqueueUsage(fact: UsageFact, occurredAt: string, account: string) {
+    // 只保存资料、不单独入队：推送时由引用它的用量带上。同一轮内被重新归属的事件
+    // 会替换待发送条目，未归属账户就不会因短暂的中间状态出现在服务端。
     if (account === UNATTRIBUTED_ACCOUNT_ID) {
-      this.upsertAccount(unattributedAccount);
+      this.db
+        .query(
+          "INSERT OR IGNORE INTO accounts (external_id, payload) VALUES (?, ?)",
+        )
+        .run(UNATTRIBUTED_ACCOUNT_ID, JSON.stringify(unattributedAccount));
     }
     const payload: IngestUsage = {
       externalId: fact.externalId,
