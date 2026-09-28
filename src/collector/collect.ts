@@ -211,11 +211,16 @@ export function emptyReport(): CollectReport {
 /**
  * 一轮采集：先记录当前登录账户并按新时间线修正归属，再读取会话增量，
  * 使本轮新事件直接使用延长后的区间；最后记录额度快照。
+ *
+ * 读取期间 Claude Code 仍在写入，晚于开始时刻的记录落在观察区间之外。读完后再确认一次
+ * 登录账户：未变化时把区间延长到确认时刻，这些记录与状态栏采样随即归入该账户；
+ * 期间切换了账户则保持无法判断。finishedAt 给出确认时刻，测试可固定它。
  */
 export function collect(
   state: CollectorState,
   sources: CollectSources,
   now: Date = new Date(),
+  finishedAt: () => Date = () => now,
 ): CollectReport {
   const report = emptyReport();
   const snapshot = readClaudeJson(sources.claudeJson);
@@ -235,6 +240,20 @@ export function collect(
   for (const path of files) ingestFile(state, path, report);
   state.forgetMissingFiles(new Set(files));
 
+  // 先读状态栏缓存再确认账户，使采样时刻不晚于确认时刻。
+  const cache = sources.statuslineCache
+    ? readStatuslineCache(sources.statuslineCache)
+    : undefined;
+  if (snapshot?.account) {
+    const accountUuid = snapshot.account.accountUuid;
+    const confirmedAt = finishedAt().toISOString();
+    const confirmed = readClaudeJson(sources.claudeJson);
+    if (confirmed?.account?.accountUuid === accountUuid) {
+      const since = state.observeAccount(accountUuid, confirmedAt);
+      report.reattributed += state.reattribute(since);
+    }
+  }
+
   if (snapshot?.utilization) {
     const quota = quotaSnapshot(snapshot.utilization);
     if (!quota) {
@@ -247,8 +266,7 @@ export function collect(
     }
   }
 
-  if (sources.statuslineCache) {
-    const cache = readStatuslineCache(sources.statuslineCache);
+  if (cache !== undefined) {
     if (!cache) {
       report.statuslineQuotaSkipped = "状态栏额度缓存不存在或格式无效";
     } else {

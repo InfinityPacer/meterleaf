@@ -82,7 +82,11 @@ import {
   usePreference,
   useScopedPreference,
 } from "./lib/preferences";
-import { orderedAccounts, moveAccount } from "./lib/account-order";
+import {
+  isEmptyAccount,
+  moveAccount,
+  orderedAccounts,
+} from "./lib/account-order";
 import { useAccountArchive } from "./lib/use-account-archive";
 import { accountInitial, withAccountAliases } from "./lib/account-aliases";
 import { planBadge } from "./lib/plan";
@@ -831,7 +835,7 @@ export function App() {
   const hiddenIds = new Set(accountArchive.data?.hidden ?? []);
   const sortedAccounts = orderedAccounts(
     (quotaSnapshot?.accounts ?? []).filter(
-      (account) => !hiddenIds.has(account.id),
+      (account) => !hiddenIds.has(account.id) && !isEmptyAccount(account),
     ),
     accountOrder,
   );

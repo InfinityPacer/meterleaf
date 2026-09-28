@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { orderedAccounts, moveAccount } from "../src/web/lib/account-order";
+import { isEmptyAccount, moveAccount, orderedAccounts } from "../src/web/lib/account-order";
 import { preferenceSchemas, readStoredPreference, writeStoredPreference } from "../src/web/lib/preferences";
 
 test("account order survives storage and appends new accounts without reviving removed ones", () => {
@@ -20,4 +20,17 @@ test("moving an account skips archived neighbours and leaves them in place", () 
   expect(moveAccount(["a", "x", "b"], "b", -1, visible)).toEqual(["b", "x", "a"]);
   expect(moveAccount(["a", "x", "b"], "a", 1, visible)).toEqual(["b", "x", "a"]);
   expect(moveAccount(["x", "a", "b"], "a", -1, visible)).toEqual(["x", "a", "b"]);
+});
+
+test("empty unknown accounts are left out of the overview, sources without totals stay", () => {
+  const base = { kind: "unknown", fiveHour: null, sevenDay: null };
+  expect(isEmptyAccount({ ...base, lifetime: { count: 0 } })).toBe(true);
+  expect(isEmptyAccount({ ...base, lifetime: { count: 3 } })).toBe(false);
+  expect(isEmptyAccount(base)).toBe(false);
+  expect(
+    isEmptyAccount({ ...base, kind: "api", lifetime: { count: 0 } }),
+  ).toBe(false);
+  expect(
+    isEmptyAccount({ ...base, sevenDay: {}, lifetime: { count: 0 } }),
+  ).toBe(false);
 });
