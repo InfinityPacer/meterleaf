@@ -281,6 +281,59 @@ describe("账户归属", () => {
     );
     state.close();
   });
+
+  test("读取期间写入的记录在账户未变时归入该账户，不产生未归属账户", () => {
+    const w = workspace();
+    writeAccount(w.claudeJson, FIXTURE_ACCOUNT_UUID);
+    writeFileSync(w.session, line("first", "2026-09-01T10:00:00Z", 5));
+    const state = new CollectorState(":memory:");
+    state.setBinding({
+      accountUuid: FIXTURE_ACCOUNT_UUID,
+      before: "2026-09-01T10:01:00.000Z",
+    });
+    collect(state, w, new Date("2026-09-01T10:01:00Z"));
+    ackAll(state);
+
+    // 本轮在 10:02:00 开始，记录写于 10:02:02，读完确认时已是 10:02:03。
+    appendFileSync(w.session, line("race", "2026-09-01T10:02:02Z", 5));
+    collect(
+      state,
+      w,
+      new Date("2026-09-01T10:02:00Z"),
+      () => new Date("2026-09-01T10:02:03Z"),
+    );
+    expect(pendingUsage(state).get("req_race:race")!.accountExternalId).toBe(
+      FIXTURE_ACCOUNT_UUID,
+    );
+    // 推送只带上待发送用量引用的账户，未归属账户因此不会到达服务端。
+    expect(
+      [...pendingUsage(state).values()].map((u) => u.accountExternalId),
+    ).toEqual([FIXTURE_ACCOUNT_UUID]);
+    expect(state.pending("account", 10)).toHaveLength(0);
+    state.close();
+  });
+
+  test("读取期间切换了账户时，开始之后的记录仍无法判断", () => {
+    const w = workspace();
+    writeAccount(w.claudeJson, FIXTURE_ACCOUNT_UUID);
+    writeFileSync(w.session, line("first", "2026-09-01T10:00:00Z", 5));
+    const state = new CollectorState(":memory:");
+    collect(state, w, new Date("2026-09-01T10:01:00Z"));
+    ackAll(state);
+
+    appendFileSync(w.session, line("race", "2026-09-01T10:02:02Z", 5));
+    collect(state, w, new Date("2026-09-01T10:02:00Z"), () => {
+      writeAccount(w.claudeJson, OTHER_ACCOUNT);
+      return new Date("2026-09-01T10:02:03Z");
+    });
+    expect(pendingUsage(state).get("req_race:race")!.accountExternalId).toBe(
+      "unattributed",
+    );
+    // 未归属账户不单独入队，由引用它的用量在推送时带上。
+    expect(state.account("unattributed")!.name).toBe("未归属");
+    expect(state.pending("account", 10)).toHaveLength(0);
+    state.close();
+  });
 });
 
 describe("额度快照", () => {
