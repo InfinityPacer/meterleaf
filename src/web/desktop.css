@@ -1207,6 +1207,16 @@
     display: contents;
     font-size: 13px;
   }
+  /* 带快照日期的模型名比名称列宽，折行保留完整标识，圆点对齐首行。 */
+  .app-shell .model-breakdown .model-label {
+    align-items: flex-start;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .app-shell .model-breakdown .model-label i {
+    margin-top: calc((1lh - 6px) / 2);
+  }
   .app-shell .model-breakdown button > div:last-child {
     display: contents;
     font-size: 12px;
