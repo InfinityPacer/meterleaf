@@ -25,7 +25,7 @@ test("live config is explicit and errors never repeat credentials", () => {
   );
   expect(readConfig({ METERLEAF_DEMO: "true" })).toMatchObject({
     METERLEAF_PORT: 4318,
-    METERLEAF_REPORT_REFRESH_INTERVAL_MS: 300_000,
+    METERLEAF_REPORT_REFRESH_INTERVAL_MS: 86_400_000,
   });
   expect(
     readConfig({

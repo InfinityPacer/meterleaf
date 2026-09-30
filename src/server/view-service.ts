@@ -15,7 +15,8 @@ import {
 import type { SyncStatus } from "./sync";
 
 const CACHE_LIMIT = 16;
-const DEFAULT_REFRESH_INTERVAL_MS = 300_000;
+/** 定时刷新只是兜底；打开页面时读取会先返回缓存再后台刷新。 */
+const DEFAULT_REFRESH_INTERVAL_MS = 86_400_000;
 
 /** 报表结果的可见同步状态；账本结果本身仍保持 shared 契约不变。 */
 export interface ReportStatus {
@@ -86,6 +87,27 @@ interface CacheEntry {
   refreshing: boolean;
   lastError: SafeErrorSummary | null;
   sync?: SyncStatus;
+  /** 已排队或已落盘内容的摘要；未知时为 undefined，下次持久化必定写入。 */
+  persistedDigest?: string;
+}
+
+/**
+ * 持久化内容摘要。各层 asOf 只是计算时刻，sync 读取时由当前状态覆盖，均不计入摘要，
+ * 避免账本未变时的刷新反复改写整条缓存；lastUsed 同理只影响重启后的淘汰顺序。
+ */
+function persistedDigest(entry: {
+  query: ViewQuery;
+  basis: UsdBasis;
+  value: LedgerView;
+}): string {
+  const { sync: _sync, reportStatus: _status, ...value } = entry.value;
+  return createHash("sha256")
+    .update(
+      JSON.stringify([entry.query, entry.basis, value], (key, item) =>
+        key === "asOf" ? undefined : item,
+      ),
+    )
+    .digest("hex");
 }
 
 type ReportErrorCode =
@@ -333,6 +355,7 @@ export class ViewService {
           ...saved,
           refreshing: false,
           lastError: null,
+          persistedDigest: persistedDigest(saved),
         });
       }
       cache.close();
@@ -433,9 +456,13 @@ export class ViewService {
     );
   }
 
+  /** 内容与已持久化版本相同则不写；worker 仍保持 save → saved 的逐条协议。 */
   private persistCache(entry: CacheEntry) {
     if (this.closed || this.cachePersistenceDisabled || !this.cacheWriter)
       return;
+    const digest = persistedDigest(entry);
+    if (digest === entry.persistedDigest) return;
+    entry.persistedDigest = digest;
     for (const key of this.pendingCacheWrites.keys()) {
       if (!this.cache.has(key)) this.pendingCacheWrites.delete(key);
     }
@@ -452,6 +479,8 @@ export class ViewService {
         .sort((left, right) => left.lastUsed - right.lastUsed)[0];
       if (!victim) break;
       this.pendingCacheWrites.delete(victim.key);
+      const dropped = this.cache.get(victim.key);
+      if (dropped) dropped.persistedDigest = undefined;
     }
     this.scheduleCacheWrites();
   }

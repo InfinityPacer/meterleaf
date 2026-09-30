@@ -20,10 +20,10 @@ test("page leases expire independently and hiding one page preserves other viewe
   expect(presence.hasVisible(135)).toBe(false);
 });
 
-test("sync intervals default to 15/60 seconds and accept bounded overrides", () => {
+test("sync intervals default to 15 seconds visible / 15 minutes hidden and accept bounded overrides", () => {
   const defaults = readConfig({ METERLEAF_DEMO: "true" });
   expect(defaults.METERLEAF_SYNC_VISIBLE_INTERVAL_MS).toBe(15000);
-  expect(defaults.METERLEAF_SYNC_HIDDEN_INTERVAL_MS).toBe(60000);
+  expect(defaults.METERLEAF_SYNC_HIDDEN_INTERVAL_MS).toBe(900000);
   expect(
     readConfig({
       METERLEAF_DEMO: "true",

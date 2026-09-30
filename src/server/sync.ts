@@ -93,7 +93,7 @@ class SyncPhaseError extends Error {
 
 const defaultOptions: ResolvedSyncRunnerOptions = {
   intervalMs: 15_000,
-  hiddenIntervalMs: 60_000,
+  hiddenIntervalMs: 900_000,
   backlogIntervalMs: 1_000,
   quotaIntervalMs: 30_000,
   sweepMs: 6 * 3_600_000,

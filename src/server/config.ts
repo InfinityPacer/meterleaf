@@ -45,13 +45,13 @@ const envSchema = z.object({
     .int()
     .min(5_000)
     .max(3_600_000)
-    .default(60_000),
+    .default(900_000),
   METERLEAF_REPORT_REFRESH_INTERVAL_MS: z.coerce
     .number()
     .int()
     .min(30_000)
     .max(86_400_000)
-    .default(300_000),
+    .default(86_400_000),
   METERLEAF_SOURCE_ID: z
     .string()
     .regex(/^[a-zA-Z0-9_-]+$/)

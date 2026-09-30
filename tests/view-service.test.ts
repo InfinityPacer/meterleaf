@@ -1561,3 +1561,124 @@ test("a configured pull source still rejects cold reports when its status is unr
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("refreshes persist a report view only when its content changes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-cache-digest-"));
+  const path = join(dir, "ledger.sqlite");
+  const cachePath = `${path}.reports.sqlite.views`;
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  const events: LogEvent[] = [];
+  const diagnostics = createDiagnosticsLogger({
+    level: "debug",
+    sink: (event) => events.push(event),
+  });
+  const cacheWrites = () =>
+    events.filter((event) => event.event === "report.cache_write_timing")
+      .length;
+  const persistedRow = () => {
+    const db = new Database(cachePath, { readonly: true, strict: true });
+    try {
+      return db
+        .query<{ last_used: number; payload: string }, []>(
+          "SELECT last_used, payload FROM view_cache",
+        )
+        .get();
+    } finally {
+      db.close();
+    }
+  };
+  const settle = async (reports: ViewService) => {
+    const deadline = Date.now() + 3_000;
+    let result = await reports.read(query, "subscription", sync, false);
+    while (result.reportStatus?.refreshing && Date.now() < deadline) {
+      await Bun.sleep(10);
+      result = await reports.read(query, "subscription", sync, false);
+    }
+    expect(result.reportStatus?.refreshing).toBe(false);
+    return result;
+  };
+  let clock = 1_000;
+  let reports: ViewService | undefined;
+  try {
+    const observedAt = new Date(Date.now() - 60_000).toISOString();
+    store.savePage(
+      "test",
+      "incremental",
+      {
+        records: [viewUsage("1", observedAt)],
+        nextCursor: "1",
+        hasMore: false,
+      },
+      observedAt,
+    );
+    reports = new ViewService(path, book, {
+      refreshIntervalMs: 0,
+      diagnostics,
+      now: () => clock,
+    });
+    const first = await reports.read(query, "subscription", sync);
+    clock = 1_500;
+    await Bun.sleep(5);
+    await reports.read(query, "subscription", sync);
+    await settle(reports);
+    await reports.close();
+    expect(cacheWrites()).toBe(1);
+    const initial = persistedRow();
+    expect(initial?.last_used).toBe(1_000);
+
+    // 重启恢复后的刷新结果与落盘内容相同：asOf 与 lastUsed 变化不触发写入。
+    reports = new ViewService(path, book, {
+      refreshIntervalMs: 0,
+      diagnostics,
+      now: () => clock,
+    });
+    clock = 2_000;
+    await Bun.sleep(5);
+    await reports.read(query, "subscription", sync);
+    const unchanged = await settle(reports);
+    expect(unchanged.asOf).not.toBe(first.asOf);
+    expect(unchanged.view.count).toBe(1);
+    await reports.close();
+    expect(cacheWrites()).toBe(1);
+    expect(persistedRow()).toEqual(initial);
+
+    // 账本出现新事实后刷新结果改变，必须写入并在重启后恢复为新结果。
+    reports = new ViewService(path, book, {
+      refreshIntervalMs: 0,
+      diagnostics,
+      now: () => clock,
+    });
+    const nextObservedAt = new Date(Date.now() - 30_000).toISOString();
+    store.savePage(
+      "test",
+      "incremental",
+      {
+        records: [viewUsage("2", nextObservedAt)],
+        nextCursor: "2",
+        hasMore: false,
+      },
+      nextObservedAt,
+    );
+    clock = 3_000;
+    await reports.read(query, "subscription", sync);
+    const changed = await settle(reports);
+    expect(changed.view.count).toBe(2);
+    await reports.close();
+    expect(cacheWrites()).toBe(2);
+    expect(persistedRow()?.last_used).toBe(3_000);
+
+    reports = new ViewService(path, book, {
+      refreshIntervalMs: 0,
+      diagnostics,
+      now: () => clock,
+    });
+    const restored = await reports.read(query, "subscription", sync, false);
+    expect(restored.view.count).toBe(2);
+    expect(restored.asOf).toBe(changed.asOf);
+  } finally {
+    await reports?.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
