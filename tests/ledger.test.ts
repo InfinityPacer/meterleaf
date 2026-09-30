@@ -563,3 +563,71 @@ test("quota amounts and estimates keep priced spend when another request is unpr
   expect(unknown.estimate.usd).toBeNull();
   expect(unknown.periodCredits).not.toBeNull();
 });
+
+test("re-saving identical accounts, quotas and state leaves the ledger untouched; real changes still propagate", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-ledger-noop-"));
+  const path = join(dir, "ledger.sqlite");
+  const store = new LedgerStore(path, book);
+  // 报表线程用独立只读连接判断账本是否变化，这里按同样方式观察。
+  const reader = new LedgerStore(path, book, { readonly: true });
+  try {
+    const accounts = [account("test", "a")];
+    const quotas = [quota(40, "2026-09-09T00:00:00Z").fact];
+    const collectedAt = "2026-09-09T00:01:00Z";
+    const replay = () => {
+      store.saveAccountsSnapshot("test", accounts);
+      store.saveAccounts(accounts);
+      store.saveQuotas(quotas, collectedAt);
+      store.saveIngestBatch(
+        "test",
+        {
+          batchId: "batch-1",
+          collector: { name: "test", version: "1" },
+          accounts,
+          usage: [],
+          quotas,
+        },
+        collectedAt,
+      );
+      store.savePage(
+        "test",
+        "incremental",
+        { records: [fact()], nextCursor: "1", hasMore: false },
+        collectedAt,
+      );
+    };
+    replay();
+    const revision = store.revision();
+    const fingerprint = reader.reportFingerprint();
+    const totalChanges = () =>
+      store.db
+        .query<{ count: number }, []>("SELECT total_changes() AS count")
+        .get()!.count;
+
+    const stateChanges = totalChanges();
+    store.setState("test:incremental:cursor", "1");
+    store.setState("test:incremental:caughtUp", true);
+    expect(totalChanges()).toBe(stateChanges);
+
+    replay();
+    expect(store.revision()).toBe(revision);
+    expect(reader.reportFingerprint()).toBe(fingerprint);
+    expect(store.quotas()).toHaveLength(1);
+
+    const changedQuota = { ...quotas[0]!, percent: 55 };
+    store.saveQuotas([changedQuota], "2026-09-09T00:02:00Z");
+    expect(store.revision()).toBe(revision + 1);
+    const afterQuota = reader.reportFingerprint();
+    expect(afterQuota).not.toBe(fingerprint);
+    expect(reader.quotas().map((item) => item.fact.percent)).toEqual([40, 55]);
+
+    store.saveAccountsSnapshot("test", [{ ...accounts[0]!, name: "renamed" }]);
+    expect(store.revision()).toBe(revision + 2);
+    expect(reader.reportFingerprint()).not.toBe(afterQuota);
+    expect(reader.accounts()[0]!.name).toBe("renamed");
+  } finally {
+    reader.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
