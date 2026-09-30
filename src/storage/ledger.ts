@@ -281,10 +281,11 @@ export class LedgerStore {
       .get(key);
     return row ? (JSON.parse(row.value) as T) : null;
   }
+  /** 值未变时不改写行，避免周期性同步状态在空闲时持续产生 WAL 写入。 */
   setState(key: string, value: unknown) {
     this.db
       .query(
-        "INSERT INTO sync_state VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        "INSERT INTO sync_state VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE sync_state.value IS NOT excluded.value",
       )
       .run(key, JSON.stringify(value));
   }
@@ -395,7 +396,7 @@ export class LedgerStore {
       for (const account of accounts) {
         const write = this.db
           .query(
-            "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload<>excluded.payload",
+            "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload IS NOT excluded.payload",
           )
           .run(account.sourceId, account.externalId, JSON.stringify(account));
         changed ||= write.changes > 0;
@@ -420,7 +421,7 @@ export class LedgerStore {
       for (const account of accounts) {
         const write = this.db
           .query(
-            "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload<>excluded.payload",
+            "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload IS NOT excluded.payload",
           )
           .run(account.sourceId, account.externalId, JSON.stringify(account));
         changed ||= write.changes > 0;
@@ -497,7 +498,7 @@ export class LedgerStore {
       for (const account of batch.accounts) {
         const write = this.db
           .query(
-            "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload<>excluded.payload",
+            "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload IS NOT excluded.payload",
           )
           .run(sourceId, account.externalId, JSON.stringify(account));
         changed ||= write.changes > 0;

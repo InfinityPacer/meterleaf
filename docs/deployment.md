@@ -57,14 +57,16 @@ docker compose up -d --no-build --pull never
 | `METERLEAF_BIND_ADDRESS`               | `127.0.0.1`    | Compose 对外绑定地址                       |
 | `METERLEAF_PUBLISHED_PORT`             | `4318`         | Compose 对外端口                           |
 | `METERLEAF_SYNC_VISIBLE_INTERVAL_MS`   | `15000`        | 页面可见时的自动同步间隔，5 秒至 1 小时    |
-| `METERLEAF_SYNC_HIDDEN_INTERVAL_MS`    | `60000`        | 页面不可见时的自动同步间隔，5 秒至 1 小时  |
-| `METERLEAF_REPORT_REFRESH_INTERVAL_MS` | `300000`       | 报表后台刷新间隔，30 秒至 24 小时          |
+| `METERLEAF_SYNC_HIDDEN_INTERVAL_MS`    | `900000`       | 页面不可见时的自动同步间隔，5 秒至 1 小时  |
+| `METERLEAF_REPORT_REFRESH_INTERVAL_MS` | `86400000`     | 报表后台兜底刷新间隔，30 秒至 24 小时      |
 | `METERLEAF_USD_BASIS`                  | `subscription` | 默认 USD 口径，也可选 `api`                |
 | `METERLEAF_PRICE_BOOK`                 | 内置价格表     | 自定义完整价格 JSON 路径                   |
 | `METERLEAF_LOG_LEVEL`                  | `info`         | `debug`、`info`、`warn`、`error`、`silent` |
 | `METERLEAF_INGEST_KEYS`                | 未启用         | 本机采集器写入密钥，见下文                 |
 
 `SUB2API_DATABASE_URL` 与 `METERLEAF_INGEST_KEYS` 至少填写一项，未填写的来源不启用。
+
+打开页面时报表会先显示上次结果并立即在后台刷新，自动同步也按可见间隔运行，因此两个较长的默认间隔只影响无人查看时的后台频率，用来减少 NAS 磁盘写入。
 
 Compose 将容器内数据目录、监听地址和端口固定为 `/app/app_data`、`0.0.0.0` 和 `4318`；`METERLEAF_DATA_DIR`、`METERLEAF_HOST`、`METERLEAF_PORT`、`METERLEAF_DEMO` 仅用于直接以 Bun 启动时的本地配置。
 
