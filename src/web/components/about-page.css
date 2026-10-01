@@ -231,6 +231,12 @@
   text-align: right;
   overflow-wrap: anywhere;
 }
+.about-page-session {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
 .about-page-link {
   display: inline-flex;
   align-items: center;

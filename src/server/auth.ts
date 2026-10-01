@@ -323,6 +323,14 @@ export function registerGithubAuth(
     },
   );
 
+  /** 界面据此显示当前账号与退出入口；未开启 GitHub 登录时该路径不存在。 */
+  app.get("/auth/session", (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    const session = currentSession(request);
+    if (!session) return reply.code(401).send({ error: "unauthorized" });
+    return { login: session.u };
+  });
+
   app.get("/auth/logout", (_request, reply) => {
     reply.header("Cache-Control", "no-store");
     reply.header("Set-Cookie", cookie(SESSION_COOKIE, "", 0));

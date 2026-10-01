@@ -1,6 +1,13 @@
 import { version as appVersion } from "../../../package.json";
-import { ArrowUpRight, Database, Globe2, Scale, Terminal } from "lucide-react";
-import type { ComponentProps } from "react";
+import {
+  ArrowUpRight,
+  Database,
+  Globe2,
+  Scale,
+  Terminal,
+  UserRound,
+} from "lucide-react";
+import { useEffect, useState, type ComponentProps } from "react";
 import type { LedgerSnapshot } from "../../shared/report";
 import { ThemeControl } from "./ThemeControl";
 import "./about-page.css";
@@ -22,6 +29,16 @@ export function AboutPage({
   onMobileLayoutChange,
   mode,
 }: AboutPageProps) {
+  const [session, setSession] = useState<{ login: string } | null>(null);
+  useEffect(() => {
+    let active = true;
+    readSession()
+      .then((value) => active && setSession(value))
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
   const modeLabel =
     mode === "live" ? "实时 API" : mode === "demo" ? "本地演示" : "尚未读取";
 
@@ -77,6 +94,20 @@ export function AboutPage({
               </dt>
               <dd>{modeLabel}</dd>
             </div>
+            {session && (
+              <div>
+                <dt>
+                  <UserRound size={15} />
+                  登录账号
+                </dt>
+                <dd className="about-page-session">
+                  <span>{session.login}</span>
+                  <a className="about-page-link" href="/auth/logout">
+                    退出登录
+                  </a>
+                </dd>
+              </div>
+            )}
             <div>
               <dt>
                 <Scale size={15} />
@@ -120,4 +151,15 @@ export function AboutPage({
       </div>
     </section>
   );
+}
+
+/** 只有服务端开启 GitHub 登录时才有账号；未开启或演示环境返回 null，不显示退出入口。 */
+async function readSession(): Promise<{ login: string } | null> {
+  const response = await fetch("/auth/session", {
+    credentials: "same-origin",
+    redirect: "manual",
+  });
+  if (!response.ok) return null;
+  const body = (await response.json()) as { login?: unknown };
+  return typeof body.login === "string" ? { login: body.login } : null;
 }

@@ -234,3 +234,20 @@ test("login never redirects outside the site", async () => {
     expect(callback.headers.location).toBe("/");
   }
 });
+
+test("the interface can read the signed-in account and sign out", async () => {
+  const ctx = setup();
+  expect((await ctx.app.inject({ url: "/auth/session" })).statusCode).toBe(401);
+  const session = cookies((await login(ctx)).callback).get(
+    "meterleaf_session",
+  )!.value;
+  const current = await ctx.app.inject({
+    url: "/auth/session",
+    headers: { cookie: `meterleaf_session=${session}` },
+  });
+  expect(current.json<{ login: string }>()).toEqual({
+    login: "infinitypacer",
+  });
+  const logout = await ctx.app.inject({ url: "/auth/logout" });
+  expect(cookies(logout).get("meterleaf_session")!.line).toContain("Max-Age=0");
+});
