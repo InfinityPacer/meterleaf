@@ -70,6 +70,7 @@ async function main() {
       )
     : null;
   const app = createApp({
+    githubAuth: config.githubAuth,
     accountArchive: store ? {
       read: () => store.archivedAccounts(),
       write: (id, archived) => store.setAccountArchived(id, archived),
