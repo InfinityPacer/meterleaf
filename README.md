@@ -72,7 +72,7 @@ docker compose up -d --pull never
 
 访问 `http://127.0.0.1:4318`。连接了 Sub2API 时，从右上角「数据同步」启动首次采集，默认不自动采集，可自行开启自动同步。只用 Claude Code 时没有这个入口，采集器推送后数据自动出现。
 
-已发布镜像的拉取方式、跨主机访问、反向代理、配置项及备份恢复见[部署指南](docs/deployment.md)。应用不内置认证，可在反向代理层接入 OAuth/OIDC 认证。
+已发布镜像的拉取方式、跨主机访问、反向代理、配置项及备份恢复见[部署指南](docs/deployment.md)。对外开放前可开启 [GitHub 登录](docs/deployment.md#github-登录)，只允许指定账号访问。
 
 ### 接入 Claude Code
 

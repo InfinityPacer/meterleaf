@@ -26,6 +26,43 @@ function parseIngestKeys(value: string | undefined): IngestKey[] {
   return keys;
 }
 
+// Compose 对未填写的变量传入空字符串，按未配置处理。
+const optionalText = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
+
+/** 填写 Client ID 即启用 GitHub 登录，此时其余登录配置缺一不可，避免半配置下意外开放。 */
+function parseGithubAuth(config: z.infer<typeof envSchema>) {
+  const fields = [
+    config.METERLEAF_GITHUB_CLIENT_ID,
+    config.METERLEAF_GITHUB_CLIENT_SECRET,
+    config.METERLEAF_GITHUB_USERS,
+    config.METERLEAF_PUBLIC_URL,
+  ];
+  if (fields.every((value) => value === undefined)) return undefined;
+  if (fields.some((value) => value === undefined))
+    throw new Error(
+      "GitHub login needs METERLEAF_GITHUB_CLIENT_ID, METERLEAF_GITHUB_CLIENT_SECRET, METERLEAF_GITHUB_USERS and METERLEAF_PUBLIC_URL",
+    );
+  const users = config
+    .METERLEAF_GITHUB_USERS!.split(",")
+    .map((user) => user.trim())
+    .filter(Boolean);
+  if (
+    users.length === 0 ||
+    users.some((user) => !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(user))
+  )
+    throw new Error("Invalid METERLEAF_GITHUB_USERS; expected GitHub logins");
+  return {
+    clientId: config.METERLEAF_GITHUB_CLIENT_ID!,
+    clientSecret: config.METERLEAF_GITHUB_CLIENT_SECRET!,
+    users,
+    publicUrl: config.METERLEAF_PUBLIC_URL!,
+    sessionDays: config.METERLEAF_SESSION_DAYS,
+  };
+}
+
 const envSchema = z.object({
   METERLEAF_DEMO: z.enum(["true", "false"]).default("false"),
   METERLEAF_HOST: z.string().default("127.0.0.1"),
@@ -64,6 +101,14 @@ const envSchema = z.object({
     z.string().url().optional(),
   ),
   METERLEAF_INGEST_KEYS: z.string().optional(),
+  METERLEAF_GITHUB_CLIENT_ID: optionalText,
+  METERLEAF_GITHUB_CLIENT_SECRET: optionalText,
+  METERLEAF_GITHUB_USERS: optionalText,
+  METERLEAF_PUBLIC_URL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional(),
+  ),
+  METERLEAF_SESSION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
 });
 /** 只有显式 demo=true 才能使用演示数据；缺配置不能静默切换运行模式。 */
 export function readConfig(env: Record<string, string | undefined>) {
@@ -88,5 +133,5 @@ export function readConfig(env: Record<string, string | undefined>) {
     throw new Error(
       "METERLEAF_INGEST_KEYS source must differ from METERLEAF_SOURCE_ID",
     );
-  return { ...config, ingestKeys };
+  return { ...config, ingestKeys, githubAuth: parseGithubAuth(config) };
 }
