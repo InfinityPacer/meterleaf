@@ -44,7 +44,7 @@ docker compose up -d --no-build --pull never
 
 生产构建包含 PWA 清单、图标和离线页，浏览器可将应用安装为独立窗口，无需额外安装插件。首页在脚本加载期间显示启动提示；构建会为文本静态资源生成 Brotli/Gzip 变体，服务器按浏览器能力返回。除本机地址外，需要 HTTPS；反向代理须允许访问 `/manifest.webmanifest`、`/sw.js`、`/offline.html` 和 `/icons/*`。离线资源不缓存 API 或账户数据，断网后重新打开不会展示旧账本。
 
-随附 Compose 仅绑定宿主机回环地址。如果反向代理在其他容器中，应加入共享 Docker 网络并访问 `meterleaf:4318`，或显式调整宿主机绑定地址。应用不内置认证，可在代理层接入 OAuth/OIDC 认证。
+随附 Compose 仅绑定宿主机回环地址。如果反向代理在其他容器中，应加入共享 Docker 网络并访问 `meterleaf:4318`，或显式调整宿主机绑定地址。对外开放前按[GitHub 登录](#github-登录)开启登录保护。
 
 ## 配置
 
@@ -63,6 +63,7 @@ docker compose up -d --no-build --pull never
 | `METERLEAF_PRICE_BOOK`                 | 内置价格表     | 自定义完整价格 JSON 路径                   |
 | `METERLEAF_LOG_LEVEL`                  | `info`         | `debug`、`info`、`warn`、`error`、`silent` |
 | `METERLEAF_INGEST_KEYS`                | 未启用         | 本机采集器写入密钥，见下文                 |
+| `METERLEAF_GITHUB_CLIENT_ID` 等        | 未启用         | GitHub 登录，见下文                        |
 
 `SUB2API_DATABASE_URL` 与 `METERLEAF_INGEST_KEYS` 至少填写一项，未填写的来源不启用。
 
@@ -99,7 +100,7 @@ docker compose up -d --no-build --pull never  # 已发布镜像
 
 采集器需要能访问 Meterleaf。采集器与服务在同一台电脑时使用 `http://127.0.0.1:4318`。服务在 NAS 等其他主机时，随附 Compose 默认只监听回环地址，局域网访问需把 `METERLEAF_BIND_ADDRESS` 改为 `0.0.0.0` 或宿主机局域网地址，或者经由已有的反向代理访问。HTTP 下写入密钥明文传输，只在可信局域网中使用。
 
-若要让外网的电脑推送，只在反向代理上为 `POST /api/ingest/v1/batches` 绕过原有登录保护，其余页面照旧。这个地址用写入密钥鉴权，必须走 HTTPS。反向代理的请求体上限至少设为 8 MB，Nginx 默认 1 MB 会拒绝大批次。以 Nginx 为例：
+若要让外网的电脑推送，地址必须走 HTTPS。开启了 [GitHub 登录](#github-登录)时采集器写入已绕过登录；如果改由反向代理做登录保护，只为 `POST /api/ingest/v1/batches` 绕过它，其余页面照旧。这个地址用写入密钥鉴权。反向代理的请求体上限至少设为 8 MB，Nginx 默认 1 MB 会拒绝大批次。以 Nginx 为例：
 
 ```nginx
 location = /api/ingest/v1/batches {
@@ -110,6 +111,37 @@ location = /api/ingest/v1/batches {
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
+
+## GitHub 登录
+
+Meterleaf 可以要求访问者先用 GitHub 账号登录，只有允许名单里的账号能查看页面和读取接口。不开启时，任何能访问到服务的人都能看到账本，只适合本机或可信局域网。
+
+1. 在 GitHub 的 Settings → Developer settings → OAuth Apps 新建应用。Homepage URL 填浏览器访问 Meterleaf 的地址，Authorization callback URL 填同一地址加 `/auth/github/callback`，例如 `https://meterleaf.example.com/auth/github/callback`。
+2. 生成 Client Secret，把下面几项写入 `.env`：
+
+   ```dotenv
+   METERLEAF_GITHUB_CLIENT_ID=<Client ID>
+   METERLEAF_GITHUB_CLIENT_SECRET=<Client Secret>
+   METERLEAF_GITHUB_USERS=your-github-login
+   METERLEAF_PUBLIC_URL=https://meterleaf.example.com
+   # METERLEAF_SESSION_DAYS=30
+   ```
+
+3. 执行 `docker compose up -d`（按实际来源加上前文的参数）让容器按新配置重建。
+
+| 变量                             | 说明                                                       |
+| -------------------------------- | ---------------------------------------------------------- |
+| `METERLEAF_GITHUB_CLIENT_ID`     | OAuth 应用的 Client ID                                     |
+| `METERLEAF_GITHUB_CLIENT_SECRET` | OAuth 应用的 Client Secret                                 |
+| `METERLEAF_GITHUB_USERS`         | 允许登录的 GitHub 用户名，多个用英文逗号分隔，不区分大小写 |
+| `METERLEAF_PUBLIC_URL`           | 浏览器访问 Meterleaf 的地址，须与 OAuth 应用的回调地址一致 |
+| `METERLEAF_SESSION_DAYS`         | 登录有效天数，默认 `30`，范围 1 至 365                     |
+
+前四项要么都填，要么都留空；只填一部分时服务不会启动。地址是 HTTPS 时登录 Cookie 只经 HTTPS 发送。
+
+登录保持在浏览器里，经常使用时自动顺延，闲置超过有效天数才需要重新登录。访问 `/auth/logout` 退出。从 `METERLEAF_GITHUB_USERS` 删除某个账号并重建容器后，该账号已有的登录立即失效；更换 Client Secret 会让所有人重新登录。
+
+开启后，健康检查 `/api/health`、采集器写入地址和图标等安装用的静态文件仍可直接访问，采集器继续用写入密钥推送，不需要登录。
 
 ## 首次采集与自动同步
 

@@ -9,6 +9,11 @@ import { encodeLedger } from "../shared/ledger-wire";
 import type { SyncStatus } from "./sync";
 import { registerResponseCompression } from "./response-compression";
 import { registerIngestRoutes, type IngestTarget } from "./ingest";
+import {
+  registerGithubAuth,
+  type GithubAuthConfig,
+  type GithubClient,
+} from "./auth";
 import { z } from "zod";
 import {
   createLedgerView,
@@ -41,6 +46,10 @@ interface AppOptions {
   diagnostics?: DiagnosticsLogger;
   /** 本机采集器的推送入口；未配置写入密钥时不注册。 */
   ingest?: IngestTarget;
+  /** 未配置时不做认证，由部署方在反向代理层负责。 */
+  githubAuth?: GithubAuthConfig;
+  githubClient?: GithubClient;
+  now?: () => number;
   sync?: {
     status(): SyncStatus;
     requestSync(): unknown;
@@ -59,7 +68,7 @@ function isReportBuilding(
   );
 }
 
-/** 服务读写本地账本状态；上游保持只读，认证由外部反代负责。 */
+/** 服务读写本地账本状态；上游保持只读。配置 GitHub 登录时由服务自身认证，否则交给外部反代。 */
 export function createApp({
   snapshot,
   view,
@@ -68,6 +77,9 @@ export function createApp({
   sync,
   accountArchive,
   ingest,
+  githubAuth,
+  githubClient,
+  now,
 }: AppOptions) {
   const app = Fastify({ logger: false });
   registerResponseCompression(app);
@@ -99,6 +111,12 @@ export function createApp({
       },
     );
   });
+  if (githubAuth)
+    registerGithubAuth(app, githubAuth, {
+      client: githubClient,
+      now,
+      diagnostics,
+    });
   app.get("/api/health", () => ({ status: "ok" }));
   if (ingest) registerIngestRoutes(app, ingest, diagnostics);
   const displayState = () => ({
