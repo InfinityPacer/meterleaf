@@ -22,7 +22,6 @@ export function AccountMergeDialog({
   onSave: (id: string, targetId: string | null) => void;
 }) {
   const [target, setTarget] = useState("");
-  const [container, setContainer] = useState<HTMLDivElement | null>(null);
   useEffect(() => setTarget(""), [account?.id]);
   const members =
     state?.links.filter((link) => link.rootId === account?.id) ?? [];
@@ -45,10 +44,7 @@ export function AccountMergeDialog({
     >
       <Dialog.Portal>
         <Dialog.Backdrop className="account-confirm-backdrop" />
-        <Dialog.Popup
-          ref={setContainer}
-          className="account-confirm account-rename account-merge"
-        >
+        <Dialog.Popup className="account-confirm account-rename account-merge">
           <Dialog.Title>合并额度与用量</Dialog.Title>
           <Dialog.Description>
             将「{account?.name}
@@ -65,7 +61,7 @@ export function AccountMergeDialog({
               label="目标账户"
               value={target}
               onChange={setTarget}
-              portalContainer={container}
+              withinDialog
               options={[
                 { value: "", label: "请选择目标账户" },
                 ...options.map((value) => ({

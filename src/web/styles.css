@@ -2323,6 +2323,16 @@ button[data-size="icon-sm"],
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
 }
+/* 选择器挂到页面浮层，避开弹窗的 transform 定位和 overflow 裁切。 */
+.filter-select-positioner[data-dialog] {
+  z-index: 102;
+}
+.filter-select-positioner[data-dialog] .filter-select-list {
+  max-height: min(320px, calc(var(--available-height, 320px) - 16px));
+}
+.filter-select-positioner[data-dialog] .filter-select-item {
+  overflow-wrap: anywhere;
+}
 .account-merge .filter-select,
 .account-merge .filter-select-trigger {
   width: 100%;

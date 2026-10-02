@@ -362,8 +362,21 @@ export class ViewService {
       });
       cache = new ViewCache(cachePath, namespace);
       for (const saved of cache.load()) {
-        if (saved.key !== this.cacheKey(saved.query, saved.basis))
+        if (saved.key !== this.cacheKey(saved.query, saved.basis)) {
+          // 合并版本变化及首次升级的旧键属于正常失效，不能因此停用持久缓存。
+          if (this.accountMappingVersion) {
+            const oldKey: unknown = JSON.parse(saved.key);
+            if (
+              Array.isArray(oldKey) &&
+              (oldKey.length === 2 ||
+                (oldKey.length === 3 && typeof oldKey[2] === "string")) &&
+              JSON.stringify(oldKey.slice(0, 2)) ===
+                JSON.stringify([saved.query, saved.basis])
+            )
+              continue;
+          }
           throw new Error("Invalid persisted report key");
+        }
         this.cache.set(saved.key, {
           ...saved,
           refreshing: false,

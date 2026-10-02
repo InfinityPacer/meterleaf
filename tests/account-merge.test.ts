@@ -14,6 +14,10 @@ import { ReportProjection } from "../src/server/report-projection";
 import { createApp } from "../src/server/app";
 import { ViewService, ReportBuildingError } from "../src/server/view-service";
 import type { ViewQuery } from "../src/shared/ledger-view";
+import {
+  createDiagnosticsLogger,
+  type LogEvent,
+} from "../src/server/diagnostics";
 
 const now = new Date().toISOString();
 const query: ViewQuery = {
@@ -313,11 +317,20 @@ test("cached and background reports never mix old usage grouping with merged quo
   const path = join(dir, "ledger.sqlite");
   const store = new LedgerStore(path, defaultPriceBook);
   seed(store);
+  const events: LogEvent[] = [];
   const options = {
     inlineRebuildLimit: 0,
     accountMappingVersion: () => String(store.accountMergeVersion()),
+    diagnostics: createDiagnosticsLogger({
+      level: "debug",
+      sink: (event) => events.push(event),
+    }),
   };
-  let service = new ViewService(path, defaultPriceBook, options);
+  // 首次启动模拟升级前的二元缓存键，再切换到有合并版本的缓存键。
+  let service = new ViewService(path, defaultPriceBook, {
+    ...options,
+    accountMappingVersion: undefined,
+  });
   const read = async () => {
     for (let i = 0; i < 100; i++) {
       try {
@@ -331,6 +344,9 @@ test("cached and background reports never mix old usage grouping with merged quo
   };
   try {
     expect((await read()).accounts).toHaveLength(3);
+    await service.close();
+    service = new ViewService(path, defaultPriceBook, options);
+    expect((await read()).accounts).toHaveLength(3);
     store.setAccountMerge("local:a", "gateway:a");
     const merged = await read();
     expect(merged.accounts).toHaveLength(2);
@@ -341,6 +357,9 @@ test("cached and background reports never mix old usage grouping with merged quo
     store.setAccountMerge("local:a", null);
     service = new ViewService(path, defaultPriceBook, options);
     expect((await read()).accounts).toHaveLength(3);
+    expect(
+      events.filter((event) => event.event === "report.cache_failed"),
+    ).toEqual([]);
   } finally {
     await service.close();
     store.close();

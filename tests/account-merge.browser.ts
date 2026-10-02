@@ -43,6 +43,18 @@ for (const [sourceId, name, percent] of [
     now,
   );
 }
+store.saveAccounts(
+  Array.from({ length: 16 }, (_, index) => ({
+    sourceId: "sample-extra",
+    externalId: String(index),
+    name: `候选账号 ${index + 1}`,
+    platform: "openai",
+    kind: "api" as const,
+    plan: null,
+    parentExternalId: null,
+    subjectKey: null,
+  })),
+);
 const app = createApp({
   webRoot: resolve("dist/web"),
   snapshot: (days, basis, dateRange) =>
@@ -68,10 +80,12 @@ try {
   for (const viewport of [
     { width: 1440, height: 1000 },
     { width: 390, height: 844 },
+    { width: 320, height: 568 },
   ]) {
     const context = await browser.newContext({
       viewport,
       reducedMotion: "reduce",
+      colorScheme: viewport.width === 1440 ? "light" : "dark",
     });
     try {
       const page = await context.newPage();
@@ -87,7 +101,32 @@ try {
       await expect(
         dialog.getByRole("button", { name: "确认合并" }),
       ).toBeDisabled();
+      const initialScroll = await dialog.evaluate(
+        (element) => element.scrollTop,
+      );
       await dialog.getByRole("combobox", { name: "目标账户" }).click();
+      const list = page.getByRole("listbox");
+      const listBox = await list.boundingBox();
+      expect(listBox!.y).toBeGreaterThanOrEqual(0);
+      expect(listBox!.y + listBox!.height).toBeLessThanOrEqual(viewport.height);
+      expect(
+        await list.evaluate(
+          (element) => element.scrollHeight > element.clientHeight,
+        ),
+      ).toBe(true);
+      await page
+        .getByRole("option", {
+          name: "候选账号 16 · sample-extra",
+          exact: true,
+        })
+        .click();
+      expect(await dialog.evaluate((element) => element.scrollTop)).toBe(
+        initialScroll,
+      );
+      await dialog.getByRole("combobox", { name: "目标账户" }).click();
+      await page.screenshot({
+        path: `test-results/account-merge/${viewport.width}-dropdown.png`,
+      });
       await page
         .getByRole("option", { name: "网关账号（示例） · sample-gateway" })
         .click();
