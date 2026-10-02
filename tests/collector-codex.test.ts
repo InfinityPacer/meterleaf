@@ -13,6 +13,7 @@ import { join } from "node:path";
 import {
   CodexCollector,
   codexEvent,
+  codexSnapshot,
   emptyContext,
 } from "../src/collector/codex";
 import { ingestBatchSchema, type IngestBatch } from "../src/shared/ingest";
@@ -86,7 +87,11 @@ const config = {
 const ack = (batch: IngestBatch) =>
   Promise.resolve({
     batchId: batch.batchId,
-    accepted: { usage: batch.usage.length, accounts: 1, quotas: 0 },
+    accepted: {
+      usage: batch.usage.length,
+      accounts: 1,
+      quotas: batch.quotas.length,
+    },
   });
 
 test("Codex reads per-request usage, separates cache and keeps reasoning inside output", () => {
@@ -273,4 +278,153 @@ test("Codex replay after a lost acknowledgement uses stable request IDs", async 
     return ack(batch);
   });
   expect(received.size).toBe(1);
+});
+
+function quotaEvent(
+  timestamp = "2026-10-02T12:00:00Z",
+  plan = "pro",
+  percent = 70,
+) {
+  return {
+    timestamp,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: null,
+      rate_limits: {
+        limit_id: "codex",
+        plan_type: plan,
+        primary: {
+          used_percent: percent,
+          window_minutes: 10080,
+          resets_at: 1791048473,
+        },
+        secondary: {
+          used_percent: 12,
+          window_minutes: 300,
+          resets_at: 1790990000,
+        },
+        credits: { has_credits: true, balance: "62500" },
+      },
+    },
+  };
+}
+
+test("Codex quota windows follow duration, not primary/secondary position", () => {
+  const snapshot = codexSnapshot(quotaEvent())!;
+  expect(snapshot.plan).toBe("pro");
+  expect(snapshot.quotas.map((q) => [q.window, q.percent])).toEqual([
+    ["seven-day", 70],
+    ["five-hour", 12],
+  ]);
+  expect(snapshot.quotas[0]!.sampledAt).toBe("2026-10-02T12:00:00.000Z");
+  expect(JSON.stringify(snapshot)).not.toContain("62500");
+});
+
+test("Codex ignores model-scoped buckets and invalid percentages without guessing", () => {
+  const row = quotaEvent();
+  row.payload.rate_limits.limit_id = "codex_other";
+  expect(codexSnapshot(row)).toBeNull();
+  row.payload.rate_limits.limit_id = "codex";
+  row.payload.rate_limits.primary.used_percent = -1;
+  row.payload.rate_limits.secondary.window_minutes = 15;
+  expect(codexSnapshot(row)!.quotas).toEqual([]);
+  expect(codexSnapshot({ ...row, timestamp: "bad" })).toBeNull();
+});
+
+test("Codex sends plan and quota updates even with no new usage", async () => {
+  const { root, file, collector } = fixture();
+  await collector.scan(root);
+  await collector.push(config, ack);
+  appendFileSync(file, lines(quotaEvent()));
+  expect((await collector.scan(root)).events).toBe(0);
+  let calls = 0;
+  await collector.push(config, async (batch) => {
+    calls++;
+    expect(ingestBatchSchema.safeParse(batch).success).toBe(true);
+    expect(batch.usage).toHaveLength(0);
+    expect(batch.accounts[0]).toMatchObject({
+      kind: "subscription",
+      plan: "pro",
+    });
+    expect(batch.quotas).toHaveLength(2);
+    return ack(batch);
+  });
+  expect(calls).toBe(1);
+  expect(collector.status()).toMatchObject({
+    pendingSnapshots: 0,
+    plan: "pro",
+  });
+});
+
+test("Codex old backfill cannot overwrite new plan or quota observations", async () => {
+  const { root, file, collector } = fixture();
+  appendFileSync(
+    file,
+    lines(quotaEvent(), quotaEvent("2026-10-01T12:00:00Z", "plus", 20)),
+  );
+  await collector.scan(root);
+  await collector.push(config, async (batch) => {
+    expect(batch.accounts[0]!.plan).toBe("pro");
+    expect(batch.quotas.find((q) => q.window === "seven-day")!.percent).toBe(
+      70,
+    );
+    return ack(batch);
+  });
+  appendFileSync(file, lines(usage(2)));
+  await collector.scan(root);
+  await collector.push(config, async (batch) => {
+    expect(batch.accounts[0]!.plan).toBe("pro");
+    expect(batch.quotas).toHaveLength(0);
+    return ack(batch);
+  });
+});
+
+test("Codex repeated token totals still accept independent newer quota snapshots", async () => {
+  const { root, file, collector } = fixture();
+  const sameUsage = usage();
+  Object.assign(sameUsage.payload, {
+    rate_limits: quotaEvent().payload.rate_limits,
+  });
+  appendFileSync(file, lines(sameUsage));
+  await collector.scan(root);
+  expect(collector.status()).toMatchObject({ events: 1, pendingSnapshots: 3 });
+});
+
+test("Codex snapshot delivery failure retains updates for retry", async () => {
+  const { root, file, collector } = fixture();
+  appendFileSync(file, lines(quotaEvent()));
+  await collector.scan(root);
+  await expect(
+    collector.push(config, async () => {
+      throw new Error("offline");
+    }),
+  ).rejects.toThrow("offline");
+  expect(collector.status().pendingSnapshots).toBe(3);
+  await collector.push(config, ack);
+  expect(collector.status().pendingSnapshots).toBe(0);
+});
+
+test("Codex quota migration replays existing offsets once without losing delivery state", async () => {
+  const { root, file, collector, state } = fixture();
+  await collector.scan(root);
+  await collector.push(config, ack);
+  appendFileSync(file, lines(quotaEvent()));
+  await collector.scan(root);
+  // Emulate an older collector that consumed the lines without storing metadata.
+  collector.db.exec(
+    "DELETE FROM snapshots; DELETE FROM diagnostics WHERE key='quota_reader_v1';",
+  );
+  const updated = new CodexCollector(state);
+  opened.push(updated);
+  expect(updated.status()).toMatchObject({ files: 0, events: 1, pending: 0 });
+  await updated.scan(root);
+  expect(updated.status()).toMatchObject({
+    events: 1,
+    pending: 0,
+    plan: "pro",
+  });
+  const reopened = new CodexCollector(state);
+  opened.push(reopened);
+  expect(reopened.status().files).toBe(1);
 });

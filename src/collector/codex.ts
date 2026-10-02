@@ -4,7 +4,9 @@ import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   ingestUsageSchema,
+  ingestQuotaSchema,
   type IngestBatch,
+  type IngestQuota,
   type IngestUsage,
 } from "../shared/ingest";
 import type { CollectorConfig } from "./config";
@@ -36,6 +38,57 @@ function token(tokens: RecordValue, key: string): number | null {
     throw new Error("invalid_token_count");
   }
   return value;
+}
+
+/** Quota notifications are independent of token usage, including info:null and repeated totals. */
+export function codexSnapshot(
+  raw: unknown,
+): { sampledAt: string; plan: string | null; quotas: IngestQuota[] } | null {
+  const event = object(raw);
+  const payload = object(event?.payload);
+  if (event?.type !== "event_msg" || payload?.type !== "token_count")
+    return null;
+  const limits = object(payload.rate_limits);
+  if (!limits || (limits.limit_id != null && limits.limit_id !== "codex"))
+    return null;
+  if (
+    typeof event.timestamp !== "string" ||
+    !Number.isFinite(Date.parse(event.timestamp))
+  )
+    return null;
+  const sampledAt = new Date(event.timestamp).toISOString();
+  const plan =
+    typeof limits.plan_type === "string" &&
+    limits.plan_type !== "unknown" &&
+    /^[a-z][a-z0-9_-]{0,63}$/.test(limits.plan_type)
+      ? limits.plan_type
+      : null;
+  const quotas: IngestQuota[] = [];
+  for (const name of ["primary", "secondary"]) {
+    const bucket = object(limits[name]);
+    if (!bucket) continue;
+    const minutes = bucket.window_minutes;
+    const window =
+      minutes === 300 ? "five-hour" : minutes === 10080 ? "seven-day" : null;
+    if (!window) continue;
+    const reset =
+      typeof bucket.resets_at === "number" &&
+      Number.isSafeInteger(bucket.resets_at) &&
+      bucket.resets_at > 0 &&
+      bucket.resets_at < 8640000000000
+        ? new Date(bucket.resets_at * 1000).toISOString()
+        : null;
+    const parsed = ingestQuotaSchema.safeParse({
+      accountExternalId: "codex-local",
+      window,
+      percent: bucket.used_percent,
+      sampledAt,
+      resetsAt: reset,
+      windowMinutes: minutes,
+    });
+    if (parsed.success && reset) quotas.push(parsed.data);
+  }
+  return plan || quotas.length ? { sampledAt, plan, quotas } : null;
 }
 
 /** Only inspect session identity, model context and token events, never message bodies. */
@@ -140,6 +193,12 @@ interface Pending {
   id: string;
   payload: string;
 }
+interface SnapshotRow {
+  key: string;
+  sampled_at: string;
+  payload: string;
+  sent: number;
+}
 
 export class CodexCollector {
   readonly db: Database;
@@ -148,7 +207,38 @@ export class CodexCollector {
     this.db.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, offset INTEGER, inode TEXT, tail TEXT, context TEXT, size INTEGER, modified REAL);
       CREATE TABLE IF NOT EXISTS usage(id TEXT PRIMARY KEY, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS snapshots(key TEXT PRIMARY KEY, sampled_at TEXT NOT NULL, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS diagnostics(key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+    // Replay old offsets once to discover metadata that older collectors never parsed.
+    // Stable usage IDs and sent flags remain untouched; replay still uses the 64 MiB budget.
+    this.db.transaction(() => {
+      if (
+        !this.db
+          .query("SELECT 1 FROM diagnostics WHERE key='quota_reader_v1'")
+          .get()
+      ) {
+        this.db.exec("DELETE FROM files");
+        this.db
+          .query("INSERT INTO diagnostics VALUES ('quota_reader_v1','1')")
+          .run();
+      }
+    })();
+  }
+
+  private saveSnapshot(raw: unknown) {
+    const snapshot = codexSnapshot(raw);
+    if (!snapshot) return;
+    const rows: [string, unknown][] = snapshot.quotas.map((quota) => [
+      quota.window,
+      quota,
+    ]);
+    if (snapshot.plan) rows.push(["plan", snapshot.plan]);
+    const save = this.db
+      .query(`INSERT INTO snapshots(key,sampled_at,payload,sent) VALUES (?,?,?,0)
+      ON CONFLICT(key) DO UPDATE SET sampled_at=excluded.sampled_at,payload=excluded.payload,sent=0
+      WHERE excluded.sampled_at > snapshots.sampled_at`);
+    for (const [key, payload] of rows)
+      save.run(key, snapshot.sampledAt, JSON.stringify(payload));
   }
 
   scanFile(
@@ -221,7 +311,9 @@ export class CodexCollector {
               ]).toString("utf8");
               if (/"(?:session_meta|turn_context|token_count)"/.test(line)) {
                 try {
-                  const usage = codexEvent(JSON.parse(line), context);
+                  const raw: unknown = JSON.parse(line);
+                  this.saveSnapshot(raw);
+                  const usage = codexEvent(raw, context);
                   if (usage)
                     events += insert.run(
                       usage.externalId,
@@ -339,24 +431,34 @@ export class CodexCollector {
           "SELECT id,payload FROM usage WHERE sent=0 ORDER BY rowid LIMIT 500",
         )
         .all();
-      if (!rows.length) break;
+      const snapshots = this.db
+        .query<SnapshotRow, []>("SELECT * FROM snapshots WHERE sent=0")
+        .all();
+      if (!rows.length && !snapshots.length) break;
+      const planRow = this.db
+        .query<SnapshotRow, []>("SELECT * FROM snapshots WHERE key='plan'")
+        .get();
+      const plan: string | null = planRow ? JSON.parse(planRow.payload) : null;
+      const quotas: IngestQuota[] = snapshots
+        .filter((row) => row.key !== "plan")
+        .map((row) => JSON.parse(row.payload));
       const batch: IngestBatch = {
         schemaVersion: 1,
         sourceId: config.sourceId,
         batchId: crypto.randomUUID(),
-        collector: { name: "meterleaf-codex-collector", version: "0.1.0" },
+        collector: { name: "meterleaf-codex-collector", version: "0.2.0" },
         accounts: [
           {
             externalId: "codex-local",
             name: "Codex 本机",
             platform: "openai",
-            kind: "unknown",
-            plan: null,
+            kind: plan ? "subscription" : "unknown",
+            plan,
             subjectKey: null,
           },
         ],
         usage: rows.map((row) => JSON.parse(row.payload)),
-        quotas: [],
+        quotas,
       };
       const result = object(await send(batch));
       const accepted = object(result?.accepted);
@@ -364,13 +466,18 @@ export class CodexCollector {
         result?.batchId !== batch.batchId ||
         accepted?.usage !== rows.length ||
         accepted?.accounts !== 1 ||
-        accepted?.quotas !== 0
+        accepted?.quotas !== quotas.length
       ) {
         throw new Error("invalid_ingest_acknowledgement");
       }
       this.db.transaction(() => {
         const update = this.db.query("UPDATE usage SET sent=1 WHERE id=?");
         for (const row of rows) update.run(row.id);
+        const mark = this.db.query(
+          "UPDATE snapshots SET sent=1 WHERE key=? AND sampled_at=? AND payload=?",
+        );
+        for (const row of snapshots)
+          mark.run(row.key, row.sampled_at, row.payload);
         this.db
           .query("INSERT OR REPLACE INTO diagnostics VALUES ('last_success',?)")
           .run(new Date().toISOString());
@@ -381,6 +488,11 @@ export class CodexCollector {
   }
 
   status() {
+    const plan = this.db
+      .query<{ payload: string }, []>(
+        "SELECT payload FROM snapshots WHERE key='plan'",
+      )
+      .get();
     return {
       files: this.db
         .query<{ n: number }, []>("SELECT count(*) AS n FROM files")
@@ -393,6 +505,12 @@ export class CodexCollector {
           "SELECT count(*) AS n FROM usage WHERE sent=0",
         )
         .get()!.n,
+      pendingSnapshots: this.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) AS n FROM snapshots WHERE sent=0",
+        )
+        .get()!.n,
+      plan: plan ? (JSON.parse(plan.payload) as string) : null,
       lastSuccess:
         this.db
           .query<{ value: string }, []>(
