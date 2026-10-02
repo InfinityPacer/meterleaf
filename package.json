@@ -19,7 +19,8 @@
     "test": "bun test tests",
     "test:browser": "bun tests/browser.smoke.ts",
     "collector": "bun src/collector/main.ts",
-    "build:collector": "bun scripts/build-collector.ts"
+    "build:collector": "bun scripts/build-collector.ts",
+    "build:codex-collector": "bun build --compile src/collector/codex-main.ts --outfile dist/meterleaf-codex-collector"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

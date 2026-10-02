@@ -14,6 +14,7 @@ export interface FilterSelectProps {
   onChange: (value: string) => void;
   icon?: ReactNode;
   options: FilterSelectOption[];
+  withinDialog?: boolean;
 }
 
 /** 统一的自定义筛选选择器，避免不同页面回退到浏览器原生下拉菜单。 */
@@ -23,6 +24,7 @@ export function FilterSelect({
   onChange,
   icon,
   options,
+  withinDialog,
 }: FilterSelectProps) {
   return (
     <div className="filter-select">
@@ -49,6 +51,7 @@ export function FilterSelect({
         <Select.Portal>
           <Select.Positioner
             className="filter-select-positioner"
+            data-dialog={withinDialog || undefined}
             sideOffset={6}
             align="start"
             alignItemWithTrigger={false}

@@ -10,40 +10,15 @@ import type {
 } from "../shared/report";
 import type { LedgerStore, StoredUsage } from "../storage/ledger";
 import type { SyncRunner } from "./sync";
+import {
+  createAccountResolver,
+  ref,
+  type AccountResolver,
+} from "../domain/account-merge";
+export { createAccountResolver, ref } from "../domain/account-merge";
+export type { AccountResolver } from "../domain/account-merge";
 
 const DAY_MS = 86_400_000;
-
-/** URI 分量避免来源与外部 ID 分隔符冲突，身份规则由适配器提供。 */
-export function ref(sourceId: string, externalId: string) {
-  return `${encodeURIComponent(sourceId)}:${encodeURIComponent(externalId)}`;
-}
-
-export type AccountResolver = (sourceId: string, externalId: string) => string;
-
-/** 按来源快照解析父账号；缺失父项停止，循环在再次访问节点前停止。 */
-export function createAccountResolver(
-  sourceAccounts: readonly SourceAccount[],
-): AccountResolver {
-  const indexed = new Map(
-    sourceAccounts.map((account) => [
-      ref(account.sourceId, account.externalId),
-      account,
-    ]),
-  );
-  return (sourceId, externalId) => {
-    let key = ref(sourceId, externalId);
-    const visited = new Set<string>();
-    while (!visited.has(key)) {
-      visited.add(key);
-      const account = indexed.get(key);
-      if (!account?.parentExternalId) break;
-      const parent = ref(sourceId, account.parentExternalId);
-      if (!indexed.has(parent)) break;
-      key = parent;
-    }
-    return key;
-  };
-}
 
 function metadataText(
   metadata: UsageFact["metadata"],
@@ -164,7 +139,7 @@ export function liveSnapshot(
   dateRange?: DateRange,
 ): LedgerSnapshot {
   const sourceAccounts = store.accounts();
-  const root = createAccountResolver(sourceAccounts);
+  const root = createAccountResolver(sourceAccounts, store.accountMerges());
   const indexed = new Map(
     sourceAccounts.map((account) => [
       ref(account.sourceId, account.externalId),
@@ -329,7 +304,8 @@ function unknownAccount(sourceId: string, externalId: string): SourceAccount {
 
 /** 只读取账户和额度快照；请求金额由外部索引按窗口提供。 */
 export function indexedSnapshot(
-  store: Pick<LedgerStore, "book" | "accounts" | "quotas">,
+  store: Pick<LedgerStore, "book" | "accounts" | "quotas"> &
+    Partial<Pick<LedgerStore, "accountMerges">>,
   sync: Pick<SyncRunner, "status"> | null,
   now: string,
   usdBasis: UsdBasis,
@@ -339,11 +315,16 @@ export function indexedSnapshot(
     endInclusive: string,
     basis: UsdBasis,
     modelScope: ((model: string) => boolean) | null,
-  ) => { usd: string | null; credits: string | null; count?: number; tokens?: number | null },
+  ) => {
+    usd: string | null;
+    credits: string | null;
+    count?: number;
+    tokens?: number | null;
+  },
   observedAccountIds: string[] = [],
 ): Omit<LedgerSnapshot, "records"> {
   const sourceAccounts = store.accounts();
-  const root = createAccountResolver(sourceAccounts);
+  const root = createAccountResolver(sourceAccounts, store.accountMerges?.());
   const sourceAccountByRef = new Map(
     sourceAccounts.map((account) => [
       ref(account.sourceId, account.externalId),

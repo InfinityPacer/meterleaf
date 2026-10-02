@@ -87,6 +87,25 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
 Claude Code 每一轮都会把最新的 5 小时与 7 天额度传给状态栏命令。如果你的状态栏脚本把它写成文件，采集器可以读取这个文件，额度会比 `~/.claude.json` 里的缓存新得多。
 
+没有现成状态栏脚本时，可使用仓库中的 `scripts/claude-statusline.sh`（需要 Bash 与 `jq`）。在 Claude Code 的 `~/.claude/settings.json` 中添加下面一项，将路径改为脚本的实际绝对路径；如果已配置状态栏，请把额度缓存逻辑整合进现有脚本，不要覆盖原命令：
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bash /absolute/path/to/meterleaf/scripts/claude-statusline.sh"
+  }
+}
+```
+
+脚本在终端显示简短的 5h / 7d 百分比，只把额度和真实重置时间保存到采集器自己的目录，不存储完整状态栏内容，不读凭据、不发网络请求。macOS 上启用默认缓存路径：
+
+```sh
+meterleaf-collector statusline-cache "$HOME/Library/Application Support/Meterleaf Collector/statusline-quota.tsv"
+```
+
+Claude Code 下一轮提供额度后，等待每分钟同步，Meterleaf 的账户卡片就会显示重置时间（跨天时附日期）。没有提供额度时保留未知，不从首次请求时间推算。非 macOS 或自定义采集器目录时，给状态栏命令设置 `METERLEAF_STATUSLINE_CACHE`，并让采集器读取同一个路径。
+
 文件每行一个窗口，三列用制表符分隔，依次是窗口名 `five_hour` 或 `seven_day`、已用百分比、重置时间的 Unix 秒。例如 `five_hour	18	1790277600`。启用时提供绝对路径：
 
 ```sh

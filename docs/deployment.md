@@ -2,7 +2,7 @@
 
 [返回首页](../README.md)
 
-Meterleaf 单容器提供前端与 API，可以只读访问 Sub2API PostgreSQL，也可以接收采集器推送的 Claude Code 用量或 CPA 插件账本。至少配置一种来源，使用本地 SQLite 保存账本。不代理模型请求，不修改上游，也不直接请求 OpenAI 或 Anthropic。
+Meterleaf 单容器提供前端与 API，可以只读访问 Sub2API PostgreSQL，也可以接收采集器推送的 Claude Code、Codex 用量或 CPA 插件账本。至少配置一种来源，使用本地 SQLite 保存账本。不代理模型请求，不修改上游，也不直接请求 OpenAI 或 Anthropic。
 
 CLIProxyAPI（CPA）需要额外启动可选同步容器，读取 usage-report 插件保存的账本。安装、密钥追加、来源筛选和重复统计说明见[接入 CPA](cpa.md)。该方式复用 `METERLEAF_INGEST_KEYS`，不需要 Sub2API 数据库。
 
@@ -76,6 +76,8 @@ Compose 将容器内数据目录、监听地址和端口固定为 `/app/app_data
 自定义价格文件可放在挂载的 `prices` 目录，设置 `METERLEAF_PRICE_BOOK=/app/prices/custom.json`。修改后更新费率版本并重启，详见[计价说明](pricing.md)。
 
 ## 接入本机采集器
+
+Codex 本地用量使用独立采集器和来源名称，安装与后台任务见[接入 Codex](codex-collector.md)。同样通过下面的写入密钥接入，不需要 Sub2API；与 CC 或网关记录不做跨来源去重。
 
 Claude Code 等本地直连的客户端不经过网关，需要在使用它的电脑上运行本机采集器，由采集器把用量、账户和额度快照推送到 Meterleaf。安装和日常使用见[本机采集器](collector.md)。
 

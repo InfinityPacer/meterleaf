@@ -15,6 +15,7 @@ import {
   type GithubClient,
 } from "./auth";
 import { z } from "zod";
+import type { AccountMergeState } from "../domain/account-merge";
 import {
   createLedgerView,
   type LedgerView,
@@ -23,6 +24,10 @@ import {
 } from "../shared/ledger-view";
 
 interface AppOptions {
+  accountMerge?: {
+    read(): AccountMergeState;
+    write(id: string, targetId: string | null): AccountMergeState;
+  };
   /** 本地账户展示状态，不向连接器透传写操作。 */
   accountArchive?: {
     read(): string[];
@@ -76,6 +81,7 @@ export function createApp({
   diagnostics = silentLogger,
   sync,
   accountArchive,
+  accountMerge,
   ingest,
   githubAuth,
   githubClient,
@@ -118,6 +124,30 @@ export function createApp({
       diagnostics,
     });
   app.get("/api/health", () => ({ status: "ok" }));
+  app.get(
+    "/api/accounts/merge",
+    () => accountMerge?.read() ?? { writable: false, accounts: [], links: [] },
+  );
+  app.put("/api/accounts/merge", (request, reply) => {
+    const id = z.string().min(1).max(512);
+    const parsed = z
+      .object({ id, targetId: id.nullable() })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "合并参数无效" });
+    if (!accountMerge)
+      return reply.code(503).send({ error: "当前账本不支持合并" });
+    try {
+      return accountMerge.write(parsed.data.id, parsed.data.targetId);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        /^(账户不存在|不能|请先|请选择)/.test(error.message)
+      )
+        return reply.code(400).send({ error: error.message });
+      throw error;
+    }
+  });
   if (ingest) registerIngestRoutes(app, ingest, diagnostics);
   const displayState = () => ({
     archived: accountArchive?.read() ?? [],
