@@ -2319,6 +2319,46 @@ button[data-size="icon-sm"],
 .account-rename-reset {
   margin-right: auto;
 }
+.account-merge {
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+/* 选择器挂到页面浮层，避开弹窗的 transform 定位和 overflow 裁切。 */
+.filter-select-positioner[data-dialog] {
+  z-index: 102;
+}
+.filter-select-positioner[data-dialog] .filter-select-list {
+  max-height: min(320px, calc(var(--available-height, 320px) - 16px));
+}
+.filter-select-positioner[data-dialog] .filter-select-item {
+  overflow-wrap: anywhere;
+}
+.account-merge .filter-select,
+.account-merge .filter-select-trigger {
+  width: 100%;
+  max-width: 100%;
+}
+.account-merge-members ul {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.account-merge-members li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.account-merge-members li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.account-merge-members button {
+  flex-shrink: 0;
+  min-height: 44px;
+}
 .account-lifetime {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

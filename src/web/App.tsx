@@ -1,4 +1,6 @@
 import { version as appVersion } from "../../package.json";
+import { useAccountMerge } from "./lib/use-account-merge";
+import { AccountMergeDialog } from "./components/AccountMergeDialog";
 import {
   lazy,
   Suspense,
@@ -611,6 +613,10 @@ export function App() {
   );
   const [editingAccountOrder, setEditingAccountOrder] = useState(false);
   const accountArchive = useAccountArchive();
+  const accountMerge = useAccountMerge();
+  const [accountToMerge, setAccountToMerge] = useState<LedgerAccount | null>(
+    null,
+  );
   const [accountToHide, setAccountToHide] = useState<LedgerAccount | null>(
     null,
   );
@@ -906,6 +912,21 @@ export function App() {
               className="account-menu-positioner"
             >
               <ActionMenu.Popup className="account-menu-popup">
+                <ActionMenu.Item
+                  className="account-menu-item"
+                  disabled={
+                    !accountMerge.data?.writable ||
+                    accountMerge.mutation.isPending
+                  }
+                  onClick={() => {
+                    accountMerge.mutation.reset();
+                    void accountMerge.refetch();
+                    setAccountToMerge(account);
+                  }}
+                >
+                  <Layers3 size={16} />
+                  合并额度与用量
+                </ActionMenu.Item>
                 {!accountArchive.data?.writable && (
                   <p className="account-readonly-note">
                     {accountArchive.isError
@@ -1853,6 +1874,30 @@ export function App() {
             { onSuccess: () => setAccountToRename(null) },
           );
         }}
+      />
+      <AccountMergeDialog
+        account={accountToMerge}
+        state={accountMerge.data}
+        hiddenIds={accountArchive.data?.hidden ?? []}
+        pending={accountMerge.mutation.isPending}
+        error={
+          accountMerge.mutation.isError
+            ? accountMerge.mutation.error.message
+            : null
+        }
+        onClose={() => setAccountToMerge(null)}
+        onSave={(id, targetId) =>
+          accountMerge.mutation.mutate(
+            { id, targetId },
+            {
+              onSuccess: () => {
+                setAccountToMerge(null);
+                setFilter((current) => ({ ...current, account: "all" }));
+                setRecordPage(0);
+              },
+            },
+          )
+        }
       />
       <AlertDialog.Root
         open={!!accountToHide}

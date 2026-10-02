@@ -66,19 +66,28 @@ async function main() {
           refreshIntervalMs: config.METERLEAF_REPORT_REFRESH_INTERVAL_MS,
           diagnostics: logger,
           getSyncStatus: sync ? sync.status.bind(sync) : undefined,
+          accountMappingVersion: () => String(store!.accountMergeVersion()),
         },
       )
     : null;
   const app = createApp({
     githubAuth: config.githubAuth,
-    accountArchive: store ? {
-      read: () => store.archivedAccounts(),
-      write: (id, archived) => store.setAccountArchived(id, archived),
-      hidden: () => store.hiddenAccounts(),
-      hide: (id) => store.hideAccount(id),
-      aliases: () => store.accountAliases(),
-      setAlias: (id, alias) => store.setAccountAlias(id, alias),
-    } : undefined,
+    accountMerge: store
+      ? {
+          read: () => store.accountMergeState(),
+          write: (id, targetId) => store.setAccountMerge(id, targetId),
+        }
+      : undefined,
+    accountArchive: store
+      ? {
+          read: () => store.archivedAccounts(),
+          write: (id, archived) => store.setAccountArchived(id, archived),
+          hidden: () => store.hiddenAccounts(),
+          hide: (id) => store.hideAccount(id),
+          aliases: () => store.accountAliases(),
+          setAlias: (id, alias) => store.setAccountAlias(id, alias),
+        }
+      : undefined,
     view: reports
       ? (query, basis = config.METERLEAF_USD_BASIS, refresh = true) =>
           reports.read(query, basis, undefined, refresh)

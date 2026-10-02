@@ -72,7 +72,8 @@ export class ReportProjection {
     const file = sourceFileState(this.sourcePath);
     const state = this.store.reportUsageChangeState();
     const accounts = this.store.accounts();
-    const mapping = JSON.stringify(
+    const mapping = JSON.stringify([
+      Object.entries(this.store.accountMerges()).sort(),
       accounts
         .map((account) => [
           account.sourceId,
@@ -80,7 +81,7 @@ export class ReportProjection {
           account.parentExternalId,
         ])
         .sort(),
-    );
+    ]);
     const row = this.index.db
       .query<{ payload: string }, []>(
         "SELECT payload FROM projection_checkpoint WHERE id=1",
@@ -120,7 +121,7 @@ export class ReportProjection {
     const fingerprint = this.store.reportFingerprint();
     const changed = this.store.db.transaction(() => {
       const { accounts, state, previous, checkpoint, rebuild } = this.plan();
-      const root = createAccountResolver(accounts);
+      const root = createAccountResolver(accounts, this.store.accountMerges());
       return this.index.db.transaction(() => {
         let updated = rebuild;
         if (rebuild) {
@@ -167,6 +168,12 @@ export class ReportProjection {
   /** 索引内金额所依据的价格表；后台重建期间用它标注过渡结果。 */
   indexedPricing(): IndexedPricing | null {
     return this.index.getMeta<IndexedPricing>("pricing");
+  }
+
+  /** 合并变化后旧索引的账户归属不能与新额度混用。 */
+  accountsCurrent(): boolean {
+    const { previous, checkpoint } = this.plan();
+    return previous?.accounts === checkpoint.accounts;
   }
 
   private pricing(): IndexedPricing {
