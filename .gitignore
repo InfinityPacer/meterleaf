@@ -5,6 +5,9 @@ dist/
 .env.*
 !.env.example
 app_data/
+cpa_data/
+cpa_ingest_key
+__pycache__/
 coverage/
 test-results/
 .DS_Store

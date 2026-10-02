@@ -17,6 +17,10 @@ jobs:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun test tests
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python3 -m unittest discover -s collectors/cpa -p 'test_*.py' -v
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -32,5 +36,10 @@ jobs:
         env:
           SUB2API_DATABASE_URL: postgresql://readonly:example@postgres:5432/sub2api
         run: docker compose config -q
+      - name: Validate optional CPA collector Compose
+        env:
+          METERLEAF_INGEST_KEYS: cpa:0000000000000000000000000000000000000000000000000000000000000000
+          CPA_USAGE_DIRECTORY: /tmp/cpa
+        run: docker compose -f compose.yaml -f compose.cpa.yaml --profile cpa config -q
       - name: Build container without publishing
         run: docker build -t meterleaf:ci .

@@ -1,0 +1,35 @@
+# Optional companion: docker compose -f compose.yaml -f compose.cpa.yaml --profile cpa up -d
+services:
+  cpa-collector:
+    profiles: [cpa]
+    image: python:3.12-alpine
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command: [python3, -u, /collector/bridge.py]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      CPA_DATABASE: /source/usage-report.sqlite
+      METERLEAF_URL: http://meterleaf:4318
+      METERLEAF_KEY_FILE: /run/secrets/cpa-ingest-key
+      SOURCE_ID: ${CPA_SOURCE_ID:-cpa}
+      MODEL_SCOPE: ${CPA_MODEL_SCOPE:-all}
+    volumes:
+      - ./collectors/cpa:/collector:ro
+      # Mount the directory so SQLite sees live WAL files and database replacements.
+      - ${CPA_USAGE_DIRECTORY:?Set CPA_USAGE_DIRECTORY}:/source:ro
+      - ./cpa_data:/data
+      - ./cpa_ingest_key:/run/secrets/cpa-ingest-key:ro
+    healthcheck:
+      test: [CMD, python3, /collector/bridge.py, --health]
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

@@ -2,7 +2,9 @@
 
 [返回首页](../README.md)
 
-Meterleaf 单容器提供前端与 API，可以只读访问 Sub2API PostgreSQL，也可以接收本机采集器推送的 Claude Code 用量，两种来源至少配置一种，使用本地 SQLite 保存账本。不代理模型请求，不修改 Sub2API，也不直接请求 OpenAI 或 Anthropic。
+Meterleaf 单容器提供前端与 API，可以只读访问 Sub2API PostgreSQL，也可以接收采集器推送的 Claude Code 用量或 CPA 插件账本。至少配置一种来源，使用本地 SQLite 保存账本。不代理模型请求，不修改上游，也不直接请求 OpenAI 或 Anthropic。
+
+CLIProxyAPI（CPA）需要额外启动可选同步容器，读取 usage-report 插件保存的账本。安装、密钥追加、来源筛选和重复统计说明见[接入 CPA](cpa.md)。该方式复用 `METERLEAF_INGEST_KEYS`，不需要 Sub2API 数据库。
 
 ## 安装
 
