@@ -14,6 +14,7 @@ export interface FilterSelectProps {
   onChange: (value: string) => void;
   icon?: ReactNode;
   options: FilterSelectOption[];
+  portalContainer?: HTMLElement | null;
 }
 
 /** 统一的自定义筛选选择器，避免不同页面回退到浏览器原生下拉菜单。 */
@@ -23,6 +24,7 @@ export function FilterSelect({
   onChange,
   icon,
   options,
+  portalContainer,
 }: FilterSelectProps) {
   return (
     <div className="filter-select">
@@ -46,7 +48,7 @@ export function FilterSelect({
             <ChevronDown size={15} aria-hidden="true" />
           </Select.Icon>
         </Select.Trigger>
-        <Select.Portal>
+        <Select.Portal container={portalContainer ?? undefined}>
           <Select.Positioner
             className="filter-select-positioner"
             sideOffset={6}

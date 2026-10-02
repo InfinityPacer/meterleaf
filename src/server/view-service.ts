@@ -28,6 +28,8 @@ export interface ReportStatus {
 export type ReportView = LedgerView & { reportStatus?: ReportStatus };
 
 export interface ViewServiceOptions {
+  /** 本地账户归属变化使已有视图失效，包括重启后恢复的持久缓存。 */
+  accountMappingVersion?: () => string;
   /** 派生报表索引独立于事实账本；只读 URI 默认用内存，验证时可显式指定本地索引文件。 */
   indexPath?: string;
   /** 成功视图独立持久化；null 禁用，默认从磁盘索引路径派生，内存索引不落盘。 */
@@ -53,8 +55,12 @@ interface WorkerMessage {
   error?: string;
   /** 分段耗时仅用于诊断，不写入缓存或用户账本。 */
   timings?: {
-    queueMs: number; indexMs: number; readMs: number;
-    snapshotMs: number; aggregateMs: number; materializeMs: number;
+    queueMs: number;
+    indexMs: number;
+    readMs: number;
+    snapshotMs: number;
+    aggregateMs: number;
+    materializeMs: number;
   };
 }
 
@@ -231,7 +237,10 @@ export class ViewService {
   private cacheWriteRequests = new Map<number, PendingCacheWrite>();
   private cachePersistenceDisabled = false;
 
+  private readonly accountMappingVersion?: () => string;
+
   constructor(path: string, book: PriceBook, options: ViewServiceOptions = {}) {
+    this.accountMappingVersion = options.accountMappingVersion;
     this.diagnostics = options.diagnostics ?? silentLogger;
     this.refreshIntervalMs =
       options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
@@ -335,7 +344,11 @@ export class ViewService {
   }
 
   private cacheKey(query: ViewQuery, basis: UsdBasis): string {
-    return JSON.stringify([query, basis]);
+    return JSON.stringify(
+      this.accountMappingVersion
+        ? [query, basis, this.accountMappingVersion()]
+        : [query, basis],
+    );
   }
 
   /** 旧价格版本只作为过渡结果保留，不能把旧金额标为新版本；数据库替换必须失效。 */
@@ -628,11 +641,15 @@ export class ViewService {
     let task!: Promise<LedgerView>;
     const request = new Promise<LedgerView>((resolve, reject) => {
       this.pending.set(id, {
-        resolve, reject,
+        resolve,
+        reject,
         diagnostic: {
           queryId: this.cacheId(key),
-          sort: query.sort, desc: query.desc, page: query.page,
-          pageSize: query.pageSize, dimension: query.dimension,
+          sort: query.sort,
+          desc: query.desc,
+          page: query.page,
+          pageSize: query.pageSize,
+          dimension: query.dimension,
           granularity: query.granularity,
           hasSearch: !!query.filter.search.trim(),
           hasModel: query.filter.model !== "all",

@@ -19,6 +19,11 @@ import {
   type Valuation,
 } from "../domain/pricing";
 import { withSub2ApiImageUsage } from "../connectors/sub2api-usage";
+import {
+  createAccountResolver,
+  ref,
+  type AccountMergeState,
+} from "../domain/account-merge";
 
 export interface StoredUsage {
   fact: UsageFact;
@@ -293,6 +298,84 @@ export class LedgerStore {
   /** 归档是本地展示状态，独立于上游账户快照和历史账单，不受同步覆盖。 */
   archivedAccounts(): string[] {
     return this.getState<string[]>("local:archived-accounts") ?? [];
+  }
+
+  accountMerges(): Record<string, string> {
+    return this.getState<Record<string, string>>("local:account-merges") ?? {};
+  }
+
+  accountMergeVersion(): number {
+    return this.getState<number>("local:account-merge-version") ?? 0;
+  }
+
+  accountMergeState(): AccountMergeState {
+    const accounts = this.accounts();
+    const base = createAccountResolver(accounts);
+    const root = createAccountResolver(accounts, this.accountMerges());
+    const aliases = this.accountAliases();
+    return {
+      writable: true,
+      accounts: accounts
+        .filter(
+          (a) =>
+            base(a.sourceId, a.externalId) === ref(a.sourceId, a.externalId),
+        )
+        .map((a) => ({
+          id: ref(a.sourceId, a.externalId),
+          name: aliases[ref(a.sourceId, a.externalId)] ?? a.name,
+          sourceId: a.sourceId,
+        })),
+      links: Object.entries(this.accountMerges()).map(([id, targetId]) => {
+        const account = accounts.find(
+          (a) => ref(a.sourceId, a.externalId) === id,
+        );
+        return {
+          id,
+          targetId,
+          rootId: account
+            ? root(account.sourceId, account.externalId)
+            : targetId,
+        };
+      }),
+    };
+  }
+
+  /** 只保存可撤销的归属关系；采集事实、游标和去重键不变。 */
+  setAccountMerge(id: string, targetId: string | null): AccountMergeState {
+    return this.db.transaction(() => {
+      const merges = { ...this.accountMerges() };
+      if (targetId !== null && merges[id] === targetId)
+        return this.accountMergeState();
+      if (targetId === null) delete merges[id];
+      else {
+        const accounts = this.accountMergeState().accounts;
+        if (
+          !accounts.some((a) => a.id === id) ||
+          !accounts.some((a) => a.id === targetId)
+        )
+          throw new Error("账户不存在或不是独立账户");
+        if (id === targetId) throw new Error("不能合并到自身");
+        if (Object.hasOwn(merges, id)) throw new Error("请先解除该账户的合并");
+        if (Object.hasOwn(merges, targetId))
+          throw new Error("请选择尚未合并的目标账户");
+        if (
+          this.accountMergeState().links.some(
+            (link) => link.id === targetId && link.rootId === id,
+          )
+        )
+          throw new Error("不能循环合并账户");
+        merges[id] = targetId;
+      }
+      if (JSON.stringify(merges) !== JSON.stringify(this.accountMerges())) {
+        this.setState("local:account-merges", merges);
+        this.setState(
+          "local:account-merge-version",
+          this.accountMergeVersion() + 1,
+        );
+        this.bumpRevision();
+      }
+      return this.accountMergeState();
+    })();
   }
 
   /** 删除展示只保存稳定 ID，账单、额度历史与上游账户均不删除。 */

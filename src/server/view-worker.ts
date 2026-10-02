@@ -58,7 +58,7 @@ type IndexState =
   | { mode: "building"; since: string };
 
 function whileBuilding(): IndexState {
-  return building!.previousPricing
+  return building!.previousPricing && projection.accountsCurrent()
     ? { mode: "transitional", pricing: building!.previousPricing }
     : { mode: "building", since: building!.since };
 }
@@ -79,9 +79,13 @@ function prepareIndex(): IndexState {
     ensureInline();
     return { mode: "current" };
   }
-  const previousPricing = needed === "same-source" ? usablePricing() : null;
+  const previousPricing =
+    needed === "same-source" && projection.accountsCurrent()
+      ? usablePricing()
+      : null;
   if (Date.now() < retryAt) {
-    if (previousPricing) return { mode: "transitional", pricing: previousPricing };
+    if (previousPricing)
+      return { mode: "transitional", pricing: previousPricing };
     throw new Error("Report index rebuild failed recently");
   }
   if (!startBackgroundBuild(previousPricing)) {
@@ -122,7 +126,11 @@ function startBackgroundBuild(previousPricing: IndexedPricing | null): boolean {
   let worker: Worker;
   try {
     worker = new Worker(new URL("./index-builder.ts", import.meta.url), {
-      workerData: { path: config.path, book: config.book, target: nextIndexPath },
+      workerData: {
+        path: config.path,
+        book: config.book,
+        target: nextIndexPath,
+      },
     });
   } catch (error) {
     diagnostics.warn("report.index_rebuild_unavailable", {
@@ -278,7 +286,11 @@ parentPort!.on(
         aggregateMs = performance.now() - aggregateStarted;
         const materializeStarted = performance.now();
         const read = (basis: UsdBasis) => {
-          const view = projection.index.materialize(prepared, basis, snapshots[basis]);
+          const view = projection.index.materialize(
+            prepared,
+            basis,
+            snapshots[basis],
+          );
           return {
             ...view,
             accounts: view.accounts.map((account) => ({
@@ -301,14 +313,24 @@ parentPort!.on(
           : result;
       })();
       if (state.mode === "building") {
-        parentPort!.postMessage({ id: request.id, building: { since: state.since } });
+        parentPort!.postMessage({
+          id: request.id,
+          building: { since: state.since },
+        });
         return;
       }
       parentPort!.postMessage({
         id: request.id,
         result,
         transitional: state.mode === "transitional",
-        timings: { queueMs, indexMs, readMs, snapshotMs, aggregateMs, materializeMs },
+        timings: {
+          queueMs,
+          indexMs,
+          readMs,
+          snapshotMs,
+          aggregateMs,
+          materializeMs,
+        },
       });
     } catch (error) {
       diagnostics.warn("report.query_failed", {
