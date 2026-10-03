@@ -369,9 +369,9 @@ function AccountRow({
   usage?: AccountLifetime;
 }) {
   const accountUsage = account.lifetime ?? usage;
-  const hasQuota = Boolean(
-    account.fiveHour || account.sevenDay || account.sevenDayFable,
-  );
+  const hasQuota =
+    !archived &&
+    Boolean(account.fiveHour || account.sevenDay || account.sevenDayFable);
   const windows = withFableQuotaWindow(
     visibleQuotaWindows(account, asOf, compactUsage),
     account,
@@ -585,7 +585,7 @@ function OverviewQuotas({
               compactUsage={compactUsage}
               usage={accountUsage?.[account.id]}
               onOpen={() =>
-                account.fiveHour || account.sevenDay
+                !showArchived && (account.fiveHour || account.sevenDay)
                   ? onOpen(account)
                   : onRequests(account)
               }

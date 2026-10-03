@@ -122,7 +122,7 @@ function UsageSummary({
         </span>
       )}
       <span className="mobile-home-visually-hidden">
-        {account.name}无独立额度窗口。
+        {account.name}用量汇总。
       </span>
     </div>
   );
@@ -238,12 +238,15 @@ export function MobileHome({
           aria-label={showArchived ? "已归档账户列表" : "账户额度摘要"}
         >
           {accounts.map((account) => {
-            const quotas = withFableQuotaWindow(
-              visibleQuotaWindows(account, asOf),
-              account,
-              asOf,
-            );
-            const hasQuota = Boolean(account.fiveHour || account.sevenDay);
+            const quotas = showArchived
+              ? []
+              : withFableQuotaWindow(
+                  visibleQuotaWindows(account, asOf),
+                  account,
+                  asOf,
+                );
+            const hasQuota =
+              !showArchived && Boolean(account.fiveHour || account.sevenDay);
             const plan = planBadge(account);
             const open = () =>
               hasQuota ? onAccount(account) : onRequests(account);
