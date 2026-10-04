@@ -267,13 +267,8 @@ try {
     localStorage.setItem("meterleaf-pref-mobileLayout", JSON.stringify("app")),
   );
   await page.reload();
-  await detail(
-    "history",
-    "≈$100.00",
-    /上一周期/,
-    "desktop-previous-period.png",
-  );
-  await detail("rough", "≈$800.00", /粗估/);
+  await detail("history", "$100.00", /上一周期/, "desktop-previous-period.png");
+  await detail("rough", "$800.00", /粗估/);
   for (const account of ["history", "rough"] as const) {
     await ingest(observation(account, 2, 16, 8));
     await ingest(observation(account, 3, 24, 16));
@@ -282,8 +277,8 @@ try {
   await apiStage("previous-period", 100, "rough", 800, 24);
   await loadPage();
   await tokensCard("2.16M", "9.00K");
-  await detail("history", "≈$100.00", /上一周期/, "desktop-early-history.png");
-  await detail("rough", "≈$800.00", /粗估/);
+  await detail("history", "$100.00", /上一周期/, "desktop-early-history.png");
+  await detail("rough", "$800.00", /粗估/);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await loadPage();
@@ -293,8 +288,8 @@ try {
     ),
   ).toBe(true);
   await tokensCard("2.16M", "9.00K");
-  await detail("history", "≈$100.00", /上一周期/, "mobile-early-history.png");
-  await detail("rough", "≈$800.00", /粗估/, "mobile-rough.png");
+  await detail("history", "$100.00", /上一周期/, "mobile-early-history.png");
+  await detail("rough", "$800.00", /粗估/, "mobile-rough.png");
   for (const account of ["history", "rough"] as const) {
     await ingest(observation(account, 10, 30, 24));
     await ingest(observation(account, 15, 35, 30));
@@ -306,7 +301,7 @@ try {
   await tokensCard("1.92M", "13.00K");
   await detail(
     "history",
-    "≈$122.62",
+    "$122.62",
     /综合上一周期与本周期/,
     "mobile-blended.png",
   );
@@ -315,7 +310,7 @@ try {
   await tokensCard("1.92M", "13.00K");
   await detail(
     "history",
-    "≈$122.62",
+    "$122.62",
     /综合上一周期与本周期/,
     "desktop-blended.png",
   );

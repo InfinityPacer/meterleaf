@@ -57,7 +57,7 @@ test("formats an eligible estimate in the requested unit", () => {
   expect(estimateAmount(quota, "credits", now)).toBe("37,039.6");
 });
 
-test("rough, historical and blended estimates show their approximation per unit", () => {
+test("rough, historical and blended estimates display plain amounts without a prefix", () => {
   for (const method of ["rough", "previous-period", "blended"] as const) {
     const quota = {
       ...window,
@@ -65,7 +65,7 @@ test("rough, historical and blended estimates show their approximation per unit"
         methods: { usd: method, credits: "segments" },
       }),
     };
-    expect(estimateAmount(quota, "usd", now)).toBe("≈$1,481.58");
+    expect(estimateAmount(quota, "usd", now)).toBe("$1,481.58");
     expect(estimateAmount(quota, "credits", now)).toBe("37,039.6");
   }
   const missing = {
@@ -76,7 +76,7 @@ test("rough, historical and blended estimates show their approximation per unit"
     }),
   };
   expect(estimateAmount(missing, "usd", now)).toBe("N/A");
-  expect(estimateAmount(missing, "credits", now)).toBe("≈37,039.6");
+  expect(estimateAmount(missing, "credits", now)).toBe("37,039.6");
   expect(estimateAmount({ ...missing, resetsAt: now }, "credits", now)).toBe(
     "N/A",
   );

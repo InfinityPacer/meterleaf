@@ -10,15 +10,10 @@ export function estimateAmount(
   if (!window || quotaState(window, asOf) === "expired") return "N/A";
   const estimate = window.estimate;
   if (!estimate || estimate.reason !== "eligible") return "N/A";
-  const text = amount(
+  return amount(
     numericAmount(unit === "usd" ? estimate.usd : estimate.credits),
     unit,
   );
-  return text !== "N/A" &&
-    estimate.methods?.[unit] &&
-    estimate.methods[unit] !== "segments"
-    ? `≈${text}`
-    : text;
 }
 
 /** 移动端紧凑金额行隐藏已耗尽、未知或过期周期的预估；Web 始终保留预估栏。 */
