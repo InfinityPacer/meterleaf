@@ -39,6 +39,7 @@ export function summaryFromLifetime(
   const days = totals.from ? spanDays(totals.from, totals.asOf) : null;
   return {
     tokens: total,
+    tokensIncomplete: totals.tokens.incomplete > 0,
     usd,
     credits: credits ? credits : null,
     requests: totals.count,
@@ -74,6 +75,7 @@ export function summaryFromView(
   const days = all?.since ? spanDays(all.since, all.asOf) : null;
   return {
     tokens,
+    tokensIncomplete: view.tokenSummary.incompleteRows > 0,
     usd,
     credits:
       view.creditsSummary.hasKnown && view.creditsSummary.value

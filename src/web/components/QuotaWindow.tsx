@@ -1,6 +1,7 @@
 import { amount, compact, numericAmount } from "../lib/report";
 import {
   estimateAmount,
+  estimateDescription,
   quotaLabel,
   quotaPercent,
   quotaWaitingReset,
@@ -140,7 +141,7 @@ export function QuotaWindow({
           {showEstimate && (
             <span
               className="quota-window-estimate"
-              title={`${label} 预估：按已用比例推算的整周额度价值`}
+              title={`${label} 预估 · ${estimateDescription(window)}`}
             >
               <i aria-hidden="true">·</i>
               <span aria-label={`${label} 预估`}>{estimateText}</span>

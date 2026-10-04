@@ -69,6 +69,7 @@ import { AccountHeadingActions } from "./components/AccountHeadingActions";
 import {
   accountQuotaExhausted,
   estimateAmount,
+  estimateDescription,
   quotaLabel,
   quotaPercent,
   quotaState,
@@ -453,7 +454,9 @@ function AccountRow({
                 variant="line"
                 hideCaption
               />
-              <strong>{estimateAmount(account.sevenDay, "usd", asOf)}</strong>
+              <strong title={estimateDescription(account.sevenDay)}>
+                {estimateAmount(account.sevenDay, "usd", asOf)}
+              </strong>
             </span>
           )}
         </>
@@ -2254,6 +2257,8 @@ export function App() {
                             quotaAsOf,
                           )}
                         </dd>
+                        <dt>7d 费用预估依据</dt>
+                        <dd>{estimateDescription(selectedAccount.sevenDay)}</dd>
                         <dt>7d 预估 Credits</dt>
                         <dd>
                           {estimateAmount(
@@ -2300,7 +2305,11 @@ export function App() {
                             )}
                           </dd>
                           <dt>Fable 预估费用</dt>
-                          <dd>
+                          <dd
+                            title={estimateDescription(
+                              selectedAccount.sevenDayFable,
+                            )}
+                          >
                             {estimateAmount(
                               selectedAccount.sevenDayFable,
                               "usd",

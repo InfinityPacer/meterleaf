@@ -356,7 +356,8 @@ export class ViewService {
     let cache: ViewCache | null = null;
     try {
       const namespace = JSON.stringify({
-        format: 1,
+        // 多段额度预估不能恢复为旧版单点结果。仅失效派生缓存，不修改账本。
+        format: 2,
         source: sourceFileState(sourcePath).identity,
         book: book.id,
       });

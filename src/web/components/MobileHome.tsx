@@ -189,7 +189,9 @@ function RangeSummary({
           </strong>
         </span>
       </div>
-      {summary && <CompositionBar composition={summary.composition} />}
+      {summary && (
+        <CompositionBar composition={summary.composition} showOutput />
+      )}
     </section>
   );
 }

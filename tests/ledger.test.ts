@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import Decimal from "decimal.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,7 +39,12 @@ const book: PriceBook = {
 test("account archive and hide persist independently of source snapshots and usage", () => {
   const store = new LedgerStore(":memory:", book);
   try {
-    store.savePage("test", "incremental", { records: [fact()], nextCursor: "1", hasMore: false }, "2026-09-09T00:00:00Z");
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [fact()], nextCursor: "1", hasMore: false },
+      "2026-09-09T00:00:00Z",
+    );
     store.setAccountArchived("test:a", true);
     store.hideAccount("test:a");
     store.saveAccountsSnapshot("test", []);
@@ -49,7 +55,9 @@ test("account archive and hide persist independently of source snapshots and usa
     expect(store.archivedAccounts()).toEqual([]);
     expect(store.hiddenAccounts()).toEqual(["test:a"]);
     expect(store.countUsage("test")).toBe(1);
-  } finally { store.close(); }
+  } finally {
+    store.close();
+  }
 });
 
 function fact(id = "1"): UsageFact {
@@ -491,7 +499,7 @@ test("expired snapshots never carry old percent or spend into new window", () =>
   expect(view.periodUsd).toBeNull();
   expect(view.estimate.reason).toBe("expired");
 });
-test("seven day estimate uses one sample without a minimum percentage or delta", () => {
+test("early weekly observations use a rough estimate without requiring a segment", () => {
   const row = fact();
   const usage = [{ fact: row, valuation: valueUsage(row, book) }];
   const history = [
@@ -499,10 +507,18 @@ test("seven day estimate uses one sample without a minimum percentage or delta",
     quota(25, "2026-09-08T02:00:00Z"),
   ];
   const view = quotaView(history, usage, "2026-09-08T02:01:00Z")!;
-  expect(view.estimate.usd).toBe("0.00498");
-  expect(
-    quotaView([history[1]!], usage, "2026-09-08T02:01:00Z")!.estimate.usd,
-  ).toBe(view.estimate.usd);
+  expect(view.estimate.usd).toBe(
+    new Decimal("0.001245")
+      .mul(25)
+      .mul(100)
+      .div(20 ** 2 + 25 ** 2)
+      .toString(),
+  );
+  expect(view.estimate.methods?.usd).toBe("rough");
+  const single = quotaView([history[1]!], usage, "2026-09-08T02:01:00Z")!;
+  expect(single.estimate.usd).toBe("0.00498");
+  expect(single.estimate.reason).toBe("eligible");
+  expect(single.estimate.methods?.usd).toBe("rough");
   expect(
     quotaView(
       [...history, quota(1, "2026-09-08T02:02:00Z")],
@@ -520,15 +536,29 @@ test("seven day estimate uses one sample without a minimum percentage or delta",
 });
 
 test("estimate excludes post-sample spend and does not divide by zero", () => {
-  const row = fact();
-  const usage = [{ fact: row, valuation: valueUsage(row, book) }];
-  expect(
-    quotaView(
-      [quota(19, "2026-09-08T00:00:00Z")],
-      usage,
-      "2026-09-08T02:01:00Z",
-    )!.estimate.usd,
-  ).toBeNull();
+  const usage = [1, 3, 5].map((hour) => {
+    const row = {
+      ...fact(String(hour)),
+      occurredAt: `2026-09-08T0${hour}:00:00Z`,
+    };
+    return { fact: row, valuation: valueUsage(row, book) };
+  });
+  const history = [
+    quota(10, "2026-09-08T00:00:00Z"),
+    quota(20, "2026-09-08T02:00:00Z"),
+    quota(30, "2026-09-08T04:00:00Z"),
+  ];
+  const view = quotaView(history, usage, "2026-09-08T05:01:00Z")!;
+  expect(view.periodUsd).toBe(
+    new Decimal(usage[0]!.valuation.usd.amount!).mul(3).toString(),
+  );
+  expect(view.estimate.usd).toBe(
+    new Decimal(usage[0]!.valuation.usd.amount!).mul(10).toString(),
+  );
+  expect(view.estimate.credits).toBe(
+    new Decimal(usage[0]!.valuation.credits.amount!).mul(10).toString(),
+  );
+  expect(view.estimate.reason).toBe("eligible");
   expect(
     quotaView(
       [quota(0, "2026-09-08T02:00:00Z")],
@@ -542,26 +572,43 @@ test("quota amounts and estimates keep priced spend when another request is unpr
   const row = fact();
   const valued = valueUsage(row, book);
   const missing = { ...valued, usd: { ...valued.usd, amount: null } };
-  const history = [quota(25, "2026-09-08T02:00:00Z")];
-  const priced = { fact: row, valuation: valued };
-  const baseline = quotaView(history, [priced], "2026-09-08T02:01:00Z")!;
+  const history = [
+    quota(10, "2026-09-08T00:00:00Z"),
+    quota(20, "2026-09-08T02:00:00Z"),
+    quota(30, "2026-09-08T04:00:00Z"),
+  ];
+  const priced = [1, 3].map((hour) => ({
+    fact: {
+      ...row,
+      externalId: `priced-${hour}`,
+      occurredAt: `2026-09-08T0${hour}:00:00Z`,
+    },
+    valuation: valued,
+  }));
+  const unpriced = priced.map(({ fact }) => ({
+    fact: { ...fact, externalId: `unpriced-${fact.externalId}` },
+    valuation: missing,
+  }));
+  const baseline = quotaView(history, priced, "2026-09-08T04:01:00Z")!;
   const view = quotaView(
     history,
-    [priced, { fact: row, valuation: missing }],
-    "2026-09-08T02:01:00Z",
+    [...priced, ...unpriced],
+    "2026-09-08T04:01:00Z",
   )!;
+  expect(baseline.estimate.usd).toBe(
+    new Decimal(valued.usd.amount!).mul(10).toString(),
+  );
   expect(view.periodUsd).toBe(baseline.periodUsd);
   expect(view.estimate.usd).toBe(baseline.estimate.usd);
   expect(view.estimate.reason).toBe("eligible");
-  expect(view.periodRequests).toBe(2);
-  const unknown = quotaView(
-    history,
-    [{ fact: row, valuation: missing }],
-    "2026-09-08T02:01:00Z",
-  )!;
+  expect(view.periodRequests).toBe(4);
+  const unknown = quotaView(history, unpriced, "2026-09-08T04:01:00Z")!;
   expect(unknown.periodUsd).toBeNull();
   expect(unknown.estimate.usd).toBeNull();
   expect(unknown.periodCredits).not.toBeNull();
+  expect(unknown.estimate.credits).toBe(
+    new Decimal(valued.credits.amount!).mul(10).toString(),
+  );
 });
 
 test("re-saving identical accounts, quotas and state leaves the ledger untouched; real changes still propagate", async () => {

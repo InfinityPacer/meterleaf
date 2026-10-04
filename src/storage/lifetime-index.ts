@@ -459,7 +459,7 @@ export class LifetimeIndex {
         next.identity = sourceState.identity;
         next.stamp = sourceState.stamp;
         next.sourceRevision = observation.revision;
-        this.db.transaction(() => this.writeState(next))();
+        // 检查点仍代表上次实际用量进度；额度和状态刷新仅更新连接内的观察值。
         this.state = next;
       }
       return this.complete(dataVersion, false);
@@ -609,10 +609,7 @@ export class LifetimeIndex {
           resetRequired: true,
         };
       }
-      if (
-        revision === state.sourceRevision &&
-        changeState.lastSequence === state.checkpoint
-      ) {
+      if (changeState.lastSequence === state.checkpoint) {
         return {
           revision,
           changeState,
