@@ -978,9 +978,15 @@ test("timer refreshes cached queries sequentially", async () => {
     )
       await Bun.sleep(20);
     expect([...cache.values()][0]?.value.view.count).toBe(3);
-    expect(
-      (reports as unknown as { active: Map<string, unknown> }).active.size,
-    ).toBe(0);
+    // 更新已可见时下一轮可能刚启动，先停表并等待该轮结束，再检查没有遗留任务。
+    const scheduled = reports as unknown as {
+      refreshTimer: ReturnType<typeof setInterval> | null;
+      scheduledRefresh: Promise<void> | null;
+      active: Map<string, unknown>;
+    };
+    if (scheduled.refreshTimer) clearInterval(scheduled.refreshTimer);
+    await scheduled.scheduledRefresh;
+    expect(scheduled.active.size).toBe(0);
   } finally {
     await reports?.close();
     store.close();

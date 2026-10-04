@@ -1,3 +1,5 @@
+import { LedgerStore } from "../src/storage/ledger";
+import { defaultPriceBook } from "../src/domain/default-prices";
 import { chromium, expect, type Browser, type Page } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -25,6 +27,27 @@ await new Promise<void>((done) => probe.close(() => done()));
 const base = `http://127.0.0.1:${port}/`;
 const sourceId = "quota-browser";
 const key = `mlk_${crypto.randomUUID()}`;
+// 合成历史套餐观测先于历史用量，不能靠今天的账户套餐回填旧快照。
+const fixtureStore = new LedgerStore(
+  resolve(dataDir, "meterleaf.sqlite"),
+  defaultPriceBook,
+);
+fixtureStore.saveAccounts(
+  [
+    {
+      sourceId,
+      externalId: "history",
+      name: "合成历史参考账户",
+      platform: "anthropic",
+      kind: "subscription",
+      plan: "max-5x",
+      subjectKey: null,
+      parentExternalId: null,
+    },
+  ],
+  new Date(Date.now() - 8 * 86400_000).toISOString(),
+);
+fixtureStore.close();
 // 独立真实服务禁用 .env，仅持有本次生成的写入密钥和临时数据库。
 const server = Bun.spawn(
   [process.execPath, "--no-env-file", "src/server/main.ts"],
@@ -329,6 +352,51 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await loadPage();
   await detail("history", "$100.00", /多段.*中位数/, "desktop-segments.png");
+  // 套餐变化时百分比仍递增，验证真正隔离套餐，而非仅靠百分比回退。
+  const changed = (percent: number, addedUsd: number) => {
+    const batch = observation("history", percent, addedUsd, 0);
+    const at = Date.now();
+    batch.accounts[0]!.plan = "max-20x";
+    batch.quotas[0]!.sampledAt = iso(at);
+    batch.usage[0]!.occurredAt = iso(at - 1);
+    return batch;
+  };
+  const planStage = async (percent: number, expected: string | null) => {
+    let result: LedgerView | undefined;
+    await expect
+      .poll(
+        async () => {
+          const response = await fetch(base + "api/view?days=30&pageSize=100");
+          if (response.status !== 200) return false;
+          result = (await response.json()) as LedgerView;
+          const window = accountWindow(result, "history");
+          return (
+            window.percent === percent && window.estimate?.usd === expected
+          );
+        },
+        { timeout: 15000 },
+      )
+      .toBe(true);
+    stages.push({ method: "plan-change", percent, usd: expected });
+    return result!;
+  };
+  await ingest(changed(61, 1));
+  await planStage(61, null);
+  await Bun.sleep(20);
+  await ingest(changed(62, 1));
+  await planStage(62, null);
+  await Bun.sleep(20);
+  await ingest(changed(64, 4));
+  const changedView = await planStage(64, "200");
+  expect(accountWindow(changedView, "history").periodUsd).toBe("86");
+  expect(accountWindow(changedView, "history").estimate?.methods?.usd).toBe(
+    "rough",
+  );
+  await loadPage();
+  await detail("history", "$200.00", /粗估/, "desktop-plan-changed.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await loadPage();
+  await detail("history", "$200.00", /粗估/, "mobile-plan-changed.png");
   expect(errors).toEqual([]);
   const result = {
     status: "passed",

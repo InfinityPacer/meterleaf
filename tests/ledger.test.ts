@@ -525,7 +525,7 @@ test("early weekly observations use a rough estimate without requiring a segment
       usage,
       "2026-09-08T02:03:00Z",
     )!.estimate.usd,
-  ).toBe("0.1245");
+  ).toBeNull();
   expect(
     quotaView(
       [...history, quota(30, "2026-09-08T02:02:00Z", "2026-09-15T02:00:00Z")],
