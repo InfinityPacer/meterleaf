@@ -296,7 +296,7 @@ export class SyncRunner {
         try {
           const accounts = await this.connector.readAccounts();
           accountsCount = accounts.length;
-          this.store.saveAccountsSnapshot(sourceId, accounts);
+          this.store.saveAccountsSnapshot(sourceId, accounts, now);
           this.store.setState(this.metadataSuccessKey("accounts"), now);
           this.logStage("accounts", {
             count: accountsCount,

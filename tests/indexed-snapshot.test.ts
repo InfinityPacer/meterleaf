@@ -72,7 +72,17 @@ function quota(
     windowMinutes: window === "seven-day" ? 10080 : 300,
     ...overrides,
   };
-  return { fact, collectedAt: sampledAt };
+  return {
+    fact,
+    collectedAt: sampledAt,
+    planHistory: [
+      {
+        plan: "pro",
+        observedAt: "2026-08-01T00:00:00.000Z",
+        changed: false,
+      },
+    ],
+  };
 }
 
 function usage(): StoredUsage {
@@ -543,7 +553,7 @@ test("row and indexed snapshots read the previous cycle outside the selected rep
   const store = new LedgerStore(":memory:", defaultPriceBook);
   const index = new ReportIndex(":memory:");
   try {
-    store.saveAccounts([account("child")]);
+    store.saveAccounts([account("child")], "2026-08-01T00:00:00.000Z");
     const priorHistory = [0, 10, 20].map((percent, hour) =>
       quota("seven-day", percent, {
         externalId: `prior-${hour}`,

@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import type { QuotaPlanObservation } from "./quota-plan";
 import {
   estimateQuotaSegments,
   roughQuotaEstimate,
@@ -18,6 +19,7 @@ export interface PricedUsage {
 export interface CollectedQuota {
   fact: QuotaFact;
   collectedAt: string;
+  planHistory?: readonly QuotaPlanObservation[];
 }
 
 /** modelScope 非空时只汇总满足条件的模型；读取器必须遵守，否则按模型计量的窗口会混入其他请求。 */
@@ -206,22 +208,47 @@ export function quotaView(
       sample.window === fact.window &&
       sample.windowMinutes === fact.windowMinutes,
   );
+  const plan = [...(latest.planHistory ?? [])]
+    .filter((entry) => Date.parse(entry.observedAt) <= time)
+    .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt))
+    .at(-1);
+  const planStart = plan ? Date.parse(plan.observedAt) : NaN;
   const duration = fact.windowMinutes! * 60_000;
   const estimateCycle = (cycleReset: number, until: number) => {
     const cycleStart = cycleReset - duration;
-    const observations = sameSource.flatMap(({ fact: sample }) => {
+    // 已发现套餐变化后不能使用变化前的点。初次建立历史不冒充过去的套餐证明。
+    const boundary =
+      plan && (plan.changed || cycleReset !== reset)
+        ? Math.max(cycleStart, planStart)
+        : cycleStart;
+    let observations = sameSource.flatMap(({ fact: sample }) => {
       const at = Date.parse(sample.sampledAt ?? "");
       if (
         Date.parse(sample.resetsAt ?? "") !== cycleReset ||
         sample.percent === null ||
         !Number.isFinite(at) ||
-        at < cycleStart ||
+        at < boundary ||
         at > until ||
         at >= cycleReset
       )
         return [];
       return [{ percent: sample.percent, sampledAt: sample.sampledAt! }];
     });
+    let rebased = boundary > cycleStart;
+    for (let index = 1; index < observations.length; index++) {
+      if (observations[index]!.percent < observations[index - 1]!.percent) {
+        observations = observations.slice(index);
+        index = 0;
+        rebased = true;
+      }
+    }
+    observations = observations.filter(
+      (entry) =>
+        Number.isFinite(entry.percent) &&
+        entry.percent >= 0 &&
+        entry.percent < 100,
+    );
+    const baseline = rebased ? observations[0] : undefined;
     const charges = new Map<string, QuotaEstimateAmounts>();
     const read = (at: string) => {
       let value = charges.get(at);
@@ -234,13 +261,30 @@ export function quotaView(
       }
       return value;
     };
-    const segments = estimateQuotaSegments(observations, read);
+    // 消费和百分比同时平移，套餐中途变化或百分比回退时不混入旧区间消费。
+    const baselineCharges = baseline ? read(baseline.sampledAt) : null;
+    const estimateRead = (at: string): QuotaEstimateAmounts => {
+      const amount = read(at);
+      if (!baselineCharges) return amount;
+      const difference = (unit: "usd" | "credits") =>
+        amount[unit] === null || baselineCharges[unit] === null
+          ? null
+          : new Decimal(amount[unit]!).sub(baselineCharges[unit]!).toString();
+      return { usd: difference("usd"), credits: difference("credits") };
+    };
+    const estimateObservations = baseline
+      ? observations.map((entry) => ({
+          ...entry,
+          percent: new Decimal(entry.percent).sub(baseline.percent).toNumber(),
+        }))
+      : observations;
+    const segments = estimateQuotaSegments(estimateObservations, estimateRead);
     const rough = roughQuotaEstimate(
-      observations,
-      read,
+      estimateObservations,
+      estimateRead,
       cycleReset === reset ? 0 : 10,
     );
-    return { segments, rough, observations };
+    return { segments, rough, observations, rebased };
   };
   const current = estimateCycle(reset, sampled);
   // 只借用紧邻的上一周期；缺少上一周期或长时间停用后，不沿用久远额度。
@@ -252,9 +296,14 @@ export function quotaView(
       ? candidate
       : latestReset;
   }, -Infinity);
-  const previous = Number.isFinite(previousReset)
-    ? estimateCycle(previousReset, previousReset)
-    : null;
+  // 只有当前已知套餐区间内的历史才有资格参考，未知和旧版本快照不能证明套餐相同。
+  const previous =
+    plan?.plan &&
+    Number.isFinite(previousReset) &&
+    previousReset > planStart &&
+    !current.rebased
+      ? estimateCycle(previousReset, previousReset)
+      : null;
   const methods: NonNullable<QuotaView["estimate"]["methods"]> = {
     usd: null,
     credits: null,
