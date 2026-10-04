@@ -24,6 +24,10 @@ import {
   ref,
   type AccountMergeState,
 } from "../domain/account-merge";
+import {
+  quotaPlanHistoryKey,
+  type QuotaPlanObservation,
+} from "../domain/quota-plan";
 
 export interface StoredUsage {
   fact: UsageFact;
@@ -50,6 +54,7 @@ export interface StoredUsageChangeStream extends Omit<
 export interface StoredQuota {
   fact: QuotaFact;
   collectedAt: string;
+  planHistory?: readonly QuotaPlanObservation[];
 }
 
 /** 报表索引使用的稳定 primitive；金额继续以十进制字符串跨线程传递。 */
@@ -473,23 +478,60 @@ export class LedgerStore {
     return changed;
   }
 
-  saveAccounts(accounts: SourceAccount[]) {
+  /** 账户与套餐观测同事务写入；相同套餐不重复记录观测时间。 */
+  private writeAccount(account: SourceAccount, observedAt: string) {
+    const key = quotaPlanHistoryKey(account.sourceId, account.externalId);
+    const history = this.getState<QuotaPlanObservation[]>(key) ?? [];
+    const previousObservation = history.at(-1);
+    const previousRow = previousObservation
+      ? null
+      : this.db
+          .query<{ payload: string }, [string, string]>(
+            "SELECT payload FROM accounts WHERE source_id=? AND external_id=?",
+          )
+          .get(account.sourceId, account.externalId);
+    const previousAccount = previousRow
+      ? (JSON.parse(previousRow.payload) as SourceAccount)
+      : null;
+    const historyChanged =
+      !previousObservation || previousObservation.plan !== account.plan;
+    if (historyChanged) {
+      history.push({
+        plan: account.plan,
+        observedAt,
+        changed: previousObservation
+          ? true
+          : previousAccount !== null && previousAccount.plan !== account.plan,
+      });
+      this.setState(key, history);
+    }
+    const write = this.db
+      .query(
+        "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload IS NOT excluded.payload",
+      )
+      .run(account.sourceId, account.externalId, JSON.stringify(account));
+    return historyChanged || write.changes > 0;
+  }
+
+  saveAccounts(
+    accounts: SourceAccount[],
+    observedAt = new Date().toISOString(),
+  ) {
     this.db.transaction(() => {
       let changed = false;
       for (const account of accounts) {
-        const write = this.db
-          .query(
-            "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload IS NOT excluded.payload",
-          )
-          .run(account.sourceId, account.externalId, JSON.stringify(account));
-        changed ||= write.changes > 0;
+        changed = this.writeAccount(account, observedAt) || changed;
       }
       if (changed) this.bumpRevision();
     })();
   }
 
   /** 在单一事务内提交来源账户快照；空快照也会删除该来源全部账户。 */
-  saveAccountsSnapshot(sourceId: string, accounts: readonly SourceAccount[]) {
+  saveAccountsSnapshot(
+    sourceId: string,
+    accounts: readonly SourceAccount[],
+    observedAt = new Date().toISOString(),
+  ) {
     for (const account of accounts) {
       if (account.sourceId !== sourceId)
         throw new Error("Connector returned a foreign source account");
@@ -502,12 +544,7 @@ export class LedgerStore {
       this.db.query("DELETE FROM account_snapshot_ids").run();
       let changed = false;
       for (const account of accounts) {
-        const write = this.db
-          .query(
-            "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload IS NOT excluded.payload",
-          )
-          .run(account.sourceId, account.externalId, JSON.stringify(account));
-        changed ||= write.changes > 0;
+        changed = this.writeAccount(account, observedAt) || changed;
         this.db
           .query("INSERT OR IGNORE INTO account_snapshot_ids VALUES (?)")
           .run(account.externalId);
@@ -576,15 +613,29 @@ export class LedgerStore {
     for (const item of [...batch.accounts, ...batch.quotas])
       if (item.sourceId !== sourceId)
         throw new Error("Ingest batch contains a foreign source item");
+    const nowMs = Date.parse(now);
+    const sampledByAccount = new Map<string, number>();
+    for (const quota of batch.quotas) {
+      const sampledMs = quota.sampledAt ? Date.parse(quota.sampledAt) : NaN;
+      if (!Number.isFinite(sampledMs) || sampledMs > nowMs) continue;
+      sampledByAccount.set(
+        quota.accountExternalId,
+        Math.max(
+          sampledByAccount.get(quota.accountExternalId) ?? -Infinity,
+          sampledMs,
+        ),
+      );
+    }
     this.db.transaction(() => {
       let changed = false;
       for (const account of batch.accounts) {
-        const write = this.db
-          .query(
-            "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload IS NOT excluded.payload",
-          )
-          .run(sourceId, account.externalId, JSON.stringify(account));
-        changed ||= write.changes > 0;
+        const sampledMs = sampledByAccount.get(account.externalId);
+        if (
+          sampledMs !== undefined &&
+          this.isStalePlanChange(account, sampledMs, nowMs)
+        )
+          continue;
+        changed = this.writeAccount(account, now) || changed;
       }
       changed = this.writeFacts(sourceId, batch.usage, now) || changed;
       changed = this.writeQuotas(batch.quotas, now) || changed;
@@ -595,6 +646,42 @@ export class LedgerStore {
       });
       if (changed) this.bumpRevision();
     })();
+  }
+
+  /** 额度采样不得早于已观察的套餐边界或已有快照；未来日期不能充当水位。 */
+  private isStalePlanChange(
+    account: SourceAccount,
+    sampledMs: number,
+    nowMs: number,
+  ) {
+    const priorRow = this.db
+      .query<{ payload: string }, [string, string]>(
+        "SELECT payload FROM accounts WHERE source_id=? AND external_id=?",
+      )
+      .get(account.sourceId, account.externalId);
+    if (
+      !priorRow ||
+      (JSON.parse(priorRow.payload) as SourceAccount).plan === account.plan
+    )
+      return false;
+    const latestObservation = this.getState<QuotaPlanObservation[]>(
+      quotaPlanHistoryKey(account.sourceId, account.externalId),
+    )?.at(-1);
+    const observedMs = latestObservation
+      ? Date.parse(latestObservation.observedAt)
+      : NaN;
+    if (Number.isFinite(observedMs) && sampledMs <= observedMs) return true;
+    const rows = this.db
+      .query<{ sampled_at: string }, [string, string]>(
+        "SELECT sampled_at FROM quota_snapshots WHERE source_id=? AND account_id=? AND sampled_at IS NOT NULL",
+      )
+      .all(account.sourceId, account.externalId);
+    let latest = -Infinity;
+    for (const row of rows) {
+      const at = Date.parse(row.sampled_at);
+      if (Number.isFinite(at) && at <= nowMs) latest = Math.max(latest, at);
+    }
+    return sampledMs <= latest;
   }
 
   /** 数据版本和事实同事务提交；相同页面重放不使报表缓存失效。 */
@@ -633,15 +720,24 @@ export class LedgerStore {
       .map((row) => JSON.parse(row.payload) as SourceAccount);
   }
   quotas(): StoredQuota[] {
+    const histories = new Map<string, QuotaPlanObservation[] | null>();
     return this.db
       .query<{ payload: string; collected_at: string }, []>(
         "SELECT payload, collected_at FROM quota_snapshots ORDER BY sampled_at, collected_at",
       )
       .all()
-      .map((row) => ({
-        fact: JSON.parse(row.payload) as QuotaFact,
-        collectedAt: row.collected_at,
-      }));
+      .map((row) => {
+        const fact = JSON.parse(row.payload) as QuotaFact;
+        const key = quotaPlanHistoryKey(fact.sourceId, fact.accountExternalId);
+        if (!histories.has(key))
+          histories.set(key, this.getState<QuotaPlanObservation[]>(key));
+        const planHistory = histories.get(key);
+        return {
+          fact,
+          collectedAt: row.collected_at,
+          ...(planHistory ? { planHistory } : {}),
+        };
+      });
   }
 
   /** 返回已落盘的来源事实数量；不把额度快照或本地估值重复计入。 */

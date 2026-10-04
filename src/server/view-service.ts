@@ -356,8 +356,8 @@ export class ViewService {
     let cache: ViewCache | null = null;
     try {
       const namespace = JSON.stringify({
-        // 多段额度预估不能恢复为旧版单点结果。仅失效派生缓存，不修改账本。
-        format: 2,
+        // 套餐边界参与预估，旧口径的派生结果不能恢复；原始账本保持完整。
+        format: 3,
         source: sourceFileState(sourcePath).identity,
         book: book.id,
       });
