@@ -31,7 +31,7 @@ async function main() {
       book,
     );
   }
-  // 只接收本机采集器推送时没有拉取任务，数据同步入口随之隐藏。
+  // 只接收本机采集器推送时没有拉取任务，页面仍通过账本状态观察更新。
   if (store && config.SUB2API_DATABASE_URL) {
     stage = "connector";
     const connector = createSub2ApiConnector({
@@ -93,6 +93,16 @@ async function main() {
           reports.read(query, basis, undefined, refresh)
       : undefined,
     sync: sync ?? undefined,
+    ledgerStatus: store
+      ? () => {
+          const times = [store.lastIngestAt(), sync?.status().lastSuccess]
+            .filter((value): value is string =>
+              Boolean(value && Number.isFinite(Date.parse(value))),
+            )
+            .sort((a, b) => Date.parse(b) - Date.parse(a));
+          return { revision: store.revision(), updatedAt: times[0] ?? null };
+        }
+      : undefined,
     ingest: store
       ? {
           keys: config.ingestKeys,

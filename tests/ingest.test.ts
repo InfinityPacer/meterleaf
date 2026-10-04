@@ -72,6 +72,10 @@ function batch(overrides: Partial<IngestBatch> = {}): IngestBatch {
 function setup() {
   const store = new LedgerStore(":memory:", defaultPriceBook);
   const app = createApp({
+    ledgerStatus: () => ({
+      revision: store.revision(),
+      updatedAt: store.lastIngestAt(),
+    }),
     snapshot: () => {
       throw new Error("not used");
     },
@@ -281,4 +285,61 @@ test("models without a 1-hour rate stay unpriced instead of using the 5-minute p
   expect(valueUsage(unknownModel, defaultPriceBook, "api").apiUsd.reason).toBe(
     "missing-rate",
   );
+});
+
+test("collector-only status exposes committed revision and receipt time without pull sync", async () => {
+  const { store, app, post } = setup();
+  const status = async () =>
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/sync/presence",
+        payload: { id: "test-page", visible: true },
+      })
+    ).json();
+  try {
+    expect(await status()).toEqual({
+      unavailable: true,
+      ledger: { revision: 0, updatedAt: null },
+    });
+    const payload = batch();
+    expect((await post(payload)).statusCode).toBe(200);
+    const received = await status();
+    expect(received.unavailable).toBe(true);
+    expect(received.ledger.revision).toBeGreaterThan(0);
+    expect(received.ledger.updatedAt).toBe("2026-09-24T16:11:00.000Z");
+    expect(
+      (await app.inject({ method: "GET", url: "/api/sync" })).json(),
+    ).toEqual(received);
+    await post(payload);
+    expect(await status()).toEqual(received);
+    await post(batch({ usage: [usage({ externalId: "req_2:msg_2" })] }));
+    expect((await status()).ledger.revision).toBeGreaterThan(
+      received.ledger.revision,
+    );
+    const committed = await status();
+    expect((await post(batch(), "mlk_rejected")).statusCode).toBe(401);
+    expect(await status()).toEqual(committed);
+    store.saveIngestBatch(
+      "empty-source",
+      {
+        batchId: "empty",
+        collector: payload.collector,
+        accounts: [],
+        usage: [],
+        quotas: [],
+      },
+      "2026-09-25T00:00:00.000Z",
+    );
+    expect((await status()).ledger).toEqual({
+      revision: committed.ledger.revision,
+      updatedAt: "2026-09-25T00:00:00.000Z",
+    });
+    store.setState("bad:ingest:last", { at: "invalid" });
+    store.setState("older:ingest:last", { at: "2025-01-01T00:00:00.000Z" });
+    expect(store.lastIngestAt()).toBe("2026-09-25T00:00:00.000Z");
+  } finally {
+    await app.close();
+    store.close();
+  }
 });

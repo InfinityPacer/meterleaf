@@ -1,3 +1,4 @@
+import type { LedgerUpdateStatus } from "../../shared/live-status";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Popover } from "@base-ui/react/popover";
@@ -45,7 +46,10 @@ export function syncFailureMessage(error: { stage: string; kind: string }) {
   return `${action}时${reason}。${hint}`;
 }
 
-type SyncStatusResponse = SyncStatus & { unavailable?: boolean };
+type SyncStatusResponse = Partial<SyncStatus> & {
+  unavailable?: boolean;
+  ledger?: LedgerUpdateStatus;
+};
 
 type SyncStatusReadErrorKind =
   | "authentication"
@@ -145,7 +149,7 @@ export function getSyncStatusRefetchInterval(
     status: string;
     fetchFailureCount: number;
     error: unknown;
-    data?: Pick<SyncStatus, "running">;
+    data?: Partial<Pick<SyncStatus, "running">>;
   },
   paused: boolean,
 ) {
@@ -163,7 +167,7 @@ function postPresence(pageId: string, visible: boolean, signal?: AbortSignal) {
 
 /** 查询失败时旧快照不再是当前运行状态的可靠依据。 */
 export function isSyncActuallyRunning(
-  status: Pick<SyncStatus, "running"> | undefined,
+  status: Partial<Pick<SyncStatus, "running">> | undefined,
   queryFailed: boolean,
 ) {
   return Boolean(status && !queryFailed && status.running);
@@ -202,7 +206,7 @@ function statusLabel(
   if (status.running)
     return status.phase === "sweep"
       ? "历史回扫中"
-      : `同步中 · ${stageLabels[status.phase] ?? "处理中"}`;
+      : `同步中 · ${stageLabels[status.phase ?? "idle"] ?? "处理中"}`;
   if (status.error || status.quotaError || status.lastError) return "同步失败";
   if (!status.lastAttempt) return "尚未同步";
   if (status.initialComplete)
@@ -227,6 +231,7 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
   const client = useQueryClient();
   const { paused, setPaused } = useLiveUpdates();
   const lastSuccess = useRef<string | null | undefined>(undefined);
+  const lastRevision = useRef<number | undefined>(undefined);
   const wasPaused = useRef(false);
   const [pageId] = useState(() =>
     Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) =>
@@ -355,13 +360,15 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
   const status = query.data;
   const completedAt = query.isError ? lastSuccess.current : status?.lastSuccess;
   useEffect(() => {
-    if (completedAt === undefined) return;
+    if (completedAt === undefined || paused || !visible || query.isError)
+      return;
     // 完成标识变化也覆盖两次查询间已结束的短任务，不能只观察 running 跳变。
     const changed =
       lastSuccess.current !== undefined && completedAt !== lastSuccess.current;
     lastSuccess.current = completedAt;
-    if (changed) void client.invalidateQueries({ queryKey: ["ledger"] });
-  }, [completedAt, client]);
+    if (changed && !status?.ledger)
+      void client.invalidateQueries({ queryKey: ["ledger"] });
+  }, [completedAt, client, paused, visible, query.isError, status?.ledger]);
   const automatic = useMutation({
     mutationFn: async (enabled: boolean) => {
       const response = await fetch("/api/sync/automatic", {
@@ -379,7 +386,14 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
     },
   });
 
-  if (status?.unavailable) return null;
+  const revision = query.isError ? undefined : status?.ledger?.revision;
+  useEffect(() => {
+    if (revision === undefined || paused || !visible) return;
+    // 首次状态读取也核对报表，覆盖首屏报表与心跳之间恰好提交的新批次。
+    const changed = lastRevision.current !== revision;
+    lastRevision.current = revision;
+    if (changed) void client.invalidateQueries({ queryKey: ["ledger"] });
+  }, [revision, paused, visible, client]);
 
   const queryFailed = query.isError;
   const statusKnown = Boolean(status && !queryFailed);
@@ -391,9 +405,15 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
   const hasError = Boolean(
     queryFailed || syncFailed || trigger.isError || automatic.isError,
   );
-  const label = statusLabel(status, queryFailed, requestPending, query.error);
+  const pullAvailable = !status?.unavailable;
+  const label =
+    !queryFailed && status?.unavailable
+      ? "由采集器推送数据"
+      : statusLabel(status, queryFailed, requestPending, query.error);
   const tone = statusTone(status, queryFailed, requestPending);
-  const updatedLabel = formatSyncUpdatedAt(completedAt);
+  const updatedLabel = formatSyncUpdatedAt(
+    status?.ledger?.updatedAt ?? completedAt,
+  );
 
   return (
     <Popover.Root>
@@ -429,7 +449,9 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
                 <strong>{label}</strong>
                 {status && (
                   <span>
-                    {status.localRecords.toLocaleString()} 条请求
+                    {status.localRecords === undefined
+                      ? "最近接收数据"
+                      : `${status.localRecords.toLocaleString()} 条请求`}
                     {updatedLabel ? ` · ${updatedLabel}` : ""}
                   </span>
                 )}
@@ -464,15 +486,17 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
                     "操作失败，请稍后重试"}
                 </p>
               )}
-              <label className="sync-auto-control">
-                <input
-                  type="checkbox"
-                  checked={status?.autoEnabled ?? false}
-                  disabled={!statusKnown || automatic.isPending}
-                  onChange={(event) => automatic.mutate(event.target.checked)}
-                />
-                <span>自动同步</span>
-              </label>
+              {pullAvailable && (
+                <label className="sync-auto-control">
+                  <input
+                    type="checkbox"
+                    checked={status?.autoEnabled ?? false}
+                    disabled={!statusKnown || automatic.isPending}
+                    onChange={(event) => automatic.mutate(event.target.checked)}
+                  />
+                  <span>自动同步</span>
+                </label>
+              )}
               <label className="sync-auto-control">
                 <input
                   type="checkbox"
@@ -481,26 +505,28 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
                 />
                 <span>暂停页面自动更新</span>
               </label>
-              <Button
-                variant="outline"
-                className="sync-action"
-                disabled={!statusKnown || requestPending || running}
-                onClick={() => {
-                  // 后端对运行中请求复用同一任务；客户端同时保留单次提交闸门，避免重复网络请求。
-                  if (statusKnown && !running && !requestPending)
-                    trigger.mutate();
-                }}
-                title="立即从 Sub2API 同步用量"
-              >
-                <RefreshCw size={15} aria-hidden="true" />
-                {requestPending
-                  ? "正在提交"
-                  : running
-                    ? "同步中"
-                    : syncFailed
-                      ? "重试同步"
-                      : "立即同步"}
-              </Button>
+              {pullAvailable && (
+                <Button
+                  variant="outline"
+                  className="sync-action"
+                  disabled={!statusKnown || requestPending || running}
+                  onClick={() => {
+                    // 后端对运行中请求复用同一任务；客户端同时保留单次提交闸门，避免重复网络请求。
+                    if (statusKnown && !running && !requestPending)
+                      trigger.mutate();
+                  }}
+                  title="立即从 Sub2API 同步用量"
+                >
+                  <RefreshCw size={15} aria-hidden="true" />
+                  {requestPending
+                    ? "正在提交"
+                    : running
+                      ? "同步中"
+                      : syncFailed
+                        ? "重试同步"
+                        : "立即同步"}
+                </Button>
+              )}
             </div>
           </Popover.Popup>
         </Popover.Positioner>

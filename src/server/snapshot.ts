@@ -148,13 +148,14 @@ export function liveSnapshot(
   );
   const history = store.quotas();
   const nowTime = Date.parse(now);
-  // 账户周期统计不能被报表筛选日期截断。查询范围至少覆盖源快照给定的完整窗口。
+  // 上一周期重置可能早于本周期起点，最多向前覆盖三个窗口，
+  // 避免逐行路径截断历史参考，而索引路径仍能读取完整费用。
   const accountStart = history.reduce(
     (earliest, { fact }) =>
       fact.resetsAt && fact.windowMinutes && Date.parse(fact.resetsAt) > nowTime
         ? Math.min(
             earliest,
-            Date.parse(fact.resetsAt) - fact.windowMinutes * 60_000,
+            Date.parse(fact.resetsAt) - fact.windowMinutes * 60_000 * 3,
           )
         : earliest,
     nowTime - days * 2 * DAY_MS,

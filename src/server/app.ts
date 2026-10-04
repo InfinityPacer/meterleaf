@@ -1,3 +1,4 @@
+import type { LedgerUpdateStatus } from "../shared/live-status";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
@@ -24,6 +25,7 @@ import {
 } from "../shared/ledger-view";
 
 interface AppOptions {
+  ledgerStatus?: () => LedgerUpdateStatus;
   accountMerge?: {
     read(): AccountMergeState;
     write(id: string, targetId: string | null): AccountMergeState;
@@ -76,6 +78,7 @@ function isReportBuilding(
 /** 服务读写本地账本状态；上游保持只读。配置 GitHub 登录时由服务自身认证，否则交给外部反代。 */
 export function createApp({
   snapshot,
+  ledgerStatus,
   view,
   webRoot,
   diagnostics = silentLogger,
@@ -283,9 +286,13 @@ export function createApp({
       );
     }
   });
+  const readSyncStatus = () => ({
+    ...(sync?.status() ?? { unavailable: true }),
+    ...(ledgerStatus ? { ledger: ledgerStatus() } : {}),
+  });
   app.get("/api/sync", (_request, reply) => {
     reply.header("Cache-Control", "no-store");
-    return sync?.status() ?? { unavailable: true };
+    return readSyncStatus();
   });
   app.post<{ Body: { id?: unknown; visible?: unknown } }>(
     "/api/sync/presence",
@@ -299,7 +306,7 @@ export function createApp({
       )
         return reply.code(400).send({ error: "invalid-page-presence" });
       sync?.updatePresence?.(id, visible);
-      return sync?.status() ?? { unavailable: true };
+      return readSyncStatus();
     },
   );
   app.post("/api/sync", (_request, reply) => {

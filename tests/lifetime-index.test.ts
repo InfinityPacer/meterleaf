@@ -571,6 +571,10 @@ test("checks revision before trusting an unchanged data version", async () => {
     const state = sourceState("db-a", "stat-1", "same-connection-version");
     expect(index.ensure(state)).toBe(true);
     const readsBefore = source.changeStateReads();
+    const writesBefore = index.db
+      .query<{ n: number }, []>("SELECT total_changes() AS n")
+      .get()!.n;
+    const persistedRevision = store.revision();
     store.setState("ledger:dataRevision", store.revision() + 1);
 
     expect(index.ensure(state)).toBe(false);
@@ -580,7 +584,84 @@ test("checks revision before trusting an unchanged data version", async () => {
         "SELECT source_revision FROM lifetime_index_state WHERE price_book_key=?",
       )
       .get("test@test-v1");
-    expect(persisted?.source_revision).toBe(store.revision());
+    expect(persisted?.source_revision).toBe(persistedRevision);
+    expect(
+      index.db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n,
+    ).toBe(writesBefore);
+    expect(index.ensure(state)).toBe(false);
+    expect(source.changeStateReads()).toBe(readsBefore + 1);
+  } finally {
+    index.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("quota refreshes and unchanged restarts do not write cumulative index state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-lifetime-index-"));
+  const store = new LedgerStore(join(dir, "ledger.sqlite"), book);
+  const indexPath = join(dir, "lifetime.sqlite");
+  const source = instrument(store);
+  let index = new LifetimeIndex(indexPath, source.source, {
+    priceBookKey: "test@test-v1",
+  });
+  const writes = () =>
+    index.db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n;
+  const checkpoint = () =>
+    index.db.query("SELECT * FROM lifetime_index_state").all();
+  try {
+    const occurredAt = "2026-09-08T01:00:00.000Z";
+    save(store, [fact("one", occurredAt)]);
+    expect(index.ensure(sourceState("db-a", "stat-0", "0"))).toBe(true);
+    const totals = index.value("subscription", occurredAt);
+    const before = writes();
+    const persisted = checkpoint();
+    const sequence = store.reportUsageChangeState().lastSequence;
+    for (let minute = 1; minute <= 3; minute += 1) {
+      const sampledAt = `2026-09-09T00:0${minute}:00Z`;
+      const revision = store.revision();
+      store.saveQuotas(
+        [
+          {
+            sourceId: "test",
+            externalId: "quota",
+            accountExternalId: "account",
+            window: "five-hour",
+            percent: 25,
+            sampledAt,
+            resetsAt: "2026-09-09T04:00:00Z",
+            windowMinutes: 300,
+          },
+        ],
+        sampledAt,
+      );
+      expect(store.revision()).toBeGreaterThan(revision);
+      expect(store.reportUsageChangeState().lastSequence).toBe(sequence);
+      const state = sourceState("db-a", `stat-${minute}`, String(minute));
+      expect(index.ensure(state)).toBe(false);
+      const reads = source.changeStateReads();
+      expect(index.ensure(state)).toBe(false);
+      expect(source.changeStateReads()).toBe(reads);
+      expect(writes()).toBe(before);
+      expect(checkpoint()).toEqual(persisted);
+      expect(index.value("subscription", occurredAt)).toEqual(totals);
+    }
+    index.close();
+    index = new LifetimeIndex(indexPath, source.source, {
+      priceBookKey: "test@test-v1",
+    });
+    const reopenedWrites = writes();
+    expect(index.ensure(sourceState("db-a", "stat-3", "1"))).toBe(false);
+    expect(writes()).toBe(reopenedWrites);
+    expect(checkpoint()).toEqual(persisted);
+    save(store, [fact("one", occurredAt, 300, 30)]);
+    expect(index.ensure(sourceState("db-a", "stat-4", "2"))).toBe(true);
+    expect(writes()).toBeGreaterThan(reopenedWrites);
+    expect(index.value("subscription", occurredAt)).toMatchObject({
+      count: 1,
+      tokens: { input: 300, output: 30, total: 380 },
+    });
+    expect(source.scans()).toBe(1);
   } finally {
     index.close();
     store.close();
