@@ -602,6 +602,22 @@ export class LedgerStore {
     return this.getState<number>("ledger:dataRevision") ?? 0;
   }
 
+  /** 最近成功收到采集批次的时间，包含幂等重试；不代表用量发生时间或报表计算时间。 */
+  lastIngestAt(): string | null {
+    const rows = this.db
+      .query<{ value: string }, []>(
+        "SELECT value FROM sync_state WHERE key LIKE '%:ingest:last'",
+      )
+      .all();
+    let latest: string | null = null;
+    for (const row of rows) {
+      const at: unknown = JSON.parse(row.value)?.at;
+      if (typeof at !== "string" || !Number.isFinite(Date.parse(at))) continue;
+      if (latest === null || Date.parse(at) > Date.parse(latest)) latest = at;
+    }
+    return latest;
+  }
+
   private bumpRevision() {
     const revision = this.revision() + 1;
     this.setState("ledger:dataRevision", revision);

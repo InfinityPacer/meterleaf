@@ -110,6 +110,7 @@ export class ReportProjection {
       previous.tracked !== state.tracked ||
       previous.sequence > state.lastSequence ||
       previous.revision > checkpoint.revision ||
+      (this.initialized && this.revision > checkpoint.revision) ||
       (!state.tracked && previous.stamp !== file.stamp);
     return { accounts, state, previous, checkpoint, rebuild };
   }
@@ -121,6 +122,13 @@ export class ReportProjection {
     const fingerprint = this.store.reportFingerprint();
     const changed = this.store.db.transaction(() => {
       const { accounts, state, previous, checkpoint, rebuild } = this.plan();
+      // 有日志的来源以用量游标确认报表事实；额度刷新只更新当前连接的观察状态。
+      if (
+        state.tracked &&
+        !rebuild &&
+        state.lastSequence === previous!.sequence
+      )
+        return false;
       const root = createAccountResolver(accounts, this.store.accountMerges());
       return this.index.db.transaction(() => {
         let updated = rebuild;

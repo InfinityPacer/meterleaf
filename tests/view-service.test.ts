@@ -5,10 +5,7 @@ import { mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LedgerStore } from "../src/storage/ledger";
-import {
-  ReportBuildingError,
-  ViewService,
-} from "../src/server/view-service";
+import { ReportBuildingError, ViewService } from "../src/server/view-service";
 import { loadPriceBook } from "../src/server/price-book";
 import { priceBookKey, valueUsage } from "../src/domain/pricing";
 import { createApp } from "../src/server/app";
@@ -975,7 +972,10 @@ test("timer refreshes cached queries sequentially", async () => {
     ).cache;
     // 等待定时刷新提交结果，不把 CI 的 worker 调度速度当作业务约束。
     const deadline = Date.now() + 5000;
-    while ([...cache.values()][0]?.value.view.count !== 3 && Date.now() < deadline)
+    while (
+      [...cache.values()][0]?.value.view.count !== 3 &&
+      Date.now() < deadline
+    )
       await Bun.sleep(20);
     expect([...cache.values()][0]?.value.view.count).toBe(3);
     expect(
@@ -1199,13 +1199,18 @@ test("worker keeps quota period and estimate amounts aligned with USD basis", as
   let reports: ViewService | undefined;
   try {
     const now = Date.now();
-    const record = viewUsage(
-      "long-context-quota",
-      new Date(now - 60_000).toISOString(),
-      300_000,
-      1_000,
+    const records = [150_000, 90_000, 30_000].map((offset, index) =>
+      viewUsage(
+        `long-context-quota-${index}`,
+        new Date(now - offset).toISOString(),
+        300_000,
+        1_000,
+      ),
     );
-    const sampledAt = new Date(now - 30_000).toISOString();
+    const record = records[0]!;
+    const sampleTimes = [120_000, 60_000, 15_000].map((offset) =>
+      new Date(now - offset).toISOString(),
+    );
     const resetsAt = new Date(
       now + 6 * 86_400_000 + 23 * 3_600_000,
     ).toISOString();
@@ -1224,23 +1229,21 @@ test("worker keeps quota period and estimate amounts aligned with USD basis", as
     store.savePage(
       "test",
       "incremental",
-      { records: [record], nextCursor: "1", hasMore: false },
+      { records, nextCursor: "3", hasMore: false },
       new Date(now).toISOString(),
     );
     store.saveQuotas(
-      [
-        {
-          sourceId: "test",
-          externalId: "quota-long-context",
-          accountExternalId: "a",
-          window: "seven-day",
-          percent: 80,
-          sampledAt,
-          resetsAt,
-          windowMinutes: 10_080,
-        },
-      ],
-      sampledAt,
+      sampleTimes.map((sampledAt, index) => ({
+        sourceId: "test",
+        externalId: `quota-long-context-${index}`,
+        accountExternalId: "a",
+        window: "seven-day",
+        percent: 60 + index * 10,
+        sampledAt,
+        resetsAt,
+        windowMinutes: 10_080,
+      })),
+      sampleTimes.at(-1)!,
     );
     reports = new ViewService(join(dir, "test.sqlite"), book, {
       refreshIntervalMs: 86_400_000,
@@ -1251,18 +1254,28 @@ test("worker keeps quota period and estimate amounts aligned with USD basis", as
     const valuation = valueUsage(record, book);
     const subscriptionQuota = subscription.accounts[0]!.sevenDay!;
     const apiQuota = api.accounts[0]!.sevenDay!;
-    expect(subscriptionQuota.periodUsd).toBe(valuation.subscriptionUsd.amount);
-    expect(apiQuota.periodUsd).toBe(valuation.apiUsd.amount);
+    expect(subscriptionQuota.periodUsd).toBe(
+      new Decimal(valuation.subscriptionUsd.amount!).mul(3).toString(),
+    );
+    expect(apiQuota.periodUsd).toBe(
+      new Decimal(valuation.apiUsd.amount!).mul(3).toString(),
+    );
     expect(apiQuota.periodUsd).not.toBe(subscriptionQuota.periodUsd);
     expect(apiQuota.periodCredits).toBe(subscriptionQuota.periodCredits);
     expect(subscriptionQuota.estimate?.usd).toBe(
       new Decimal(valuation.subscriptionUsd.amount!)
         .mul(100)
-        .div(80)
+        .div(10)
         .toString(),
     );
     expect(apiQuota.estimate?.usd).toBe(
-      new Decimal(valuation.apiUsd.amount!).mul(100).div(80).toString(),
+      new Decimal(valuation.apiUsd.amount!).mul(100).div(10).toString(),
+    );
+    expect(subscriptionQuota.estimate?.reason).toBe("eligible");
+    expect(apiQuota.estimate?.reason).toBe("eligible");
+    expect(apiQuota.estimate?.usd).not.toBe(subscriptionQuota.estimate?.usd);
+    expect(apiQuota.estimate?.credits).toBe(
+      subscriptionQuota.estimate?.credits,
     );
     expect(api.records[0]!.valuation?.usdBasis).toBe("api");
     expect(api.records[0]!.valuation?.usd).toEqual(
@@ -1676,6 +1689,68 @@ test("refreshes persist a report view only when its content changes", async () =
     const restored = await reports.read(query, "subscription", sync, false);
     expect(restored.view.count).toBe(2);
     expect(restored.asOf).toBe(changed.asOf);
+  } finally {
+    await reports?.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a prior quota algorithm cache is discarded without changing ledger facts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-quota-revision-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  let reports: ViewService | undefined;
+  try {
+    const now = new Date().toISOString();
+    store.savePage(
+      "test",
+      "incremental",
+      {
+        records: [viewUsage("1", now)],
+        nextCursor: "1",
+        hasMore: false,
+      },
+      now,
+    );
+    reports = new ViewService(path, book, { refreshIntervalMs: 0 });
+    expect((await reports.read(query, "subscription", sync)).view.count).toBe(
+      1,
+    );
+    await reports.close();
+    const db = new Database(`${path}.reports.sqlite.views`);
+    try {
+      const row = db
+        .query<{ namespace: string }, []>(
+          "SELECT namespace FROM view_cache_namespace WHERE id=1",
+        )
+        .get()!;
+      const namespace = { ...JSON.parse(row.namespace), format: 1 };
+      db.query("UPDATE view_cache_namespace SET namespace=? WHERE id=1").run(
+        JSON.stringify(namespace),
+      );
+      const cached = db
+        .query<{ key: string; payload: string }, []>(
+          "SELECT key, payload FROM view_cache",
+        )
+        .all();
+      for (const entry of cached) {
+        const payload = JSON.parse(entry.payload);
+        payload.value.view.count = 999;
+        db.query("UPDATE view_cache SET payload=? WHERE key=?").run(
+          JSON.stringify(payload),
+          entry.key,
+        );
+      }
+    } finally {
+      db.close();
+    }
+    reports = new ViewService(path, book, { refreshIntervalMs: 0 });
+    const result = await reports.read(query, "subscription", sync, false);
+    expect(result.view.count).toBe(1);
+    expect(result.reportStatus?.refreshing).toBe(false);
+    expect(store.countUsage("test")).toBe(1);
   } finally {
     await reports?.close();
     store.close();

@@ -15,6 +15,8 @@ export interface TokenComposition {
  */
 export interface UsageSummaryData {
   tokens: number | null;
+  /** 部分请求缺少 token 桶时，平均值仅反映已知部分。 */
+  tokensIncomplete?: boolean;
   usd: number | null;
   /** 订阅 Credits 与美元是不同依据；没有 Credits 用量时为 null 且不展示。 */
   credits: number | null;
@@ -116,11 +118,6 @@ export function CompositionBar({
             <span>{((part.value / total) * 100).toFixed(1)}%</span>
           </li>
         ))}
-        {composition.output !== null && (
-          <li data-segment="output">
-            输出<span>{compact(composition.output)}</span>
-          </li>
-        )}
       </ul>
     </div>
   );
@@ -161,6 +158,19 @@ export function UsageSummary({
               `日均 ${compact(data.dailyTokens)}`
             ) : null}
           </small>
+          {data.tokens !== null &&
+            data.requests !== null &&
+            data.requests > 0 && (
+              <small>
+                {data.tokensIncomplete ? "每次请求已知" : "每次请求"}{" "}
+                {compact(data.tokens / data.requests)}
+              </small>
+            )}
+          {data.composition.output !== null && (
+            <small title="模型生成内容的 Tokens 总量，不是缓存读取量">
+              模型输出 {compact(data.composition.output)}
+            </small>
+          )}
         </div>
         <div>
           <dt>费用</dt>

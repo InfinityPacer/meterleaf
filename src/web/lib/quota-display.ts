@@ -10,10 +10,15 @@ export function estimateAmount(
   if (!window || quotaState(window, asOf) === "expired") return "N/A";
   const estimate = window.estimate;
   if (!estimate || estimate.reason !== "eligible") return "N/A";
-  return amount(
+  const text = amount(
     numericAmount(unit === "usd" ? estimate.usd : estimate.credits),
     unit,
   );
+  return text !== "N/A" &&
+    estimate.methods?.[unit] &&
+    estimate.methods[unit] !== "segments"
+    ? `≈${text}`
+    : text;
 }
 
 /** 移动端紧凑金额行隐藏已耗尽、未知或过期周期的预估；Web 始终保留预估栏。 */
@@ -160,4 +165,21 @@ export function quotaLabel(window: AccountWindow | null, asOf: string) {
   const percent = quotaPercent(window, asOf);
   if (percent === null) return "N/A";
   return `已用 ${percent}%`;
+}
+
+/** 估算依据跟随金额展示，历史与早期粗估不冒充本周期充分观测。 */
+export function estimateDescription(
+  window: AccountWindow | null,
+  unit: "usd" | "credits" = "usd",
+) {
+  switch (window?.estimate?.methods?.[unit]) {
+    case "rough":
+      return "粗估值，按本周期已观测消费与比例加权推算，早期波动较大";
+    case "previous-period":
+      return "参考上一周期估值，本周期观测仍少";
+    case "blended":
+      return "综合上一周期与本周期观测，随本周期样本增加逐步调整";
+    default:
+      return "按同周期多段消费与比例变化的中位数推算，不代表供应商承诺额度";
+  }
 }

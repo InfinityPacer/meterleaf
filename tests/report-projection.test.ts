@@ -100,6 +100,150 @@ test("projection reopens without scanning facts and incrementally applies correc
   }
 });
 
+test("quota refreshes and unchanged restarts do not write projection checkpoints", () => {
+  const { dir, path, cache, store, save } = setup();
+  let projection = new ReportProjection(store, path, cache);
+  const writes = () =>
+    projection.index.db
+      .query<{ n: number }, []>("SELECT total_changes() AS n")
+      .get()!.n;
+  const checkpoint = () =>
+    projection.index.db
+      .query<{ payload: string }, []>(
+        "SELECT payload FROM projection_checkpoint WHERE id=1",
+      )
+      .get()!.payload;
+  try {
+    save([fact("1")]);
+    expect(projection.ensure()).toBe(true);
+    const before = writes();
+    const persisted = checkpoint();
+    const sequence = store.reportUsageChangeState().lastSequence;
+    for (let minute = 1; minute <= 3; minute += 1) {
+      const sampledAt = `2026-09-08T12:0${minute}:00.000Z`;
+      const revision = store.revision();
+      store.saveQuotas(
+        [
+          {
+            sourceId: "test",
+            externalId: "quota",
+            accountExternalId: "child",
+            window: "five-hour",
+            percent: 25,
+            sampledAt,
+            resetsAt: "2026-09-08T16:00:00.000Z",
+            windowMinutes: 300,
+          },
+        ],
+        sampledAt,
+      );
+      expect(store.revision()).toBeGreaterThan(revision);
+      expect(store.reportUsageChangeState().lastSequence).toBe(sequence);
+      expect(projection.ensure()).toBe(false);
+      expect(projection.ensure()).toBe(false);
+      expect(writes()).toBe(before);
+      expect(checkpoint()).toBe(persisted);
+    }
+    projection.close();
+    projection = new ReportProjection(store, path, cache);
+    const reopenedWrites = writes();
+    const scan = spyOn(store, "reportUsages").mockImplementation(() => {
+      throw new Error("Unexpected full scan after quota refresh");
+    });
+    try {
+      expect(projection.ensure()).toBe(false);
+      expect(writes()).toBe(reopenedWrites);
+      expect(checkpoint()).toBe(persisted);
+      save([fact("1", 77), fact("2")]);
+      expect(projection.ensure()).toBe(true);
+      expect(writes()).toBeGreaterThan(reopenedWrites);
+      const result = projection.index.read(meta, query);
+      expect(result.view.count).toBe(2);
+      expect(result.records.find((row) => row.id === "test:1")?.input).toBe(77);
+      expect(scan).not.toHaveBeenCalled();
+    } finally {
+      scan.mockRestore();
+    }
+  } finally {
+    projection.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("unchanged sequences still rebuild for price books, source identity and revision rollback", () => {
+  const { dir, path, cache, store, save } = setup();
+  const replacementPath = join(dir, "replacement.sqlite");
+  const replacement = new LedgerStore(replacementPath, defaultPriceBook);
+  const repriced = new LedgerStore(path, {
+    ...defaultPriceBook,
+    version: "projection-price-change",
+  });
+  let projection = new ReportProjection(store, path, cache);
+  try {
+    save([fact("1")]);
+    expect(projection.ensure()).toBe(true);
+    const revision = store.revision();
+    store.setState("ledger:dataRevision", revision + 1);
+    expect(projection.ensure()).toBe(false);
+    store.setState("ledger:dataRevision", revision);
+    expect(projection.ensure()).toBe(true);
+    projection.close();
+
+    projection = new ReportProjection(repriced, path, cache);
+    expect(projection.ensure()).toBe(true);
+    expect(projection.indexedPricing()?.version).toContain(
+      "projection-price-change",
+    );
+    projection.close();
+    projection = new ReportProjection(store, path, cache);
+    expect(projection.ensure()).toBe(true);
+    projection.close();
+
+    replacement.savePage(
+      "test",
+      "incremental",
+      { records: [fact("replacement", 77)], nextCursor: null, hasMore: false },
+      meta.asOf,
+    );
+    expect(replacement.reportUsageChangeState().lastSequence).toBe(
+      store.reportUsageChangeState().lastSequence,
+    );
+    projection = new ReportProjection(replacement, replacementPath, cache);
+    expect(projection.ensure()).toBe(true);
+    expect(projection.index.read(meta, query).records).toMatchObject([
+      { id: "test:replacement", input: 77 },
+    ]);
+  } finally {
+    projection.close();
+    repriced.close();
+    replacement.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy projection still rebuilds after the source stamp changes", () => {
+  const { dir, path, cache, store, save } = setup();
+  const projection = new ReportProjection(store, path, cache);
+  const untracked = spyOn(store, "reportUsageChangeState").mockReturnValue({
+    tracked: false,
+    lastSequence: 0,
+  });
+  try {
+    save([fact("1")]);
+    expect(projection.ensure()).toBe(true);
+    save([fact("1", 77)]);
+    expect(projection.ensure()).toBe(true);
+    expect(projection.index.read(meta, query).records[0]?.input).toBe(77);
+  } finally {
+    untracked.mockRestore();
+    projection.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("projection rolls back data and checkpoint together then retries the same delta", () => {
   const { dir, path, cache, store, save } = setup();
   const projection = new ReportProjection(store, path, cache);
