@@ -175,19 +175,6 @@ function RangeSummary({
         <span>
           <small>Tokens</small>
           <strong>{formatTokens(summary?.tokens)}</strong>
-          {summary?.tokens != null &&
-            summary.requests != null &&
-            summary.requests > 0 && (
-              <small aria-label="每次请求平均 Tokens">
-                {summary.tokensIncomplete ? "每次已知" : "每次"}{" "}
-                {formatTokens(summary.tokens / summary.requests)}
-              </small>
-            )}
-          {summary?.composition.output != null && (
-            <small title="模型生成内容的 Tokens 总量，不是缓存读取量">
-              模型输出 {formatTokens(summary.composition.output)}
-            </small>
-          )}
         </span>
         <span>
           <small>请求</small>
@@ -202,7 +189,9 @@ function RangeSummary({
           </strong>
         </span>
       </div>
-      {summary && <CompositionBar composition={summary.composition} />}
+      {summary && (
+        <CompositionBar composition={summary.composition} showOutput />
+      )}
     </section>
   );
 }

@@ -215,12 +215,20 @@ async function tokensCard(average: string, output: string) {
   const card = mobile
     ? page!.locator(".mobile-home-summary-metrics > span").first()
     : page!.locator("section.usage-summary dl > div").first();
-  if (mobile)
-    await expect(card.getByLabel("每次请求平均 Tokens")).toContainText(average);
-  else await expect(card).toContainText("每次请求");
-  await expect(card).toContainText("输出");
-  await expect(card).toContainText(average);
-  await expect(card).toContainText(output);
+  if (mobile) {
+    await expect(card).not.toContainText("每次");
+    await expect(card).not.toContainText("输出");
+    const outputNote = page!.locator(
+      ".mobile-home-summary .token-composition-legend [data-segment=output]",
+    );
+    await expect(outputNote).toContainText("输出");
+    await expect(outputNote).toContainText(output);
+  } else {
+    await expect(card).toContainText("每次请求");
+    await expect(card).toContainText("输出");
+    await expect(card).toContainText(average);
+    await expect(card).toContainText(output);
+  }
   expect(
     await page!.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,

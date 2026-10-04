@@ -87,8 +87,10 @@ function Change({
 /** 输入侧构成按已知 Tokens 计算占比；未知的桶不画，也不补零。 */
 export function CompositionBar({
   composition,
+  showOutput = false,
 }: {
   composition: TokenComposition;
+  showOutput?: boolean;
 }) {
   const parts = segments
     .map((segment) => ({ ...segment, value: composition[segment.key] }))
@@ -118,6 +120,14 @@ export function CompositionBar({
             <span>{((part.value / total) * 100).toFixed(1)}%</span>
           </li>
         ))}
+        {showOutput && composition.output !== null && (
+          <li
+            data-segment="output"
+            title="模型生成内容的 Tokens 总量，不是缓存读取量"
+          >
+            输出<span>{compact(composition.output)}</span>
+          </li>
+        )}
       </ul>
     </div>
   );
@@ -168,7 +178,7 @@ export function UsageSummary({
             )}
           {data.composition.output !== null && (
             <small title="模型生成内容的 Tokens 总量，不是缓存读取量">
-              模型输出 {compact(data.composition.output)}
+              输出 {compact(data.composition.output)}
             </small>
           )}
         </div>
