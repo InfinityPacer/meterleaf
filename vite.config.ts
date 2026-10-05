@@ -4,7 +4,25 @@ import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    {
+      name: "meterleaf-boot-styles",
+      apply: "build",
+      transformIndexHtml: {
+        order: "post",
+        // 启动提示使用内联样式，完整样式下载不应阻止它首次绘制。
+        handler: (html) =>
+          html.replace(/<link\b[^>]*\brel="stylesheet"[^>]*>/g, (link) =>
+            link.replace(
+              "<link",
+              '<link data-app-styles media="print" onload="this.media=\'all\'" onerror="this.dataset.failed=\'true\'"',
+            ),
+          ),
+      },
+    },
+  ],
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src/web", import.meta.url)) },
   },
