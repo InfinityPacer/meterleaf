@@ -10,6 +10,7 @@ import "./mobile.css";
 import "./desktop.css";
 import "./account-identity.css";
 import { registerPwa } from "./pwa";
+import { waitForAppStyles } from "./boot";
 
 void registerPwa().catch(() => undefined);
 
@@ -17,6 +18,11 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: { retry: 1, staleTime: 30000, refetchOnWindowFocus: false },
   },
+});
+await waitForAppStyles().catch((error: unknown) => {
+  const content = document.querySelector(".boot-shell__content");
+  if (content) content.textContent = "页面样式加载失败，请重新打开 Meterleaf。";
+  throw error;
 });
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

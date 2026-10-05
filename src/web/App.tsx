@@ -130,7 +130,7 @@ import {
   ReportBuildingPanel,
   ReportRebuildingNotice,
 } from "./components/ReportBuilding";
-import { AccountTrend } from "./components/AccountTrend";
+import { LazyAccountTrend as AccountTrend } from "./components/LazyAccountTrend";
 import { ChartStyleControl } from "./components/ChartStyleControl";
 import { useMobileLayout } from "./lib/use-mobile-layout";
 import { useLiveUpdates } from "./lib/use-live-updates";
