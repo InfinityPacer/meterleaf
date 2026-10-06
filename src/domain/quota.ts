@@ -78,6 +78,33 @@ export interface QuotaView {
   };
 }
 
+/** 上游重置时间带毫秒级抖动，按最接近的整分钟归组，同一周期不能因抖动拆成两个。 */
+function cycleResetKey(resetsAt: string | null) {
+  const value = resetsAt ? Date.parse(resetsAt) : NaN;
+  return Number.isFinite(value) ? Math.round(value / 60_000) * 60_000 : NaN;
+}
+
+/**
+ * 同一周期、同一套餐内已用百分比只增不减。多个 Claude Code 会话会轮流写入各自较早看到的额度，
+ * 小幅回落是过时读数，忽略后保留此前最高值；至少回落 5 个百分点且不高于此前最高值一半时，
+ * 才视为上游重新计数，从回落点重新起算。
+ */
+function stableReadings<T extends { percent: number }>(readings: readonly T[]) {
+  let kept: T[] = [];
+  let rebased = false;
+  for (const reading of readings) {
+    const highest = kept.at(-1)?.percent;
+    if (highest !== undefined && reading.percent < highest) {
+      if (highest - reading.percent < 5 || reading.percent > highest / 2)
+        continue;
+      kept = [];
+      rebased = true;
+    }
+    kept.push(reading);
+  }
+  return { readings: kept, rebased };
+}
+
 function sumCharges(rows: readonly PricedUsage[], unit: "usd" | "credits") {
   // 周期费用累计可计价部分；只有有请求且全部缺价时金额才未知。
   const priced = rows.filter((row) => row.valuation[unit].amount !== null);
@@ -139,7 +166,7 @@ export function quotaView(
   );
   const latest = ordered.at(-1)!;
   const fact = latest.fact;
-  const reset = fact.resetsAt ? Date.parse(fact.resetsAt) : NaN;
+  const reset = cycleResetKey(fact.resetsAt);
   const sampled = fact.sampledAt ? Date.parse(fact.sampledAt) : NaN;
   const time = Date.parse(now);
   const expired = Number.isFinite(reset) && reset <= time;
@@ -166,9 +193,58 @@ export function quotaView(
         ? readCharges(startsAt!, now)
         : { usd: "0", credits: "0", count: 0, tokens: 0 }
       : null;
+  // 合并账户可能同时持有多个采样来源，只用最新来源比较百分比。
+  const sameSource = ordered.filter(
+    ({ fact: sample }) =>
+      sample.sourceId === fact.sourceId &&
+      sample.accountExternalId === fact.accountExternalId &&
+      sample.window === fact.window &&
+      sample.windowMinutes === fact.windowMinutes,
+  );
+  const plan = [...(latest.planHistory ?? [])]
+    .filter((entry) => Date.parse(entry.observedAt) <= time)
+    .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt))
+    .at(-1);
+  const planStart = plan ? Date.parse(plan.observedAt) : NaN;
+  const duration = (fact.windowMinutes ?? 0) * 60_000;
+  /** 返回某周期内同一来源、同一已知套餐区间的有效读数，过时回落已剔除。 */
+  const cycleReadings = (cycleReset: number, until: number) => {
+    const cycleStart = cycleReset - duration;
+    // 已发现套餐变化后不能使用变化前的点。初次建立历史不冒充过去的套餐证明。
+    const boundary =
+      plan && (plan.changed || cycleReset !== reset)
+        ? Math.max(cycleStart, planStart)
+        : cycleStart;
+    const observations = sameSource.flatMap(({ fact: sample }) => {
+      const at = Date.parse(sample.sampledAt ?? "");
+      if (
+        cycleResetKey(sample.resetsAt) !== cycleReset ||
+        sample.percent === null ||
+        !Number.isFinite(sample.percent) ||
+        sample.percent < 0 ||
+        !Number.isFinite(at) ||
+        at < boundary ||
+        at > until ||
+        at >= cycleReset
+      )
+        return [];
+      return [{ percent: sample.percent, sampledAt: sample.sampledAt! }];
+    });
+    const stable = stableReadings(observations);
+    return {
+      observations: stable.readings,
+      rebased: stable.rebased || boundary > cycleStart,
+    };
+  };
+  // 展示的百分比同样忽略过时回落，避免进度在相邻两个值之间来回跳。
+  const displayPercent =
+    known && !expired && fact.percent !== null && fact.percent >= 0
+      ? (cycleReadings(reset, sampled).observations.at(-1)?.percent ??
+        fact.percent)
+      : fact.percent;
   const result: QuotaView = {
     window: fact.window,
-    percent: expired ? 0 : fact.percent,
+    percent: expired ? 0 : displayPercent,
     sampledAt: fact.sampledAt,
     resetsAt: fact.resetsAt,
     startsAt: expired ? null : startsAt,
@@ -200,53 +276,12 @@ export function quotaView(
     fact.window === "five-hour"
   )
     return result;
-  // 合并账户可能同时持有多个采样来源，只用最新来源比较百分比。
-  const sameSource = ordered.filter(
-    ({ fact: sample }) =>
-      sample.sourceId === fact.sourceId &&
-      sample.accountExternalId === fact.accountExternalId &&
-      sample.window === fact.window &&
-      sample.windowMinutes === fact.windowMinutes,
-  );
-  const plan = [...(latest.planHistory ?? [])]
-    .filter((entry) => Date.parse(entry.observedAt) <= time)
-    .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt))
-    .at(-1);
-  const planStart = plan ? Date.parse(plan.observedAt) : NaN;
-  const duration = fact.windowMinutes! * 60_000;
   const estimateCycle = (cycleReset: number, until: number) => {
     const cycleStart = cycleReset - duration;
-    // 已发现套餐变化后不能使用变化前的点。初次建立历史不冒充过去的套餐证明。
-    const boundary =
-      plan && (plan.changed || cycleReset !== reset)
-        ? Math.max(cycleStart, planStart)
-        : cycleStart;
-    let observations = sameSource.flatMap(({ fact: sample }) => {
-      const at = Date.parse(sample.sampledAt ?? "");
-      if (
-        Date.parse(sample.resetsAt ?? "") !== cycleReset ||
-        sample.percent === null ||
-        !Number.isFinite(at) ||
-        at < boundary ||
-        at > until ||
-        at >= cycleReset
-      )
-        return [];
-      return [{ percent: sample.percent, sampledAt: sample.sampledAt! }];
-    });
-    let rebased = boundary > cycleStart;
-    for (let index = 1; index < observations.length; index++) {
-      if (observations[index]!.percent < observations[index - 1]!.percent) {
-        observations = observations.slice(index);
-        index = 0;
-        rebased = true;
-      }
-    }
-    observations = observations.filter(
-      (entry) =>
-        Number.isFinite(entry.percent) &&
-        entry.percent >= 0 &&
-        entry.percent < 100,
+    const readings = cycleReadings(cycleReset, until);
+    const rebased = readings.rebased;
+    const observations = readings.observations.filter(
+      (entry) => entry.percent < 100,
     );
     const baseline = rebased ? observations[0] : undefined;
     const charges = new Map<string, QuotaEstimateAmounts>();
@@ -278,18 +313,25 @@ export function quotaView(
           percent: new Decimal(entry.percent).sub(baseline.percent).toNumber(),
         }))
       : observations;
-    const segments = estimateQuotaSegments(estimateObservations, estimateRead);
+    // 上游百分比为四舍五入整数。重新起算的基准点落在平台期中段，相对百分比的取整偏差无法确定，不做校正。
+    const roundedPercent = !rebased;
+    const segments = estimateQuotaSegments(
+      estimateObservations,
+      estimateRead,
+      roundedPercent,
+    );
     const rough = roughQuotaEstimate(
       estimateObservations,
       estimateRead,
       cycleReset === reset ? 0 : 10,
+      roundedPercent,
     );
     return { segments, rough, observations, rebased };
   };
   const current = estimateCycle(reset, sampled);
   // 只借用紧邻的上一周期；缺少上一周期或长时间停用后，不沿用久远额度。
   const previousReset = sameSource.reduce((latestReset, { fact: sample }) => {
-    const candidate = Date.parse(sample.resetsAt ?? "");
+    const candidate = cycleResetKey(sample.resetsAt);
     return candidate <= start &&
       candidate > start - duration &&
       candidate > latestReset

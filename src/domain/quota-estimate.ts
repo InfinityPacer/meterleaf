@@ -145,18 +145,39 @@ function estimateUnit(
 }
 
 /**
+ * 上游把百分比四舍五入为整数时，紧接 k-1 之后首次出现的 k 实际约为 k-0.5。
+ * 只有相邻整数之间的首次到达才能确定跨越时刻；跳跃到达或非整数读数保持原值。
+ * 周期初期粗估直接除以百分比，不校正会在 1%、2%、3% 时分别低估约一半、四分之一和六分之一。
+ */
+function roundedArrivals(
+  segment: readonly QuotaEstimateObservation[],
+): QuotaEstimateObservation[] {
+  return segment.map((observation, index) => {
+    const previous = segment[index - 1];
+    return previous &&
+      Number.isInteger(observation.percent) &&
+      previous.percent === observation.percent - 1
+      ? { ...observation, percent: observation.percent - 0.5 }
+      : observation;
+  });
+}
+
+/**
  * 数据尚不足以形成多段估算时，按真实观测做过原点加权粗估。
  * 权重为百分比平方，缺价点不参与对应单位的分子或分母。
  * 调用方筛选窗口并排序，使用与多段估算相同的缓存读取器可复用费用查询。
+ * roundedPercent 表示上游百分比为四舍五入整数，首次到达点按跨越时刻校正。
  */
 export function roughQuotaEstimate(
   observations: readonly QuotaEstimateObservation[],
   readCumulativeCharges: QuotaEstimateChargeReader,
   minimumObservedPercent = 0,
+  roundedPercent = false,
 ): QuotaEstimateAmounts {
-  const selected = representativePoints(currentSegment(observations)).filter(
-    (observation) => observation.percent > 0,
-  );
+  const segment = currentSegment(observations);
+  const selected = representativePoints(
+    roundedPercent ? roundedArrivals(segment) : segment,
+  ).filter((observation) => observation.percent > 0);
   const charges = selected.map((observation) =>
     readCumulativeCharges(observation.sampledAt),
   );
@@ -204,13 +225,17 @@ export function roughQuotaEstimate(
  * 调用方先筛选同一来源和当前窗口，并按 sampledAt 升序传入观测。
  * 点对费用差抵消窗口初始偏移，点对中位数只是条件性估算，不是承诺额度。
  * 每单位至少需要三个正值点对，百分比差不足 5 个百分点不参与外推。
+ * roundedPercent 与粗估相同，校正后周期初期从粗估切换到多段估算时不会跳变。
  */
 export function estimateQuotaSegments(
   observations: readonly QuotaEstimateObservation[],
   readCumulativeCharges: QuotaEstimateChargeReader,
+  roundedPercent = false,
 ): QuotaSegmentEstimate {
   const segment = currentSegment(observations);
-  const selected = representativePoints(segment);
+  const selected = representativePoints(
+    roundedPercent ? roundedArrivals(segment) : segment,
+  );
   const deltaPercent = segment.length
     ? new Decimal(segment.at(-1)!.percent).sub(segment[0]!.percent).toNumber()
     : null;
