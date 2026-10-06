@@ -5,6 +5,7 @@ import {
   type QuotaChargeReader,
 } from "../src/domain/quota";
 import type { QuotaPlanObservation } from "../src/domain/quota-plan";
+import { fullWeekEstimate } from "./quota-projection";
 
 const iso = (day: number, hour = 0) =>
   new Date(Date.UTC(2026, 8, day, hour)).toISOString();
@@ -64,17 +65,16 @@ test("legacy and unknown plans never borrow previous-period estimates", () => {
       ...s,
       planHistory,
     }));
-    expect(quotaView(samples, read, iso(8, 4))!.estimate).toMatchObject({
-      usd: "5000",
-      methods: { usd: "rough" },
-    });
+    const result = quotaView(samples, read, iso(8, 4))!;
+    expect(result.estimate.methods?.usd).toBe("rough");
+    expect(fullWeekEstimate(result)).toBe("5000");
   }
 });
 
 test("same known continuous plan retains early historical reference", () => {
-  expect(
-    quotaView([...prior, sample(8, 0, 1)], read, iso(8, 4))!.estimate,
-  ).toMatchObject({ usd: "100", methods: { usd: "previous-period" } });
+  const result = quotaView([...prior, sample(8, 0, 1)], read, iso(8, 4))!;
+  expect(result.estimate.methods?.usd).toBe("previous-period");
+  expect(fullWeekEstimate(result)).toBe("100");
 });
 
 test("cross-cycle plan changes reject previous plan and keep current-cycle rough", () => {
@@ -83,10 +83,9 @@ test("cross-cycle plan changes reject previous plan and keep current-cycle rough
     ...s,
     planHistory: plans,
   }));
-  expect(quotaView(samples, read, iso(8, 4))!.estimate).toMatchObject({
-    usd: "7000",
-    methods: { usd: "rough" },
-  });
+  const result = quotaView(samples, read, iso(8, 4))!;
+  expect(result.estimate.methods?.usd).toBe("rough");
+  expect(fullWeekEstimate(result)).toBe("7000");
 });
 
 test("mid-cycle plan change with increasing percentages rebases both money and percent", () => {
@@ -113,7 +112,7 @@ test("mid-cycle plan change with increasing percentages rebases both money and p
       planHistory: plans,
     }));
     const result = quotaView(samples, read, iso(8, 4))!;
-    expect(result.estimate.usd).toBe(expected);
+    expect(fullWeekEstimate(result)).toBe(expected);
     expect(result.periodUsd).toBe("92");
     expect(result.estimate.methods?.usd).not.toBe("previous-period");
     expect(result.estimate.methods?.usd).not.toBe("blended");
@@ -131,20 +130,17 @@ test("returning to same plan after unknown or another plan cannot reconnect old 
       ...s,
       planHistory: plans,
     }));
-    expect(quotaView(samples, read, iso(8, 4))!.estimate).toMatchObject({
-      usd: "200",
-      methods: { usd: "rough" },
-    });
+    const result = quotaView(samples, read, iso(8, 4))!;
+    expect(result.estimate.methods?.usd).toBe("rough");
+    expect(fullWeekEstimate(result)).toBe("200");
   }
 });
 
 test("percent rollback without plan metadata also isolates money and disables prior", () => {
   const current = [sample(8, 0, 40), sample(8, 1, 10), sample(8, 2, 11)];
   const result = quotaView([...prior, ...current], read, iso(8, 4))!;
-  expect(result.estimate).toMatchObject({
-    usd: "200",
-    methods: { usd: "rough" },
-  });
+  expect(result.estimate.methods?.usd).toBe("rough");
+  expect(fullWeekEstimate(result)).toBe("200");
 });
 
 test("missing baseline pricing and saturated new-plan samples never fabricate an estimate", () => {
@@ -194,4 +190,25 @@ test("millisecond reset jitter stays in the same cycle", () => {
   expect(
     quotaView([...current, jittered], linear, iso(8, 4))!.estimate,
   ).toMatchObject({ usd: "1000", methods: { usd: "segments" } });
+});
+
+test("estimates add the remaining share to actual spend and converge to it when exhausted", () => {
+  // 前半段每 1% 花 15，后半段每 1% 花 10；整周外推值不变时，已花占比越高越接近实际。
+  const spentAt = (percent: number) =>
+    percent <= 50 ? percent * 15 : 750 + (percent - 50) * 10;
+  const percents = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90];
+  const current = percents.map((percent, hour) => sample(8, hour, percent));
+  const reader: QuotaChargeReader = (_, end) => {
+    const hour = Math.min(new Date(end).getUTCHours(), percents.length - 1);
+    return { usd: String(spentAt(percents[hour]!)), credits: null };
+  };
+  const late = quotaView(current, reader, iso(8, 9))!;
+  expect(late.periodUsd).toBe("1150");
+  // 只用整周外推会停在 1300；按后半段花费继续用满实际为 1250。
+  expect(fullWeekEstimate(late)).toBe("1300");
+  expect(late.estimate.usd).toBe("1280");
+
+  const exhausted = [...current, sample(8, 10, 100)];
+  const full = quotaView(exhausted, reader, iso(8, 10))!;
+  expect(full.estimate.usd).toBe(full.periodUsd);
 });
