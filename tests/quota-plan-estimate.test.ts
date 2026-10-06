@@ -163,3 +163,35 @@ test("missing baseline pricing and saturated new-plan samples never fabricate an
     )!.estimate.usd,
   ).toBeNull();
 });
+
+test("stale lower readings within one cycle neither rebase estimates nor lower the shown percent", () => {
+  // 多个会话轮流写入额度缓存时，较早的读数会让百分比暂时回落 1 至 5 个点。
+  const percents = [10, 20, 30, 29, 30, 25, 40, 39];
+  const current = percents.map((percent, hour) => sample(8, hour, percent));
+  const linear: QuotaChargeReader = (_, end) => {
+    const hour = new Date(end).getUTCHours();
+    const highest = Math.max(...percents.slice(0, hour + 1));
+    return { usd: String(highest * 10), credits: null };
+  };
+  const result = quotaView(current, linear, iso(8, 7))!;
+  expect(result.percent).toBe(40);
+  expect(result.estimate).toMatchObject({
+    usd: "1000",
+    methods: { usd: "segments" },
+  });
+});
+
+test("millisecond reset jitter stays in the same cycle", () => {
+  const current = [0, 10, 20, 30].map((percent, hour) =>
+    sample(8, hour, percent),
+  );
+  const jittered = sample(8, 4, 40);
+  jittered.fact.resetsAt = new Date(Date.parse(iso(15)) - 30).toISOString();
+  const linear: QuotaChargeReader = (_, end) => ({
+    usd: String(new Date(end).getUTCHours() * 100),
+    credits: null,
+  });
+  expect(
+    quotaView([...current, jittered], linear, iso(8, 4))!.estimate,
+  ).toMatchObject({ usd: "1000", methods: { usd: "segments" } });
+});
