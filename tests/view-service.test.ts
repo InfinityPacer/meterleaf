@@ -17,6 +17,7 @@ import {
   createDiagnosticsLogger,
   type LogEvent,
 } from "../src/server/diagnostics";
+import { fullWeekEstimate } from "./quota-projection";
 
 const query: ViewQuery = {
   filter: { days: 7, model: "all", account: "all", search: "" },
@@ -1268,13 +1269,13 @@ test("worker keeps quota period and estimate amounts aligned with USD basis", as
     );
     expect(apiQuota.periodUsd).not.toBe(subscriptionQuota.periodUsd);
     expect(apiQuota.periodCredits).toBe(subscriptionQuota.periodCredits);
-    expect(subscriptionQuota.estimate?.usd).toBe(
+    expect(fullWeekEstimate(subscriptionQuota)).toBe(
       new Decimal(valuation.subscriptionUsd.amount!)
         .mul(100)
         .div(10)
         .toString(),
     );
-    expect(apiQuota.estimate?.usd).toBe(
+    expect(fullWeekEstimate(apiQuota)).toBe(
       new Decimal(valuation.apiUsd.amount!).mul(100).div(10).toString(),
     );
     expect(subscriptionQuota.estimate?.reason).toBe("eligible");

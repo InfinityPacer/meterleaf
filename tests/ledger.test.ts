@@ -13,6 +13,7 @@ import { valueUsage, type PriceBook } from "../src/domain/pricing";
 import { quotaView } from "../src/domain/quota";
 import { LedgerStore } from "../src/storage/ledger";
 import { SyncRunner } from "../src/server/sync";
+import { fullWeekEstimate } from "./quota-projection";
 
 const book: PriceBook = {
   schemaVersion: 1,
@@ -507,16 +508,17 @@ test("early weekly observations use a rough estimate without requiring a segment
     quota(25, "2026-09-08T02:00:00Z"),
   ];
   const view = quotaView(history, usage, "2026-09-08T02:01:00Z")!;
-  expect(view.estimate.usd).toBe(
+  expect(fullWeekEstimate(view)).toBe(
     new Decimal("0.001245")
       .mul(25)
       .mul(100)
       .div(20 ** 2 + 25 ** 2)
+      .toDecimalPlaces(12)
       .toString(),
   );
   expect(view.estimate.methods?.usd).toBe("rough");
   const single = quotaView([history[1]!], usage, "2026-09-08T02:01:00Z")!;
-  expect(single.estimate.usd).toBe("0.00498");
+  expect(fullWeekEstimate(single)).toBe("0.00498");
   expect(single.estimate.reason).toBe("eligible");
   expect(single.estimate.methods?.usd).toBe("rough");
   expect(
@@ -595,7 +597,7 @@ test("quota amounts and estimates keep priced spend when another request is unpr
     [...priced, ...unpriced],
     "2026-09-08T04:01:00Z",
   )!;
-  expect(baseline.estimate.usd).toBe(
+  expect(fullWeekEstimate(baseline)).toBe(
     new Decimal(valued.usd.amount!).mul(10).toString(),
   );
   expect(view.periodUsd).toBe(baseline.periodUsd);
@@ -606,7 +608,7 @@ test("quota amounts and estimates keep priced spend when another request is unpr
   expect(unknown.periodUsd).toBeNull();
   expect(unknown.estimate.usd).toBeNull();
   expect(unknown.periodCredits).not.toBeNull();
-  expect(unknown.estimate.credits).toBe(
+  expect(fullWeekEstimate(unknown, "credits")).toBe(
     new Decimal(valued.credits.amount!).mul(10).toString(),
   );
 });
