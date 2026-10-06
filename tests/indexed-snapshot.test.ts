@@ -18,6 +18,7 @@ import {
 import type { SyncStatus } from "../src/server/sync";
 import { LedgerStore, type StoredUsage } from "../src/storage/ledger";
 import { ReportIndex } from "../src/storage/report-index";
+import { fullWeekEstimate } from "./quota-projection";
 
 const now = "2026-09-09T01:00:00.000Z";
 const sampledAt = "2026-09-08T12:00:00.000Z";
@@ -182,8 +183,8 @@ test("quota reader sums through now and estimates only through sampledAt", () =>
 
   expect(view.periodUsd).toBe("3");
   expect(view.periodCredits).toBe("6");
-  expect(view.estimate.usd).toBe("10");
-  expect(view.estimate.credits).toBe("20");
+  expect(fullWeekEstimate(view)).toBe("10");
+  expect(fullWeekEstimate(view, "credits")).toBe("20");
   expect(calls).toContainEqual(["2026-09-08T00:00:00.000Z", now]);
   for (const sample of history)
     expect(calls).toContainEqual([
@@ -249,8 +250,11 @@ test("indexed snapshot aggregates child quotas without reading usage and keeps o
   expect(snapshot.accounts[0]!.sevenDay).toMatchObject({
     periodUsd: "3",
     periodCredits: "6",
-    estimate: { usd: "10", credits: "20" },
   });
+  expect(fullWeekEstimate(snapshot.accounts[0]!.sevenDay!)).toBe("10");
+  expect(fullWeekEstimate(snapshot.accounts[0]!.sevenDay!, "credits")).toBe(
+    "20",
+  );
   expect(snapshot.accounts[1]).toMatchObject({
     name: "Account deleted",
     plan: "未提供",
@@ -300,7 +304,8 @@ test("the Fable weekly window reads only Fable usage and still estimates its bud
   expect(scopes[0]!("claude-fable-5-1")).toBe(true);
   expect(scopes[0]!("claude-fable-5")).toBe(true);
   expect(scopes[0]!("claude-opus-5")).toBe(false);
-  expect(view.estimate).toMatchObject({ usd: "10", reason: "eligible" });
+  expect(view.estimate.reason).toBe("eligible");
+  expect(fullWeekEstimate(view)).toBe("10");
 
   quotaView([quota("seven-day", 20)], reader, now);
   expect(scopes.at(-1)).toBeNull();
@@ -328,8 +333,10 @@ test("row-based quota views exclude other models from the Fable window", () => {
   expect(fable.periodRequests).toBe(3);
   expect(week.periodRequests).toBe(6);
   expect(fable.periodUsd).toBe(new Decimal(fableUsd).mul(3).toString());
-  expect(fable.estimate.usd).toBe(new Decimal(fableUsd).mul(10).toString());
-  expect(week.estimate.usd).toBe(
+  expect(fullWeekEstimate(fable)).toBe(
+    new Decimal(fableUsd).mul(10).toString(),
+  );
+  expect(fullWeekEstimate(week)).toBe(
     new Decimal(fableUsd).add(opusUsd).mul(10).toString(),
   );
 });
@@ -382,7 +389,7 @@ test("a new cycle or percent rollback estimates only its current monotonic segme
       resetsAt: "2026-09-14T00:00:00.000Z",
     }),
   );
-  expect(baseline.estimate.usd).toBe("5");
+  expect(fullWeekEstimate(baseline)).toBe("5");
   const beforeRollback = priorCycle.map((sample, index) => ({
     ...sample,
     fact: {
@@ -455,7 +462,7 @@ test("real indexed and row snapshots agree on multi-point weekly and Fable estim
       const valuation = valueUsage(records[0]!, defaultPriceBook);
       const charge =
         basis === "api" ? valuation.apiUsd : valuation.subscriptionUsd;
-      expect(indexedAccount.sevenDayFable?.estimate?.usd).toBe(
+      expect(fullWeekEstimate(indexedAccount.sevenDayFable!)).toBe(
         new Decimal(charge.amount!).mul(10).toString(),
       );
       expect(indexedAccount.sevenDayFable?.periodUsd).toBe(
@@ -503,8 +510,8 @@ test("previous weekly estimate stabilizes early usage and yields gradually to th
       reader,
       now,
     )!;
-    expect(result.estimate.usd).toBe(expected);
-    expect(result.estimate.credits).toBe(
+    expect(fullWeekEstimate(result)).toBe(expected);
+    expect(fullWeekEstimate(result, "credits")).toBe(
       new Decimal(expected).mul(10).toString(),
     );
     expect(result.estimate.methods).toEqual({ usd: method, credits: method });
@@ -523,10 +530,9 @@ test("historical fallback never crosses sources or reuses a distant or too-small
     start === "2026-09-08T00:00:00.000Z"
       ? { usd: "2", credits: "20" }
       : { usd: "10", credits: "100" };
-  expect(quotaView([prior, current], reader, now)!.estimate).toMatchObject({
-    usd: "100",
-    methods: { usd: "previous-period" },
-  });
+  const borrowed = quotaView([prior, current], reader, now)!;
+  expect(borrowed.estimate.methods?.usd).toBe("previous-period");
+  expect(fullWeekEstimate(borrowed)).toBe("100");
   for (const overrides of [
     { sourceId: "other" },
     { accountExternalId: "other" },
@@ -605,11 +611,11 @@ test("row and indexed snapshots read the previous cycle outside the selected rep
       expect(rows.accounts[0]!.sevenDay).toMatchObject({
         periodUsd: charge.amount,
         periodRequests: 1,
-        estimate: {
-          usd: new Decimal(charge.amount!).mul(10).toString(),
-          methods: { usd: "previous-period" },
-        },
+        estimate: { methods: { usd: "previous-period" } },
       });
+      expect(fullWeekEstimate(rows.accounts[0]!.sevenDay!)).toBe(
+        new Decimal(charge.amount!).mul(10).toString(),
+      );
       expect(rows.records).toHaveLength(1);
     }
   } finally {
@@ -642,8 +648,9 @@ test("historical reference is not pulled toward noisy rough usage before multi-s
   };
   for (let count = 1; count <= 3; count++) {
     expect(
-      quotaView([...previous, ...current.slice(0, count)], read, now)!.estimate
-        .usd,
+      fullWeekEstimate(
+        quotaView([...previous, ...current.slice(0, count)], read, now)!,
+      ),
     ).toBe("1000");
   }
 });

@@ -389,6 +389,20 @@ export function quotaView(
             : "rough";
     }
   }
+  // 上面得到的是按每 1% 花费外推的整周价值，只用来估计剩余部分。已花金额确定，
+  // 剩余比例越小估值越接近已花，用满时正好相等。套餐中途变化时已花包含变化前消费，该周期估值偏高。
+  const remaining = new Decimal(100)
+    .sub(Math.min(Math.max(result.percent ?? 0, 0), 100))
+    .div(100);
+  for (const unit of ["usd", "credits"] as const) {
+    const quota = result.estimate[unit];
+    const spent = unit === "usd" ? result.periodUsd : result.periodCredits;
+    result.estimate[unit] =
+      quota === null || spent === null
+        ? null
+        : new Decimal(spent).add(new Decimal(quota).mul(remaining)).toString();
+    if (result.estimate[unit] === null) methods[unit] = null;
+  }
   result.estimate.deltaPercent = current.segments.deltaPercent;
   result.estimate.methods = methods;
   result.estimate.reason =
