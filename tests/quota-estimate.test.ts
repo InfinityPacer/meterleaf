@@ -369,3 +369,58 @@ test("a zero-cost first plateau does not hide later positive rough usage", () =>
     ),
   ).toEqual({ usd: "1000", credits: "2000" });
 });
+
+test("rounded integer percents treat adjacent first arrivals as half-point crossings", () => {
+  // 上游四舍五入时，紧接 k-1 后首次出现 k 的时刻实际约为 k-0.5。
+  const percents = [0, 1, 2, 3];
+  const samples = observations(percents);
+  const byTime = new Map(
+    samples.map((sample, index) => {
+      const crossed = Math.max(0, percents[index]! - 0.5);
+      return [
+        sample.sampledAt,
+        { usd: String(crossed * 10), credits: String(crossed * 250) },
+      ];
+    }),
+  );
+  const reader = (sampledAt: string) => byTime.get(sampledAt)!;
+  expect(roughQuotaEstimate(samples, reader, 0, true)).toEqual({
+    usd: "1000",
+    credits: "25000",
+  });
+  // 未声明取整时保持原百分比，结果明显偏低。
+  expect(Number(roughQuotaEstimate(samples, reader).usd)).toBeLessThan(900);
+});
+
+test("rounded correction skips jumped arrivals and fractional readings", () => {
+  for (const percents of [
+    [0, 10],
+    [0, 0.4, 1.4],
+  ]) {
+    const samples = observations(percents);
+    const charges = linearCharges(percents);
+    const byTime = new Map(
+      samples.map((sample, index) => [sample.sampledAt, charges[index]!]),
+    );
+    expect(
+      roughQuotaEstimate(samples, (at) => byTime.get(at)!, 0, true).usd,
+    ).toBe("1000");
+  }
+});
+
+test("rounded correction keeps segment estimates continuous with early rough estimates", () => {
+  const percents = [0, 1, 2, 3, 4, 5, 6, 7];
+  const samples = observations(percents);
+  const byTime = new Map(
+    samples.map((sample, index) => {
+      const crossed = Math.max(0, percents[index]! - 0.5);
+      return [
+        sample.sampledAt,
+        { usd: String(crossed * 10), credits: String(crossed * 250) },
+      ];
+    }),
+  );
+  const result = estimateQuotaSegments(samples, (at) => byTime.get(at)!, true);
+  expect(result.usd).toBe("1000");
+  expect(result.credits).toBe("25000");
+});
