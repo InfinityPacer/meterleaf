@@ -161,26 +161,29 @@ export function UsageSummary({
         <div>
           <dt>Tokens</dt>
           <dd>{compact(data.tokens)}</dd>
-          <small>
+          {/* 附注与命中率图例同一排法：一行内依次排列，放不下时整项换行。 */}
+          <small className="summary-notes">
             {data.change ? (
               <Change value={data.change.tokens} />
             ) : data.dailyTokens !== null ? (
-              `日均 ${compact(data.dailyTokens)}`
+              <span>
+                日均 <b>{compact(data.dailyTokens)}</b>
+              </span>
             ) : null}
-          </small>
-          {data.tokens !== null &&
-            data.requests !== null &&
-            data.requests > 0 && (
-              <small>
-                {data.tokensIncomplete ? "每次请求已知" : "每次请求"}{" "}
-                {compact(data.tokens / data.requests)}
-              </small>
+            {data.tokens !== null &&
+              data.requests !== null &&
+              data.requests > 0 && (
+                <span>
+                  {data.tokensIncomplete ? "每次请求已知" : "每次请求"}{" "}
+                  <b>{compact(data.tokens / data.requests)}</b>
+                </span>
+              )}
+            {data.composition.output !== null && (
+              <span title="模型生成内容的 Tokens 总量，不是缓存读取量">
+                输出 <b>{compact(data.composition.output)}</b>
+              </span>
             )}
-          {data.composition.output !== null && (
-            <small title="模型生成内容的 Tokens 总量，不是缓存读取量">
-              输出 {compact(data.composition.output)}
-            </small>
-          )}
+          </small>
         </div>
         <div>
           <dt>费用</dt>

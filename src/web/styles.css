@@ -2173,6 +2173,20 @@ button[data-size="icon-sm"],
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+/* Tokens 格的附注沿用命中率图例的排法：同一行排列，数值用次一级灰度。 */
+.usage-summary dl > div > .summary-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+.summary-notes > span {
+  white-space: nowrap;
+}
+.summary-notes b {
+  color: var(--muted);
+  font-weight: inherit;
+  font-variant-numeric: tabular-nums;
+}
 .summary-change {
   display: inline-flex;
   align-items: center;
@@ -2204,6 +2218,13 @@ button[data-size="icon-sm"],
   font-size: 14px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
+}
+/* 窄屏按内容分配列宽，峰值的时间与数值留在一行；实在放不下时才换行。 */
+@media (max-width: 900px) {
+  .trend-insights {
+    grid-template-columns: repeat(3, auto);
+    justify-content: space-between;
+  }
 }
 .account-menu-positioner {
   z-index: 80;
