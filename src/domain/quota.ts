@@ -41,10 +41,11 @@ export type QuotaChargeReader = (
 export function quotaModelScope(
   window: QuotaFact["window"],
 ): ((model: string) => boolean) | null {
-  if (window === "seven-day-fable")
-    return (model) => model.startsWith("claude-fable-");
-  return null;
+  return window === "seven-day-fable" ? fableModelScope : null;
 }
+
+// 固定函数身份，报表索引按身份复用同一窗口的汇总。
+const fableModelScope = (model: string) => model.startsWith("claude-fable-");
 
 /** 到期等待新快照时仅展示已重置状态，旧百分比不能带入下一周期。 */
 export interface QuotaView {

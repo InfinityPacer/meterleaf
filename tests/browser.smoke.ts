@@ -276,7 +276,6 @@ function createLiveUnknownSnapshot(
         },
       },
     ],
-    resets: [],
     sync: {
       lastSuccess: "2026-09-08T15:55:00Z",
       error: "source-sync-failed",

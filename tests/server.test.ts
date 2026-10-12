@@ -71,7 +71,6 @@ test("ledger route validates range and never falls back to demonstration on fail
         asOf: "2026-09-08T00:00:00Z",
         records: [],
         accounts: [],
-        resets: [],
       };
     },
   });
@@ -104,7 +103,6 @@ test("ledger route validates and forwards custom date ranges", async () => {
         asOf: "2026-09-08T00:00:00Z",
         records: [],
         accounts: [],
-        resets: [],
       };
     },
   });

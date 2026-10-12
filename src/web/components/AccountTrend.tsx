@@ -110,6 +110,18 @@ export function selectAccountTrendPoints(
   return view.view.units[metric].points;
 }
 
+const preciseUsdFormat = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 6,
+});
+const percentFormat = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 2,
+});
+const countFormat = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 0,
+});
+
 /** Tokens 与桌面趋势图一致使用缩写，请求数等计数保留完整数字。 */
 export function formatMetricValue(
   value: number | null,
@@ -117,15 +129,10 @@ export function formatMetricValue(
 ) {
   if (value === null || !Number.isFinite(value)) return "N/A";
   if (metric === "tokens") return `${compact(value)} ${metricLabels[metric]}`;
-  if (metric === "usd")
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 6,
-    }).format(value);
-  const formatted = new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: metric === "percent" ? 2 : 0,
-  }).format(value);
+  if (metric === "usd") return preciseUsdFormat.format(value);
+  const formatted = (metric === "percent" ? percentFormat : countFormat).format(
+    value,
+  );
   return `${formatted} ${metricLabels[metric]}`;
 }
 

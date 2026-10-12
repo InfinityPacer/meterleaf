@@ -96,8 +96,12 @@ function prepareIndex(): IndexState {
   return whileBuilding();
 }
 
+/** 最近一次 ensure 是否写入了新的报表事实，供后台补齐回报。 */
+let lastEnsureChanged = false;
+
 function ensureInline() {
   const changed = projection.ensure();
+  lastEnsureChanged = changed;
   lifetime.ensure({
     ...sourceFileState(config.path),
     dataVersion: store.reportFingerprint(),
@@ -213,10 +217,32 @@ function swapIndexes() {
   }
 }
 
+/** 主线程定时补齐：只追上已落盘的推送，不计算报表，也不回复结果。 */
+function catchUp() {
+  const started = performance.now();
+  lastEnsureChanged = false;
+  try {
+    const state = store.db.transaction(() => prepareIndex())();
+    parentPort!.postMessage({
+      type: "caught-up",
+      catchUp: {
+        mode: state.mode,
+        changed: lastEnsureChanged,
+        durationMs: Math.round(performance.now() - started),
+      },
+    });
+  } catch (error) {
+    diagnostics.warn("report.index_catch_up_failed", {
+      error: summarizeError(error),
+    });
+  }
+}
+
 /** 查询只读取持久化小时汇总及当前明细页；事实解析仅发生于首次建索引或增量修订。 */
 parentPort!.on(
   "message",
   (request: {
+    type?: "catch-up";
     id: number;
     query: ViewQuery;
     basis: UsdBasis;
@@ -224,6 +250,10 @@ parentPort!.on(
     /** 与主线程共享绝对时钟；缺失或无效时队列耗时按 0 计。 */
     queuedAt?: number;
   }) => {
+    if (request.type === "catch-up") {
+      catchUp();
+      return;
+    }
     const started = performance.now();
     const receivedAt = performance.timeOrigin + performance.now();
     const queueMs =
@@ -245,35 +275,32 @@ parentPort!.on(
         const transitional = state.mode === "transitional";
         const now = new Date().toISOString();
         const readStarted = performance.now();
+        // 两个口径在同一事务内读取相同的账户与额度历史，只读一次；窗口汇总同理。
+        const sumWindow = projection.index.windowReader();
+        const accounts = store.accounts();
+        const quotas = store.quotas();
+        const merges = store.accountMerges();
+        const ledger = {
+          book: store.book,
+          accounts: () => accounts,
+          quotas: () => quotas,
+          accountMerges: () => merges,
+        };
         const snapshots = {
           subscription: indexedSnapshot(
-            store,
+            ledger,
             request.sync ? { status: () => request.sync! } : null,
             now,
             "subscription",
-            (accountId, from, to, selectedBasis, modelScope) =>
-              projection.index.sumWindow(
-                accountId,
-                from,
-                to,
-                selectedBasis,
-                modelScope,
-              ),
+            sumWindow,
             projection.accountIds(),
           ),
           api: indexedSnapshot(
-            store,
+            ledger,
             request.sync ? { status: () => request.sync! } : null,
             now,
             "api",
-            (accountId, from, to, selectedBasis, modelScope) =>
-              projection.index.sumWindow(
-                accountId,
-                from,
-                to,
-                selectedBasis,
-                modelScope,
-              ),
+            sumWindow,
             projection.accountIds(),
           ),
         } as const;
