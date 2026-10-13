@@ -86,6 +86,20 @@ function cycleResetKey(resetsAt: string | null) {
 }
 
 /**
+ * quotaView 只用到最新读数所在周期和紧邻的上一周期，返回同一来源窗口需要保留的最早采样时刻。
+ * 读数的重置时间不会晚于采样时刻一个窗口，上一周期的读数因此都晚于本周期重置前三个窗口，
+ * 另留一小时吸收重置时间抖动。周期未知或已到期时只需最新读数。
+ */
+export function quotaHistoryStart(latest: QuotaFact, now: string): number {
+  const sampled = latest.sampledAt ? Date.parse(latest.sampledAt) : NaN;
+  const reset = cycleResetKey(latest.resetsAt);
+  const duration = (latest.windowMinutes ?? 0) * 60_000;
+  if (!Number.isFinite(reset) || duration <= 0 || reset <= Date.parse(now))
+    return sampled;
+  return Math.min(sampled, reset - 3 * duration - 3_600_000);
+}
+
+/**
  * 同一周期、同一套餐内已用百分比只增不减。多个 Claude Code 会话会轮流写入各自较早看到的额度，
  * 小幅回落是过时读数，忽略后保留此前最高值；至少回落 5 个百分点且不高于此前最高值一半时，
  * 才视为上游重新计数，从回落点重新起算。
@@ -160,11 +174,14 @@ export function quotaView(
   now: string,
 ): QuotaView | null {
   if (!history.length) return null;
-  const ordered = [...history].sort(
-    (a, b) =>
-      Date.parse(a.fact.sampledAt ?? a.collectedAt) -
-      Date.parse(b.fact.sampledAt ?? b.collectedAt),
-  );
+  // 每条读数只解析一次时间，历史较长时排序和逐周期筛选不再重复解析。
+  const ordered = history
+    .map((row) => ({
+      row,
+      order: Date.parse(row.fact.sampledAt ?? row.collectedAt),
+    }))
+    .sort((a, b) => a.order - b.order)
+    .map(({ row }) => row);
   const latest = ordered.at(-1)!;
   const fact = latest.fact;
   const reset = cycleResetKey(fact.resetsAt);
@@ -195,13 +212,19 @@ export function quotaView(
         : { usd: "0", credits: "0", count: 0, tokens: 0 }
       : null;
   // 合并账户可能同时持有多个采样来源，只用最新来源比较百分比。
-  const sameSource = ordered.filter(
-    ({ fact: sample }) =>
-      sample.sourceId === fact.sourceId &&
-      sample.accountExternalId === fact.accountExternalId &&
-      sample.window === fact.window &&
-      sample.windowMinutes === fact.windowMinutes,
-  );
+  const sameSource = ordered
+    .filter(
+      ({ fact: sample }) =>
+        sample.sourceId === fact.sourceId &&
+        sample.accountExternalId === fact.accountExternalId &&
+        sample.window === fact.window &&
+        sample.windowMinutes === fact.windowMinutes,
+    )
+    .map(({ fact: sample }) => ({
+      sample,
+      at: Date.parse(sample.sampledAt ?? ""),
+      cycle: cycleResetKey(sample.resetsAt),
+    }));
   const plan = [...(latest.planHistory ?? [])]
     .filter((entry) => Date.parse(entry.observedAt) <= time)
     .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt))
@@ -216,10 +239,9 @@ export function quotaView(
       plan && (plan.changed || cycleReset !== reset)
         ? Math.max(cycleStart, planStart)
         : cycleStart;
-    const observations = sameSource.flatMap(({ fact: sample }) => {
-      const at = Date.parse(sample.sampledAt ?? "");
+    const observations = sameSource.flatMap(({ sample, at, cycle }) => {
       if (
-        cycleResetKey(sample.resetsAt) !== cycleReset ||
+        cycle !== cycleReset ||
         sample.percent === null ||
         !Number.isFinite(sample.percent) ||
         sample.percent < 0 ||
@@ -331,14 +353,13 @@ export function quotaView(
   };
   const current = estimateCycle(reset, sampled);
   // 只借用紧邻的上一周期；缺少上一周期或长时间停用后，不沿用久远额度。
-  const previousReset = sameSource.reduce((latestReset, { fact: sample }) => {
-    const candidate = cycleResetKey(sample.resetsAt);
-    return candidate <= start &&
-      candidate > start - duration &&
-      candidate > latestReset
-      ? candidate
-      : latestReset;
-  }, -Infinity);
+  const previousReset = sameSource.reduce(
+    (latestReset, { cycle }) =>
+      cycle <= start && cycle > start - duration && cycle > latestReset
+        ? cycle
+        : latestReset,
+    -Infinity,
+  );
   // 只有当前已知套餐区间内的历史才有资格参考，未知和旧版本快照不能证明套餐相同。
   const previous =
     plan?.plan &&

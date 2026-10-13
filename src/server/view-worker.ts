@@ -275,10 +275,10 @@ parentPort!.on(
         const transitional = state.mode === "transitional";
         const now = new Date().toISOString();
         const readStarted = performance.now();
-        // 两个口径在同一事务内读取相同的账户与额度历史，只读一次；窗口汇总同理。
+        // 两个口径在同一事务内读取相同的账户与近期额度历史，只读一次；窗口汇总同理。
         const sumWindow = projection.index.windowReader();
         const accounts = store.accounts();
-        const quotas = store.quotas();
+        const quotas = store.reportQuotas(now);
         const merges = store.accountMerges();
         const ledger = {
           book: store.book,
