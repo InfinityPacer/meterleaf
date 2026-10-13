@@ -380,13 +380,17 @@ export class ViewService {
   private restoreCache(cachePath: string, sourcePath: string, book: PriceBook) {
     let cache: ViewCache | null = null;
     try {
-      const namespace = JSON.stringify({
-        // 套餐边界参与预估，旧口径的派生结果不能恢复；原始账本保持完整。
-        format: 3,
+      const identity = {
         source: sourceFileState(sourcePath).identity,
         book: book.id,
-      });
-      cache = new ViewCache(cachePath, namespace);
+      };
+      // 套餐边界参与预估，格式 2 及更早的派生结果不能恢复；原始账本保持完整。
+      // 格式 4 不再保存额度重置记录，格式 3 的结果仍可直接使用。旧版本校验要求该字段，
+      // 换用新格式号让回滚后的旧版本清空缓存重新计算，而不是停用持久缓存。
+      const namespace = JSON.stringify({ format: 4, ...identity });
+      cache = new ViewCache(cachePath, namespace, [
+        JSON.stringify({ format: 3, ...identity }),
+      ]);
       for (const saved of cache.load()) {
         if (saved.key !== this.cacheKey(saved.query, saved.basis)) {
           // 合并版本变化及首次升级的旧键属于正常失效，不能因此停用持久缓存。
