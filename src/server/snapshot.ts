@@ -239,30 +239,12 @@ export function liveSnapshot(
       sevenDayFable,
     };
   });
-  const resets = [
-    ...new Map(
-      history.flatMap(({ fact }) =>
-        fact.resetsAt && Date.parse(fact.resetsAt) <= Date.parse(now)
-          ? [
-              [
-                `${root(fact.sourceId, fact.accountExternalId)}:${fact.resetsAt}`,
-                {
-                  accountId: root(fact.sourceId, fact.accountExternalId),
-                  at: fact.resetsAt,
-                },
-              ] as const,
-            ]
-          : [],
-      ),
-    ).values(),
-  ];
   return {
     mode: "live",
     usdBasis,
     asOf: now,
     accounts,
     records,
-    resets,
     sync: sync?.status(),
     pricing: {
       version: priceBookKey(store.book),
@@ -394,28 +376,11 @@ export function indexedSnapshot(
       sevenDayFable,
     };
   });
-  const nowTime = Date.parse(now);
-  const resets = [
-    ...new Map(
-      history.flatMap(({ fact }) => {
-        if (!fact.resetsAt || !(Date.parse(fact.resetsAt) <= nowTime))
-          return [];
-        const accountId = root(fact.sourceId, fact.accountExternalId);
-        return [
-          [
-            `${accountId}:${fact.resetsAt}`,
-            { accountId, at: fact.resetsAt },
-          ] as const,
-        ];
-      }),
-    ).values(),
-  ];
   return {
     mode: "live",
     usdBasis,
     asOf: now,
     accounts,
-    resets,
     sync: sync?.status(),
     pricing: {
       version: priceBookKey(store.book),

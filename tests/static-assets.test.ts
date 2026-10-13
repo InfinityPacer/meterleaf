@@ -28,7 +28,6 @@ test("static shell serves pre-compressed hashed assets with safe cache headers",
       asOf: new Date().toISOString(),
       records: [],
       accounts: [],
-      resets: [],
     }),
   });
   try {

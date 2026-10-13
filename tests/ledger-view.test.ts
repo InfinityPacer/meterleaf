@@ -71,7 +71,6 @@ function snapshot(
     asOf: "2026-09-08T00:00:00.000Z",
     accounts,
     records,
-    resets: [],
   };
 }
 

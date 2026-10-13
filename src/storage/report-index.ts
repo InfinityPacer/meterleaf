@@ -327,6 +327,21 @@ function addAmount(
   target.knownRows += knownRows;
 }
 
+function windowSum(aggregate: Aggregate, usdBasis: UsdBasis) {
+  if (!aggregate.count) return { count: 0, tokens: 0, usd: "0", credits: "0" };
+  const usd = summaryAmount(aggregate, usdBasis);
+  return {
+    count: aggregate.count,
+    tokens: aggregate.tokenIncompleteRows === 0 ? aggregate.tokenValue : null,
+    // 与明细路径一致：缺价记录不抹除同一周期内已经计价的金额。
+    usd: usd.knownRows > 0 ? usd.value.toString() : null,
+    credits:
+      aggregate.credits.knownRows > 0
+        ? aggregate.credits.value.toString()
+        : null,
+  };
+}
+
 function addAggregate(target: Aggregate, source: Aggregate) {
   target.count += source.count;
   addNumber(target.input, source.input.value, source.input.knownRows);
@@ -1031,13 +1046,64 @@ export class ReportIndex {
     usd: string | null;
     credits: string | null;
   } {
+    return windowSum(
+      this.windowAggregate(accountId, startInclusive, endInclusive, modelScope),
+      usdBasis,
+    );
+  }
+
+  /**
+   * 返回按口径换算前的窗口读取器，供同一时刻的多个口径快照共享。额度预估会对每个
+   * 采样点读取一次窗口，两个口径各查一遍会让快照耗时翻倍；汇总本身与口径无关。
+   */
+  windowReader(): (
+    accountId: string,
+    startInclusive: string,
+    endInclusive: string,
+    usdBasis: UsdBasis,
+    modelScope: ((model: string) => boolean) | null,
+  ) => ReturnType<ReportIndex["sumWindow"]> {
+    const aggregates = new Map<string, Aggregate>();
+    const scopes = new Map<(model: string) => boolean, number>();
+    return (accountId, startInclusive, endInclusive, usdBasis, modelScope) => {
+      let scope = 0;
+      if (modelScope) {
+        scope = scopes.get(modelScope) ?? scopes.size + 1;
+        scopes.set(modelScope, scope);
+      }
+      const key = JSON.stringify([
+        accountId,
+        startInclusive,
+        endInclusive,
+        scope,
+      ]);
+      let aggregate = aggregates.get(key);
+      if (!aggregate) {
+        aggregate = this.windowAggregate(
+          accountId,
+          startInclusive,
+          endInclusive,
+          modelScope,
+        );
+        aggregates.set(key, aggregate);
+      }
+      return windowSum(aggregate, usdBasis);
+    };
+  }
+
+  private windowAggregate(
+    accountId: string,
+    startInclusive: string,
+    endInclusive: string,
+    modelScope: ((model: string) => boolean) | null,
+  ): Aggregate {
     const start = Date.parse(startInclusive);
     const end = Date.parse(endInclusive);
     if (!Number.isFinite(start) || !Number.isFinite(end))
       throw new RangeError("sumWindow bounds must be valid dates");
     if (start > end)
       throw new RangeError("sumWindow start must not exceed end");
-    const aggregate = this.loadContributions(
+    return this.loadContributions(
       { start, end, startInclusive: true, endInclusive: true },
       { model: "all", account: accountId, search: "", days: 1 },
     ).reduce((total, contribution) => {
@@ -1046,19 +1112,6 @@ export class ReportIndex {
         addAggregate(total, contribution.aggregate);
       return total;
     }, emptyAggregate());
-    if (!aggregate.count)
-      return { count: 0, tokens: 0, usd: "0", credits: "0" };
-    const usd = summaryAmount(aggregate, usdBasis);
-    return {
-      count: aggregate.count,
-      tokens: aggregate.tokenIncompleteRows === 0 ? aggregate.tokenValue : null,
-      // 与明细路径一致：缺价记录不抹除同一周期内已经计价的金额。
-      usd: usd.knownRows > 0 ? usd.value.toString() : null,
-      credits:
-        aggregate.credits.knownRows > 0
-          ? aggregate.credits.value.toString()
-          : null,
-    };
   }
 
   /**

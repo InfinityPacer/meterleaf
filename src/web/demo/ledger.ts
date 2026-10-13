@@ -268,10 +268,6 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
         lifetime: lifetime("api"),
       },
     ],
-    resets: [
-      { accountId: "personal", at: "2026-09-04T09:20:00+08:00" },
-      { accountId: "studio", at: "2026-09-07T14:00:00+08:00" },
-    ],
   };
 }
 
