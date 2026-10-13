@@ -28,7 +28,6 @@ function entry(key = "report", lastUsed = 1): CachedReport {
         mode: "live",
         asOf: "2026-09-08T12:00:00.000Z",
         accounts: [],
-        resets: [],
         pricing: {
           version: "book:old-v1",
           publishedAt: "2026-01-01",
@@ -166,7 +165,7 @@ test("malformed JSON and invalid containers throw rather than synthesizing defau
         JSON.stringify({ ...entry(), value: { ...entry().value, view: [] } }),
         JSON.stringify({
           ...entry(),
-          value: { ...entry().value, resets: null },
+          value: { ...entry().value, asOf: 1 },
         }),
       ]) {
         db.query("UPDATE view_cache SET payload=?").run(payload);

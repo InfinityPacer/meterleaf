@@ -71,38 +71,47 @@ export function modelLabel(model: string) {
     );
 }
 
+// 图表与表格每次渲染会格式化成百上千个值；Intl 格式器构造远比 format 昂贵，按选项复用。
+const compactAbbreviated = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+const compactPlain = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+const compactAxisFormat = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+const usdFormat = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 2,
+});
+const creditsFormat = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 1,
+});
+const localTimeFormats = new Map<string, Intl.DateTimeFormat>();
+
 export function compact(value: number | null) {
   if (value === null || !Number.isFinite(value)) return "N/A";
   // 缩写后固定两位小数，同屏的 3.00B 与 2.95B 才能对齐比较；千以下保持整数。
   const abbreviated = Math.abs(value) >= 1000;
-  return new Intl.NumberFormat("en-US", {
-    notation: "compact",
-    minimumFractionDigits: abbreviated ? 2 : 0,
-    maximumFractionDigits: 2,
-  }).format(value);
+  return (abbreviated ? compactAbbreviated : compactPlain).format(value);
 }
 
 /** 坐标轴刻度只需量级，不补零，避免 15.00M 这类冗长刻度。 */
 export function compactAxis(value: number) {
-  return new Intl.NumberFormat("en-US", {
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(value);
+  return compactAxisFormat.format(value);
 }
 
 export function amount(value: number | null, unit: ReportUnit) {
   if (value === null || !Number.isFinite(value)) return "N/A";
-  if (unit === "usd")
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 2,
-    }).format(value);
-  return unit === "tokens"
-    ? compact(value)
-    : new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(
-        value,
-      );
+  if (unit === "usd") return usdFormat.format(value);
+  return unit === "tokens" ? compact(value) : creditsFormat.format(value);
 }
 
 function decimalValue(value: string | null) {
@@ -319,12 +328,18 @@ export function localTime(
   if (iso === null || iso === undefined) return "未知";
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) return "未知";
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    month: "2-digit",
-    day: "2-digit",
-    ...options,
-  }).format(date);
+  const key = JSON.stringify(options);
+  let format = localTimeFormats.get(key);
+  if (!format) {
+    format = new Intl.DateTimeFormat("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      month: "2-digit",
+      day: "2-digit",
+      ...options,
+    });
+    localTimeFormats.set(key, format);
+  }
+  return format.format(date);
 }
 
 /** 报表维度不改变筛选范围；时间桶使用与趋势图相同的上海时区边界。 */

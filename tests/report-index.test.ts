@@ -358,7 +358,6 @@ function metadata(
     mode: "live",
     asOf,
     accounts,
-    resets: [],
     usdBasis,
   };
 }
@@ -951,6 +950,42 @@ describe("ReportIndex", () => {
           "subscription",
         ),
       ).toEqual({ count: 0, tokens: 0, usd: "0", credits: "0" });
+
+      // 两个口径的快照共享读取器：结果与逐次读取一致，同一窗口只查询一次。
+      const target = index as unknown as {
+        loadContributions: (...args: unknown[]) => unknown;
+      };
+      const load = target.loadContributions.bind(index);
+      let loads = 0;
+      target.loadContributions = (...args) => {
+        loads += 1;
+        return load(...args);
+      };
+      const read = index.windowReader();
+      const scope = (model: string) => model.startsWith("gpt-");
+      for (const basis of ["subscription", "api"] as const) {
+        for (const modelScope of [null, scope]) {
+          expect(
+            read(
+              "quota-account",
+              "2026-09-08T00:00:00.000Z",
+              "2026-09-08T03:00:00.000Z",
+              basis,
+              modelScope,
+            ),
+          ).toEqual(
+            index.sumWindow(
+              "quota-account",
+              "2026-09-08T00:00:00.000Z",
+              "2026-09-08T03:00:00.000Z",
+              basis,
+              modelScope,
+            ),
+          );
+        }
+      }
+      // 4 次逐次读取，加上读取器按模型范围各查一次。
+      expect(loads).toBe(6);
     } finally {
       index.close();
       await rm(directory, { recursive: true, force: true });

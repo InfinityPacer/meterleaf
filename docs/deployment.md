@@ -69,7 +69,7 @@ docker compose up -d --no-build --pull never
 
 `SUB2API_DATABASE_URL` 与 `METERLEAF_INGEST_KEYS` 至少填写一项，未填写的来源不启用。
 
-打开页面时报表会先显示上次结果并立即在后台刷新，自动同步也按可见间隔运行，因此两个较长的默认间隔只影响无人查看时的后台频率，用来减少 NAS 磁盘写入。
+打开页面时报表会先显示上次结果并立即在后台刷新，自动同步也按可见间隔运行，因此两个较长的默认间隔只影响无人查看时的后台频率，用来减少 NAS 磁盘写入。采集器推来的新用量每小时补进一次报表索引，没有新推送时不写盘，空闲后打开页面最多只需补最近一小时的量。
 
 Compose 将容器内数据目录、监听地址和端口固定为 `/app/app_data`、`0.0.0.0` 和 `4318`；`METERLEAF_DATA_DIR`、`METERLEAF_HOST`、`METERLEAF_PORT`、`METERLEAF_DEMO` 仅用于直接以 Bun 启动时的本地配置。
 

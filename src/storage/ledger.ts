@@ -28,6 +28,11 @@ import {
   quotaPlanHistoryKey,
   type QuotaPlanObservation,
 } from "../domain/quota-plan";
+import { quotaHistoryStart } from "../domain/quota";
+
+/** toISOString 的固定宽度格式，同格式的时间按文本比较即按时间先后。 */
+const isoTimestampGlob =
+  "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z";
 
 export interface StoredUsage {
   fact: UsageFact;
@@ -720,24 +725,103 @@ export class LedgerStore {
       .map((row) => JSON.parse(row.payload) as SourceAccount);
   }
   quotas(): StoredQuota[] {
-    const histories = new Map<string, QuotaPlanObservation[] | null>();
-    return this.db
-      .query<{ payload: string; collected_at: string }, []>(
-        "SELECT payload, collected_at FROM quota_snapshots ORDER BY sampled_at, collected_at",
+    return this.storedQuotas(
+      this.db
+        .query<{ payload: string; collected_at: string }, []>(
+          "SELECT payload, collected_at FROM quota_snapshots ORDER BY sampled_at, collected_at, rowid",
+        )
+        .all(),
+    );
+  }
+
+  /**
+   * 报表额度视图需要的快照，顺序与 quotas() 相同。每个来源账户窗口按最新读数截取，
+   * 更早的历史不影响结果，跳过后读取量不随采样持续增长。时间按文本比较，
+   * 非标准 UTC 格式的采样时间无法比较，所在窗口保留全部历史。
+   */
+  reportQuotas(now: string): StoredQuota[] {
+    const groups = this.db
+      .query<
+        {
+          source_id: string;
+          account_id: string;
+          window: string;
+          odd: number | null;
+          payload: string | null;
+        },
+        [string]
+      >(
+        `
+        WITH latest AS (
+          SELECT source_id, account_id, window, MAX(sampled_at) AS sampled_at,
+            SUM(sampled_at NOT GLOB ?1) AS odd
+          FROM quota_snapshots GROUP BY source_id, account_id, window
+        )
+        SELECT l.source_id, l.account_id, l.window, l.odd, q.payload FROM latest l
+        LEFT JOIN quota_snapshots q ON q.source_id=l.source_id AND q.account_id=l.account_id
+          AND q.window=l.window AND q.sampled_at=l.sampled_at
+      `,
       )
-      .all()
-      .map((row) => {
-        const fact = JSON.parse(row.payload) as QuotaFact;
-        const key = quotaPlanHistoryKey(fact.sourceId, fact.accountExternalId);
-        if (!histories.has(key))
-          histories.set(key, this.getState<QuotaPlanObservation[]>(key));
-        const planHistory = histories.get(key);
-        return {
-          fact,
-          collectedAt: row.collected_at,
-          ...(planHistory ? { planHistory } : {}),
-        };
-      });
+      .all(isoTimestampGlob);
+    const bounds = new Map<string, [string, string, string, string]>();
+    for (const group of groups) {
+      const key = JSON.stringify([
+        group.source_id,
+        group.account_id,
+        group.window,
+      ]);
+      const start =
+        group.odd || !group.payload
+          ? NaN
+          : quotaHistoryStart(JSON.parse(group.payload) as QuotaFact, now);
+      // 同一采样时刻可能有多条读数，取最早的截取点。
+      const since = Number.isFinite(start) ? new Date(start).toISOString() : "";
+      const previous = bounds.get(key);
+      if (!previous || since < previous[3])
+        bounds.set(key, [
+          group.source_id,
+          group.account_id,
+          group.window,
+          since,
+        ]);
+    }
+    return this.storedQuotas(
+      this.db
+        .query<{ payload: string; collected_at: string }, [string]>(
+          `
+          WITH bound AS (
+            SELECT json_extract(value, '$[0]') AS source_id,
+              json_extract(value, '$[1]') AS account_id,
+              json_extract(value, '$[2]') AS window,
+              json_extract(value, '$[3]') AS since
+            FROM json_each(?)
+          )
+          SELECT q.payload, q.collected_at FROM bound b
+          JOIN quota_snapshots q ON q.source_id=b.source_id AND q.account_id=b.account_id
+            AND q.window=b.window AND (q.sampled_at IS NULL OR q.sampled_at >= b.since)
+          ORDER BY q.sampled_at, q.collected_at, q.rowid
+        `,
+        )
+        .all(JSON.stringify([...bounds.values()])),
+    );
+  }
+
+  private storedQuotas(
+    rows: readonly { payload: string; collected_at: string }[],
+  ): StoredQuota[] {
+    const histories = new Map<string, QuotaPlanObservation[] | null>();
+    return rows.map((row) => {
+      const fact = JSON.parse(row.payload) as QuotaFact;
+      const key = quotaPlanHistoryKey(fact.sourceId, fact.accountExternalId);
+      if (!histories.has(key))
+        histories.set(key, this.getState<QuotaPlanObservation[]>(key));
+      const planHistory = histories.get(key);
+      return {
+        fact,
+        collectedAt: row.collected_at,
+        ...(planHistory ? { planHistory } : {}),
+      };
+    });
   }
 
   /** 返回已落盘的来源事实数量；不把额度快照或本地估值重复计入。 */

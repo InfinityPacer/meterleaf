@@ -91,7 +91,6 @@ function validate(entry: unknown): asserts entry is CachedReport {
   requireShape(object(value));
   requireShape(value.mode === "live" || value.mode === "demo");
   requireShape(typeof value.asOf === "string");
-  requireShape(Array.isArray(value.resets) && value.resets.every(object));
   validateVariant(value);
   if (value.pricing !== undefined) {
     requireShape(

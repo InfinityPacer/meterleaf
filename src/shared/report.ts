@@ -89,7 +89,6 @@ export interface LedgerSnapshot {
   asOf: string;
   accounts: LedgerAccount[];
   records: LedgerRecord[];
-  resets: { accountId: string; at: string }[];
   sync?: {
     lastAttempt?: string | null;
     running?: boolean;

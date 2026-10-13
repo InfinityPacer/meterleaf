@@ -1764,3 +1764,139 @@ test("a prior quota algorithm cache is discarded without changing ledger facts",
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a cache saved by 0.9.8 with reset history is kept after upgrading", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-format-3-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  let reports: ViewService | undefined;
+  try {
+    const now = new Date().toISOString();
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [viewUsage("1", now)], nextCursor: "1", hasMore: false },
+      now,
+    );
+    reports = new ViewService(path, book, { refreshIntervalMs: 0 });
+    await reports.read(query, "subscription", sync);
+    await reports.close();
+    const db = new Database(`${path}.reports.sqlite.views`);
+    try {
+      const row = db
+        .query<{ namespace: string }, []>(
+          "SELECT namespace FROM view_cache_namespace WHERE id=1",
+        )
+        .get()!;
+      db.query("UPDATE view_cache_namespace SET namespace=? WHERE id=1").run(
+        JSON.stringify({ ...JSON.parse(row.namespace), format: 3 }),
+      );
+      // 0.9.8 的结果带有额度重置记录；改动计数以确认读到的是恢复的缓存。
+      for (const entry of db
+        .query<{ key: string; payload: string }, []>(
+          "SELECT key, payload FROM view_cache",
+        )
+        .all()) {
+        const payload = JSON.parse(entry.payload);
+        payload.value.view.count = 999;
+        for (const variant of [
+          payload.value,
+          ...Object.values(payload.value.usdVariants ?? {}),
+        ])
+          (variant as { resets?: unknown[] }).resets = [];
+        db.query("UPDATE view_cache SET payload=? WHERE key=?").run(
+          JSON.stringify(payload),
+          entry.key,
+        );
+      }
+    } finally {
+      db.close();
+    }
+    reports = new ViewService(path, book, { refreshIntervalMs: 0 });
+    const result = await reports.read(query, "subscription", sync, false);
+    expect(result.view.count).toBe(999);
+    await reports.close();
+    reports = undefined;
+    const reopened = new Database(`${path}.reports.sqlite.views`);
+    try {
+      const row = reopened
+        .query<{ namespace: string }, []>(
+          "SELECT namespace FROM view_cache_namespace WHERE id=1",
+        )
+        .get()!;
+      expect(JSON.parse(row.namespace).format).toBe(4);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await reports?.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("background catch-up applies pushed usage to the index without a read and skips idle periods", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-catch-up-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  const events: LogEvent[] = [];
+  const at = new Date(Date.now() - 60_000).toISOString();
+  store.savePage(
+    "test",
+    "incremental",
+    { records: [viewUsage("1", at)], nextCursor: "1", hasMore: false },
+    at,
+  );
+  const reports = new ViewService(path, book, {
+    refreshIntervalMs: 0,
+    indexCatchUpIntervalMs: 20,
+    diagnostics: createDiagnosticsLogger({
+      level: "debug",
+      sink: (event) => events.push(event),
+    }),
+  });
+  const catchUps = () =>
+    events.filter((event) => event.event === "report.index_catch_up");
+  const updates = () => catchUps().filter((event) => event.changed).length;
+  const waitFor = async (condition: () => boolean) => {
+    const deadline = Date.now() + 2_000;
+    while (!condition() && Date.now() < deadline) await Bun.sleep(10);
+    expect(condition()).toBe(true);
+  };
+  try {
+    expect((await reports.read(query, "subscription", sync)).view.count).toBe(
+      1,
+    );
+    // 没有新推送时补齐是空操作，不能产生索引写入。
+    const idleFrom = catchUps().length;
+    await waitFor(() => catchUps().length >= idleFrom + 3);
+    expect(updates()).toBe(0);
+
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [viewUsage("2", at)], nextCursor: "2", hasMore: false },
+      at,
+    );
+    await waitFor(() => updates() === 1);
+    const timing = events.filter(
+      (event) => event.event === "report.query_timing",
+    ).length;
+    const fresh = await reports.read(
+      { ...query, pageSize: 6 },
+      "subscription",
+      sync,
+    );
+    expect(fresh.view.count).toBe(2);
+    expect(updates()).toBe(1);
+    expect(
+      events.filter((event) => event.event === "report.query_timing"),
+    ).toHaveLength(timing + 1);
+  } finally {
+    await reports.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

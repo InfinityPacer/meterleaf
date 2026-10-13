@@ -17,6 +17,11 @@ import type { SyncStatus } from "./sync";
 const CACHE_LIMIT = 16;
 /** 定时刷新只是兜底；打开页面时读取会先返回缓存再后台刷新。 */
 const DEFAULT_REFRESH_INTERVAL_MS = 86_400_000;
+/**
+ * 无人查看时索引不随每次推送写盘；按此间隔把新推送补进索引，下次打开只需补最近一段。
+ * 没有新用量时补齐是空操作，不产生写入。
+ */
+const DEFAULT_INDEX_CATCH_UP_INTERVAL_MS = 3_600_000;
 
 /** 报表结果的可见同步状态；账本结果本身仍保持 shared 契约不变。 */
 export interface ReportStatus {
@@ -35,6 +40,8 @@ export interface ViewServiceOptions {
   /** 成功视图独立持久化；null 禁用，默认从磁盘索引路径派生，内存索引不落盘。 */
   cachePath?: string | null;
   refreshIntervalMs?: number;
+  /** 后台补齐索引的间隔，0 表示只在查询时补齐。 */
+  indexCatchUpIntervalMs?: number;
   /** 账本事实少于此数时同步重建索引，默认 2000；测试用 0 验证后台重建。 */
   inlineRebuildLimit?: number;
   diagnostics?: DiagnosticsLogger;
@@ -45,8 +52,14 @@ export interface ViewServiceOptions {
 
 interface WorkerMessage {
   /** index-rebuilt 表示后台重建结束（成功或放弃），此前的过渡结果需要重新计算。 */
-  type?: "index-rebuilt";
+  type?: "index-rebuilt" | "caught-up";
   id: number;
+  /** 后台补齐的结果；changed 表示补进了新推送的用量。 */
+  catchUp?: {
+    mode: "current" | "transitional" | "building";
+    changed: boolean;
+    durationMs: number;
+  };
   result?: LedgerView;
   /** 结果来自后台重建期间保留的旧索引，可能使用旧价格表或缺少最新事实。 */
   transitional?: boolean;
@@ -214,6 +227,7 @@ export class ViewService {
   private readonly getSyncStatus?: () => SyncStatus;
   private readonly now: () => number;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private catchUpTimer: ReturnType<typeof setInterval> | null = null;
   private scheduledRefresh: Promise<void> | null = null;
   private closeTask: Promise<void> | null = null;
   private sequence = 0;
@@ -265,6 +279,14 @@ export class ViewService {
       },
     });
     this.worker.on("message", (message: WorkerMessage) => {
+      if (message.type === "caught-up") {
+        this.diagnostics.log(
+          message.catchUp?.changed ? "info" : "debug",
+          "report.index_catch_up",
+          { ...message.catchUp },
+        );
+        return;
+      }
       if (message.type === "index-rebuilt") {
         this.indexRebuilding = false;
         this.refreshAfterRebuild();
@@ -292,6 +314,9 @@ export class ViewService {
     this.worker.on("error", () => this.fail());
     this.worker.on("exit", () => this.fail());
     this.startRefreshTimer();
+    this.startCatchUpTimer(
+      options.indexCatchUpIntervalMs ?? DEFAULT_INDEX_CATCH_UP_INTERVAL_MS,
+    );
   }
 
   /** 已有缓存先返回旧结果；refresh=false 只观察任务结果，防止轮询持续重算。 */
@@ -355,13 +380,17 @@ export class ViewService {
   private restoreCache(cachePath: string, sourcePath: string, book: PriceBook) {
     let cache: ViewCache | null = null;
     try {
-      const namespace = JSON.stringify({
-        // 套餐边界参与预估，旧口径的派生结果不能恢复；原始账本保持完整。
-        format: 3,
+      const identity = {
         source: sourceFileState(sourcePath).identity,
         book: book.id,
-      });
-      cache = new ViewCache(cachePath, namespace);
+      };
+      // 套餐边界参与预估，格式 2 及更早的派生结果不能恢复；原始账本保持完整。
+      // 格式 4 不再保存额度重置记录，格式 3 的结果仍可直接使用。旧版本校验要求该字段，
+      // 换用新格式号让回滚后的旧版本清空缓存重新计算，而不是停用持久缓存。
+      const namespace = JSON.stringify({ format: 4, ...identity });
+      cache = new ViewCache(cachePath, namespace, [
+        JSON.stringify({ format: 3, ...identity }),
+      ]);
       for (const saved of cache.load()) {
         if (saved.key !== this.cacheKey(saved.query, saved.basis)) {
           // 合并版本变化及首次升级的旧键属于正常失效，不能因此停用持久缓存。
@@ -806,6 +835,17 @@ export class ViewService {
     unref?.call(this.refreshTimer);
   }
 
+  private startCatchUpTimer(intervalMs: number) {
+    if (!(intervalMs > 0)) return;
+    this.catchUpTimer = setInterval(() => {
+      if (this.closed || this.failed) return;
+      this.worker.postMessage({ type: "catch-up" });
+    }, intervalMs);
+    const unref = (this.catchUpTimer as unknown as { unref?: () => void })
+      .unref;
+    unref?.call(this.catchUpTimer);
+  }
+
   /** 等进行中的定时刷新结束后再完整刷新一轮，确保每个过渡结果都换成新索引的结果。 */
   private refreshAfterRebuild() {
     void (this.scheduledRefresh ?? Promise.resolve()).then(() =>
@@ -849,6 +889,10 @@ export class ViewService {
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
       this.refreshTimer = null;
+    }
+    if (this.catchUpTimer) {
+      clearInterval(this.catchUpTimer);
+      this.catchUpTimer = null;
     }
     const scheduled = this.scheduledRefresh;
     this.fail();
