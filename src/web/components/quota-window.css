@@ -16,15 +16,17 @@
   border-top: 1px solid var(--line);
 }
 
+/* 用 flex 而非 auto 列：iOS Safari 在重置文字变长后不一定重算 auto 列宽，时间会溢出卡片。 */
 .quota-window-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  justify-content: space-between;
   align-items: baseline;
   gap: 7px;
   min-width: 0;
 }
 
 .quota-window-title {
+  flex: 1 1 auto;
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
@@ -59,6 +61,7 @@
 
 /* 重置时间是一个整体，不在中间断行；窄屏时由左侧标题让出宽度。 */
 .quota-window-reset {
+  flex: none;
   white-space: nowrap;
   color: var(--muted);
   font-size: 12px;

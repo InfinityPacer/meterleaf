@@ -11,6 +11,7 @@ import {
   quotaWaitingReset,
   accountQuotaExhausted,
   withFableQuotaWindow,
+  quotaResetMinute,
 } from "../src/web/lib/quota-display";
 
 type QuotaEstimate = NonNullable<AccountWindow["estimate"]>;
@@ -249,4 +250,15 @@ test("quota timer selects the earliest pending window and ignores unknown dates"
       clock,
     ),
   ).toBe(2_147_483_647);
+});
+
+test("reset times round to the nearest minute so sub-second jitter shows one value", () => {
+  expect(quotaResetMinute("2026-10-18T07:59:59.568Z")).toBe(
+    Date.parse("2026-10-18T08:00:00.000Z"),
+  );
+  expect(quotaResetMinute("2026-10-18T08:00:00Z")).toBe(
+    Date.parse("2026-10-18T08:00:00.000Z"),
+  );
+  expect(quotaResetMinute(null)).toBeNull();
+  expect(quotaResetMinute("invalid")).toBeNull();
 });
