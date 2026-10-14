@@ -4,6 +4,7 @@ import {
   estimateDescription,
   quotaLabel,
   quotaPercent,
+  quotaResetMinute,
   quotaWaitingReset,
   showQuotaEstimate,
   type VisibleQuotaWindow,
@@ -34,9 +35,10 @@ const dayKeyFormatter = new Intl.DateTimeFormat("en-CA", {
 
 /** 当天重置只显示时刻，跨天才带日期；无效时间不猜测。 */
 function formatResetTime(value: string | null, asOf: string) {
-  const reset = value ? new Date(value) : null;
+  const minute = quotaResetMinute(value);
   const sample = new Date(asOf);
-  if (!reset || !Number.isFinite(reset.getTime())) return "重置未知";
+  if (minute === null) return "重置未知";
+  const reset = new Date(minute);
   return Number.isFinite(sample.getTime()) &&
     dayKeyFormatter.format(reset) === dayKeyFormatter.format(sample)
     ? `${clockFormatter.format(reset)} 重置`

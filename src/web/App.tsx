@@ -73,6 +73,7 @@ import {
   quotaLabel,
   quotaPercent,
   quotaState,
+  quotaResetMinute,
   showQuotaEstimate,
   visibleQuotaWindows,
   withFableQuotaWindow,
@@ -2197,11 +2198,16 @@ export function App() {
                             "expired"
                           ? "N/A"
                           : selectedAccount.sevenDay.resetsAt
-                            ? localTime(selectedAccount.sevenDay.resetsAt, {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                                hour12: false,
-                              })
+                            ? localTime(
+                                quotaResetMinute(
+                                  selectedAccount.sevenDay.resetsAt,
+                                ),
+                                {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                  hour12: false,
+                                },
+                              )
                             : "N/A"}
                     </dd>
                     {visibleQuotaWindows(
@@ -2286,7 +2292,9 @@ export function App() {
                           <dd>
                             {selectedAccount.sevenDayFable.resetsAt
                               ? localTime(
-                                  selectedAccount.sevenDayFable.resetsAt,
+                                  quotaResetMinute(
+                                    selectedAccount.sevenDayFable.resetsAt,
+                                  ),
                                   {
                                     hour: "2-digit",
                                     minute: "2-digit",
