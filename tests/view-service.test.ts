@@ -292,6 +292,21 @@ test("a price change rebuilds in the background and answers uncached queries fro
       (await readdir(dir)).filter((name) => name.includes(".next")),
     ).toEqual([]);
 
+    // 重建完成后缓存里的各个查询依次刷新，上面只等到了最近使用的分页查询。
+    // 默认查询仍在刷新时写入增量，进行中的刷新可能已读过数据库，之后的观察读取又不会再触发刷新。
+    let settled = await reports.read(query, "subscription", sync, false);
+    const settleDeadline = Date.now() + 5000;
+    while (
+      (settled.reportStatus?.refreshing ||
+        settled.pricing!.version !== priceBookKey(nextBook)) &&
+      Date.now() < settleDeadline
+    ) {
+      await Bun.sleep(20);
+      settled = await reports.read(query, "subscription", sync, false);
+    }
+    expect(settled.pricing!.version).toBe(priceBookKey(nextBook));
+    expect(settled.reportStatus?.refreshing).toBe(false);
+
     // 替换后的索引继续接收增量。
     const later = new Date().toISOString();
     store.savePage(
