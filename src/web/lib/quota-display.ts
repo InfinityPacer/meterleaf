@@ -105,15 +105,25 @@ export function withFableQuotaWindow(
   ];
 }
 
+/**
+ * 展示用的重置时刻，取最接近的整分钟。上游同一重置点会在整点前后差不到一秒，
+ * 直接按分钟截断会在 15:59 与 16:00 之间来回变化；无效时间返回 null。
+ */
+export function quotaResetMinute(resetsAt: string | null | undefined) {
+  const value = Date.parse(resetsAt ?? "");
+  return Number.isFinite(value) ? Math.round(value / 60_000) * 60_000 : null;
+}
+
 /** 等待新采样的窗口只说明上一周期何时结束，不给出百分比或金额。 */
 export function quotaWaitingReset(window: AccountWindow, asOf: string) {
-  if (quotaState(window, asOf) !== "expired" || !window.resetsAt) return null;
+  const reset = quotaResetMinute(window.resetsAt);
+  if (quotaState(window, asOf) !== "expired" || reset === null) return null;
   return `${new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  }).format(new Date(window.resetsAt))} 已重置`;
+  }).format(reset)} 已重置`;
 }
 
 /** 各入口使用同一有效周期规则，过期的耗尽状态不能延续到下一周期。 */

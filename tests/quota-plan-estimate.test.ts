@@ -212,3 +212,46 @@ test("estimates add the remaining share to actual spend and converge to it when 
   const full = quotaView(exhausted, reader, iso(8, 10))!;
   expect(full.estimate.usd).toBe(full.periodUsd);
 });
+
+test("plan upgrade reported after the upstream reset starts from the zero reading", () => {
+  // 升级后上游当即清零，账户资料要等 Claude Code 刷新后才上报新套餐。
+  const plans = [
+    ...known,
+    { plan: "max", observedAt: iso(8, 2), changed: true },
+  ];
+  const spend = [900, 900, 900, 920, 960];
+  const reader: QuotaChargeReader = (_, end) => ({
+    usd: String(spend[Math.min(new Date(end).getUTCHours(), 4)]),
+    credits: null,
+  });
+  const readings = [sample(8, 0, 90), sample(8, 1, 0), sample(8, 3, 1)].map(
+    (s) => ({ ...s, planHistory: plans }),
+  );
+  const result = quotaView(readings, reader, iso(8, 3))!;
+  expect(result.percent).toBe(1);
+  // 首次到达 1% 实际约为 0.5%，清零后花费 20 对应整周 4000。
+  expect(fullWeekEstimate(result)).toBe("4000");
+  expect(result.estimate.methods?.usd).toBe("rough");
+});
+
+test("a reset before the previous plan observation is not the new plan's start", () => {
+  const plans = [
+    ...known,
+    { plan: "max", observedAt: iso(8, 2), changed: true },
+    { plan: "pro", observedAt: iso(8, 4), changed: true },
+  ];
+  const spend = [900, 900, 900, 920, 960, 1000];
+  const reader: QuotaChargeReader = (_, end) => ({
+    usd: String(spend[Math.min(new Date(end).getUTCHours(), 5)]),
+    credits: null,
+  });
+  const readings = [
+    sample(8, 0, 90),
+    sample(8, 1, 0),
+    sample(8, 3, 1),
+    sample(8, 5, 2),
+  ].map((s) => ({ ...s, planHistory: plans }));
+  const result = quotaView(readings, reader, iso(8, 5))!;
+  // 只有 hour 5 一个新套餐读数，不能借用 hour 1 的清零点外推。
+  expect(result.estimate.usd).toBeNull();
+});

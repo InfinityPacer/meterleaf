@@ -225,34 +225,56 @@ export function quotaView(
       at: Date.parse(sample.sampledAt ?? ""),
       cycle: cycleResetKey(sample.resetsAt),
     }));
-  const plan = [...(latest.planHistory ?? [])]
+  const plans = [...(latest.planHistory ?? [])]
     .filter((entry) => Date.parse(entry.observedAt) <= time)
-    .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt))
-    .at(-1);
+    .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt));
+  const plan = plans.at(-1);
   const planStart = plan ? Date.parse(plan.observedAt) : NaN;
+  const priorPlanStart =
+    plans.length > 1 ? Date.parse(plans.at(-2)!.observedAt) : -Infinity;
   const duration = (fact.windowMinutes ?? 0) * 60_000;
-  /** 返回某周期内同一来源、同一已知套餐区间的有效读数，过时回落已剔除。 */
-  const cycleReadings = (cycleReset: number, until: number) => {
-    const cycleStart = cycleReset - duration;
-    // 已发现套餐变化后不能使用变化前的点。初次建立历史不冒充过去的套餐证明。
-    const boundary =
-      plan && (plan.changed || cycleReset !== reset)
-        ? Math.max(cycleStart, planStart)
-        : cycleStart;
-    const observations = sameSource.flatMap(({ sample, at, cycle }) => {
+  /** 周期内同一来源的有效读数，过时回落、负值和缺值已剔除。 */
+  const readingsBetween = (cycleReset: number, from: number, until: number) =>
+    sameSource.flatMap(({ sample, at, cycle }) => {
       if (
         cycle !== cycleReset ||
         sample.percent === null ||
         !Number.isFinite(sample.percent) ||
         sample.percent < 0 ||
         !Number.isFinite(at) ||
-        at < boundary ||
+        at < from ||
         at > until ||
         at >= cycleReset
       )
         return [];
-      return [{ percent: sample.percent, sampledAt: sample.sampledAt! }];
+      return [{ percent: sample.percent, sampledAt: sample.sampledAt!, at }];
     });
+  /** 返回某周期内同一来源、同一已知套餐区间的有效读数，过时回落已剔除。 */
+  const cycleReadings = (cycleReset: number, until: number) => {
+    const cycleStart = cycleReset - duration;
+    // 已发现套餐变化后不能使用变化前的点。初次建立历史不冒充过去的套餐证明。
+    let boundary =
+      plan && (plan.changed || cycleReset !== reset)
+        ? Math.max(cycleStart, planStart)
+        : cycleStart;
+    // 套餐要等 Claude Code 刷新账户资料才上报，上游往往更早已按新套餐重新计数。
+    // 观察到变化前、上一次套餐观察后的最后一次重新计数就是新套餐的起点，
+    // 从这里起算才能保留清零读数，使百分比与费用都从真实起点累计。
+    if (plan?.changed && boundary > cycleStart) {
+      const lead = stableReadings(
+        readingsBetween(
+          cycleReset,
+          Math.max(cycleStart, priorPlanStart),
+          boundary,
+        ),
+      );
+      const restart = lead.readings[0];
+      if (lead.rebased && restart && restart.at < boundary)
+        boundary = restart.at;
+    }
+    const observations = readingsBetween(cycleReset, boundary, until).map(
+      ({ percent, sampledAt }) => ({ percent, sampledAt }),
+    );
     const stable = stableReadings(observations);
     return {
       observations: stable.readings,
@@ -336,8 +358,9 @@ export function quotaView(
           percent: new Decimal(entry.percent).sub(baseline.percent).toNumber(),
         }))
       : observations;
-    // 上游百分比为四舍五入整数。重新起算的基准点落在平台期中段，相对百分比的取整偏差无法确定，不做校正。
-    const roundedPercent = !rebased;
+    // 上游百分比为四舍五入整数。重新起算的基准点落在平台期中段时，相对百分比的取整偏差无法确定，
+    // 不做校正；基准点是清零后的 0%，相对百分比就是上游读数，仍按首次到达校正。
+    const roundedPercent = !baseline || baseline.percent === 0;
     const segments = estimateQuotaSegments(
       estimateObservations,
       estimateRead,
