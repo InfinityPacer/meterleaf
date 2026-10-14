@@ -57,9 +57,9 @@
   color: var(--quota-alert);
 }
 
+/* 重置时间是一个整体，不在中间断行；窄屏时由左侧标题让出宽度。 */
 .quota-window-reset {
-  min-width: 0;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
