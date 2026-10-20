@@ -89,7 +89,11 @@ export function QuotaWindow({
           {/* 等待期间只显示空轨道；不设宽度的填充块会撑满，看起来像已用尽。 */}
           <span style={{ width: 0 }} />
         </span>
+        {/* 费用未知不补零，用破折号占住费用位，与其他窗口保持“金额 + 说明”两行。 */}
         <span className="quota-window-foot">
+          <span className="quota-window-amount">
+            <strong aria-label={`${label}费用等待更新`}>—</strong>
+          </span>
           <span className="quota-window-volume">新周期数据到达后显示</span>
         </span>
       </span>

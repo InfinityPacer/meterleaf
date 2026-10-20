@@ -120,9 +120,8 @@
   font-style: normal;
 }
 
-.quota-window[data-waiting="true"] .quota-window-volume {
-  margin-left: 0;
-  white-space: normal;
+.quota-window[data-waiting="true"] .quota-window-foot strong {
+  color: var(--muted);
 }
 
 .quota-window-amount {
