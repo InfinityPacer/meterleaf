@@ -5,6 +5,8 @@ interface ArchiveState {
   hidden: string[];
   /** 账户 ID 到用户别名；未设置的账户沿用上游名称。 */
   aliases: Record<string, string>;
+  /** 账户 ID 到用户指定的套餐；旧版服务端没有该字段。 */
+  plans?: Record<string, string>;
   writable: boolean;
 }
 const key = ["account-archive"];
@@ -29,7 +31,8 @@ export function useAccountArchive() {
       value:
         | { id: string; archived: boolean }
         | { id: string; hidden: true }
-        | { id: string; alias: string | null },
+        | { id: string; alias: string | null }
+        | { id: string; plan: string | null },
     ) => {
       const response = await fetch("/api/accounts/archive", {
         method: "PUT",
@@ -39,7 +42,12 @@ export function useAccountArchive() {
       if (!response.ok) throw new Error("账户操作失败，请重试");
       return response.json() as Promise<ArchiveState>;
     },
-    onSuccess: (state) => client.setQueryData(key, state),
+    onSuccess: (state, value) => {
+      client.setQueryData(key, state);
+      // 套餐会改变报表里的徽标和额度预估依据，立即重新读取，不等下一次版本轮询。
+      if ("plan" in value)
+        void client.invalidateQueries({ queryKey: ["ledger"] });
+    },
   });
   return { ...query, mutation };
 }

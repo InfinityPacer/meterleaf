@@ -21,7 +21,7 @@ test("account display API archives, restores and hides without invoking source s
       const response = await app.inject({ method: "PUT", url: "/api/accounts/archive", payload });
       expect(response.statusCode).toBe(200);
     }
-    expect((await app.inject("/api/accounts/archive")).json<{ archived: string[]; hidden: string[]; aliases: Record<string, string>; writable: boolean }>()).toEqual({ archived: ["test:a"], hidden: ["test:a"], aliases: {}, writable: true });
+    expect((await app.inject("/api/accounts/archive")).json<{ archived: string[]; hidden: string[]; aliases: Record<string, string>; plans: Record<string, string>; writable: boolean }>()).toEqual({ archived: ["test:a"], hidden: ["test:a"], aliases: {}, plans: {}, writable: true });
     expect((await app.inject({ method: "PUT", url: "/api/accounts/archive", payload: { id: "test:a", hidden: false } })).statusCode).toBe(400);
   } finally { await app.close(); }
 });

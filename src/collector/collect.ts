@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { join } from "node:path";
-import { accountFact, readClaudeJson } from "./claude-code/account";
+import {
+  accountFact,
+  readClaudeJson,
+  type ClaudeAccount,
+} from "./claude-code/account";
+import {
+  credentialPlanFrom,
+  type CredentialLocation,
+  type CredentialTextReader,
+} from "./claude-code/credential";
 import { quotaSnapshot } from "./claude-code/quota";
 import {
   readStatuslineCache,
@@ -18,6 +27,11 @@ export interface CollectSources {
   claudeJson: string;
   /** 可选：用户状态栏脚本写出的额度缓存 TSV。 */
   statuslineCache?: string | null;
+  /** 可选：读取登录凭据中的套餐字段；未提供时只用 .claude.json 中的字段。 */
+  credential?: {
+    location: CredentialLocation;
+    read: CredentialTextReader;
+  } | null;
 }
 
 export interface CollectReport {
@@ -33,6 +47,12 @@ export interface CollectReport {
   /** 本轮是否成功读取 ~/.claude.json；读不到时账户与额度本轮跳过。 */
   claudeJsonRead: boolean;
   accountUuid: string | null;
+  /** 本轮是否采用了登录凭据中当前账户的套餐字段。 */
+  credentialPlanRead: boolean;
+  /** 本轮读到了套餐字段，但要等下一轮确认登录账户未变才采用。 */
+  credentialPlanPending: boolean;
+  /** 待确认的凭据换算出的套餐，供 scan 展示；未采用前不上报。 */
+  pendingPlan: string | null;
   quotaRecorded: boolean;
   quotaSkipped: string | null;
   statuslineQuotaRecorded: boolean;
@@ -200,11 +220,69 @@ export function emptyReport(): CollectReport {
     reattributed: 0,
     claudeJsonRead: false,
     accountUuid: null,
+    credentialPlanRead: false,
+    credentialPlanPending: false,
+    pendingPlan: null,
     quotaRecorded: false,
     quotaSkipped: null,
     statuslineQuotaRecorded: false,
     statuslineQuotaSkipped: null,
     statuslineIgnoredLines: 0,
+  };
+}
+
+const credentialCandidateKey = "credential_plan_candidate";
+
+/**
+ * 凭据只代表读取时登录的账户，且不带账户 UUID。Claude Code 登录新账户时先写凭据、
+ * 后写 .claude.json，这几秒内两者分属不同账户。读取后再确认一次登录账户，并且只采用
+ * 连续两轮都对同一账户读到的同一套餐；切换中途读到的组合不会持续到下一轮，
+ * 不会把新账户的套餐记到旧账户上。代价是套餐晚一轮出现。
+ */
+function currentCredentialPlan(
+  state: CollectorState,
+  sources: CollectSources,
+  account: ClaudeAccount,
+  report: CollectReport,
+) {
+  if (!sources.credential) return null;
+  const plan = credentialPlanFrom(
+    sources.credential.read(sources.credential.location),
+  );
+  const confirmed = readClaudeJson(sources.claudeJson);
+  const candidate =
+    plan && confirmed?.account?.accountUuid === account.accountUuid
+      ? JSON.stringify({ accountUuid: account.accountUuid, plan })
+      : "";
+  const previous = state.getMeta(credentialCandidateKey);
+  if (previous !== candidate) state.setMeta(credentialCandidateKey, candidate);
+  if (!candidate) return null;
+  if (previous !== candidate) {
+    report.credentialPlanPending = true;
+    report.pendingPlan = accountFact(account, plan).plan;
+    return null;
+  }
+  return plan;
+}
+
+/**
+ * 新版 Claude Code 的 .claude.json 不含组织类型和速率档位，本轮凭据又不可用时，
+ * 只能得到不完整的套餐，例如 Team 席位读不出档位。这时沿用此前为该账户记录的套餐与类型，
+ * 避免套餐在两次采集之间来回变化；旧版字段齐全或凭据可用时以本轮结果为准。
+ */
+function stickyAccountFact(
+  state: CollectorState,
+  account: ClaudeAccount,
+  credential: ReturnType<typeof credentialPlanFrom>,
+) {
+  const fact = accountFact(account, credential);
+  if (credential || account.organizationType !== null) return fact;
+  const previous = state.account(account.accountUuid);
+  if (!previous) return fact;
+  return {
+    ...fact,
+    plan: previous.plan ?? fact.plan,
+    kind: fact.kind === "unknown" ? previous.kind : fact.kind,
   };
 }
 
@@ -227,7 +305,14 @@ export function collect(
   report.claudeJsonRead = snapshot !== null;
   if (snapshot?.account) {
     report.accountUuid = snapshot.account.accountUuid;
-    state.upsertAccount(accountFact(snapshot.account));
+    const credential = currentCredentialPlan(
+      state,
+      sources,
+      snapshot.account,
+      report,
+    );
+    report.credentialPlanRead = credential !== null;
+    state.upsertAccount(stickyAccountFact(state, snapshot.account, credential));
     const since = state.observeAccount(
       snapshot.account.accountUuid,
       now.toISOString(),

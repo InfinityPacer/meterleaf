@@ -103,33 +103,52 @@ test("plan observations persist without changing quota payload or identity", asy
   }
 });
 
-test("A to B to A and unknown plans retain boundaries while retries do not write", () => {
+test("A to B to A keeps boundaries, unknown plans add none, and retries do not write", () => {
   const store = new LedgerStore(":memory:", defaultPriceBook);
   try {
     store.saveQuotas([quota()], first);
     store.saveAccounts([account("pro")], first);
     store.saveAccounts([account("max-5x")], second);
     store.saveAccounts([account("pro")], third);
-    store.saveAccounts([account(null)], "2026-10-01T04:00:00.000Z");
     const totalChanges = store.db
       .query<{ total: number }, []>("SELECT total_changes() AS total")
       .get()!.total;
     const revision = store.revision();
-    store.saveAccounts([account(null)], "2026-10-01T04:30:00.000Z");
+    store.saveAccounts([account("pro")], "2026-10-01T04:30:00.000Z");
     expect(
       store.db
         .query<{ total: number }, []>("SELECT total_changes() AS total")
         .get()!.total,
     ).toBe(totalChanges);
     expect(store.revision()).toBe(revision);
+    // 暂时读不到套餐不能证明套餐变了，之后读回同一套餐也不构成边界。
+    store.saveAccounts([account(null)], "2026-10-01T04:00:00.000Z");
+    store.saveAccounts([account("pro")], "2026-10-01T04:40:00.000Z");
     expect(history(store)).toEqual([
       { plan: "pro", observedAt: first, changed: false },
       { plan: "max-5x", observedAt: second, changed: true },
       { plan: "pro", observedAt: third, changed: true },
-      { plan: null, observedAt: "2026-10-01T04:00:00.000Z", changed: true },
     ]);
-    store.saveAccounts([account("pro")], "2026-10-01T04:40:00.000Z");
-    expect(history(store)?.at(-1)?.changed).toBe(true);
+    store.saveAccounts([account("max-20x")], "2026-10-01T05:00:00.000Z");
+    expect(history(store)?.at(-1)).toEqual({
+      plan: "max-20x",
+      observedAt: "2026-10-01T05:00:00.000Z",
+      changed: true,
+    });
+  } finally {
+    store.close();
+  }
+});
+
+test("a plan that becomes known relabels the unknown observation instead of adding a boundary", () => {
+  const store = new LedgerStore(":memory:", defaultPriceBook);
+  try {
+    store.saveQuotas([quota()], first);
+    store.saveAccounts([account(null)], first);
+    store.saveAccounts([account("team-premium")], third);
+    expect(history(store)).toEqual([
+      { plan: "team-premium", observedAt: first, changed: false },
+    ]);
   } finally {
     store.close();
   }

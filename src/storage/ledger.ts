@@ -25,6 +25,7 @@ import {
   type AccountMergeState,
 } from "../domain/account-merge";
 import {
+  planRelation,
   quotaPlanHistoryKey,
   type QuotaPlanObservation,
 } from "../domain/quota-plan";
@@ -135,6 +136,11 @@ function reportAmount(value: string | number | null) {
 }
 
 /** 单一 SQLite 所有者保证批次事实、独立费用与游标同时可见。金额始终保存为十进制字符串。 */
+/** 只有两个已知且确实不同的套餐才构成变化；未知、改名与细化都不是。 */
+function isPlanChange(previous: string | null, next: string | null) {
+  return planRelation(previous, next) === "change";
+}
+
 export class LedgerStore {
   readonly db: Database;
   private reportChangeLogAvailable: boolean | undefined;
@@ -406,6 +412,29 @@ export class LedgerStore {
     return this.getState<Record<string, string>>("local:account-aliases") ?? {};
   }
 
+  /** 用户为账户指定的套餐，键为来源账户标识。 */
+  accountPlans(): Record<string, string> {
+    return this.getState<Record<string, string>>("local:account-plans") ?? {};
+  }
+
+  /**
+   * plan 为 null 时恢复自动识别。指定套餐会改变报表中的套餐和额度预估依据，
+   * 因此推进账本版本使缓存的报表重新计算。
+   */
+  setAccountPlan(id: string, plan: string | null): Record<string, string> {
+    return this.db.transaction(() => {
+      const previous = this.accountPlans();
+      const plans = { ...previous };
+      if (plan === null) delete plans[id];
+      else plans[id] = plan;
+      if (previous[id] !== plans[id]) {
+        this.setState("local:account-plans", plans);
+        this.bumpRevision();
+      }
+      return plans;
+    })();
+  }
+
   /** alias 为 null 时恢复上游名称。 */
   setAccountAlias(id: string, alias: string | null): Record<string, string> {
     return this.db.transaction(() => {
@@ -483,7 +512,51 @@ export class LedgerStore {
     return changed;
   }
 
-  /** 账户与套餐观测同事务写入；相同套餐不重复记录观测时间。 */
+  /**
+   * 在已有历史上记录一次套餐观测，返回历史是否改变。只有真实的套餐变化才追加边界；
+   * 改名或细化改写最后一次观测的标签并保留其时间。最后一次是旧版留下的未知观测时，
+   * 新套餐与它之前的已知套餐相同就去掉这条未知，恢复连续区间；不同才在当前时刻追加边界。
+   */
+  private observePlan(
+    history: QuotaPlanObservation[],
+    plan: string | null,
+    observedAt: string,
+  ) {
+    const last = history.at(-1)!;
+    if (plan === null) return false;
+    if (last.plan === null) {
+      const prior = history.at(-2);
+      if (!prior) {
+        history[history.length - 1] = { ...last, plan };
+        return true;
+      }
+      if (isPlanChange(prior.plan, plan)) {
+        history.push({ plan, observedAt, changed: true });
+        return true;
+      }
+      history.pop();
+      if (planRelation(prior.plan, plan) === "refine")
+        history[history.length - 1] = { ...prior, plan };
+      return true;
+    }
+    const relation = planRelation(last.plan, plan);
+    if (relation === "refine") {
+      history[history.length - 1] = { ...last, plan };
+      return true;
+    }
+    if (relation === "change") {
+      history.push({ plan, observedAt, changed: true });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 账户与套餐观测同事务写入；相同套餐不重复记录观测时间。
+   * 只有两个不同的已知套餐之间才算套餐变化。未知不能证明套餐变了，不追加观测；
+   * 从未知变为已知是补上一直成立的标签，直接改写最后一次观测，保留其时间，
+   * 额度预估因此继续使用此前全部读数，不会从补上标签的时刻重新起算。
+   */
   private writeAccount(account: SourceAccount, observedAt: string) {
     const key = quotaPlanHistoryKey(account.sourceId, account.externalId);
     const history = this.getState<QuotaPlanObservation[]>(key) ?? [];
@@ -498,18 +571,19 @@ export class LedgerStore {
     const previousAccount = previousRow
       ? (JSON.parse(previousRow.payload) as SourceAccount)
       : null;
-    const historyChanged =
-      !previousObservation || previousObservation.plan !== account.plan;
-    if (historyChanged) {
-      history.push({
-        plan: account.plan,
-        observedAt,
-        changed: previousObservation
-          ? true
-          : previousAccount !== null && previousAccount.plan !== account.plan,
-      });
-      this.setState(key, history);
-    }
+    const historyChanged = previousObservation
+      ? this.observePlan(history, account.plan, observedAt)
+      : (history.push({
+          plan: account.plan,
+          observedAt,
+          changed: isPlanChange(previousAccount?.plan ?? null, account.plan),
+        }),
+        true);
+    if (historyChanged) this.setState(key, history);
+    // 更笼统的同一套餐不覆盖已知的具体套餐，例如凭据缺少倍数时徽标仍显示 Max 20x。
+    const known = history.at(-1)?.plan ?? null;
+    if (planRelation(known, account.plan) === "coarser")
+      account = { ...account, plan: known };
     const write = this.db
       .query(
         "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload IS NOT excluded.payload",
@@ -666,7 +740,10 @@ export class LedgerStore {
       .get(account.sourceId, account.externalId);
     if (
       !priorRow ||
-      (JSON.parse(priorRow.payload) as SourceAccount).plan === account.plan
+      !isPlanChange(
+        (JSON.parse(priorRow.payload) as SourceAccount).plan,
+        account.plan,
+      )
     )
       return false;
     const latestObservation = this.getState<QuotaPlanObservation[]>(
@@ -716,13 +793,34 @@ export class LedgerStore {
     return revision;
   }
 
-  accounts(): SourceAccount[] {
+  private sourceAccounts(): SourceAccount[] {
     return this.db
       .query<{ payload: string }, []>(
         "SELECT payload FROM accounts ORDER BY source_id, external_id",
       )
       .all()
       .map((row) => JSON.parse(row.payload) as SourceAccount);
+  }
+
+  /**
+   * 报表使用的账户资料。用户为 Claude 账户指定的套餐覆盖上游套餐，指定套餐即说明是订阅账户；
+   * 手动套餐只有 Claude 的取值，其他平台的账户不受影响。
+   */
+  accounts(): SourceAccount[] {
+    const plans = this.accountPlans();
+    return this.sourceAccounts().map((account) => {
+      const plan =
+        account.platform === "anthropic"
+          ? plans[ref(account.sourceId, account.externalId)]
+          : undefined;
+      return plan
+        ? {
+            ...account,
+            plan,
+            kind: account.kind === "unknown" ? "subscription" : account.kind,
+          }
+        : account;
+    });
   }
   quotas(): StoredQuota[] {
     return this.storedQuotas(
@@ -806,15 +904,37 @@ export class LedgerStore {
     );
   }
 
+  /**
+   * 用户指定的套餐只填补未知的套餐观测，不改写已知套餐，也不新增观测：
+   * 补上标签不构成套餐变化，额度预估继续使用全部读数；真实的套餐变化仍以上游观测为准。
+   */
   private storedQuotas(
     rows: readonly { payload: string; collected_at: string }[],
   ): StoredQuota[] {
     const histories = new Map<string, QuotaPlanObservation[] | null>();
+    const plans = this.accountPlans();
+    // 合并后界面在目标账户上设置套餐，被合并账户的额度历史也按目标的设置补全。
+    const root = Object.keys(plans).length
+      ? createAccountResolver(this.sourceAccounts(), this.accountMerges())
+      : null;
     return rows.map((row) => {
       const fact = JSON.parse(row.payload) as QuotaFact;
       const key = quotaPlanHistoryKey(fact.sourceId, fact.accountExternalId);
-      if (!histories.has(key))
-        histories.set(key, this.getState<QuotaPlanObservation[]>(key));
+      if (!histories.has(key)) {
+        const history = this.getState<QuotaPlanObservation[]>(key);
+        const plan = root
+          ? (plans[ref(fact.sourceId, fact.accountExternalId)] ??
+            plans[root(fact.sourceId, fact.accountExternalId)])
+          : undefined;
+        histories.set(
+          key,
+          history && plan
+            ? history.map((entry) =>
+                entry.plan === null ? { ...entry, plan } : entry,
+              )
+            : history,
+        );
+      }
       const planHistory = histories.get(key);
       return {
         fact,

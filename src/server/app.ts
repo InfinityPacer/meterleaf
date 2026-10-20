@@ -1,3 +1,4 @@
+import { manualAccountPlans } from "../shared/account-plan";
 import type { LedgerUpdateStatus } from "../shared/live-status";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
@@ -38,6 +39,9 @@ interface AppOptions {
     hide(id: string): string[];
     aliases(): Record<string, string>;
     setAlias(id: string, alias: string | null): Record<string, string>;
+    /** 用户指定的套餐；不支持的账本不提供。 */
+    plans?(): Record<string, string>;
+    setPlan?(id: string, plan: string | null): Record<string, string>;
   };
   snapshot: (
     days: number,
@@ -156,6 +160,7 @@ export function createApp({
     archived: accountArchive?.read() ?? [],
     hidden: accountArchive?.hidden() ?? [],
     aliases: accountArchive?.aliases() ?? {},
+    plans: accountArchive?.plans?.() ?? {},
     writable: Boolean(accountArchive),
   });
   app.get("/api/accounts/archive", displayState);
@@ -177,13 +182,18 @@ export function createApp({
               .nullable(),
           })
           .strict(),
+        // null 恢复自动识别。
+        z.object({ id, plan: z.enum(manualAccountPlans).nullable() }).strict(),
       ])
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "归档参数无效" });
     if (!accountArchive)
       return reply.code(503).send({ error: "当前账本不支持归档" });
     const change = parsed.data;
+    if ("plan" in change && !accountArchive.setPlan)
+      return reply.code(503).send({ error: "当前账本不支持指定套餐" });
     if ("hidden" in change) accountArchive.hide(change.id);
+    else if ("plan" in change) accountArchive.setPlan!(change.id, change.plan);
     else if ("alias" in change)
       accountArchive.setAlias(change.id, change.alias ?? null);
     else accountArchive.write(change.id, change.archived);
@@ -191,13 +201,17 @@ export function createApp({
       action:
         "hidden" in change
           ? "hide"
-          : "alias" in change
-            ? change.alias
-              ? "rename"
-              : "reset-name"
-            : change.archived
-              ? "archive"
-              : "restore",
+          : "plan" in change
+            ? change.plan
+              ? "set-plan"
+              : "reset-plan"
+            : "alias" in change
+              ? change.alias
+                ? "rename"
+                : "reset-name"
+              : change.archived
+                ? "archive"
+                : "restore",
     });
     return displayState();
   });
