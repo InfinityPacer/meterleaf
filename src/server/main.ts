@@ -86,6 +86,8 @@ async function main() {
           hide: (id) => store.hideAccount(id),
           aliases: () => store.accountAliases(),
           setAlias: (id, alias) => store.setAccountAlias(id, alias),
+          plans: () => store.accountPlans(),
+          setPlan: (id, plan) => store.setAccountPlan(id, plan),
         }
       : undefined,
     view: reports

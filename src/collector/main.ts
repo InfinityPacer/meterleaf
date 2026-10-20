@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import { readClaudeJson } from "./claude-code/account";
+import { readCredentialText } from "./claude-code/credential";
 import { readStatuslineCache } from "./claude-code/statusline-cache";
 import { collect, type CollectReport } from "./collect";
 import {
@@ -268,7 +269,18 @@ function collectSources(paths: CollectorPaths) {
   } catch {
     statuslineCache = null;
   }
-  return { ...paths, statuslineCache };
+  return {
+    ...paths,
+    statuslineCache,
+    credential: {
+      // 与 Claude Code 相同，只有显式设置 CLAUDE_CONFIG_DIR 时钥匙串条目名才带目录后缀。
+      location: {
+        claudeRoot: paths.claudeRoot,
+        customConfigDir: Boolean(process.env.CLAUDE_CONFIG_DIR),
+      },
+      read: readCredentialText,
+    },
+  };
 }
 
 function runScan(paths: CollectorPaths, json: boolean) {
@@ -305,6 +317,12 @@ function runScan(paths: CollectorPaths, json: boolean) {
           ? "当前账户: 未登录订阅账户"
           : "当前账户: 未能读取 .claude.json",
     );
+    if (report.accountUuid) {
+      const plan = state.account(report.accountUuid)?.plan ?? "未识别";
+      console.log(
+        `套餐: ${plan}（${report.credentialPlanRead ? "来自登录凭据" : "未读到登录凭据"}）`,
+      );
+    }
     for (const quota of quotas) {
       console.log(
         `额度 ${quota.window}: ${quota.percent ?? "未知"}%（采样于 ${quota.sampledAt}）`,

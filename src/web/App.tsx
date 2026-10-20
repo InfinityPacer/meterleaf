@@ -28,6 +28,7 @@ import {
   Trash2,
   MoreHorizontal,
   PencilLine,
+  BadgeCheck,
   BarChart3,
   Coins,
   Database,
@@ -127,6 +128,10 @@ import {
   AccountRenameDialog,
   type RenameTarget,
 } from "./components/AccountRenameDialog";
+import {
+  AccountPlanDialog,
+  type PlanTarget,
+} from "./components/AccountPlanDialog";
 import {
   ReportBuildingPanel,
   ReportRebuildingNotice,
@@ -627,6 +632,7 @@ export function App() {
   const [accountToRename, setAccountToRename] = useState<RenameTarget | null>(
     null,
   );
+  const [accountToPlan, setAccountToPlan] = useState<PlanTarget | null>(null);
   // 归档列表只是总览账户区的临时切换，重新打开应用时回到使用中的账户。
   const [showArchived, setShowArchived] = useState(false);
   const [reportDimension, setReportDimension] = usePreference<ReportDimension>(
@@ -960,6 +966,28 @@ export function App() {
                   <PencilLine size={16} />
                   重命名
                 </ActionMenu.Item>
+                {account.platform === "anthropic" &&
+                  accountArchive.data?.plans && (
+                    <ActionMenu.Item
+                      className="account-menu-item"
+                      disabled={
+                        !accountArchive.data.writable ||
+                        accountArchive.mutation.isPending
+                      }
+                      onClick={() => {
+                        accountArchive.mutation.reset();
+                        setAccountToPlan({
+                          id: account.id,
+                          name: account.name,
+                          plan:
+                            accountArchive.data?.plans?.[account.id] ?? null,
+                        });
+                      }}
+                    >
+                      <BadgeCheck size={16} />
+                      设置套餐
+                    </ActionMenu.Item>
+                  )}
                 <ActionMenu.Item
                   className="account-menu-item"
                   disabled={
@@ -1875,6 +1903,23 @@ export function App() {
           accountArchive.mutation.mutate(
             { id: accountToRename.id, alias },
             { onSuccess: () => setAccountToRename(null) },
+          );
+        }}
+      />
+      <AccountPlanDialog
+        target={accountToPlan}
+        pending={accountArchive.mutation.isPending}
+        error={
+          accountToPlan && accountArchive.mutation.isError
+            ? accountArchive.mutation.error.message
+            : null
+        }
+        onClose={() => setAccountToPlan(null)}
+        onSave={(plan) => {
+          if (!accountToPlan) return;
+          accountArchive.mutation.mutate(
+            { id: accountToPlan.id, plan },
+            { onSuccess: () => setAccountToPlan(null) },
           );
         }}
       />

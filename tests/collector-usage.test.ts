@@ -171,6 +171,7 @@ describe("Claude Code 账户与额度", () => {
       organizationType: "claude_max",
       rateLimitTier: null,
       billingType: null,
+      seatTier: null,
     });
     expect(account.kind).toBe("unknown");
     expect(account.plan).toBe("claude_max");
