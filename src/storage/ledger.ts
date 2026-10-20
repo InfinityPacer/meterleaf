@@ -580,6 +580,10 @@ export class LedgerStore {
         }),
         true);
     if (historyChanged) this.setState(key, history);
+    // 更笼统的同一套餐不覆盖已知的具体套餐，例如凭据缺少倍数时徽标仍显示 Max 20x。
+    const known = history.at(-1)?.plan ?? null;
+    if (planRelation(known, account.plan) === "coarser")
+      account = { ...account, plan: known };
     const write = this.db
       .query(
         "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload IS NOT excluded.payload",

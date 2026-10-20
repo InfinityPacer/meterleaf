@@ -280,12 +280,18 @@ describe("套餐标识的改名与细化", () => {
       ),
     );
     const result = ledger.quotas()[0]?.planHistory;
+    const shown = ledger.accounts()[0]?.plan;
     ledger.close();
-    return result;
+    return { history: result, shown };
   }
 
+  test("更笼统的同一套餐不覆盖已知的具体套餐", () => {
+    expect(history(["max-20x", "max"]).shown).toBe("max-20x");
+    expect(history(["max", "max-20x"]).shown).toBe("max-20x");
+  });
+
   test("旧版标识换成新标识时改写标签，不追加边界", () => {
-    expect(history(["max-5x", "team-premium"])).toEqual([
+    expect(history(["max-5x", "team-premium"]).history).toEqual([
       {
         plan: "team-premium",
         observedAt: "2026-10-01T00:00:00.000Z",
@@ -293,7 +299,7 @@ describe("套餐标识的改名与细化", () => {
       },
     ]);
     expect(
-      history(["claude_enterprise", "enterprise", "claude_enterprise"]),
+      history(["claude_enterprise", "enterprise", "claude_enterprise"]).history,
     ).toEqual([
       {
         plan: "enterprise",
@@ -301,7 +307,7 @@ describe("套餐标识的改名与细化", () => {
         changed: false,
       },
     ]);
-    expect(history(["max-20x", "max"])).toEqual([
+    expect(history(["max-20x", "max"]).history).toEqual([
       {
         plan: "max-20x",
         observedAt: "2026-10-01T00:00:00.000Z",

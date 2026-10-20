@@ -51,6 +51,8 @@ export interface CollectReport {
   credentialPlanRead: boolean;
   /** 本轮读到了套餐字段，但要等下一轮确认登录账户未变才采用。 */
   credentialPlanPending: boolean;
+  /** 待确认的凭据换算出的套餐，供 scan 展示；未采用前不上报。 */
+  pendingPlan: string | null;
   quotaRecorded: boolean;
   quotaSkipped: string | null;
   statuslineQuotaRecorded: boolean;
@@ -220,6 +222,7 @@ export function emptyReport(): CollectReport {
     accountUuid: null,
     credentialPlanRead: false,
     credentialPlanPending: false,
+    pendingPlan: null,
     quotaRecorded: false,
     quotaSkipped: null,
     statuslineQuotaRecorded: false,
@@ -256,6 +259,7 @@ function currentCredentialPlan(
   if (!candidate) return null;
   if (previous !== candidate) {
     report.credentialPlanPending = true;
+    report.pendingPlan = accountFact(account, plan).plan;
     return null;
   }
   return plan;

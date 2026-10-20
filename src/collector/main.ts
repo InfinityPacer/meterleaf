@@ -317,13 +317,17 @@ function runScan(paths: CollectorPaths, json: boolean) {
           : "当前账户: 未能读取 .claude.json",
     );
     if (report.accountUuid) {
-      const plan = state.account(report.accountUuid)?.plan ?? "未识别";
+      // scan 只跑一轮，凭据套餐总是待确认；显示换算结果，同步时连续两轮一致才上报。
+      const plan =
+        report.pendingPlan ??
+        state.account(report.accountUuid)?.plan ??
+        "未识别";
       console.log(
         `套餐: ${plan}（${
           report.credentialPlanRead
             ? "来自登录凭据"
             : report.credentialPlanPending
-              ? "登录凭据待下一轮确认"
+              ? "来自登录凭据，同步时连续两轮一致后采用"
               : "未读到登录凭据"
         }）`,
       );
