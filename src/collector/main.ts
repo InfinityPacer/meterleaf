@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import { readClaudeJson } from "./claude-code/account";
+import { readCredentialText } from "./claude-code/credential";
 import { readStatuslineCache } from "./claude-code/statusline-cache";
 import { collect, type CollectReport } from "./collect";
 import {
@@ -268,7 +269,17 @@ function collectSources(paths: CollectorPaths) {
   } catch {
     statuslineCache = null;
   }
-  return { ...paths, statuslineCache };
+  return {
+    ...paths,
+    statuslineCache,
+    credential: {
+      location: {
+        claudeRoot: paths.claudeRoot,
+        configDir: process.env.CLAUDE_CONFIG_DIR || null,
+      },
+      read: readCredentialText,
+    },
+  };
 }
 
 function runScan(paths: CollectorPaths, json: boolean) {
@@ -305,6 +316,22 @@ function runScan(paths: CollectorPaths, json: boolean) {
           ? "当前账户: 未登录订阅账户"
           : "当前账户: 未能读取 .claude.json",
     );
+    if (report.accountUuid) {
+      // scan 只跑一轮，凭据套餐总是待确认；显示换算结果，同步时连续两轮一致才上报。
+      const plan =
+        report.pendingPlan ??
+        state.account(report.accountUuid)?.plan ??
+        "未识别";
+      console.log(
+        `套餐: ${plan}（${
+          report.credentialPlanRead
+            ? "来自登录凭据"
+            : report.credentialPlanPending
+              ? "来自登录凭据，同步时连续两轮一致后采用"
+              : "未读到登录凭据"
+        }）`,
+      );
+    }
     for (const quota of quotas) {
       console.log(
         `额度 ${quota.window}: ${quota.percent ?? "未知"}%（采样于 ${quota.sampledAt}）`,
@@ -439,7 +466,10 @@ function customEnvironment(
     environment.METERLEAF_COLLECTOR_HOME = paths.dataDir;
   }
   if (process.env.CLAUDE_CONFIG_DIR) {
-    environment.CLAUDE_CONFIG_DIR = paths.claudeRoot;
+    // 绝对路径保留原值，钥匙串条目名按原值计算；相对路径在后台任务里无法按原工作目录解析。
+    environment.CLAUDE_CONFIG_DIR = isAbsolute(process.env.CLAUDE_CONFIG_DIR)
+      ? process.env.CLAUDE_CONFIG_DIR
+      : paths.claudeRoot;
   }
   if (claudeJsonOption || process.env.METERLEAF_CLAUDE_JSON) {
     environment.METERLEAF_CLAUDE_JSON = paths.claudeJson;

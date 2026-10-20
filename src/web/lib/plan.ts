@@ -13,7 +13,8 @@ export interface PlanBadge {
 }
 
 /**
- * 已知上游的套餐标识。Claude 采集器上报 pro、max-5x、max-20x；Sub2API 从
+ * 已知上游的套餐标识。Claude 采集器上报 pro、max-5x、max-20x、team-standard、team-premium，
+ * 只知道订阅类型时上报 max、team 或 enterprise；Sub2API 从
  * ChatGPT 凭据读取 plan_type，其中 prolite 是 Pro 5x、pro 是 Pro 20x。
  */
 const knownPlans: Record<string, Record<string, PlanBadge>> = {
@@ -21,6 +22,13 @@ const knownPlans: Record<string, Record<string, PlanBadge>> = {
     pro: { label: "Pro", tier: 1 },
     "max-5x": { label: "Max 5x", tier: 2 },
     "max-20x": { label: "Max 20x", tier: 3 },
+    // Team 席位按用量对齐，Standard 略高于 Pro，Premium 与 Max 5x 同一速率档位。
+    "team-standard": { label: "Team Standard", tier: 1 },
+    "team-premium": { label: "Team Premium", tier: 2 },
+    // 只知道订阅类型、不知道倍数时不给档位。
+    max: { label: "Max", tier: null },
+    team: { label: "Team", tier: null },
+    enterprise: { label: "Enterprise", tier: null },
   },
   openai: {
     plus: { label: "Plus", tier: 1 },
