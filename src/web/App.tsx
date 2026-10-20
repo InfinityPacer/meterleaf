@@ -413,16 +413,22 @@ function AccountRow({
           {accountInitial(account.name)}
         </span>
         <span className="account-name">
+          {/*
+            套餐徽标放在第二行，名称独占首行，Team Premium 这类长徽标不挤压名称。
+            有徽标的订阅账户不再写“订阅账户”；API、未知类型和缺少套餐的订阅仍显示类型。
+          */}
           <span className="account-name-line">
             <strong title={account.name}>{account.name}</strong>
+          </span>
+          <small>
             {plan && (
               <span className="plan-chip" data-tier={plan.tier ?? undefined}>
                 {plan.label}
               </span>
             )}
-          </span>
-          <small>
-            <span>{accountKind}</span>
+            {!(plan && account.kind === "subscription") && (
+              <span>{accountKind}</span>
+            )}
           </small>
           {archived && (
             <span className="desktop-account-status" data-archived={archived}>

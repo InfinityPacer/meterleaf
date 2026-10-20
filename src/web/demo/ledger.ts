@@ -238,7 +238,7 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
       {
         id: "claude",
         name: "Claude Code",
-        plan: "max-5x",
+        plan: "team-premium",
         platform: "anthropic",
         kind: "subscription",
         sampledAt: asOf,
