@@ -273,10 +273,9 @@ function collectSources(paths: CollectorPaths) {
     ...paths,
     statuslineCache,
     credential: {
-      // 与 Claude Code 相同，只有显式设置 CLAUDE_CONFIG_DIR 时钥匙串条目名才带目录后缀。
       location: {
         claudeRoot: paths.claudeRoot,
-        customConfigDir: Boolean(process.env.CLAUDE_CONFIG_DIR),
+        configDir: process.env.CLAUDE_CONFIG_DIR || null,
       },
       read: readCredentialText,
     },
@@ -320,7 +319,13 @@ function runScan(paths: CollectorPaths, json: boolean) {
     if (report.accountUuid) {
       const plan = state.account(report.accountUuid)?.plan ?? "未识别";
       console.log(
-        `套餐: ${plan}（${report.credentialPlanRead ? "来自登录凭据" : "未读到登录凭据"}）`,
+        `套餐: ${plan}（${
+          report.credentialPlanRead
+            ? "来自登录凭据"
+            : report.credentialPlanPending
+              ? "登录凭据待下一轮确认"
+              : "未读到登录凭据"
+        }）`,
       );
     }
     for (const quota of quotas) {
@@ -457,7 +462,10 @@ function customEnvironment(
     environment.METERLEAF_COLLECTOR_HOME = paths.dataDir;
   }
   if (process.env.CLAUDE_CONFIG_DIR) {
-    environment.CLAUDE_CONFIG_DIR = paths.claudeRoot;
+    // 绝对路径保留原值，钥匙串条目名按原值计算；相对路径在后台任务里无法按原工作目录解析。
+    environment.CLAUDE_CONFIG_DIR = isAbsolute(process.env.CLAUDE_CONFIG_DIR)
+      ? process.env.CLAUDE_CONFIG_DIR
+      : paths.claudeRoot;
   }
   if (claudeJsonOption || process.env.METERLEAF_CLAUDE_JSON) {
     environment.METERLEAF_CLAUDE_JSON = paths.claudeJson;

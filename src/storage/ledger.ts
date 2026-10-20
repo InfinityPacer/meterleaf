@@ -25,6 +25,7 @@ import {
   type AccountMergeState,
 } from "../domain/account-merge";
 import {
+  planRelation,
   quotaPlanHistoryKey,
   type QuotaPlanObservation,
 } from "../domain/quota-plan";
@@ -135,9 +136,9 @@ function reportAmount(value: string | number | null) {
 }
 
 /** 单一 SQLite 所有者保证批次事实、独立费用与游标同时可见。金额始终保存为十进制字符串。 */
-/** 两个已知且不同的套餐才构成套餐变化；任一方未知只是缺少信息。 */
+/** 只有两个已知且确实不同的套餐才构成变化；未知、改名与细化都不是。 */
 function isPlanChange(previous: string | null, next: string | null) {
-  return previous !== null && next !== null && previous !== next;
+  return planRelation(previous, next) === "change";
 }
 
 export class LedgerStore {
@@ -512,6 +513,45 @@ export class LedgerStore {
   }
 
   /**
+   * 在已有历史上记录一次套餐观测，返回历史是否改变。只有真实的套餐变化才追加边界；
+   * 改名或细化改写最后一次观测的标签并保留其时间。最后一次是旧版留下的未知观测时，
+   * 新套餐与它之前的已知套餐相同就去掉这条未知，恢复连续区间；不同才在当前时刻追加边界。
+   */
+  private observePlan(
+    history: QuotaPlanObservation[],
+    plan: string | null,
+    observedAt: string,
+  ) {
+    const last = history.at(-1)!;
+    if (plan === null) return false;
+    if (last.plan === null) {
+      const prior = history.at(-2);
+      if (!prior) {
+        history[history.length - 1] = { ...last, plan };
+        return true;
+      }
+      if (isPlanChange(prior.plan, plan)) {
+        history.push({ plan, observedAt, changed: true });
+        return true;
+      }
+      history.pop();
+      if (planRelation(prior.plan, plan) === "refine")
+        history[history.length - 1] = { ...prior, plan };
+      return true;
+    }
+    const relation = planRelation(last.plan, plan);
+    if (relation === "refine") {
+      history[history.length - 1] = { ...last, plan };
+      return true;
+    }
+    if (relation === "change") {
+      history.push({ plan, observedAt, changed: true });
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * 账户与套餐观测同事务写入；相同套餐不重复记录观测时间。
    * 只有两个不同的已知套餐之间才算套餐变化。未知不能证明套餐变了，不追加观测；
    * 从未知变为已知是补上一直成立的标签，直接改写最后一次观测，保留其时间，
@@ -531,24 +571,14 @@ export class LedgerStore {
     const previousAccount = previousRow
       ? (JSON.parse(previousRow.payload) as SourceAccount)
       : null;
-    let historyChanged = false;
-    if (!previousObservation) {
-      history.push({
-        plan: account.plan,
-        observedAt,
-        changed: isPlanChange(previousAccount?.plan ?? null, account.plan),
-      });
-      historyChanged = true;
-    } else if (previousObservation.plan === null && account.plan !== null) {
-      history[history.length - 1] = {
-        ...previousObservation,
-        plan: account.plan,
-      };
-      historyChanged = true;
-    } else if (isPlanChange(previousObservation.plan, account.plan)) {
-      history.push({ plan: account.plan, observedAt, changed: true });
-      historyChanged = true;
-    }
+    const historyChanged = previousObservation
+      ? this.observePlan(history, account.plan, observedAt)
+      : (history.push({
+          plan: account.plan,
+          observedAt,
+          changed: isPlanChange(previousAccount?.plan ?? null, account.plan),
+        }),
+        true);
     if (historyChanged) this.setState(key, history);
     const write = this.db
       .query(
@@ -759,25 +789,34 @@ export class LedgerStore {
     return revision;
   }
 
-  /** 报表使用的账户资料；用户指定的套餐覆盖上游套餐，指定套餐即说明是订阅账户。 */
-  accounts(): SourceAccount[] {
-    const plans = this.accountPlans();
+  private sourceAccounts(): SourceAccount[] {
     return this.db
       .query<{ payload: string }, []>(
         "SELECT payload FROM accounts ORDER BY source_id, external_id",
       )
       .all()
-      .map((row) => {
-        const account = JSON.parse(row.payload) as SourceAccount;
-        const plan = plans[ref(account.sourceId, account.externalId)];
-        return plan
-          ? {
-              ...account,
-              plan,
-              kind: account.kind === "unknown" ? "subscription" : account.kind,
-            }
-          : account;
-      });
+      .map((row) => JSON.parse(row.payload) as SourceAccount);
+  }
+
+  /**
+   * 报表使用的账户资料。用户为 Claude 账户指定的套餐覆盖上游套餐，指定套餐即说明是订阅账户；
+   * 手动套餐只有 Claude 的取值，其他平台的账户不受影响。
+   */
+  accounts(): SourceAccount[] {
+    const plans = this.accountPlans();
+    return this.sourceAccounts().map((account) => {
+      const plan =
+        account.platform === "anthropic"
+          ? plans[ref(account.sourceId, account.externalId)]
+          : undefined;
+      return plan
+        ? {
+            ...account,
+            plan,
+            kind: account.kind === "unknown" ? "subscription" : account.kind,
+          }
+        : account;
+    });
   }
   quotas(): StoredQuota[] {
     return this.storedQuotas(
@@ -870,12 +909,19 @@ export class LedgerStore {
   ): StoredQuota[] {
     const histories = new Map<string, QuotaPlanObservation[] | null>();
     const plans = this.accountPlans();
+    // 合并后界面在目标账户上设置套餐，被合并账户的额度历史也按目标的设置补全。
+    const root = Object.keys(plans).length
+      ? createAccountResolver(this.sourceAccounts(), this.accountMerges())
+      : null;
     return rows.map((row) => {
       const fact = JSON.parse(row.payload) as QuotaFact;
       const key = quotaPlanHistoryKey(fact.sourceId, fact.accountExternalId);
       if (!histories.has(key)) {
         const history = this.getState<QuotaPlanObservation[]>(key);
-        const plan = plans[ref(fact.sourceId, fact.accountExternalId)];
+        const plan = root
+          ? (plans[ref(fact.sourceId, fact.accountExternalId)] ??
+            plans[root(fact.sourceId, fact.accountExternalId)])
+          : undefined;
         histories.set(
           key,
           history && plan

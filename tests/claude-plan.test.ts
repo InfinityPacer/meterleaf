@@ -17,6 +17,7 @@ import { ref } from "../src/domain/account-merge";
 import type { QuotaFact, SourceAccount } from "../src/domain/connector";
 import { defaultPriceBook } from "../src/domain/default-prices";
 import { quotaView, type QuotaChargeReader } from "../src/domain/quota";
+import { planRelation } from "../src/domain/quota-plan";
 import type { IngestAccount } from "../src/shared/ingest";
 import { LedgerStore } from "../src/storage/ledger";
 
@@ -114,14 +115,14 @@ describe("Claude 套餐识别", () => {
     expect(
       keychainService({
         claudeRoot: "/Users/a/.claude",
-        customConfigDir: false,
+        configDir: null,
       }),
     ).toBe("Claude Code-credentials");
     expect(
-      keychainService({ claudeRoot: "/tmp/claude", customConfigDir: true }),
+      keychainService({ claudeRoot: "/tmp/claude", configDir: "/tmp/claude/" }),
     ).toBe(
       `Claude Code-credentials-${new Bun.CryptoHasher("sha256")
-        .update("/tmp/claude")
+        .update("/tmp/claude/")
         .digest("hex")
         .slice(0, 8)}`,
     );
@@ -140,7 +141,6 @@ describe("采集轮次中的凭据套餐", () => {
             accountUuid,
             organizationUuid: "org",
             billingType: "stripe_subscription",
-            seatTier: "team_tier_1",
           },
         }),
       );
@@ -151,7 +151,7 @@ describe("采集轮次中的凭据套餐", () => {
         projectsDir: join(directory, "projects"),
         claudeJson,
         credential: {
-          location: { claudeRoot: directory, customConfigDir: false },
+          location: { claudeRoot: directory, configDir: null },
           read,
         },
       });
@@ -180,9 +180,13 @@ describe("采集轮次中的凭据套餐", () => {
     },
   });
 
-  test("读到凭据时记录套餐，之后读不到凭据也不回退", () => {
+  test("连续两轮读到同一套餐才采用，之后读不到凭据也不回退", () => {
     const { run, plan, cleanup } = setup();
     try {
+      const first = run(() => teamPremium);
+      expect(first.credentialPlanPending).toBe(true);
+      expect(first.credentialPlanRead).toBe(false);
+      expect(plan("team-account")).toBeNull();
       expect(run(() => teamPremium).credentialPlanRead).toBe(true);
       expect(plan("team-account")).toBe("team-premium");
       expect(run(() => null).credentialPlanRead).toBe(false);
@@ -195,16 +199,178 @@ describe("采集轮次中的凭据套餐", () => {
   test("读取凭据期间切换了账户时不采用凭据", () => {
     const { run, plan, writeAccount, cleanup } = setup();
     try {
+      run(() => teamPremium);
       const report = run(() => {
         writeAccount("other-account");
         return max20x;
       });
       expect(report.credentialPlanRead).toBe(false);
-      // 没有凭据时只靠席位档位识别，Max 20x 不会被记到 Team 账户上。
+      expect(plan("team-account")).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("先写凭据、后写 .claude.json 的登录切换不会把新账户的套餐记到旧账户", () => {
+    const { run, plan, writeAccount, cleanup } = setup();
+    try {
+      run(() => teamPremium);
+      run(() => teamPremium);
+      expect(plan("team-account")).toBe("team-premium");
+      // 钥匙串已换成新账户，.claude.json 还是旧账户：这一轮只记为待确认。
+      expect(run(() => max20x).credentialPlanRead).toBe(false);
+      expect(plan("team-account")).toBe("team-premium");
+      writeAccount("max-account");
+      run(() => max20x);
+      expect(run(() => max20x).credentialPlanRead).toBe(true);
+      expect(plan("max-account")).toBe("max-20x");
       expect(plan("team-account")).toBe("team-premium");
     } finally {
       cleanup();
     }
+  });
+});
+
+describe("套餐标识的改名与细化", () => {
+  test("planRelation 区分同一套餐的不同写法与真实变化", () => {
+    expect(planRelation("max-5x", "team-premium")).toBe("refine");
+    expect(planRelation("team-premium", "max-5x")).toBe("coarser");
+    expect(planRelation("claude_team", "team")).toBe("refine");
+    expect(planRelation("claude_team", "team-standard")).toBe("refine");
+    expect(planRelation("claude_enterprise", "enterprise")).toBe("refine");
+    expect(planRelation("max", "max-20x")).toBe("refine");
+    expect(planRelation("max-20x", "max")).toBe("coarser");
+    expect(planRelation("pro", "max-5x")).toBe("change");
+    expect(planRelation("max-5x", "max-20x")).toBe("change");
+    expect(planRelation("team-standard", "team-premium")).toBe("change");
+    expect(planRelation(null, "pro")).toBe("unknown");
+  });
+
+  function history(plans: (string | null)[]) {
+    const ledger = new LedgerStore(":memory:", defaultPriceBook);
+    const account: SourceAccount = {
+      sourceId: "source",
+      externalId: "a",
+      name: "Claude Code",
+      platform: "anthropic",
+      kind: "subscription",
+      plan: null,
+      parentExternalId: null,
+      subjectKey: null,
+    };
+    ledger.saveQuotas(
+      [
+        {
+          sourceId: "source",
+          externalId: "q",
+          accountExternalId: "a",
+          window: "seven-day",
+          percent: 1,
+          sampledAt: "2026-10-01T00:00:00.000Z",
+          resetsAt: "2026-10-05T00:00:00.000Z",
+          windowMinutes: 10080,
+        },
+      ],
+      "2026-10-01T00:00:00.000Z",
+    );
+    plans.forEach((plan, index) =>
+      ledger.saveAccounts(
+        [{ ...account, plan }],
+        `2026-10-01T0${index}:00:00.000Z`,
+      ),
+    );
+    const result = ledger.quotas()[0]?.planHistory;
+    ledger.close();
+    return result;
+  }
+
+  test("旧版标识换成新标识时改写标签，不追加边界", () => {
+    expect(history(["max-5x", "team-premium"])).toEqual([
+      {
+        plan: "team-premium",
+        observedAt: "2026-10-01T00:00:00.000Z",
+        changed: false,
+      },
+    ]);
+    expect(
+      history(["claude_enterprise", "enterprise", "claude_enterprise"]),
+    ).toEqual([
+      {
+        plan: "enterprise",
+        observedAt: "2026-10-01T00:00:00.000Z",
+        changed: false,
+      },
+    ]);
+    expect(history(["max-20x", "max"])).toEqual([
+      {
+        plan: "max-20x",
+        observedAt: "2026-10-01T00:00:00.000Z",
+        changed: false,
+      },
+    ]);
+  });
+
+  test("旧版以未知结尾的历史：同一套餐恢复连续区间，不同套餐在当前时刻追加边界", () => {
+    const legacy = (plan: string) => {
+      const ledger = new LedgerStore(":memory:", defaultPriceBook);
+      const key = 'quota:planHistory:["source","a"]';
+      ledger.saveQuotas(
+        [
+          {
+            sourceId: "source",
+            externalId: "q",
+            accountExternalId: "a",
+            window: "seven-day",
+            percent: 1,
+            sampledAt: "2026-10-01T00:00:00.000Z",
+            resetsAt: "2026-10-05T00:00:00.000Z",
+            windowMinutes: 10080,
+          },
+        ],
+        "2026-10-01T00:00:00.000Z",
+      );
+      ledger.db.query("INSERT INTO sync_state (key, value) VALUES (?, ?)").run(
+        key,
+        JSON.stringify([
+          {
+            plan: "max-5x",
+            observedAt: "2026-10-01T00:00:00.000Z",
+            changed: false,
+          },
+          { plan: null, observedAt: "2026-10-01T01:00:00.000Z", changed: true },
+        ]),
+      );
+      ledger.saveAccounts(
+        [
+          {
+            sourceId: "source",
+            externalId: "a",
+            name: "Claude Code",
+            platform: "anthropic",
+            kind: "subscription",
+            plan,
+            parentExternalId: null,
+            subjectKey: null,
+          },
+        ],
+        "2026-10-01T02:00:00.000Z",
+      );
+      const result = ledger.quotas()[0]?.planHistory;
+      ledger.close();
+      return result;
+    };
+    expect(legacy("max-5x")).toEqual([
+      {
+        plan: "max-5x",
+        observedAt: "2026-10-01T00:00:00.000Z",
+        changed: false,
+      },
+    ]);
+    expect(legacy("max-20x")?.at(-1)).toEqual({
+      plan: "max-20x",
+      observedAt: "2026-10-01T02:00:00.000Z",
+      changed: true,
+    });
   });
 });
 
@@ -262,6 +428,35 @@ describe("补上套餐后额度预估不丢已有数据", () => {
       expect(before.usd).not.toBeNull();
       ledger.saveAccounts([{ ...account, plan: "team-premium" }], at(205));
       expect(estimate(ledger)).toEqual(before);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("旧版记为 max-5x 的 Team Premium 换成新标识后，预估与改名前一致", () => {
+    const ledger = new LedgerStore(":memory:", defaultPriceBook);
+    try {
+      ledger.saveAccounts([{ ...account, plan: "max-5x" }], at(0));
+      ledger.saveQuotas(quotas, at(200));
+      const before = estimate(ledger);
+      expect(before.usd).not.toBeNull();
+      ledger.saveAccounts([{ ...account, plan: "team-premium" }], at(205));
+      expect(estimate(ledger)).toEqual(before);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("在合并目标上指定套餐，被合并账户的额度历史同样补全", () => {
+    const ledger = store();
+    try {
+      ledger.saveAccounts(
+        [{ ...account, externalId: "target", plan: null }],
+        at(0),
+      );
+      ledger.setAccountMerge(ref("source", "team"), ref("source", "target"));
+      ledger.setAccountPlan(ref("source", "target"), "team-premium");
+      expect(ledger.quotas()[0]?.planHistory?.[0]?.plan).toBe("team-premium");
     } finally {
       ledger.close();
     }

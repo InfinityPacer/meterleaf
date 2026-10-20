@@ -17,8 +17,11 @@ export interface ClaudeCredentialPlan {
 export interface CredentialLocation {
   /** 已解析的 Claude Code 配置目录。 */
   claudeRoot: string;
-  /** 设置了 CLAUDE_CONFIG_DIR 时，Claude Code 的钥匙串条目名带该目录的摘要后缀。 */
-  customConfigDir: boolean;
+  /**
+   * CLAUDE_CONFIG_DIR 的原值；未设置为 null。设置后 Claude Code 的钥匙串条目名带该值的
+   * 摘要后缀，摘要按原值计算，不是解析后的路径。
+   */
+  configDir: string | null;
 }
 
 /** 读出凭据原文；读不到返回 null。测试可替换，生产实现见 readCredentialText。 */
@@ -30,9 +33,9 @@ const keychainTimeoutMs = 5_000;
 
 /** 与 Claude Code 保持一致的钥匙串条目名和账户名。 */
 export function keychainService(location: CredentialLocation): string {
-  const suffix = location.customConfigDir
+  const suffix = location.configDir
     ? `-${createHash("sha256")
-        .update(location.claudeRoot.normalize("NFC"))
+        .update(location.configDir.normalize("NFC"))
         .digest("hex")
         .slice(0, 8)}`
     : "";

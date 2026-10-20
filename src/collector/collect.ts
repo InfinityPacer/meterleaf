@@ -47,8 +47,10 @@ export interface CollectReport {
   /** 本轮是否成功读取 ~/.claude.json；读不到时账户与额度本轮跳过。 */
   claudeJsonRead: boolean;
   accountUuid: string | null;
-  /** 本轮是否从登录凭据读到当前账户的套餐字段。 */
+  /** 本轮是否采用了登录凭据中当前账户的套餐字段。 */
   credentialPlanRead: boolean;
+  /** 本轮读到了套餐字段，但要等下一轮确认登录账户未变才采用。 */
+  credentialPlanPending: boolean;
   quotaRecorded: boolean;
   quotaSkipped: string | null;
   statuslineQuotaRecorded: boolean;
@@ -217,6 +219,7 @@ export function emptyReport(): CollectReport {
     claudeJsonRead: false,
     accountUuid: null,
     credentialPlanRead: false,
+    credentialPlanPending: false,
     quotaRecorded: false,
     quotaSkipped: null,
     statuslineQuotaRecorded: false,
@@ -225,21 +228,37 @@ export function emptyReport(): CollectReport {
   };
 }
 
+const credentialCandidateKey = "credential_plan_candidate";
+
 /**
- * 凭据只代表读取时登录的账户。读取后再读一次 .claude.json，登录账户未变才采用，
- * 避免切换账户的瞬间把新账户的套餐记到旧账户上。
+ * 凭据只代表读取时登录的账户，且不带账户 UUID。Claude Code 登录新账户时先写凭据、
+ * 后写 .claude.json，这几秒内两者分属不同账户。读取后再确认一次登录账户，并且只采用
+ * 连续两轮都对同一账户读到的同一套餐；切换中途读到的组合不会持续到下一轮，
+ * 不会把新账户的套餐记到旧账户上。代价是套餐晚一轮出现。
  */
 function currentCredentialPlan(
+  state: CollectorState,
   sources: CollectSources,
   account: ClaudeAccount,
+  report: CollectReport,
 ) {
   if (!sources.credential) return null;
   const plan = credentialPlanFrom(
     sources.credential.read(sources.credential.location),
   );
-  if (!plan) return null;
   const confirmed = readClaudeJson(sources.claudeJson);
-  return confirmed?.account?.accountUuid === account.accountUuid ? plan : null;
+  const candidate =
+    plan && confirmed?.account?.accountUuid === account.accountUuid
+      ? JSON.stringify({ accountUuid: account.accountUuid, plan })
+      : "";
+  const previous = state.getMeta(credentialCandidateKey);
+  if (previous !== candidate) state.setMeta(credentialCandidateKey, candidate);
+  if (!candidate) return null;
+  if (previous !== candidate) {
+    report.credentialPlanPending = true;
+    return null;
+  }
+  return plan;
 }
 
 /**
@@ -282,7 +301,12 @@ export function collect(
   report.claudeJsonRead = snapshot !== null;
   if (snapshot?.account) {
     report.accountUuid = snapshot.account.accountUuid;
-    const credential = currentCredentialPlan(sources, snapshot.account);
+    const credential = currentCredentialPlan(
+      state,
+      sources,
+      snapshot.account,
+      report,
+    );
     report.credentialPlanRead = credential !== null;
     state.upsertAccount(stickyAccountFact(state, snapshot.account, credential));
     const since = state.observeAccount(

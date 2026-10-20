@@ -105,27 +105,23 @@ function teamPlan(seatTier: string | null): string {
 
 /**
  * 套餐只从上游给出的订阅类型、速率档位、组织类型或席位档位读取，不从接入方式或额度推断。
- * 凭据字段最完整，优先使用；旧版 Claude Code 写在 ~/.claude.json 的字段其次；
- * 新版只剩席位档位，只能识别 Team。
+ * 先用能确定倍数的依据，凭据优先于旧版 Claude Code 写在 ~/.claude.json 的字段；
+ * 凭据只说明 Max 或 Team、没有倍数时，排在旧字段和席位档位之后。
  */
 export function planFor(
   account: ClaudeAccount,
   credential: ClaudeCredentialPlan | null = null,
 ): string | null {
-  if (credential) {
-    const { subscriptionType, rateLimitTier } = credential;
-    if (subscriptionType === "team")
-      return rateLimitTier === "default_claude_max_5x"
-        ? "team-premium"
-        : teamPlan(account.seatTier);
-    if (rateLimitTier === "default_claude_max_5x") return "max-5x";
-    if (rateLimitTier === "default_claude_max_20x") return "max-20x";
-    if (
-      subscriptionType &&
-      ["pro", "max", "enterprise"].includes(subscriptionType)
-    )
-      return subscriptionType;
+  const credentialTier = credential?.rateLimitTier ?? null;
+  const credentialType = credential?.subscriptionType ?? null;
+  if (credentialType === "team" && credentialTier === "default_claude_max_5x")
+    return "team-premium";
+  if (credentialType !== "team") {
+    if (credentialTier === "default_claude_max_5x") return "max-5x";
+    if (credentialTier === "default_claude_max_20x") return "max-20x";
   }
+  if (credentialType === "pro" || credentialType === "enterprise")
+    return credentialType;
   const tier = account.rateLimitTier;
   if (account.organizationType === "claude_team")
     return tier === "default_claude_max_5x"
@@ -134,10 +130,10 @@ export function planFor(
   if (tier === "default_claude_max_5x") return "max-5x";
   if (tier === "default_claude_max_20x") return "max-20x";
   if (account.organizationType === "claude_pro") return "pro";
-  if (account.organizationType) return account.organizationType;
-  return account.seatTier?.startsWith("team_")
-    ? teamPlan(account.seatTier)
-    : null;
+  if (account.seatTier?.startsWith("team_")) return teamPlan(account.seatTier);
+  if (credentialType === "team" || credentialType === "max")
+    return credentialType;
+  return account.organizationType;
 }
 
 const subscriptionTypes = new Set(["pro", "max", "team", "enterprise"]);

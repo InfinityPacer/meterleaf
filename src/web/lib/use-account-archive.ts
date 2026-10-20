@@ -42,7 +42,12 @@ export function useAccountArchive() {
       if (!response.ok) throw new Error("账户操作失败，请重试");
       return response.json() as Promise<ArchiveState>;
     },
-    onSuccess: (state) => client.setQueryData(key, state),
+    onSuccess: (state, value) => {
+      client.setQueryData(key, state);
+      // 套餐会改变报表里的徽标和额度预估依据，立即重新读取，不等下一次版本轮询。
+      if ("plan" in value)
+        void client.invalidateQueries({ queryKey: ["ledger"] });
+    },
   });
   return { ...query, mutation };
 }
