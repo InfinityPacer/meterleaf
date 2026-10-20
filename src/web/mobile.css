@@ -569,6 +569,13 @@
   .app-shell[data-page="overview"] .mobile-period-presets {
     margin-bottom: 0;
   }
+  /* 首页卡片最宽 700px 并居中（见 mobile-home.css），上方筛选栏和下方趋势卡片取同一宽度，平板竖屏时整列对齐。 */
+  .app-shell[data-page="overview"] .mobile-filterbar,
+  .app-shell[data-page="overview"] .app-period {
+    width: 100%;
+    max-width: 700px;
+    margin-inline: auto;
+  }
   .mobile-period-presets {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr)) 44px;
