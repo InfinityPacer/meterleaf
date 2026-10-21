@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 
@@ -26,6 +26,14 @@ export interface CredentialLocation {
 
 /** 读出凭据原文；读不到返回 null。测试可替换，生产实现见 readCredentialText。 */
 export type CredentialTextReader = (
+  location: CredentialLocation,
+) => string | null;
+
+/**
+ * 凭据的修改标记，凭据每次被改写都会变化；读不到返回 null。只取条目属性或文件状态，
+ * 不读取令牌。测试可替换，生产实现见 readCredentialVersion。
+ */
+export type CredentialVersionReader = (
   location: CredentialLocation,
 ) => string | null;
 
@@ -78,6 +86,38 @@ export const readCredentialText: CredentialTextReader = (location) => {
       encoding: "utf8",
       flag: "r",
     });
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * 钥匙串条目取修改时间属性；不带 -w 时 security 只输出属性，不输出密码，也不需要授权。
+ * 与 readCredentialText 取同一来源：钥匙串没有条目时取 .credentials.json 的文件状态。
+ */
+export const readCredentialVersion: CredentialVersionReader = (location) => {
+  if (process.platform === "darwin") {
+    const result = spawnSync(
+      "/usr/bin/security",
+      [
+        "find-generic-password",
+        "-s",
+        keychainService(location),
+        "-a",
+        keychainAccount(),
+      ],
+      { encoding: "utf8", timeout: keychainTimeoutMs, maxBuffer: 1024 * 1024 },
+    );
+    if (result.status === 0) {
+      const modified = /"mdat"<timedate>=0x[0-9A-F]+\s+"(\d{14}Z)/.exec(
+        result.stdout ?? "",
+      )?.[1];
+      return modified ? `keychain:${modified}` : null;
+    }
+  }
+  try {
+    const stat = statSync(join(location.claudeRoot, ".credentials.json"));
+    return `file:${stat.mtimeMs}:${stat.size}`;
   } catch {
     return null;
   }

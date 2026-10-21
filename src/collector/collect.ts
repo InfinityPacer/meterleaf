@@ -11,6 +11,7 @@ import {
   type ClaudeCredentialPlan,
   type CredentialLocation,
   type CredentialTextReader,
+  type CredentialVersionReader,
 } from "./claude-code/credential";
 import { quotaSnapshot } from "./claude-code/quota";
 import {
@@ -32,6 +33,7 @@ export interface CollectSources {
   credential?: {
     location: CredentialLocation;
     read: CredentialTextReader;
+    version: CredentialVersionReader;
   } | null;
 }
 
@@ -237,18 +239,17 @@ export function emptyReport(): CollectReport {
 
 const credentialCandidateKey = "credential_plan_candidate";
 const credentialCheckKey = "credential_plan_check";
-/** 已确认套餐后复查凭据的间隔，用于发现同一账户的升级或降级。 */
-const credentialRecheckMs = 60 * 60_000;
-/** 凭据读不到时（例如钥匙串拒绝访问）再次尝试的间隔。 */
-const credentialRetryMs = 60 * 60_000;
+/** 读不到凭据修改标记时，退回按此间隔复查。 */
+const credentialFallbackMs = 24 * 60 * 60_000;
 
 /** 最近一次为当前账户读取凭据的结果；plan 是已确认的套餐，读取失败时沿用此前的确认结果。 */
 interface CredentialCheck {
   accountUuid: string;
   /** .claude.json 中与套餐相关的字段；变化时立即重新读取。 */
   signals: string;
+  /** 读取时凭据的修改标记；凭据未被改写时，其中的套餐不会变。 */
+  version: string | null;
   checkedAt: string;
-  failed: boolean;
   plan: ClaudeCredentialPlan | null;
 }
 
@@ -273,13 +274,15 @@ function readCredentialCheck(state: CollectorState): CredentialCheck | null {
 }
 
 /**
- * 凭据含访问令牌，只在需要时读取：登录账户或其套餐字段变化、等待第二轮确认、
- * 距上次读取超过复查或重试间隔。其余轮次沿用已确认的套餐，不访问钥匙串。
+ * 凭据含访问令牌，只在其中的套餐可能变化时读取：登录账户或其套餐字段变化、等待第二轮
+ * 确认，或凭据被改写（登录、令牌刷新、套餐变化都会改写）。修改标记只取条目属性，
+ * 不读取令牌；读不到标记时每天复查一次。其余轮次沿用已确认的套餐。
  */
 function credentialDue(
   state: CollectorState,
   check: CredentialCheck | null,
   account: ClaudeAccount,
+  version: string | null,
   now: Date,
 ): boolean {
   if (
@@ -293,10 +296,10 @@ function credentialDue(
     ? JSON.stringify({ accountUuid: check.accountUuid, plan: check.plan })
     : "";
   if (candidate && candidate !== confirmed) return true;
+  if (version !== null) return version !== check.version;
   const elapsed = now.getTime() - Date.parse(check.checkedAt);
   // 时钟回拨或记录损坏时按到期处理。
-  if (!(elapsed >= 0)) return true;
-  return elapsed >= (check.failed ? credentialRetryMs : credentialRecheckMs);
+  return !(elapsed >= 0) || elapsed >= credentialFallbackMs;
 }
 
 /**
@@ -313,17 +316,18 @@ function currentCredentialPlan(
   now: Date,
 ): ClaudeCredentialPlan | null {
   if (!sources.credential) return null;
+  const { location, read, version: readVersion } = sources.credential;
   const check = readCredentialCheck(state);
   const sameAccount =
     check?.accountUuid === account.accountUuid &&
     check.signals === credentialSignals(account);
   const known = sameAccount ? check.plan : null;
-  if (!credentialDue(state, check, account, now)) return known;
+  // 先取标记再读原文：两者之间凭据被改写时，下一轮标记不同，会再读一次。
+  const version = readVersion(location);
+  if (!credentialDue(state, check, account, version, now)) return known;
 
   report.credentialChecked = true;
-  const plan = credentialPlanFrom(
-    sources.credential.read(sources.credential.location),
-  );
+  const plan = credentialPlanFrom(read(location));
   const confirmed = readClaudeJson(sources.claudeJson);
   const candidate =
     plan && confirmed?.account?.accountUuid === account.accountUuid
@@ -331,19 +335,20 @@ function currentCredentialPlan(
       : "";
   const previous = state.getMeta(credentialCandidateKey);
   if (previous !== candidate) state.setMeta(credentialCandidateKey, candidate);
-  const record = (failed: boolean, result: ClaudeCredentialPlan | null) =>
+  const record = (result: ClaudeCredentialPlan | null) =>
     state.setMeta(
       credentialCheckKey,
       JSON.stringify({
         accountUuid: account.accountUuid,
         signals: credentialSignals(account),
+        version,
         checkedAt: now.toISOString(),
-        failed,
         plan: result,
       } satisfies CredentialCheck),
     );
+  // 读不到时（例如钥匙串拒绝访问）沿用此前的套餐，等凭据下次改写再试。
   if (!candidate) {
-    record(true, known);
+    record(known);
     return known;
   }
   if (previous !== candidate) {
@@ -351,7 +356,7 @@ function currentCredentialPlan(
     report.pendingPlan = accountFact(account, plan).plan;
     return known;
   }
-  record(false, plan);
+  record(plan);
   return plan;
 }
 
