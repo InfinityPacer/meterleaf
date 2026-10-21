@@ -3,7 +3,10 @@ import { existsSync, mkdirSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import { readClaudeJson } from "./claude-code/account";
-import { readCredentialText } from "./claude-code/credential";
+import {
+  readCredentialText,
+  readCredentialVersion,
+} from "./claude-code/credential";
 import { readStatuslineCache } from "./claude-code/statusline-cache";
 import { collect, type CollectReport } from "./collect";
 import {
@@ -56,8 +59,10 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
 对 Claude Code 的保证:
   - 只以只读方式打开 ~/.claude/projects 下的 JSONL 与 ~/.claude.json，
     不在 Claude Code 目录内写入、改名、加锁或修改权限，也不改设置、hooks 或状态栏。
-  - 不读取也不使用 OAuth 令牌、钥匙串或 .credentials.json，不调用任何 Anthropic 接口。
-  - 只上传计量数字、模型、时间和账户 UUID 派生信息；不上传对话内容、工具输出、
+  - 只在登录凭据（macOS 钥匙串或 .credentials.json）被改写或登录账户变化时读取，
+    只取订阅类型和速率档位。OAuth 令牌不解析、不保存、不上传，不调用任何
+    Anthropic 接口。
+  - 只上传计量数字、模型、时间、套餐和账户 UUID 派生信息；不上传对话内容、工具输出、
     文件路径、工作目录、Git 分支、邮箱、显示名或组织名。
 
 数据目录: $METERLEAF_COLLECTOR_HOME，默认 ~/Library/Application Support/Meterleaf Collector
@@ -262,13 +267,7 @@ function runStatuslineCache(paths: CollectorPaths, value: string | undefined) {
   return 0;
 }
 
-function collectSources(paths: CollectorPaths) {
-  let statuslineCache: string | null = null;
-  try {
-    statuslineCache = loadConfig(paths.configFile)?.statuslineCache ?? null;
-  } catch {
-    statuslineCache = null;
-  }
+function collectSources(paths: CollectorPaths, statuslineCache: string | null) {
   return {
     ...paths,
     statuslineCache,
@@ -278,6 +277,7 @@ function collectSources(paths: CollectorPaths) {
         configDir: process.env.CLAUDE_CONFIG_DIR || null,
       },
       read: readCredentialText,
+      version: readCredentialVersion,
     },
   };
 }
@@ -285,9 +285,15 @@ function collectSources(paths: CollectorPaths) {
 function runScan(paths: CollectorPaths, json: boolean) {
   const state = new CollectorState(":memory:");
   try {
+    let statuslineCache: string | null = null;
+    try {
+      statuslineCache = loadConfig(paths.configFile)?.statuslineCache ?? null;
+    } catch {
+      statuslineCache = null;
+    }
     const report = collect(
       state,
-      collectSources(paths),
+      collectSources(paths, statuslineCache),
       new Date(),
       () => new Date(),
     );
@@ -362,7 +368,7 @@ async function runSync(paths: CollectorPaths): Promise<number> {
     state = openState(paths);
     const report = collect(
       state,
-      { ...paths, statuslineCache: config.statuslineCache },
+      collectSources(paths, config.statuslineCache ?? null),
       new Date(),
       () => new Date(),
     );

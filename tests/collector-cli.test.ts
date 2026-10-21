@@ -36,7 +36,7 @@ afterEach(() => {
   for (const step of cleanup.splice(0).reverse()) step();
 });
 
-function setup() {
+function setup(credentials?: string) {
   const root = mkdtempSync(join(tmpdir(), "meterleaf-collector-cli-"));
   const claudeDir = join(root, "claude");
   const home = join(root, "home");
@@ -46,6 +46,8 @@ function setup() {
     recursive: true,
   });
   cpSync(join(fixtureRoot, "claude.json"), join(claudeDir, ".claude.json"));
+  if (credentials)
+    writeFileSync(join(claudeDir, ".credentials.json"), credentials);
   // Claude Code 目录整体只读：任何写入、改名或建锁都会失败。
   const setMode = (dir: string, mode: number) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -192,6 +194,30 @@ describe("采集器命令行", () => {
     expect(server.batches.length).toBe(batchesBefore);
 
     expect(snapshot(claudeDir)).toEqual(before);
+  });
+
+  test("后台 sync 从登录凭据识别套餐", async () => {
+    // 临时配置目录在钥匙串中没有条目，凭据从 .credentials.json 读取。
+    const { env } = setup(
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "sk-ant-oat-secret",
+          subscriptionType: "team",
+          rateLimitTier: "default_claude_max_5x",
+        },
+      }),
+    );
+    const server = fakeServer();
+    const init = run(env, "init", "--server", server.url);
+    server.keys.add(
+      /METERLEAF_INGEST_KEYS=[^:]+:([0-9a-f]{64})/.exec(init.stdout)![1]!,
+    );
+    // 第一轮只记为待确认，第二轮确认后上报凭据中的套餐。
+    expect((await runAsync(env, "sync")).code).toBe(0);
+    expect((await runAsync(env, "sync")).code).toBe(0);
+    const accounts = server.batches.flatMap((batch) => batch.accounts);
+    expect(accounts.at(-1)?.plan).toBe("team-premium");
+    expect(JSON.stringify(server.batches)).not.toContain("sk-ant-oat");
   });
 
   test("已有实例持锁时 sync 静默退出", async () => {
