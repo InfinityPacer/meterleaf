@@ -8,6 +8,7 @@ import {
 } from "./claude-code/account";
 import {
   credentialPlanFrom,
+  type ClaudeCredentialPlan,
   type CredentialLocation,
   type CredentialTextReader,
 } from "./claude-code/credential";
@@ -47,7 +48,9 @@ export interface CollectReport {
   /** 本轮是否成功读取 ~/.claude.json；读不到时账户与额度本轮跳过。 */
   claudeJsonRead: boolean;
   accountUuid: string | null;
-  /** 本轮是否采用了登录凭据中当前账户的套餐字段。 */
+  /** 本轮是否读取了登录凭据；不需要时沿用已确认的套餐，不访问钥匙串。 */
+  credentialChecked: boolean;
+  /** 本轮是否采用了登录凭据中当前账户的套餐字段，含沿用此前确认的结果。 */
   credentialPlanRead: boolean;
   /** 本轮读到了套餐字段，但要等下一轮确认登录账户未变才采用。 */
   credentialPlanPending: boolean;
@@ -220,6 +223,7 @@ export function emptyReport(): CollectReport {
     reattributed: 0,
     claudeJsonRead: false,
     accountUuid: null,
+    credentialChecked: false,
     credentialPlanRead: false,
     credentialPlanPending: false,
     pendingPlan: null,
@@ -232,20 +236,91 @@ export function emptyReport(): CollectReport {
 }
 
 const credentialCandidateKey = "credential_plan_candidate";
+const credentialCheckKey = "credential_plan_check";
+/** 已确认套餐后复查凭据的间隔，用于发现同一账户的升级或降级。 */
+const credentialRecheckMs = 60 * 60_000;
+/** 凭据读不到时（例如钥匙串拒绝访问）再次尝试的间隔。 */
+const credentialRetryMs = 60 * 60_000;
+
+/** 最近一次为当前账户读取凭据的结果；plan 是已确认的套餐，读取失败时沿用此前的确认结果。 */
+interface CredentialCheck {
+  accountUuid: string;
+  /** .claude.json 中与套餐相关的字段；变化时立即重新读取。 */
+  signals: string;
+  checkedAt: string;
+  failed: boolean;
+  plan: ClaudeCredentialPlan | null;
+}
+
+function credentialSignals(account: ClaudeAccount): string {
+  return JSON.stringify([
+    account.organizationUuid,
+    account.organizationType,
+    account.rateLimitTier,
+    account.billingType,
+    account.seatTier,
+  ]);
+}
+
+function readCredentialCheck(state: CollectorState): CredentialCheck | null {
+  const raw = state.getMeta(credentialCheckKey);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as CredentialCheck;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 凭据含访问令牌，只在需要时读取：登录账户或其套餐字段变化、等待第二轮确认、
+ * 距上次读取超过复查或重试间隔。其余轮次沿用已确认的套餐，不访问钥匙串。
+ */
+function credentialDue(
+  state: CollectorState,
+  check: CredentialCheck | null,
+  account: ClaudeAccount,
+  now: Date,
+): boolean {
+  if (
+    !check ||
+    check.accountUuid !== account.accountUuid ||
+    check.signals !== credentialSignals(account)
+  )
+    return true;
+  const candidate = state.getMeta(credentialCandidateKey) ?? "";
+  const confirmed = check.plan
+    ? JSON.stringify({ accountUuid: check.accountUuid, plan: check.plan })
+    : "";
+  if (candidate && candidate !== confirmed) return true;
+  const elapsed = now.getTime() - Date.parse(check.checkedAt);
+  // 时钟回拨或记录损坏时按到期处理。
+  if (!(elapsed >= 0)) return true;
+  return elapsed >= (check.failed ? credentialRetryMs : credentialRecheckMs);
+}
 
 /**
  * 凭据只代表读取时登录的账户，且不带账户 UUID。Claude Code 登录新账户时先写凭据、
  * 后写 .claude.json，这几秒内两者分属不同账户。读取后再确认一次登录账户，并且只采用
  * 连续两轮都对同一账户读到的同一套餐；切换中途读到的组合不会持续到下一轮，
- * 不会把新账户的套餐记到旧账户上。代价是套餐晚一轮出现。
+ * 不会把新账户的套餐记到旧账户上。代价是套餐晚一轮出现。等待确认期间沿用此前确认的套餐。
  */
 function currentCredentialPlan(
   state: CollectorState,
   sources: CollectSources,
   account: ClaudeAccount,
   report: CollectReport,
-) {
+  now: Date,
+): ClaudeCredentialPlan | null {
   if (!sources.credential) return null;
+  const check = readCredentialCheck(state);
+  const sameAccount =
+    check?.accountUuid === account.accountUuid &&
+    check.signals === credentialSignals(account);
+  const known = sameAccount ? check.plan : null;
+  if (!credentialDue(state, check, account, now)) return known;
+
+  report.credentialChecked = true;
   const plan = credentialPlanFrom(
     sources.credential.read(sources.credential.location),
   );
@@ -256,12 +331,27 @@ function currentCredentialPlan(
       : "";
   const previous = state.getMeta(credentialCandidateKey);
   if (previous !== candidate) state.setMeta(credentialCandidateKey, candidate);
-  if (!candidate) return null;
+  const record = (failed: boolean, result: ClaudeCredentialPlan | null) =>
+    state.setMeta(
+      credentialCheckKey,
+      JSON.stringify({
+        accountUuid: account.accountUuid,
+        signals: credentialSignals(account),
+        checkedAt: now.toISOString(),
+        failed,
+        plan: result,
+      } satisfies CredentialCheck),
+    );
+  if (!candidate) {
+    record(true, known);
+    return known;
+  }
   if (previous !== candidate) {
     report.credentialPlanPending = true;
     report.pendingPlan = accountFact(account, plan).plan;
-    return null;
+    return known;
   }
+  record(false, plan);
   return plan;
 }
 
@@ -310,6 +400,7 @@ export function collect(
       sources,
       snapshot.account,
       report,
+      now,
     );
     report.credentialPlanRead = credential !== null;
     state.upsertAccount(stickyAccountFact(state, snapshot.account, credential));

@@ -133,7 +133,7 @@ describe("采集轮次中的凭据套餐", () => {
   function setup() {
     const directory = mkdtempSync(join(tmpdir(), "meterleaf-claude-plan-"));
     const claudeJson = join(directory, "claude.json");
-    const writeAccount = (accountUuid: string) =>
+    const writeAccount = (accountUuid: string, seatTier?: string) =>
       writeFileSync(
         claudeJson,
         JSON.stringify({
@@ -141,26 +141,37 @@ describe("采集轮次中的凭据套餐", () => {
             accountUuid,
             organizationUuid: "org",
             billingType: "stripe_subscription",
+            seatTier,
           },
         }),
       );
     writeAccount("team-account");
     const state = new CollectorState(":memory:");
-    const run = (read: CredentialTextReader) =>
-      collect(state, {
-        projectsDir: join(directory, "projects"),
-        claudeJson,
-        credential: {
-          location: { claudeRoot: directory, configDir: null },
-          read,
+    // 每轮相隔一分钟，与后台任务一致；advance 模拟更长的间隔。
+    let clock = Date.parse("2026-10-21T00:00:00Z");
+    const advance = (minutes: number) => (clock += minutes * 60_000);
+    const run = (read: CredentialTextReader) => {
+      advance(1);
+      return collect(
+        state,
+        {
+          projectsDir: join(directory, "projects"),
+          claudeJson,
+          credential: {
+            location: { claudeRoot: directory, configDir: null },
+            read,
+          },
         },
-      });
+        new Date(clock),
+      );
+    };
     const plan = (accountUuid: string) =>
       (state.account(accountUuid) as IngestAccount | null)?.plan;
     return {
       run,
       plan,
       writeAccount,
+      advance,
       cleanup: () => {
         state.close();
         rmSync(directory, { recursive: true, force: true });
@@ -181,7 +192,7 @@ describe("采集轮次中的凭据套餐", () => {
   });
 
   test("连续两轮读到同一套餐才采用，之后读不到凭据也不回退", () => {
-    const { run, plan, cleanup } = setup();
+    const { run, plan, advance, cleanup } = setup();
     try {
       const first = run(() => teamPremium);
       expect(first.credentialPlanPending).toBe(true);
@@ -189,7 +200,75 @@ describe("采集轮次中的凭据套餐", () => {
       expect(plan("team-account")).toBeNull();
       expect(run(() => teamPremium).credentialPlanRead).toBe(true);
       expect(plan("team-account")).toBe("team-premium");
-      expect(run(() => null).credentialPlanRead).toBe(false);
+      advance(60);
+      const denied = run(() => null);
+      expect(denied.credentialChecked).toBe(true);
+      expect(plan("team-account")).toBe("team-premium");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("确认套餐后不再每轮读取凭据，每小时复查一次", () => {
+    const { run, plan, advance, cleanup } = setup();
+    try {
+      let reads = 0;
+      const read = () => {
+        reads += 1;
+        return teamPremium;
+      };
+      run(read);
+      run(read);
+      expect(reads).toBe(2);
+      for (let round = 0; round < 50; round++) {
+        const report = run(read);
+        expect(report.credentialChecked).toBe(false);
+        expect(report.credentialPlanRead).toBe(true);
+      }
+      expect(reads).toBe(2);
+      expect(plan("team-account")).toBe("team-premium");
+      advance(10);
+      expect(run(read).credentialChecked).toBe(true);
+      expect(reads).toBe(3);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("复查发现同一账户升级后，连续两轮一致才改用新套餐", () => {
+    const { run, plan, advance, cleanup } = setup();
+    try {
+      run(() => teamPremium);
+      run(() => teamPremium);
+      advance(60);
+      const changed = run(() => max20x);
+      expect(changed.credentialPlanPending).toBe(true);
+      expect(plan("team-account")).toBe("team-premium");
+      // 待确认时下一轮立即再读，不等复查间隔。
+      expect(run(() => max20x).credentialChecked).toBe(true);
+      expect(plan("team-account")).toBe("max-20x");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("读不到凭据时一小时后再试，账户资料变化时立即重读", () => {
+    const { run, plan, advance, writeAccount, cleanup } = setup();
+    try {
+      let reads = 0;
+      const denied = () => {
+        reads += 1;
+        return null;
+      };
+      run(denied);
+      for (let round = 0; round < 30; round++) run(denied);
+      expect(reads).toBe(1);
+      advance(60);
+      run(denied);
+      expect(reads).toBe(2);
+      writeAccount("team-account", "team_tier_1");
+      run(() => teamPremium);
+      run(() => teamPremium);
       expect(plan("team-account")).toBe("team-premium");
     } finally {
       cleanup();
@@ -212,13 +291,14 @@ describe("采集轮次中的凭据套餐", () => {
   });
 
   test("先写凭据、后写 .claude.json 的登录切换不会把新账户的套餐记到旧账户", () => {
-    const { run, plan, writeAccount, cleanup } = setup();
+    const { run, plan, advance, writeAccount, cleanup } = setup();
     try {
       run(() => teamPremium);
       run(() => teamPremium);
       expect(plan("team-account")).toBe("team-premium");
-      // 钥匙串已换成新账户，.claude.json 还是旧账户：这一轮只记为待确认。
-      expect(run(() => max20x).credentialPlanRead).toBe(false);
+      // 复查时钥匙串已换成新账户，.claude.json 还是旧账户：这一轮只记为待确认。
+      advance(60);
+      expect(run(() => max20x).credentialPlanPending).toBe(true);
       expect(plan("team-account")).toBe("team-premium");
       writeAccount("max-account");
       run(() => max20x);
