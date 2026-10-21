@@ -123,6 +123,25 @@ export const readCredentialVersion: CredentialVersionReader = (location) => {
   }
 };
 
+/** 从修改标记取出凭据最近一次改写的时刻（ISO UTC）；没有或无法解析时返回 null。 */
+export function credentialModifiedAt(version: string | null): string | null {
+  const keychain =
+    /^keychain:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(
+      version ?? "",
+    );
+  const at = keychain
+    ? Date.UTC(
+        Number(keychain[1]),
+        Number(keychain[2]) - 1,
+        Number(keychain[3]),
+        Number(keychain[4]),
+        Number(keychain[5]),
+        Number(keychain[6]),
+      )
+    : Number(/^file:([\d.]+):/.exec(version ?? "")?.[1] ?? NaN);
+  return Number.isFinite(at) ? new Date(at).toISOString() : null;
+}
+
 function text(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 && value.length <= 64
     ? value

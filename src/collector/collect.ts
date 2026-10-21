@@ -7,12 +7,14 @@ import {
   type ClaudeAccount,
 } from "./claude-code/account";
 import {
+  credentialModifiedAt,
   credentialPlanFrom,
   type ClaudeCredentialPlan,
   type CredentialLocation,
   type CredentialTextReader,
   type CredentialVersionReader,
 } from "./claude-code/credential";
+import { loginMoment } from "./claude-code/login";
 import { quotaSnapshot } from "./claude-code/quota";
 import {
   readStatuslineCache,
@@ -116,6 +118,7 @@ export function ingestFile(
   state: CollectorState,
   path: string,
   report: CollectReport,
+  onLogin: (at: string) => void = () => {},
 ) {
   let fd: number;
   try {
@@ -148,6 +151,10 @@ export function ingestFile(
     const observations = new Map<string, FileObservation>();
     const handleLine = (raw: string) => {
       report.lines += 1;
+      // 登录线索先于本文件的事件入库，本文件中切换前后的事件随即按切换时刻归属。
+      const login = loginMoment(raw);
+      if (login && state.recordLoginHint({ at: login, source: "transcript" }))
+        onLogin(login);
       if (!mayContainUsage(raw)) return;
       const result = parseLine(raw);
       if (result.kind === "malformed") report.malformed += 1;
@@ -237,6 +244,9 @@ export function emptyReport(): CollectReport {
   };
 }
 
+const attributionRulesKey = "attribution_rules";
+/** 归属规则版本；变化时按新规则重新归属全部事件。2 起不同账户之间的空档按切换时刻分配。 */
+const attributionRules = "2";
 const credentialCandidateKey = "credential_plan_candidate";
 const credentialCheckKey = "credential_plan_check";
 /** 读不到凭据修改标记时，退回按此间隔复查。 */
@@ -314,16 +324,15 @@ function currentCredentialPlan(
   account: ClaudeAccount,
   report: CollectReport,
   now: Date,
+  version: string | null,
 ): ClaudeCredentialPlan | null {
   if (!sources.credential) return null;
-  const { location, read, version: readVersion } = sources.credential;
+  const { location, read } = sources.credential;
   const check = readCredentialCheck(state);
   const sameAccount =
     check?.accountUuid === account.accountUuid &&
     check.signals === credentialSignals(account);
   const known = sameAccount ? check.plan : null;
-  // 先取标记再读原文：两者之间凭据被改写时，下一轮标记不同，会再读一次。
-  const version = readVersion(location);
   if (!credentialDue(state, check, account, version, now)) return known;
 
   report.credentialChecked = true;
@@ -400,25 +409,53 @@ export function collect(
   report.claudeJsonRead = snapshot !== null;
   if (snapshot?.account) {
     report.accountUuid = snapshot.account.accountUuid;
+    // 先取凭据修改标记再读原文：两者之间凭据被改写时，下一轮标记不同，会再读一次。
+    const version = sources.credential
+      ? sources.credential.version(sources.credential.location)
+      : null;
     const credential = currentCredentialPlan(
       state,
       sources,
       snapshot.account,
       report,
       now,
+      version,
     );
     report.credentialPlanRead = credential !== null;
     state.upsertAccount(stickyAccountFact(state, snapshot.account, credential));
+    const previous = state.segments().at(-1);
+    const modifiedAt = credentialModifiedAt(version);
+    // 换了账户时，凭据最近一次改写通常就是这次登录，作为会话记录之外的切换线索。
+    if (
+      previous &&
+      previous.accountUuid !== snapshot.account.accountUuid &&
+      modifiedAt
+    )
+      state.recordLoginHint({ at: modifiedAt, source: "credential" });
     const since = state.observeAccount(
       snapshot.account.accountUuid,
       now.toISOString(),
     );
     report.reattributed += state.reattribute(since);
   }
+  // 早期版本把不同账户之间的空档记为未归属；按现行规则把已有事件重新归属一次。
+  if (state.getMeta(attributionRulesKey) !== attributionRules) {
+    report.reattributed += state.reattribute(null);
+    state.setMeta(attributionRulesKey, attributionRules);
+  }
 
   const files = listSessionFiles(sources.projectsDir);
   report.files = files.length;
-  for (const path of files) ingestFile(state, path, report);
+  let earliestLogin: string | null = null;
+  for (const path of files)
+    ingestFile(state, path, report, (at) => {
+      if (earliestLogin === null || at < earliestLogin) earliestLogin = at;
+    });
+  // 本轮新读到的登录线索可能改变此前文件里空档事件的归属。
+  if (earliestLogin !== null) {
+    const since = state.gapStart(earliestLogin);
+    if (since !== null) report.reattributed += state.reattribute(since);
+  }
   state.forgetMissingFiles(new Set(files));
 
   // 先读状态栏缓存再确认账户，使采样时刻不晚于确认时刻。
