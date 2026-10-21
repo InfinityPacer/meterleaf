@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { attribute } from "../src/collector/attribution";
+import { loginMoment } from "../src/collector/claude-code/login";
 import { collect } from "../src/collector/collect";
 import { CollectorState } from "../src/collector/state";
 import type { IngestQuota, IngestUsage } from "../src/shared/ingest";
@@ -220,6 +221,43 @@ describe("账户归属", () => {
     expect(attribute("2026-09-01T14:30:00.000Z", segments, null)).toBe("B");
   });
 
+  test("不同账户之间的空档按切换时刻分给前后两个账户", () => {
+    const gap = "2026-09-01T13:30:00.000Z";
+    // 没有线索时归后一个账户。
+    expect(attribute(gap, segments, null, [])).toBe("B");
+    const transcript = {
+      at: "2026-09-01T13:40:00.000Z",
+      source: "transcript" as const,
+    };
+    const credential = {
+      at: "2026-09-01T13:10:00.000Z",
+      source: "credential" as const,
+    };
+    expect(attribute(gap, segments, null, [transcript])).toBe("A");
+    expect(
+      attribute("2026-09-01T13:40:00.000Z", segments, null, [transcript]),
+    ).toBe("B");
+    expect(attribute(gap, segments, null, [credential])).toBe("B");
+    expect(
+      attribute("2026-09-01T13:05:00.000Z", segments, null, [credential]),
+    ).toBe("A");
+    // 会话记录里的登录时刻优先于凭据修改时间。
+    expect(attribute(gap, segments, null, [credential, transcript])).toBe("A");
+    // 空档之外的线索不影响归属。
+    const outside = {
+      at: "2026-09-01T12:30:00.000Z",
+      source: "transcript" as const,
+    };
+    expect(attribute(gap, segments, null, [outside])).toBe("B");
+    // 首段之前和最后观察之后仍无法判断。
+    expect(attribute("2026-09-01T09:00:00.000Z", segments, null, [])).toBe(
+      "unattributed",
+    );
+    expect(attribute("2026-09-01T16:00:00.000Z", segments, null, [])).toBe(
+      "unattributed",
+    );
+  });
+
   test("历史绑定只作用于首段之前", () => {
     const binding = { accountUuid: "A", before: segments[0]!.firstSeen };
     expect(attribute("2026-09-01T09:00:00.000Z", segments, binding)).toBe("A");
@@ -257,13 +295,13 @@ describe("账户归属", () => {
       FIXTURE_ACCOUNT_UUID,
     );
 
-    // 账户切换后，两账户之间的空档无法判断。
+    // 账户切换后，没有登录线索的空档归后一个账户。
     writeAccount(w.claudeJson, OTHER_ACCOUNT);
     appendFileSync(w.session, line("switch", "2026-09-01T10:15:00Z", 5));
     collect(state, w, new Date("2026-09-01T10:20:00Z"));
     expect(
       pendingUsage(state).get("req_switch:switch")!.accountExternalId,
-    ).toBe("unattributed");
+    ).toBe(OTHER_ACCOUNT);
     appendFileSync(w.session, line("after", "2026-09-01T10:20:00Z", 5));
     collect(state, w, new Date("2026-09-01T10:25:00Z"));
     expect(pendingUsage(state).get("req_after:after")!.accountExternalId).toBe(
@@ -368,5 +406,116 @@ describe("额度快照", () => {
     expect(collect(state, w).quotaRecorded).toBe(true);
     expect(state.pending("quota", 10)).toHaveLength(4);
     state.close();
+  });
+});
+
+describe("切换账户时的登录线索", () => {
+  const loginLine = (at: string) =>
+    `${JSON.stringify({
+      type: "user",
+      timestamp: at,
+      message: {
+        role: "user",
+        content:
+          "<local-command-stdout>Login successful</local-command-stdout>",
+      },
+    })}\n`;
+
+  test("会话里 /login 成功的时刻把空档分给前后两个账户", () => {
+    const w = workspace();
+    writeAccount(w.claudeJson, FIXTURE_ACCOUNT_UUID);
+    const state = new CollectorState(":memory:");
+    collect(state, w, new Date("2026-09-01T10:00:00Z"));
+    // 两次运行之间：旧账户的请求、/login 成功、新账户的请求，写在不同文件里。
+    writeFileSync(w.session, line("before", "2026-09-01T10:02:00Z", 5));
+    const other = join(w.projectsDir, "p", "t.jsonl");
+    writeFileSync(
+      other,
+      loginLine("2026-09-01T10:03:00Z") +
+        line("after", "2026-09-01T10:04:00Z", 5),
+    );
+    writeAccount(w.claudeJson, OTHER_ACCOUNT);
+    collect(state, w, new Date("2026-09-01T10:05:00Z"));
+    const pending = pendingUsage(state);
+    expect(pending.get("req_before:before")!.accountExternalId).toBe(
+      FIXTURE_ACCOUNT_UUID,
+    );
+    expect(pending.get("req_after:after")!.accountExternalId).toBe(
+      OTHER_ACCOUNT,
+    );
+    state.close();
+  });
+
+  test("没有会话线索时用凭据修改时间，读不到时间时归新账户", () => {
+    for (const [modified, expected] of [
+      ["keychain:20260901100300Z", FIXTURE_ACCOUNT_UUID],
+      [null, OTHER_ACCOUNT],
+    ] as const) {
+      const w = workspace();
+      writeAccount(w.claudeJson, FIXTURE_ACCOUNT_UUID);
+      const state = new CollectorState(":memory:");
+      const sources = {
+        ...w,
+        credential: {
+          location: { claudeRoot: w.root, configDir: null },
+          read: () => null,
+          version: () => modified,
+        },
+      };
+      collect(state, sources, new Date("2026-09-01T10:00:00Z"));
+      writeFileSync(w.session, line("before", "2026-09-01T10:02:00Z", 5));
+      writeAccount(w.claudeJson, OTHER_ACCOUNT);
+      collect(state, sources, new Date("2026-09-01T10:05:00Z"));
+      expect(
+        pendingUsage(state).get("req_before:before")!.accountExternalId,
+      ).toBe(expected);
+      state.close();
+    }
+  });
+
+  test("升级后把旧规则记为未归属的空档事件重新归属一次", () => {
+    const w = workspace();
+    writeAccount(w.claudeJson, FIXTURE_ACCOUNT_UUID);
+    const state = new CollectorState(":memory:");
+    collect(state, w, new Date("2026-09-01T10:00:00Z"));
+    writeFileSync(w.session, line("gap", "2026-09-01T10:02:00Z", 5));
+    writeAccount(w.claudeJson, OTHER_ACCOUNT);
+    collect(state, w, new Date("2026-09-01T10:05:00Z"));
+    ackAll(state);
+    // 模拟旧版本留下的状态：空档事件为未归属，没有规则版本记录。
+    state.db.run("UPDATE events SET account = 'unattributed'");
+    state.db.run("DELETE FROM meta WHERE key = 'attribution_rules'");
+    const upgraded = collect(state, w, new Date("2026-09-01T10:06:00Z"));
+    expect(upgraded.reattributed).toBe(1);
+    expect(pendingUsage(state).get("req_gap:gap")!.accountExternalId).toBe(
+      OTHER_ACCOUNT,
+    );
+    ackAll(state);
+    expect(
+      collect(state, w, new Date("2026-09-01T10:07:00Z")).reattributed,
+    ).toBe(0);
+    state.close();
+  });
+
+  test("只认 /login 输出本身，引用到同样文字的行不算", () => {
+    expect(loginMoment(loginLine("2026-09-01T10:03:00Z").trim())).toBe(
+      "2026-09-01T10:03:00.000Z",
+    );
+    const quoted = JSON.stringify({
+      type: "user",
+      timestamp: "2026-09-01T10:03:00Z",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            content:
+              "<local-command-stdout>Login successful</local-command-stdout>",
+          },
+        ],
+      },
+    });
+    expect(loginMoment(quoted)).toBeNull();
+    expect(loginMoment('{"type":"user"')).toBeNull();
   });
 });

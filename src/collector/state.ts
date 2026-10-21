@@ -4,6 +4,7 @@ import {
   attribute,
   type AccountSegment,
   type HistoryBinding,
+  type LoginHint,
 } from "./attribution";
 import {
   UNATTRIBUTED_ACCOUNT_ID,
@@ -79,6 +80,11 @@ CREATE TABLE IF NOT EXISTS timeline (
   first_seen TEXT NOT NULL,
   last_seen TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS login_hints (
+  at TEXT NOT NULL,
+  source TEXT NOT NULL,
+  PRIMARY KEY (at, source)
+);
 CREATE TABLE IF NOT EXISTS accounts (external_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS outbox (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +102,7 @@ CREATE TABLE IF NOT EXISTS outbox (
 export class CollectorState {
   readonly db: Database;
   private segmentCache: AccountSegment[] | null = null;
+  private hintCache: LoginHint[] | null = null;
   private bindingCache: HistoryBinding | null | undefined;
 
   constructor(path: string) {
@@ -217,6 +224,7 @@ export class CollectorState {
         observation.firstTimestamp,
         this.segments(),
         this.binding(),
+        this.loginHints(),
       );
       this.db
         .query(
@@ -316,6 +324,34 @@ export class CollectorState {
     return this.segmentCache;
   }
 
+  loginHints(): LoginHint[] {
+    this.hintCache ??= this.db
+      .query<LoginHint, []>("SELECT at, source FROM login_hints ORDER BY at")
+      .all();
+    return this.hintCache;
+  }
+
+  /** 记录一次登录线索；已记录过返回 false。 */
+  recordLoginHint(hint: LoginHint): boolean {
+    const result = this.db
+      .query("INSERT OR IGNORE INTO login_hints (at, source) VALUES (?, ?)")
+      .run(hint.at, hint.source);
+    if (result.changes > 0) this.hintCache = null;
+    return result.changes > 0;
+  }
+
+  /** 包含该时刻的不同账户空档的起点；时刻不在任何空档内时返回 null。 */
+  gapStart(at: string): string | null {
+    const segments = this.segments();
+    for (let index = 0; index + 1 < segments.length; index += 1) {
+      const segment = segments[index]!;
+      const next = segments[index + 1]!;
+      if (at > segment.lastSeen && at <= next.firstSeen)
+        return segment.lastSeen;
+    }
+    return null;
+  }
+
   binding(): HistoryBinding | null {
     if (this.bindingCache === undefined) {
       const raw = this.getMeta("history_binding");
@@ -359,6 +395,7 @@ export class CollectorState {
   reattribute(since: string | null): number {
     const segments = this.segments();
     const binding = this.binding();
+    const hints = this.loginHints();
     const rows =
       since === null
         ? this.db
@@ -374,7 +411,7 @@ export class CollectorState {
     let changed = 0;
     this.db.transaction(() => {
       for (const row of rows) {
-        const account = attribute(row.occurred_at, segments, binding);
+        const account = attribute(row.occurred_at, segments, binding, hints);
         if (account === row.account) continue;
         this.db
           .query("UPDATE events SET account = ? WHERE key = ?")

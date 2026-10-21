@@ -7,10 +7,14 @@ import {
   type ClaudeAccount,
 } from "./claude-code/account";
 import {
+  credentialModifiedAt,
   credentialPlanFrom,
+  type ClaudeCredentialPlan,
   type CredentialLocation,
   type CredentialTextReader,
+  type CredentialVersionReader,
 } from "./claude-code/credential";
+import { loginMoment } from "./claude-code/login";
 import { quotaSnapshot } from "./claude-code/quota";
 import {
   readStatuslineCache,
@@ -31,6 +35,7 @@ export interface CollectSources {
   credential?: {
     location: CredentialLocation;
     read: CredentialTextReader;
+    version: CredentialVersionReader;
   } | null;
 }
 
@@ -47,7 +52,9 @@ export interface CollectReport {
   /** 本轮是否成功读取 ~/.claude.json；读不到时账户与额度本轮跳过。 */
   claudeJsonRead: boolean;
   accountUuid: string | null;
-  /** 本轮是否采用了登录凭据中当前账户的套餐字段。 */
+  /** 本轮是否读取了登录凭据；不需要时沿用已确认的套餐，不访问钥匙串。 */
+  credentialChecked: boolean;
+  /** 本轮是否采用了登录凭据中当前账户的套餐字段，含沿用此前确认的结果。 */
   credentialPlanRead: boolean;
   /** 本轮读到了套餐字段，但要等下一轮确认登录账户未变才采用。 */
   credentialPlanPending: boolean;
@@ -111,6 +118,7 @@ export function ingestFile(
   state: CollectorState,
   path: string,
   report: CollectReport,
+  onLogin: (at: string) => void = () => {},
 ) {
   let fd: number;
   try {
@@ -143,6 +151,10 @@ export function ingestFile(
     const observations = new Map<string, FileObservation>();
     const handleLine = (raw: string) => {
       report.lines += 1;
+      // 登录线索先于本文件的事件入库，本文件中切换前后的事件随即按切换时刻归属。
+      const login = loginMoment(raw);
+      if (login && state.recordLoginHint({ at: login, source: "transcript" }))
+        onLogin(login);
       if (!mayContainUsage(raw)) return;
       const result = parseLine(raw);
       if (result.kind === "malformed") report.malformed += 1;
@@ -220,6 +232,7 @@ export function emptyReport(): CollectReport {
     reattributed: 0,
     claudeJsonRead: false,
     accountUuid: null,
+    credentialChecked: false,
     credentialPlanRead: false,
     credentialPlanPending: false,
     pendingPlan: null,
@@ -231,24 +244,99 @@ export function emptyReport(): CollectReport {
   };
 }
 
+const attributionRulesKey = "attribution_rules";
+/** 归属规则版本；变化时按新规则重新归属全部事件。2 起不同账户之间的空档按切换时刻分配。 */
+const attributionRules = "2";
 const credentialCandidateKey = "credential_plan_candidate";
+const credentialCheckKey = "credential_plan_check";
+/** 读不到凭据修改标记时，退回按此间隔复查。 */
+const credentialFallbackMs = 24 * 60 * 60_000;
+
+/** 最近一次为当前账户读取凭据的结果；plan 是已确认的套餐，读取失败时沿用此前的确认结果。 */
+interface CredentialCheck {
+  accountUuid: string;
+  /** .claude.json 中与套餐相关的字段；变化时立即重新读取。 */
+  signals: string;
+  /** 读取时凭据的修改标记；凭据未被改写时，其中的套餐不会变。 */
+  version: string | null;
+  checkedAt: string;
+  plan: ClaudeCredentialPlan | null;
+}
+
+function credentialSignals(account: ClaudeAccount): string {
+  return JSON.stringify([
+    account.organizationUuid,
+    account.organizationType,
+    account.rateLimitTier,
+    account.billingType,
+    account.seatTier,
+  ]);
+}
+
+function readCredentialCheck(state: CollectorState): CredentialCheck | null {
+  const raw = state.getMeta(credentialCheckKey);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as CredentialCheck;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 凭据含访问令牌，只在其中的套餐可能变化时读取：登录账户或其套餐字段变化、等待第二轮
+ * 确认，或凭据被改写（登录、令牌刷新、套餐变化都会改写）。修改标记只取条目属性，
+ * 不读取令牌；读不到标记时每天复查一次。其余轮次沿用已确认的套餐。
+ */
+function credentialDue(
+  state: CollectorState,
+  check: CredentialCheck | null,
+  account: ClaudeAccount,
+  version: string | null,
+  now: Date,
+): boolean {
+  if (
+    !check ||
+    check.accountUuid !== account.accountUuid ||
+    check.signals !== credentialSignals(account)
+  )
+    return true;
+  const candidate = state.getMeta(credentialCandidateKey) ?? "";
+  const confirmed = check.plan
+    ? JSON.stringify({ accountUuid: check.accountUuid, plan: check.plan })
+    : "";
+  if (candidate && candidate !== confirmed) return true;
+  if (version !== null) return version !== check.version;
+  const elapsed = now.getTime() - Date.parse(check.checkedAt);
+  // 时钟回拨或记录损坏时按到期处理。
+  return !(elapsed >= 0) || elapsed >= credentialFallbackMs;
+}
 
 /**
  * 凭据只代表读取时登录的账户，且不带账户 UUID。Claude Code 登录新账户时先写凭据、
  * 后写 .claude.json，这几秒内两者分属不同账户。读取后再确认一次登录账户，并且只采用
  * 连续两轮都对同一账户读到的同一套餐；切换中途读到的组合不会持续到下一轮，
- * 不会把新账户的套餐记到旧账户上。代价是套餐晚一轮出现。
+ * 不会把新账户的套餐记到旧账户上。代价是套餐晚一轮出现。等待确认期间沿用此前确认的套餐。
  */
 function currentCredentialPlan(
   state: CollectorState,
   sources: CollectSources,
   account: ClaudeAccount,
   report: CollectReport,
-) {
+  now: Date,
+  version: string | null,
+): ClaudeCredentialPlan | null {
   if (!sources.credential) return null;
-  const plan = credentialPlanFrom(
-    sources.credential.read(sources.credential.location),
-  );
+  const { location, read } = sources.credential;
+  const check = readCredentialCheck(state);
+  const sameAccount =
+    check?.accountUuid === account.accountUuid &&
+    check.signals === credentialSignals(account);
+  const known = sameAccount ? check.plan : null;
+  if (!credentialDue(state, check, account, version, now)) return known;
+
+  report.credentialChecked = true;
+  const plan = credentialPlanFrom(read(location));
   const confirmed = readClaudeJson(sources.claudeJson);
   const candidate =
     plan && confirmed?.account?.accountUuid === account.accountUuid
@@ -256,12 +344,28 @@ function currentCredentialPlan(
       : "";
   const previous = state.getMeta(credentialCandidateKey);
   if (previous !== candidate) state.setMeta(credentialCandidateKey, candidate);
-  if (!candidate) return null;
+  const record = (result: ClaudeCredentialPlan | null) =>
+    state.setMeta(
+      credentialCheckKey,
+      JSON.stringify({
+        accountUuid: account.accountUuid,
+        signals: credentialSignals(account),
+        version,
+        checkedAt: now.toISOString(),
+        plan: result,
+      } satisfies CredentialCheck),
+    );
+  // 读不到时（例如钥匙串拒绝访问）沿用此前的套餐，等凭据下次改写再试。
+  if (!candidate) {
+    record(known);
+    return known;
+  }
   if (previous !== candidate) {
     report.credentialPlanPending = true;
     report.pendingPlan = accountFact(account, plan).plan;
-    return null;
+    return known;
   }
+  record(plan);
   return plan;
 }
 
@@ -305,24 +409,53 @@ export function collect(
   report.claudeJsonRead = snapshot !== null;
   if (snapshot?.account) {
     report.accountUuid = snapshot.account.accountUuid;
+    // 先取凭据修改标记再读原文：两者之间凭据被改写时，下一轮标记不同，会再读一次。
+    const version = sources.credential
+      ? sources.credential.version(sources.credential.location)
+      : null;
     const credential = currentCredentialPlan(
       state,
       sources,
       snapshot.account,
       report,
+      now,
+      version,
     );
     report.credentialPlanRead = credential !== null;
     state.upsertAccount(stickyAccountFact(state, snapshot.account, credential));
+    const previous = state.segments().at(-1);
+    const modifiedAt = credentialModifiedAt(version);
+    // 换了账户时，凭据最近一次改写通常就是这次登录，作为会话记录之外的切换线索。
+    if (
+      previous &&
+      previous.accountUuid !== snapshot.account.accountUuid &&
+      modifiedAt
+    )
+      state.recordLoginHint({ at: modifiedAt, source: "credential" });
     const since = state.observeAccount(
       snapshot.account.accountUuid,
       now.toISOString(),
     );
     report.reattributed += state.reattribute(since);
   }
+  // 早期版本把不同账户之间的空档记为未归属；按现行规则把已有事件重新归属一次。
+  if (state.getMeta(attributionRulesKey) !== attributionRules) {
+    report.reattributed += state.reattribute(null);
+    state.setMeta(attributionRulesKey, attributionRules);
+  }
 
   const files = listSessionFiles(sources.projectsDir);
   report.files = files.length;
-  for (const path of files) ingestFile(state, path, report);
+  let earliestLogin: string | null = null;
+  for (const path of files)
+    ingestFile(state, path, report, (at) => {
+      if (earliestLogin === null || at < earliestLogin) earliestLogin = at;
+    });
+  // 本轮新读到的登录线索可能改变此前文件里空档事件的归属。
+  if (earliestLogin !== null) {
+    const since = state.gapStart(earliestLogin);
+    if (since !== null) report.reattributed += state.reattribute(since);
+  }
   state.forgetMissingFiles(new Set(files));
 
   // 先读状态栏缓存再确认账户，使采样时刻不晚于确认时刻。
