@@ -66,6 +66,7 @@ docker compose up -d --no-build --pull never
 | `METERLEAF_LOG_LEVEL`                  | `info`         | `debug`、`info`、`warn`、`error`、`silent` |
 | `METERLEAF_INGEST_KEYS`                | 未启用         | 本机采集器写入密钥，见下文                 |
 | `METERLEAF_GITHUB_CLIENT_ID` 等        | 未启用         | GitHub 登录，见下文                        |
+| `METERLEAF_OPENCODE_GO_KEY` 等         | 未启用         | OpenCode Go 额度，见下文                   |
 
 `SUB2API_DATABASE_URL` 与 `METERLEAF_INGEST_KEYS` 至少填写一项，未填写的来源不启用。
 
@@ -115,6 +116,20 @@ location = /api/ingest/v1/batches {
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
+
+## OpenCode Go 额度（可选）
+
+通过 OpenCode Go 使用 DeepSeek 等模型时，用量由本机采集器按模型名归到独立的 Go 账户，见[本机采集器](collector.md#其他供应商的模型)。Go 的 5 小时、每周和每月额度则由服务端用 Go 的 Key 读取，采集器不经手这把 Key。
+
+```dotenv
+METERLEAF_OPENCODE_GO_KEY=<OpenCode Go 的 API Key>
+# 额度显示在哪个账户上：来源标识:账户标识。只有一个推送来源时可省略，默认取该来源的 opencode-go 账户。
+# METERLEAF_OPENCODE_GO_ACCOUNT=claude-code-macbook:opencode-go
+```
+
+账户标识要和采集器 `modelAccounts` 里的 `id` 一致。改完后按[写入密钥](#写入密钥)一节的启动命令重建容器。
+
+服务端只在有页面打开时读取额度，页面在线期间最多每 2 分钟读一次，没人看时不访问 Go。读取失败只在日志里记 `opencode_go.quota_failed` 和状态码，不记录 Key；Key 失效或被拒时页面保留上次读到的额度，直到它的周期结束。Go 的额度上限按美元计，月额度从订阅日起算，页面在周额度之后显示「月」窗口。
 
 ## GitHub 登录
 
