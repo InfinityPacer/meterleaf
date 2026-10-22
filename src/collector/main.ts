@@ -17,6 +17,7 @@ import {
   loadConfig,
   normalizeServer,
   saveConfig,
+  type CollectorConfig,
 } from "./config";
 import {
   appBundleOf,
@@ -267,10 +268,14 @@ function runStatuslineCache(paths: CollectorPaths, value: string | undefined) {
   return 0;
 }
 
-function collectSources(paths: CollectorPaths, statuslineCache: string | null) {
+function collectSources(
+  paths: CollectorPaths,
+  config: Pick<CollectorConfig, "statuslineCache" | "modelAccounts"> | null,
+) {
   return {
     ...paths,
-    statuslineCache,
+    statuslineCache: config?.statuslineCache ?? null,
+    modelAccounts: config?.modelAccounts ?? [],
     credential: {
       location: {
         claudeRoot: paths.claudeRoot,
@@ -285,15 +290,15 @@ function collectSources(paths: CollectorPaths, statuslineCache: string | null) {
 function runScan(paths: CollectorPaths, json: boolean) {
   const state = new CollectorState(":memory:");
   try {
-    let statuslineCache: string | null = null;
+    let config: CollectorConfig | null = null;
     try {
-      statuslineCache = loadConfig(paths.configFile)?.statuslineCache ?? null;
+      config = loadConfig(paths.configFile);
     } catch {
-      statuslineCache = null;
+      config = null;
     }
     const report = collect(
       state,
-      collectSources(paths, statuslineCache),
+      collectSources(paths, config),
       new Date(),
       () => new Date(),
     );
@@ -368,7 +373,7 @@ async function runSync(paths: CollectorPaths): Promise<number> {
     state = openState(paths);
     const report = collect(
       state,
-      collectSources(paths, config.statuslineCache ?? null),
+      collectSources(paths, config),
       new Date(),
       () => new Date(),
     );
@@ -535,8 +540,17 @@ function runStatus(paths: CollectorPaths) {
   } else {
     console.log("配置: 尚未初始化");
   }
-  if (config)
+  if (config) {
     console.log(`状态栏额度缓存: ${config.statuslineCache ?? "未启用"}`);
+    const rules = config.modelAccounts ?? [];
+    console.log(
+      `模型账户映射: ${
+        rules.length
+          ? rules.map((rule) => `${rule.match} → ${rule.name}`).join("，")
+          : "未配置（非 claude- 模型归入「其他模型」）"
+      }`,
+    );
+  }
   console.log(`后台任务: ${backgroundTaskStatus()}`);
   if (!existsSync(paths.stateFile)) {
     console.log("同步状态: 尚未运行 sync");
