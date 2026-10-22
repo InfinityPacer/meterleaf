@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "meterleaf",
   "supersedes": ["meterleaf-openai"],
-  "version": "2026-09-25.4",
+  "version": "2026-09-25.5",
   "publishedAt": "2026-09-25T00:00:00Z",
   "unit": "per_million_tokens",
   "sources": [
@@ -17,7 +17,8 @@
     "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst",
     "https://developers.openai.com/api/docs/models/gpt-image-2.5-flare",
     "https://platform.claude.com/docs/en/about-claude/pricing",
-    "https://platform.claude.com/docs/en/about-claude/models/overview"
+    "https://platform.claude.com/docs/en/about-claude/models/overview",
+    "https://opencode.ai/docs/go/"
   ],
   "notes": [
     "Subscription-equivalent USD uses the same published base prices but excludes long-context uplifts; it is an estimate, not an invoice or a credit-to-dollar exchange rate.",
@@ -33,7 +34,9 @@
     "Claude fast mode maps to the priority tier for Opus 5.5 and Opus 5, with the published fast input and output prices and cache multipliers applied on top. US-only inference (1.1x) and web search fees are not applied.",
     "Claude models on the current price list include the full context window at standard prices, so no long-context tier is configured.",
     "Only Claude model IDs and aliases listed on the official models overview are configured: claude-fable-5-1, claude-opus-5-5, claude-opus-5 (legacy), claude-sonnet-5, claude-haiku-4-5-20251001 and its alias claude-haiku-4-5. Other models stay unpriced.",
-    "Codex Fast mode credits map to the priority tier at the published 2.5x of Standard credits for GPT-5.6 Sol, Terra and Luna and GPT-6 Astra, Sol and Luna, and 2x for GPT-5.4. GPT-5.4 mini has no published Fast credits rate."
+    "Codex Fast mode credits map to the priority tier at the published 2.5x of Standard credits for GPT-5.6 Sol, Terra and Luna and GPT-6 Astra, Sol and Luna, and 2x for GPT-5.4. GPT-5.4 mini has no published Fast credits rate.",
+    "DeepSeek V4.1 Flash is valued at the per-token prices published for OpenCode Go, the only per-token basis Go publishes. Both USD branches use those prices as an estimate, not a Go invoice; the Go subscription is billed monthly regardless of token usage.",
+    "OpenCode Go peak hours are 01:00-04:00 and 06:00-10:00 UTC on weekdays; all other UTC hours and weekends use the off-peak prices. Cache writes are not published for this model."
   ],
   "rules": [
     {
@@ -1535,6 +1538,58 @@
         "cacheWrite": "1.25",
         "cacheWrite1h": "2",
         "output": "5"
+      }
+    },
+    {
+      "model": "deepseek-v4.1-flash",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "0.15",
+        "cacheRead": "0.003",
+        "cacheWrite": null,
+        "output": "0.6"
+      },
+      "peak": {
+        "days": [1, 2, 3, 4, 5],
+        "hoursUtc": [
+          { "from": "01:00", "until": "04:00" },
+          { "from": "06:00", "until": "10:00" }
+        ],
+        "rates": {
+          "input": "0.3",
+          "cacheRead": "0.006",
+          "cacheWrite": null,
+          "output": "1.2"
+        }
+      }
+    },
+    {
+      "model": "deepseek-v4.1-flash",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "0.15",
+        "cacheRead": "0.003",
+        "cacheWrite": null,
+        "output": "0.6"
+      },
+      "peak": {
+        "days": [1, 2, 3, 4, 5],
+        "hoursUtc": [
+          { "from": "01:00", "until": "04:00" },
+          { "from": "06:00", "until": "10:00" }
+        ],
+        "rates": {
+          "input": "0.3",
+          "cacheRead": "0.006",
+          "cacheWrite": null,
+          "output": "1.2"
+        }
       }
     }
   ]

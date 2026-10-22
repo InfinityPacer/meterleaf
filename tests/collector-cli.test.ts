@@ -196,6 +196,32 @@ describe("采集器命令行", () => {
     expect(snapshot(claudeDir)).toEqual(before);
   });
 
+  test("bind-history 沿用模型映射，映射账户的用量不被改归", async () => {
+    const { env, dataDir } = setup();
+    const server = fakeServer();
+    const init = run(env, "init", "--server", server.url);
+    const digest = /METERLEAF_INGEST_KEYS=[^:]+:([0-9a-f]{64})/.exec(
+      init.stdout,
+    )?.[1];
+    server.keys.add(digest!);
+    const configPath = join(dataDir, "config.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.modelAccounts = [
+      { match: "claude-*", id: "mapped", name: "Mapped", platform: "test" },
+    ];
+    writeFileSync(configPath, JSON.stringify(config));
+
+    expect((await runAsync(env, "sync")).code).toBe(0);
+    expect(run(env, "bind-history").code).toBe(0);
+    expect((await runAsync(env, "sync")).code).toBe(0);
+    const accounts = new Set(
+      server.batches.flatMap((batch) =>
+        batch.usage.map((u) => u.accountExternalId),
+      ),
+    );
+    expect(accounts).toEqual(new Set(["mapped"]));
+  });
+
   test("后台 sync 从登录凭据识别套餐", async () => {
     // 临时配置目录在钥匙串中没有条目，凭据从 .credentials.json 读取。
     const { env } = setup(

@@ -77,7 +77,7 @@ import {
   quotaResetMinute,
   showQuotaEstimate,
   visibleQuotaWindows,
-  withFableQuotaWindow,
+  withExtraQuotaWindows,
 } from "./lib/quota-display";
 import { useQuotaClock } from "./lib/use-quota-clock";
 import { useReportFilters } from "./lib/report-preferences";
@@ -378,8 +378,13 @@ function AccountRow({
   const accountUsage = account.lifetime ?? usage;
   const hasQuota =
     !archived &&
-    Boolean(account.fiveHour || account.sevenDay || account.sevenDayFable);
-  const windows = withFableQuotaWindow(
+    Boolean(
+      account.fiveHour ||
+      account.sevenDay ||
+      account.sevenDayFable ||
+      account.monthly,
+    );
+  const windows = withExtraQuotaWindows(
     visibleQuotaWindows(account, asOf, compactUsage),
     account,
     asOf,
@@ -2205,7 +2210,7 @@ export function App() {
               {selectedAccount.fiveHour || selectedAccount.sevenDay ? (
                 <>
                   <div className="account-detail-windows">
-                    {withFableQuotaWindow(
+                    {withExtraQuotaWindows(
                       visibleQuotaWindows(
                         selectedAccount,
                         quotaAsOf,
@@ -2220,7 +2225,9 @@ export function App() {
                         label={
                           key === "sevenDayFable"
                             ? "Fable 周额度"
-                            : `${label}窗口`
+                            : key === "monthly"
+                              ? "月额度"
+                              : `${label}窗口`
                         }
                         asOf={quotaAsOf}
                         waiting={waiting}
@@ -2325,7 +2332,7 @@ export function App() {
                         </dd>
                       </>
                     )}
-                    {withFableQuotaWindow(
+                    {withExtraQuotaWindows(
                       visibleQuotaWindows(
                         selectedAccount,
                         quotaAsOf,
@@ -2370,6 +2377,54 @@ export function App() {
                           >
                             {estimateAmount(
                               selectedAccount.sevenDayFable,
+                              "usd",
+                              quotaAsOf,
+                            )}
+                          </dd>
+                        </>
+                      )}
+                    {withExtraQuotaWindows(
+                      visibleQuotaWindows(
+                        selectedAccount,
+                        quotaAsOf,
+                        smallScreen,
+                      ),
+                      selectedAccount,
+                      quotaAsOf,
+                    ).some(({ key }) => key === "monthly") &&
+                      selectedAccount.monthly && (
+                        <>
+                          <dt>月额度重置</dt>
+                          <dd>
+                            {selectedAccount.monthly.resetsAt
+                              ? localTime(
+                                  quotaResetMinute(
+                                    selectedAccount.monthly.resetsAt,
+                                  ),
+                                  {
+                                    month: "2-digit",
+                                    day: "2-digit",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                    hour12: false,
+                                  },
+                                )
+                              : "N/A"}
+                          </dd>
+                          <dt>月周期费用</dt>
+                          <dd>
+                            {windowAmount(
+                              selectedAccount.monthly,
+                              "usd",
+                              quotaAsOf,
+                            )}
+                          </dd>
+                          <dt>月预估费用</dt>
+                          <dd
+                            title={estimateDescription(selectedAccount.monthly)}
+                          >
+                            {estimateAmount(
+                              selectedAccount.monthly,
                               "usd",
                               quotaAsOf,
                             )}

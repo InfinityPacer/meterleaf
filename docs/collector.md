@@ -24,6 +24,34 @@ Claude Code 会把一次请求按内容块拆成多行保存，每行带着同�
 
 费用由 Meterleaf 按[计价说明](pricing.md)中的价格表估算，1 小时与 5 分钟缓存写入分开计价。它是按公开价格计算的估值，不是 Claude 订阅账单。
 
+## 其他供应商的模型
+
+Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCode Go 使用 DeepSeek。这些请求的会话记录和 Claude 订阅写在同一个目录，记录里没有账户，也没有请求发往的地址，采集器只能靠模型名区分。
+
+所以采集器只把 `claude-` 开头的模型按登录时间归到 Claude 账户。其他模型默认归到一个叫「其他模型」的账户，不会算进 Claude 订阅的用量。想让它们显示成独立的供应商账户，在采集器数据目录的 `config.json`（macOS 上是 `~/Library/Application Support/Meterleaf Collector/config.json`）里加一项 `modelAccounts`：
+
+```json
+{
+  "modelAccounts": [
+    {
+      "match": "deepseek-*",
+      "id": "opencode-go",
+      "name": "OpenCode Go",
+      "platform": "opencode-go",
+      "kind": "subscription"
+    }
+  ]
+}
+```
+
+- `match` 是模型名，`*` 匹配任意字符。规则按顺序取第一条命中的，所以也能把某个 `claude-` 模型单独分出去。
+- `id` 是账户在这台电脑来源里的标识，只能用字母、数字、`-` 和 `_`。改 `name` 只改显示名；改 `id` 会把历史用量整体移到新账户。
+- `kind` 可填 `subscription`、`api` 或 `unknown`，省略时为 `unknown`；`plan` 可选，省略时不显示套餐。
+
+保存后下一次同步生效，不需要重启后台任务。映射有变化时，采集器会把已经推送过的用量按新映射重新归属并补推一次，服务端的报表随之更新。`meterleaf-collector status` 会列出当前的映射。
+
+想在 Meterleaf 里看到 OpenCode Go 的额度，需要在服务端单独配置 Go 的 Key，见[部署指南](deployment.md#opencode-go-额度可选)。采集器本身不读取 Go 的 Key，也不调用任何供应商接口。
+
 ## 安装
 
 采集器需要 macOS 13 或更新版本，目前不提供下载，需要在这台 Mac 上从仓库构建。构建需要 Bun 1.4.2 或更新版本，以及 Xcode 命令行工具（没有时执行 `xcode-select --install`）。

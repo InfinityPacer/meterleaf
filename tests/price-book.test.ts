@@ -43,7 +43,7 @@ test("bundled JSON contains separate USD branches with unchanged credits", () =>
   expect(api.usd.amount).toBe("6.075");
   expect(subscription.credits).toEqual(api.credits);
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-09-25.4");
+  expect(subscription.version).toBe("meterleaf@2026-09-25.5");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
@@ -140,6 +140,105 @@ test("new model prices do not guess tiers, cache writes or unrelated model alias
     expect(
       valueUsage({ ...usage, model }, defaultPriceBook).usd.amount,
     ).toBeNull();
+  }
+});
+
+const deepseekRule = defaultPriceBook.rules.find(
+  (rule) =>
+    rule.model === "deepseek-v4.1-flash" && rule.usdBasis === "subscription",
+)!;
+function deepseekFact(occurredAt: string): UsageFact {
+  return {
+    ...usage,
+    occurredAt,
+    model: "deepseek-v4.1-flash",
+    tier: "standard",
+    tokens: {
+      input: 1_000_000,
+      cacheRead: 1_000_000,
+      cacheWrite: 0,
+      output: 1_000_000,
+      cacheWrite5m: null,
+      cacheWrite1h: null,
+      reasoning: null,
+    },
+  };
+}
+function ruleAccepted(rule: unknown) {
+  return priceBookSchema.safeParse({ ...defaultPriceBook, rules: [rule] })
+    .success;
+}
+
+test("bundled book values DeepSeek V4.1 Flash at Go's weekday peak and off-peak prices", () => {
+  // Go 的峰时是 UTC 周一至周五 01:00-04:00 与 06:00-10:00，起点包含、终点不包含。
+  for (const [occurredAt, amount] of [
+    ["2026-10-23T00:59:00Z", "0.753"],
+    ["2026-10-23T01:00:00Z", "1.506"],
+    ["2026-10-23T03:59:00Z", "1.506"],
+    ["2026-10-23T04:00:00Z", "0.753"],
+    ["2026-10-23T06:00:00Z", "1.506"],
+    ["2026-10-23T09:59:00Z", "1.506"],
+    ["2026-10-23T10:00:00Z", "0.753"],
+    ["2026-10-24T02:00:00Z", "0.753"],
+    ["2026-10-25T07:00:00Z", "0.753"],
+  ] as const) {
+    const fact = deepseekFact(occurredAt);
+    const subscription = valueUsage(fact, defaultPriceBook);
+    const api = valueUsage(fact, defaultPriceBook, "api");
+    expect(subscription.usd.amount).toBe(amount);
+    expect(api.usd.amount).toBe(amount);
+    expect(subscription.usd.reason).toBeNull();
+  }
+  // 峰时同样不猜测未公布的缓存写入价。
+  const write = deepseekFact("2026-10-23T02:00:00Z");
+  write.tokens.cacheWrite = 1;
+  expect(valueUsage(write, defaultPriceBook).usd.reason).toBe(
+    "unsupported-rate-bucket",
+  );
+});
+
+test("schema rejects malformed peak blocks and combinations with other rate tiers", () => {
+  expect(ruleAccepted(deepseekRule)).toBe(true);
+  const mutations: ((rule: typeof deepseekRule) => void)[] = [
+    (rule) => {
+      rule.peak!.hoursUtc[0] = { from: "04:00", until: "04:00" };
+    },
+    (rule) => {
+      rule.peak!.hoursUtc[0] = { from: "10:00", until: "01:00" };
+    },
+    (rule) => {
+      rule.peak!.hoursUtc[0] = { from: "1:00", until: "04:00" };
+    },
+    (rule) => {
+      rule.peak!.hoursUtc[0] = { from: "01:00", until: "24:00" };
+    },
+    (rule) => {
+      rule.peak!.days = [1, 1];
+    },
+    (rule) => {
+      rule.peak!.days = [];
+    },
+    (rule) => {
+      rule.peak!.days = [0];
+    },
+    (rule) => {
+      rule.peak!.hoursUtc = [];
+    },
+    (rule) => {
+      rule.longContext = { threshold: 1000, rates: rule.rates };
+    },
+    (rule) => {
+      rule.imageRates = {
+        input: "1",
+        cacheRead: "1",
+        output: "1",
+      };
+    },
+  ];
+  for (const mutate of mutations) {
+    const rule = structuredClone(deepseekRule);
+    mutate(rule);
+    expect(ruleAccepted(rule)).toBe(false);
   }
 });
 

@@ -10,6 +10,7 @@ import { loadPriceBook } from "./price-book";
 import { liveSnapshot } from "./snapshot";
 import { SyncRunner } from "./sync";
 import { createDiagnosticsLogger } from "./diagnostics";
+import { GoQuotaRefresher } from "./opencode-go";
 import { ViewService } from "./view-service";
 
 const logger = createDiagnosticsLogger();
@@ -57,6 +58,15 @@ async function main() {
       logger,
     );
   }
+  const goQuotas =
+    store && config.openCodeGo
+      ? new GoQuotaRefresher({
+          key: config.openCodeGo.key,
+          account: config.openCodeGo.account,
+          save: (quotas, collectedAt) => store!.saveQuotas(quotas, collectedAt),
+          diagnostics: logger,
+        })
+      : null;
   stage = "http-server";
   const reports = store
     ? new ViewService(
@@ -95,6 +105,7 @@ async function main() {
           reports.read(query, basis, undefined, refresh)
       : undefined,
     sync: sync ?? undefined,
+    providerQuotas: goQuotas ?? undefined,
     ledgerStatus: store
       ? () => {
           const times = [store.lastIngestAt(), sync?.status().lastSuccess]
