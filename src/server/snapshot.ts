@@ -227,6 +227,11 @@ export function liveSnapshot(
       periodAccountUsage,
       now,
     );
+    const monthly = quotaView(
+      quotaHistory.filter((row) => row.fact.window === "monthly"),
+      periodAccountUsage,
+      now,
+    );
     return {
       id,
       name: account.name,
@@ -237,6 +242,7 @@ export function liveSnapshot(
       fiveHour,
       sevenDay,
       sevenDayFable,
+      ...(monthly ? { monthly } : {}),
     };
   });
   return {
@@ -364,6 +370,11 @@ export function indexedSnapshot(
       reader,
       now,
     );
+    const monthly = quotaView(
+      quotaHistory.filter((row) => row.fact.window === "monthly"),
+      reader,
+      now,
+    );
     return {
       id,
       name: account.name,
@@ -374,6 +385,7 @@ export function indexedSnapshot(
       fiveHour,
       sevenDay,
       sevenDayFable,
+      ...(monthly ? { monthly } : {}),
     };
   });
   return {

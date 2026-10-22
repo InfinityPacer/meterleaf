@@ -109,7 +109,48 @@ const envSchema = z.object({
     z.string().url().optional(),
   ),
   METERLEAF_SESSION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  METERLEAF_OPENCODE_GO_KEY: optionalText,
+  METERLEAF_OPENCODE_GO_ACCOUNT: optionalText,
 });
+/**
+ * 填写 Go 的 Key 即在页面打开时读取 Go 额度。额度挂到推送来源中的账户上，格式为
+ * sourceId:账户标识；只有一个推送来源时可省略，默认取该来源的 opencode-go 账户。
+ */
+function parseOpenCodeGo(
+  config: z.infer<typeof envSchema>,
+  ingestKeys: readonly IngestKey[],
+) {
+  const key = config.METERLEAF_OPENCODE_GO_KEY;
+  if (!key) return undefined;
+  const ref = config.METERLEAF_OPENCODE_GO_ACCOUNT;
+  if (!ref) {
+    if (ingestKeys.length !== 1)
+      throw new Error(
+        "METERLEAF_OPENCODE_GO_ACCOUNT is required unless exactly one ingest source is configured",
+      );
+    return {
+      key,
+      account: {
+        sourceId: ingestKeys[0]!.sourceId,
+        accountExternalId: "opencode-go",
+      },
+    };
+  }
+  const [sourceId, accountExternalId, extra] = ref.split(":");
+  if (
+    extra !== undefined ||
+    !sourceIdSchema.safeParse(sourceId).success ||
+    !/^[a-zA-Z0-9_-]{1,64}$/.test(accountExternalId ?? "")
+  )
+    throw new Error(
+      "Invalid METERLEAF_OPENCODE_GO_ACCOUNT; expected sourceId:accountId",
+    );
+  return {
+    key,
+    account: { sourceId: sourceId!, accountExternalId: accountExternalId! },
+  };
+}
+
 /** 只有显式 demo=true 才能使用演示数据；缺配置不能静默切换运行模式。 */
 export function readConfig(env: Record<string, string | undefined>) {
   const result = envSchema.safeParse(env);
@@ -133,5 +174,10 @@ export function readConfig(env: Record<string, string | undefined>) {
     throw new Error(
       "METERLEAF_INGEST_KEYS source must differ from METERLEAF_SOURCE_ID",
     );
-  return { ...config, ingestKeys, githubAuth: parseGithubAuth(config) };
+  return {
+    ...config,
+    ingestKeys,
+    githubAuth: parseGithubAuth(config),
+    openCodeGo: parseOpenCodeGo(config, ingestKeys),
+  };
 }

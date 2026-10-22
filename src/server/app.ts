@@ -67,6 +67,8 @@ interface AppOptions {
     setAutoSync(enabled: boolean): unknown;
     updatePresence?(id: string, visible: boolean): void;
   };
+  /** 服务端自行读取的供应商额度，只在有页面在线时刷新。 */
+  providerQuotas?: { updatePresence(id: string, visible: boolean): void };
 }
 function isReportBuilding(
   error: unknown,
@@ -87,6 +89,7 @@ export function createApp({
   webRoot,
   diagnostics = silentLogger,
   sync,
+  providerQuotas,
   accountArchive,
   accountMerge,
   ingest,
@@ -320,6 +323,7 @@ export function createApp({
       )
         return reply.code(400).send({ error: "invalid-page-presence" });
       sync?.updatePresence?.(id, visible);
+      providerQuotas?.updatePresence(id, visible);
       return readSyncStatus();
     },
   );
