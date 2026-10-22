@@ -23,11 +23,19 @@ export interface GoAccountRef {
   accountExternalId: string;
 }
 
-/** 月额度按订阅日起算，周期长度取重置时刻往前一个自然月（UTC）。 */
-function monthMinutes(resetsAt: string): number {
+/**
+ * 月额度按订阅日起算，周期长度取重置时刻往前一个自然月（UTC）；上月没有同一天时取上月最后一天，
+ * 例如 3 月 31 日重置的周期从 2 月 28 日（或 29 日）起算。
+ */
+export function monthMinutes(resetsAt: string): number {
   const end = new Date(resetsAt);
   const start = new Date(end);
+  start.setUTCDate(1);
   start.setUTCMonth(start.getUTCMonth() - 1);
+  const lastDay = new Date(
+    Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  start.setUTCDate(Math.min(end.getUTCDate(), lastDay));
   return Math.round((end.getTime() - start.getTime()) / 60_000);
 }
 
@@ -58,6 +66,9 @@ export function goQuotaFacts(
   }));
 }
 
+/** 读数未变时最多隔这么久写一次，让页面上的采样时间不至于显得过时。 */
+const UNCHANGED_SAVE_MS = 4 * 60_000;
+
 export interface GoQuotaOptions {
   key: string;
   account: GoAccountRef;
@@ -75,6 +86,8 @@ export interface GoQuotaOptions {
  */
 export class GoQuotaRefresher {
   private lastAttempt = Number.NEGATIVE_INFINITY;
+  /** 上次写入的读数与时刻；读数未变时少写快照，减少 NAS 写盘与报表重算。 */
+  private lastSaved: { readings: string; at: number } | null = null;
   private running: Promise<void> | null = null;
   private readonly fetch: typeof fetch;
   private readonly now: () => number;
@@ -123,10 +136,21 @@ export class GoQuotaRefresher {
         this.options.account,
         sampledAt,
       );
+      const readings = JSON.stringify(
+        facts.map((fact) => [fact.window, fact.percent, fact.resetsAt]),
+      );
+      const now = this.now();
+      if (
+        this.lastSaved?.readings === readings &&
+        now - this.lastSaved.at < UNCHANGED_SAVE_MS
+      )
+        return;
       this.options.save(facts, sampledAt);
+      this.lastSaved = { readings, at: now };
     } catch (error) {
+      // 只记错误类型：请求头非法时运行时的报错原文会带出整个 Authorization 头。
       diagnostics.warn("opencode_go.quota_failed", {
-        error: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? error.name : "unknown",
       });
     }
   }

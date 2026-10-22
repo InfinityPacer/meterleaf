@@ -5,6 +5,7 @@ import { silentLogger } from "../src/server/diagnostics";
 import {
   goQuotaFacts,
   GoQuotaRefresher,
+  monthMinutes,
   OPENCODE_GO_USAGE_URL,
 } from "../src/server/opencode-go";
 
@@ -101,6 +102,63 @@ describe("OpenCode Go 额度", () => {
     refresher.updatePresence("page", true);
     await refresher.settled();
     expect(calls).toHaveLength(2);
+  });
+
+  test("月额度周期从上月同一天起算，上月没有这一天时取月末", () => {
+    const days = (resetsAt: string) => monthMinutes(resetsAt) / (24 * 60);
+    expect(days("2026-11-23T00:23:00Z")).toBe(31);
+    expect(days("2027-03-31T00:00:00Z")).toBe(31);
+    expect(days("2028-03-30T00:00:00Z")).toBe(30);
+    expect(days("2027-01-15T00:00:00Z")).toBe(31);
+  });
+
+  test("读数未变时间隔几分钟才再写一次快照", async () => {
+    let now = Date.parse("2026-10-23T01:00:00Z");
+    const saved: string[] = [];
+    let body = BODY;
+    const refresher = new GoQuotaRefresher({
+      key: "sk-go-test",
+      account: ACCOUNT,
+      save: (_quotas, at) => saved.push(at),
+      diagnostics: silentLogger,
+      now: () => now,
+      intervalMs: 120_000,
+      fetch: (async () =>
+        new Response(JSON.stringify(body))) as unknown as typeof fetch,
+    });
+    const tick = async () => {
+      refresher.updatePresence("page", true);
+      await refresher.settled();
+      now += 120_000;
+    };
+    await tick();
+    await tick();
+    expect(saved).toHaveLength(1);
+    await tick();
+    expect(saved).toHaveLength(2);
+    body = {
+      usage: { ...BODY.usage, rolling: { ...BODY.usage.rolling, percent: 13 } },
+    };
+    await tick();
+    expect(saved).toHaveLength(3);
+  });
+
+  test("请求异常只记录错误类型，不带出密钥", async () => {
+    const warnings: unknown[] = [];
+    const refresher = new GoQuotaRefresher({
+      key: "sk-go-secret",
+      account: ACCOUNT,
+      save: () => {},
+      diagnostics: { ...silentLogger, warn: (_e, f) => warnings.push(f) },
+      fetch: (async () => {
+        throw new TypeError(
+          "Header 'Authorization' has invalid value: 'Bearer sk-go-secret'",
+        );
+      }) as unknown as typeof fetch,
+    });
+    refresher.updatePresence("page", true);
+    await refresher.settled();
+    expect(warnings).toEqual([{ error: "TypeError" }]);
   });
 
   test("配置：只有一个推送来源时默认挂到该来源的 opencode-go 账户", () => {

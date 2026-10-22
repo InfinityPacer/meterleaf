@@ -79,9 +79,12 @@ function shortId(id: string): string {
   return id === "unattributed" ? id : `${id.slice(0, 8)}…`;
 }
 
+/** 任何会重新归属事件的命令都必须带上模型映射，否则映射账户的用量会被改归「其他模型」。 */
 function openState(paths: CollectorPaths): CollectorState {
   mkdirSync(paths.dataDir, { recursive: true, mode: 0o700 });
-  return new CollectorState(paths.stateFile);
+  const state = new CollectorState(paths.stateFile);
+  state.setModelAccounts(loadConfig(paths.configFile)?.modelAccounts ?? []);
+  return state;
 }
 
 function printTotals(totals: UsageTotals[]) {
