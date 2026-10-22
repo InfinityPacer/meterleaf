@@ -105,7 +105,7 @@ export function QuotaWindow({
   const estimateText = estimateAmount(window, "usd", asOf);
   const showEstimate =
     estimate &&
-    (key === "sevenDay" || key === "sevenDayFable") &&
+    (key === "sevenDay" || key === "sevenDayFable" || key === "monthly") &&
     showQuotaEstimate(window, asOf) &&
     estimateText !== "N/A";
   const status = usable ? quotaLabel(window, asOf) : "N/A";

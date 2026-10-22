@@ -25,8 +25,8 @@ export function showQuotaEstimate(window: AccountWindow | null, asOf: string) {
 }
 
 export interface VisibleQuotaWindow {
-  key: "fiveHour" | "sevenDay" | "sevenDayFable";
-  label: "5h" | "7d" | "Fable";
+  key: "fiveHour" | "sevenDay" | "sevenDayFable" | "monthly";
+  label: "5h" | "7d" | "Fable" | "月";
   window: AccountWindow;
   /** 上游报过这个窗口，但当前快照已过期或缺值；只占位，不展示旧用量。 */
   waiting?: boolean;
@@ -103,6 +103,31 @@ export function withFableQuotaWindow(
     ...windows,
     { key: "sevenDayFable", label: "Fable", window, waiting: true },
   ];
+}
+
+/**
+ * 月额度（例如 OpenCode Go）排在周额度之后，与 Fable 一样在周额度用尽时让位。
+ * 它由服务端在页面打开时读取，过期或缺值时直接不显示，不保留占位。
+ */
+export function withExtraQuotaWindows(
+  windows: VisibleQuotaWindow[],
+  account: Pick<LedgerAccount, "sevenDayFable" | "monthly">,
+  asOf: string,
+): VisibleQuotaWindow[] {
+  const result = withFableQuotaWindow(windows, account, asOf);
+  const window = account.monthly ?? null;
+  if (!window) return result;
+  const exhaustedWeekOnly =
+    windows.length === 1 &&
+    windows[0]!.key === "sevenDay" &&
+    quotaPercent(windows[0]!.window, asOf) === 100;
+  if (
+    exhaustedWeekOnly ||
+    quotaState(window, asOf) !== "active" ||
+    quotaPercent(window, asOf) === null
+  )
+    return result;
+  return [...result, { key: "monthly", label: "月", window }];
 }
 
 /**

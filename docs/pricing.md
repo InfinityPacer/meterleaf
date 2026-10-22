@@ -3,7 +3,7 @@
 [返回首页](../README.md)
 
 Meterleaf 将费率保存在独立 JSON 文件中，内置文件为
-`prices/meterleaf-2026-09-25.json`，同时包含 OpenAI 与 Anthropic Claude 模型。使用自定义价格表时，设置
+`prices/meterleaf-2026-09-25.json`，同时包含 OpenAI、Anthropic Claude 以及通过 OpenCode Go 接入的 DeepSeek 模型。使用自定义价格表时，设置
 `METERLEAF_PRICE_BOOK=/path/to/prices.json` 并重启服务。自定义文件完整替换内置表，不进行隐式合并。
 
 ## 版本元数据
@@ -40,6 +40,8 @@ Credits 使用独立规则，不设置 `usdBasis`。两个 USD 分支与 Credits
 `null` 表示没有可用费率，不是零价。当对应 token 数量为正但费率为 `null` 时，估值保留为未计价。缺少任一基础 token 桶或匹配规则时，也保留为未计价。
 可选的 `longContext` 指定 `threshold` 和替代 `rates`；只有总输入 Tokens 严格超过阈值才使用该档位，总输入包含普通输入、缓存读取和缓存写入。来源未声明档位时按 Standard 估值并标注为假设，不从其他档位或缺失费率推导。
 
+可选的 `peak` 表示供应商公布的时段价，包含 `days`、`hoursUtc` 和替代的 `rates`。`days` 使用 ISO 星期编号，周一为 1、周日为 7；`hoursUtc` 的每个时段从 `from` 开始，到 `until` 前结束，写成 `HH:MM` 的 UTC 时间。判断记录是否处于峰时只看 `occurredAt` 换算后的 UTC 星期和时刻，与服务器或采集机器的本地时区无关。峰时费率是完整价格，不按倍率从基础费率推导；峰时与 `longContext`、`imageRates` 不能配置在同一条规则里，避免两套替代费率互相覆盖。
+
 Sol 的已公布促销价已经写入两个 USD 分支，不再额外乘以 `0.8`；`promotion.confirmedThrough` 只表示至少确认到该日期。Astra Credits 超过 272K 后按选定订阅规则继续使用标准上下文费率。
 
 GPT-5.6 的 Credits 使用对应模型的标准 Token 费率，不套用 API 长上下文加价。
@@ -56,6 +58,8 @@ Claude 规则使用 Anthropic 公布的 API 价格，订阅等价 USD 与标准 
 GPT-5.4 与 Mini 使用各自规则，不相互继承长上下文档位；未配置的 Fast、Flex 或缓存写入费率不会从标准档推导。Codex 快速模式的 Credits 记为 `priority` 档，按官方公布的倍数配置，GPT-5.6 与 GPT-6 各型号为标准档的 2.5 倍，GPT-5.4 为 2 倍，GPT-5.4 Mini 未公布，保留未计价。内置表的促销说明只描述该版本已采用的规则，不能据此假设促销结束后的价格。
 
 内置表覆盖 GPT Image 2、GPT Image 2.5 Sunburst 和 Flare，以及各自已公布的日期快照。两代图像模型配置相同的 USD 和 Credits Token 单价。
+
+通过 OpenCode Go 接入的 DeepSeek V4.1 Flash 使用 Go 公布的每百万 token 价格，并按 Go 公布的峰时规则区分工作日峰时与非峰时。这是该模型目前唯一可用的按 token 计价依据，两个 USD 分支都按它估值。Go 订阅按月计费，不随 token 用量出账，所以这些金额是估值而不是 Go 账单。该模型未公布缓存写入价，含缓存写入的记录保留未计价。
 
 未配置的模型不会自动别名到其他模型。网关参考价不是已核实的官方报价，也不能用于推导订阅 Credits。图像与实时模型需要相应媒体 Token 分桶，不能用文本四桶冒充完整费用。
 

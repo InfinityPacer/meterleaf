@@ -6,7 +6,7 @@ import type { LedgerView } from "../../shared/ledger-view";
 import type { AccountLifetime, LedgerAccount } from "../../shared/report";
 import {
   visibleQuotaWindows,
-  withFableQuotaWindow,
+  withExtraQuotaWindows,
 } from "../lib/quota-display";
 import {
   amount,
@@ -242,13 +242,14 @@ export function MobileHome({
           {accounts.map((account) => {
             const quotas = showArchived
               ? []
-              : withFableQuotaWindow(
+              : withExtraQuotaWindows(
                   visibleQuotaWindows(account, asOf),
                   account,
                   asOf,
                 );
             const hasQuota =
-              !showArchived && Boolean(account.fiveHour || account.sevenDay);
+              !showArchived &&
+              Boolean(account.fiveHour || account.sevenDay || account.monthly);
             const plan = planBadge(account);
             const open = () =>
               hasQuota ? onAccount(account) : onRequests(account);

@@ -11,6 +11,7 @@ import {
   quotaWaitingReset,
   accountQuotaExhausted,
   withFableQuotaWindow,
+  withExtraQuotaWindows,
   quotaResetMinute,
 } from "../src/web/lib/quota-display";
 
@@ -209,6 +210,32 @@ test("an expired Fable window waits for a new sample instead of disappearing", (
     ["sevenDay", false],
   ]);
   expect(shown(expired, { ...week, resetsAt: now })).toEqual([]);
+});
+
+test("a monthly window follows the weekly ones and yields to an exhausted week", () => {
+  const month = { ...window, percent: 40, resetsAt: "2026-09-23T00:00:00Z" };
+  const shown = (sevenDay: AccountWindow, monthly: AccountWindow) =>
+    withExtraQuotaWindows(
+      visibleQuotaWindows(
+        { fiveHour: { ...window, percent: 5 }, sevenDay },
+        now,
+      ),
+      { monthly },
+      now,
+    ).map((item) => item.key);
+  expect(shown({ ...window, percent: 10 }, month)).toEqual([
+    "fiveHour",
+    "sevenDay",
+    "monthly",
+  ]);
+  // 周额度用尽时紧凑视图只留周额度；月额度过期或缺值时不占位。
+  expect(shown(window, month)).toEqual(["sevenDay"]);
+  expect(
+    shown({ ...window, percent: 10 }, { ...month, resetsAt: now }),
+  ).toEqual(["fiveHour", "sevenDay"]);
+  expect(
+    shown({ ...window, percent: 10 }, { ...month, percent: null }),
+  ).toEqual(["fiveHour", "sevenDay"]);
 });
 
 test("weekly reset restores five-hour visibility instead of keeping an expired exhausted state", () => {

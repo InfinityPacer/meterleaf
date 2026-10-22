@@ -13,6 +13,38 @@ const rates = z
     output: rate.nullable(),
   })
   .strict();
+const timeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+const minutesOfDay = (value: string) => {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours! * 60 + minutes!;
+};
+/** 供应商按 UTC 星期与时段的显式价格；时段起点包含、终点不包含，跨日需拆成两段。 */
+const peak = z
+  .object({
+    /** ISO 星期编号，周一为 1，周日为 7。 */
+    days: z.array(z.number().int().min(1).max(7)).min(1),
+    hoursUtc: z
+      .array(z.object({ from: timeOfDay, until: timeOfDay }).strict())
+      .min(1),
+    rates,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.days).size !== value.days.length)
+      context.addIssue({
+        code: "custom",
+        path: ["days"],
+        message: "Peak weekdays must be unique",
+      });
+    value.hoursUtc.forEach((window, index) => {
+      if (minutesOfDay(window.from) >= minutesOfDay(window.until))
+        context.addIssue({
+          code: "custom",
+          path: ["hoursUtc", index],
+          message: "Peak window must end after it starts",
+        });
+    });
+  });
 /** 费率均按百万 token；显式版本与证据跟随账单保存，不能静默追随网关定价。 */
 export const priceBookSchema = z
   .object({
@@ -47,6 +79,8 @@ export const priceBookSchema = z
             .object({ threshold: z.number().int().nonnegative(), rates })
             .strict()
             .optional(),
+          /** 完整替代基础费率的时段价；供应商公布显式价格时直接配置，不做倍率推导。 */
+          peak: peak.optional(),
         })
         .strict()
         .refine(
@@ -55,6 +89,10 @@ export const priceBookSchema = z
               ? rule.usdBasis !== undefined
               : rule.usdBasis === undefined,
           "USD rules require an estimate basis; credits rules must not have one",
+        )
+        .refine(
+          (rule) => !(rule.peak && (rule.longContext || rule.imageRates)),
+          "Peak hours cannot be combined with long-context or image rates",
         ),
     ),
   })
@@ -119,6 +157,24 @@ export interface Valuation {
   credits: Charge;
 }
 
+/** 时段价按 occurredAt 的 UTC 星期和分钟判定，不受运行环境时区影响。 */
+function withinPeak(
+  schedule: NonNullable<PriceBook["rules"][number]["peak"]>,
+  occurredAt: string,
+) {
+  const at = new Date(occurredAt);
+  const weekday = at.getUTCDay() === 0 ? 7 : at.getUTCDay();
+  const minute = at.getUTCHours() * 60 + at.getUTCMinutes();
+  return (
+    schedule.days.includes(weekday) &&
+    schedule.hoursUtc.some(
+      (window) =>
+        minutesOfDay(window.from) <= minute &&
+        minute < minutesOfDay(window.until),
+    )
+  );
+}
+
 /** 先使用可证实的上游计量金额，否则逐币种查询独立费率；网关扣款从不充当上游金额。 */
 export function valueUsage(
   fact: UsageFact,
@@ -180,9 +236,11 @@ export function valueUsage(
     const totalInput =
       fact.tokens.input! + fact.tokens.cacheRead! + fact.tokens.cacheWrite!;
     const prices =
-      rule.longContext && totalInput > rule.longContext.threshold
-        ? rule.longContext.rates
-        : rule.rates;
+      rule.peak && withinPeak(rule.peak, fact.occurredAt)
+        ? rule.peak.rates
+        : rule.longContext && totalInput > rule.longContext.threshold
+          ? rule.longContext.rates
+          : rule.rates;
     const keys = ["input", "cacheRead", "cacheWrite", "output"] as const;
     const counts = Object.fromEntries(
       keys.map((key) => [key, fact.tokens[key]!]),

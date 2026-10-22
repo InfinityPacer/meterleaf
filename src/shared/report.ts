@@ -70,6 +70,8 @@ export interface LedgerAccount {
   sevenDay: AccountWindow | null;
   /** 只计 Fable 请求的独立周额度；上游未上报时缺省，不能据套餐推断有无。 */
   sevenDayFable?: AccountWindow | null;
+  /** 按订阅日起算的月额度，例如 OpenCode Go；上游未上报时缺省。 */
+  monthly?: AccountWindow | null;
   /** 全历史账户用量，不受报表筛选影响；缺失表示该来源尚未提供累计汇总。 */
   lifetime?: AccountLifetime;
 }

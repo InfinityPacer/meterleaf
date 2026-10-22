@@ -12,6 +12,7 @@ import {
 } from "./claude-code/account";
 import type { QuotaSnapshot } from "./claude-code/quota";
 import type { UsageFact } from "./claude-code/usage";
+import { routeModel, type ModelAccountRule } from "./model-accounts";
 
 /**
  * 文件读取进度。offset 只推进到最后一个完整行之后；fingerprint 是 offset 之前一小段字节的摘要，
@@ -104,6 +105,7 @@ export class CollectorState {
   private segmentCache: AccountSegment[] | null = null;
   private hintCache: LoginHint[] | null = null;
   private bindingCache: HistoryBinding | null | undefined;
+  private modelAccounts: readonly ModelAccountRule[] = [];
 
   constructor(path: string) {
     this.db = new Database(path, { create: true, strict: true });
@@ -116,6 +118,28 @@ export class CollectorState {
 
   close() {
     this.db.close();
+  }
+
+  /** 设置模型账户映射；改变映射后由调用方重新归属全部事件。 */
+  setModelAccounts(rules: readonly ModelAccountRule[]) {
+    this.modelAccounts = rules;
+  }
+
+  /**
+   * 事件归属：映射到固定账户的模型直接归该账户，并保存账户资料供推送时带上；
+   * Claude 模型按登录时间线推断。
+   */
+  private accountFor(model: string, occurredAt: string): string {
+    const routed = routeModel(model, this.modelAccounts);
+    if (!routed)
+      return attribute(
+        occurredAt,
+        this.segments(),
+        this.binding(),
+        this.loginHints(),
+      );
+    this.upsertAccount(routed);
+    return routed.externalId;
   }
 
   getMeta(key: string): string | null {
@@ -220,11 +244,9 @@ export class CollectorState {
       .get(observation.key);
     const serialized = JSON.stringify(observation.fact);
     if (!existing) {
-      const account = attribute(
+      const account = this.accountFor(
+        observation.fact.model,
         observation.firstTimestamp,
-        this.segments(),
-        this.binding(),
-        this.loginHints(),
       );
       this.db
         .query(
@@ -393,9 +415,6 @@ export class CollectorState {
 
   /** 按当前时间线重新计算归属；归属变化的非零事件重新进入待发送。since 为 null 时处理全部事件。 */
   reattribute(since: string | null): number {
-    const segments = this.segments();
-    const binding = this.binding();
-    const hints = this.loginHints();
     const rows =
       since === null
         ? this.db
@@ -411,17 +430,14 @@ export class CollectorState {
     let changed = 0;
     this.db.transaction(() => {
       for (const row of rows) {
-        const account = attribute(row.occurred_at, segments, binding, hints);
+        const fact = JSON.parse(row.observation) as UsageFact;
+        const account = this.accountFor(fact.model, row.occurred_at);
         if (account === row.account) continue;
         this.db
           .query("UPDATE events SET account = ? WHERE key = ?")
           .run(account, row.key);
         if (row.total > 0) {
-          this.enqueueUsage(
-            JSON.parse(row.observation) as UsageFact,
-            row.occurred_at,
-            account,
-          );
+          this.enqueueUsage(fact, row.occurred_at, account);
           changed += 1;
         }
       }

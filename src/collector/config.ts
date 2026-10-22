@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { z } from "zod";
 import { INGEST_KEY_PREFIX, sourceIdSchema } from "../shared/ingest";
+import { modelAccountRuleSchema } from "./model-accounts";
 
 const configSchema = z.object({
   server: z.string().url(),
@@ -11,6 +12,8 @@ const configSchema = z.object({
   createdAt: z.string(),
   /** 可选额度来源：用户状态栏脚本写出的 rate_limits TSV 绝对路径。 */
   statuslineCache: z.string().startsWith("/").optional(),
+  /** 可选：按模型名把用量归入独立账户，按顺序取第一条命中的规则。 */
+  modelAccounts: z.array(modelAccountRuleSchema).max(50).optional(),
 });
 
 export type CollectorConfig = z.infer<typeof configSchema>;

@@ -21,6 +21,7 @@ import {
   statuslineQuotaSnapshot,
 } from "./claude-code/statusline-cache";
 import { attribute } from "./attribution";
+import { modelAccountsDigest, type ModelAccountRule } from "./model-accounts";
 import { UNATTRIBUTED_ACCOUNT_ID } from "./claude-code/account";
 import { mayContainUsage, parseLine } from "./claude-code/usage";
 import type { CollectorState, FileCursor, FileObservation } from "./state";
@@ -37,6 +38,8 @@ export interface CollectSources {
     read: CredentialTextReader;
     version: CredentialVersionReader;
   } | null;
+  /** 可选：模型到独立账户的映射，见 model-accounts.ts。 */
+  modelAccounts?: readonly ModelAccountRule[];
 }
 
 export interface CollectReport {
@@ -245,8 +248,11 @@ export function emptyReport(): CollectReport {
 }
 
 const attributionRulesKey = "attribution_rules";
-/** 归属规则版本；变化时按新规则重新归属全部事件。2 起不同账户之间的空档按切换时刻分配。 */
-const attributionRules = "2";
+/**
+ * 归属规则版本；变化时按新规则重新归属全部事件。2 起不同账户之间的空档按切换时刻分配；
+ * 3 起非 Claude 模型按模型映射归入独立账户，映射内容变化也触发重新归属。
+ */
+const attributionRules = "3";
 const credentialCandidateKey = "credential_plan_candidate";
 const credentialCheckKey = "credential_plan_check";
 /** 读不到凭据修改标记时，退回按此间隔复查。 */
@@ -405,6 +411,9 @@ export function collect(
   finishedAt: () => Date = () => now,
 ): CollectReport {
   const report = emptyReport();
+  const modelAccounts = sources.modelAccounts ?? [];
+  state.setModelAccounts(modelAccounts);
+  const rules = `${attributionRules}:${modelAccountsDigest(modelAccounts)}`;
   const snapshot = readClaudeJson(sources.claudeJson);
   report.claudeJsonRead = snapshot !== null;
   if (snapshot?.account) {
@@ -438,10 +447,10 @@ export function collect(
     );
     report.reattributed += state.reattribute(since);
   }
-  // 早期版本把不同账户之间的空档记为未归属；按现行规则把已有事件重新归属一次。
-  if (state.getMeta(attributionRulesKey) !== attributionRules) {
+  // 规则或模型映射与上次不同（含早期版本把空档记为未归属）时，按现行规则把已有事件重新归属一次。
+  if (state.getMeta(attributionRulesKey) !== rules) {
     report.reattributed += state.reattribute(null);
-    state.setMeta(attributionRulesKey, attributionRules);
+    state.setMeta(attributionRulesKey, rules);
   }
 
   const files = listSessionFiles(sources.projectsDir);
