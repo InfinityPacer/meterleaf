@@ -11,6 +11,7 @@ import { encodeLedger } from "../shared/ledger-wire";
 import type { SyncStatus } from "./sync";
 import { registerResponseCompression } from "./response-compression";
 import { registerIngestRoutes, type IngestTarget } from "./ingest";
+import { registerOtelRoutes } from "./otel";
 import {
   registerGithubAuth,
   type GithubAuthConfig,
@@ -158,7 +159,11 @@ export function createApp({
       throw error;
     }
   });
-  if (ingest) registerIngestRoutes(app, ingest, diagnostics);
+  if (ingest) {
+    registerIngestRoutes(app, ingest, diagnostics);
+    // 同一把写入密钥也接收 Claude Code 的 OTEL 日志；只补充请求归属。
+    registerOtelRoutes(app, ingest, diagnostics);
+  }
   const displayState = () => ({
     archived: accountArchive?.read() ?? [],
     hidden: accountArchive?.hidden() ?? [],

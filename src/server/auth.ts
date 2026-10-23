@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { INGEST_BATCHES_PATH } from "../shared/ingest";
+import { OTEL_LOGS_PATH } from "../shared/otel";
 import { silentLogger, type DiagnosticsLogger } from "./diagnostics";
 
 /**
@@ -45,6 +46,7 @@ function isPublicPath(path: string) {
     path.startsWith("/auth/") ||
     path === "/api/health" ||
     path === INGEST_BATCHES_PATH ||
+    path === OTEL_LOGS_PATH ||
     path === "/favicon.svg" ||
     path === "/manifest.webmanifest" ||
     path === "/offline.html" ||
