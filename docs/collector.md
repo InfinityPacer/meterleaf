@@ -99,6 +99,8 @@ meterleaf-collector claude-profiles \
 
 这些日志只发到你自己的 Meterleaf，不发给 Anthropic。Claude Code 默认不导出提示词与回复；Meterleaf 也只保存请求 ID、账户 UUID、组织 UUID、会话 ID、模型和请求时间，其余属性即使到达也不落库。
 
+服务端比采集器先升级时，旧采集器推送的用量还没有 `attribution` 字段。如果配置过 `modelAccounts`，这段时间里 OTEL 会暂时覆盖模型映射的归属；采集器升级后会重发全部已推送用量，归属随之恢复。所以用过模型映射时，请在升级服务端后尽快升级采集器。
+
 ## 安装
 
 采集器需要 macOS 13 或更新版本，目前不提供下载，需要在这台 Mac 上从仓库构建。构建需要 Bun 1.4.2 或更新版本，以及 Xcode 命令行工具（没有时执行 `xcode-select --install`）。
