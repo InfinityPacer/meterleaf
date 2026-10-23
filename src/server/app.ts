@@ -405,6 +405,17 @@ export function createApp({
     return request.query.compact === "1" ? encodeLedger(result) : result;
   });
   app.setErrorHandler((error, request, reply) => {
+    // 超限在 Fastify 解析阶段抛出。5xx 会让采集器与 OTLP 导出器反复重试同一批，
+    // 413 才会让它们丢弃并继续后续批次。
+    if ((error as { code?: unknown }).code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+      diagnostics.log("warn", "http.payload_too_large", {
+        requestId: request.id,
+        route: request.routeOptions.url ?? "unmatched",
+      });
+      return reply
+        .code(413)
+        .send({ error: "payload-too-large", requestId: request.id });
+    }
     diagnostics.error("http.failed", {
       requestId: request.id,
       route: request.routeOptions.url ?? "unmatched",

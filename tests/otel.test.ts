@@ -18,7 +18,7 @@ import {
   DATABASE_BASELINE_REVISION,
   DATABASE_SCHEMA_REVISION,
 } from "../src/storage/schema";
-import { OTEL_LOGS_PATH } from "../src/shared/otel";
+import { OTEL_BODY_LIMIT_BYTES, OTEL_LOGS_PATH } from "../src/shared/otel";
 import { LedgerStore } from "../src/storage/ledger";
 
 const key = "mlk_test-key-for-otel-only";
@@ -199,6 +199,17 @@ test("OTEL route requires the write key, JSON and a readable body", async () => 
     expect((await post(null, { raw: "not gzip", gzip: true })).statusCode).toBe(
       400,
     );
+    // 超限返回 413，导出器才会丢弃而不是无限重试。
+    expect(
+      (
+        await post(null, {
+          raw: JSON.stringify({
+            resourceLogs: [],
+            padding: "x".repeat(OTEL_BODY_LIMIT_BYTES),
+          }),
+        })
+      ).statusCode,
+    ).toBe(413);
   } finally {
     await app.close();
   }
