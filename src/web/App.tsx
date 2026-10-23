@@ -2225,9 +2225,7 @@ export function App() {
                         label={
                           key === "sevenDayFable"
                             ? "Fable 周额度"
-                            : key === "monthly"
-                              ? "月额度"
-                              : `${label}窗口`
+                            : `${label}窗口`
                         }
                         asOf={quotaAsOf}
                         waiting={waiting}
@@ -2394,7 +2392,7 @@ export function App() {
                     ).some(({ key }) => key === "monthly") &&
                       selectedAccount.monthly && (
                         <>
-                          <dt>月额度重置</dt>
+                          <dt>1m 重置</dt>
                           <dd>
                             {selectedAccount.monthly.resetsAt
                               ? localTime(
@@ -2411,7 +2409,7 @@ export function App() {
                                 )
                               : "N/A"}
                           </dd>
-                          <dt>月周期费用</dt>
+                          <dt>1m 周期费用</dt>
                           <dd>
                             {windowAmount(
                               selectedAccount.monthly,
@@ -2419,7 +2417,7 @@ export function App() {
                               quotaAsOf,
                             )}
                           </dd>
-                          <dt>月预估费用</dt>
+                          <dt>1m 预估费用</dt>
                           <dd
                             title={estimateDescription(selectedAccount.monthly)}
                           >

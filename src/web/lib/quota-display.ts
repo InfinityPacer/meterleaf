@@ -26,7 +26,7 @@ export function showQuotaEstimate(window: AccountWindow | null, asOf: string) {
 
 export interface VisibleQuotaWindow {
   key: "fiveHour" | "sevenDay" | "sevenDayFable" | "monthly";
-  label: "5h" | "7d" | "Fable" | "月";
+  label: "5h" | "7d" | "Fable" | "1m";
   window: AccountWindow;
   /** 上游报过这个窗口，但当前快照已过期或缺值；只占位，不展示旧用量。 */
   waiting?: boolean;
@@ -127,7 +127,7 @@ export function withExtraQuotaWindows(
     quotaPercent(window, asOf) === null
   )
     return result;
-  return [...result, { key: "monthly", label: "月", window }];
+  return [...result, { key: "monthly", label: "1m", window }];
 }
 
 /**
@@ -209,6 +209,8 @@ export function estimateDescription(
       return "参考上一周期估值，本周期观测仍少";
     case "blended":
       return "综合上一周期与本周期观测，随本周期样本增加逐步调整";
+    case "plan-limit":
+      return "按 OpenCode Go 套餐公布的模型上限计算，不是外推值";
     default:
       return "按同周期多段消费与比例变化的中位数推算，不代表供应商承诺额度";
   }
