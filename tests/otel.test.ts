@@ -16,6 +16,7 @@ import {
 } from "../src/shared/ingest";
 import {
   DATABASE_BASELINE_REVISION,
+  DATABASE_OTEL_ATTRIBUTION_REVISION,
   DATABASE_REQUEST_ACCOUNTS_REVISION,
   DATABASE_SCHEMA_REVISION,
 } from "../src/storage/schema";
@@ -612,8 +613,12 @@ test("an existing ledger upgrades in place and keeps its facts", () => {
   const legacy = new Database(path, { strict: true });
   legacy.exec("DROP TABLE request_accounts");
   legacy
-    .query("DELETE FROM schema_revisions WHERE revision IN (?, ?)")
-    .run(DATABASE_REQUEST_ACCOUNTS_REVISION, DATABASE_SCHEMA_REVISION);
+    .query("DELETE FROM schema_revisions WHERE revision IN (?, ?, ?)")
+    .run(
+      DATABASE_REQUEST_ACCOUNTS_REVISION,
+      DATABASE_OTEL_ATTRIBUTION_REVISION,
+      DATABASE_SCHEMA_REVISION,
+    );
   expect(legacy.query("SELECT revision FROM schema_revisions").all()).toEqual([
     { revision: DATABASE_BASELINE_REVISION },
   ]);
@@ -640,6 +645,7 @@ test("an existing ledger upgrades in place and keeps its facts", () => {
       [
         DATABASE_BASELINE_REVISION,
         DATABASE_REQUEST_ACCOUNTS_REVISION,
+        DATABASE_OTEL_ATTRIBUTION_REVISION,
         DATABASE_SCHEMA_REVISION,
       ].sort(),
     );

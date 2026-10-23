@@ -2,6 +2,7 @@ import { renameSync, rmSync } from "node:fs";
 import { parentPort, Worker, workerData } from "node:worker_threads";
 import { LedgerStore } from "../storage/ledger";
 import { LifetimeIndex } from "../storage/lifetime-index";
+import { prunableChangeLogThrough } from "../storage/change-log-retention";
 import { sourceFileState } from "../storage/source-file-state";
 import { priceBookKey, type PriceBook } from "../domain/pricing";
 import type { ViewQuery } from "../shared/ledger-view";
@@ -58,6 +59,37 @@ type IndexState =
   | { mode: "current" }
   | { mode: "transitional"; pricing: IndexedPricing }
   | { mode: "building"; since: string };
+
+/**
+ * 变更日志清理每小时最多请求一次。游标由本线程的两个索引共同决定，执行则交给拥有
+ * 可写账本连接的主线程；重建期间不清理，旧索引的游标不代表账本已被完整消费。
+ */
+const CHANGE_LOG_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+let lastChangeLogPruneRequestAt = 0;
+
+function requestChangeLogPrune(state: IndexState) {
+  if (state.mode !== "current") return;
+  const now = Date.now();
+  if (now - lastChangeLogPruneRequestAt < CHANGE_LOG_PRUNE_INTERVAL_MS) return;
+  let consumedThrough: number | null;
+  try {
+    consumedThrough = prunableChangeLogThrough({
+      reportSequence: projection.committedSequence(),
+      lifetimeSequence: lifetime.committedCheckpoint(),
+      indexState: building ? "building" : state.mode,
+    });
+  } catch (error) {
+    // 读取索引游标失败只是放弃本次维护，报表查询仍走原有路径。
+    diagnostics.warn("report.change_log_prune_unavailable", {
+      error: summarizeError(error),
+    });
+    return;
+  }
+  if (consumedThrough === null) return;
+  // 先记时间：没有可删的行或主线程执行失败时，也不必在一小时内反复请求。
+  lastChangeLogPruneRequestAt = now;
+  parentPort!.postMessage({ type: "prune-change-log", consumedThrough });
+}
 
 function whileBuilding(): IndexState {
   return building!.previousPricing && projection.accountsCurrent()
@@ -179,6 +211,9 @@ function startBackgroundBuild(previousPricing: IndexedPricing | null): boolean {
     diagnostics.info("report.index_rebuild_finished", {
       durationMs: Math.round(performance.now() - startedAt),
     });
+    // 新索引已包含账本全部变更，可以按两个新游标请求清理。
+    building = null;
+    requestChangeLogPrune({ mode: "current" });
     finish();
   });
   worker.on("error", fail);
@@ -225,6 +260,7 @@ function catchUp() {
   lastEnsureChanged = false;
   try {
     const state = store.db.transaction(() => prepareIndex())();
+    requestChangeLogPrune(state);
     parentPort!.postMessage({
       type: "caught-up",
       catchUp: {
@@ -297,6 +333,7 @@ parentPort!.on(
         });
         return;
       }
+      requestChangeLogPrune(state);
       parentPort!.postMessage({
         id: request.id,
         result,

@@ -6,6 +6,7 @@ import { defaultPriceBook } from "../src/domain/default-prices";
 import type { UsageFact } from "../src/domain/connector";
 import { LedgerStore } from "../src/storage/ledger";
 import {
+  DATABASE_OTEL_ATTRIBUTION_REVISION,
   DATABASE_REQUEST_ACCOUNTS_REVISION,
   DATABASE_SCHEMA_REVISION,
 } from "../src/storage/schema";
@@ -297,8 +298,8 @@ test("迁移为已覆盖的事实补上 otel 标记，未覆盖的事实不变",
         "UPDATE usage_facts SET payload=json_remove(payload, '$.metadata.attribution')",
       );
       store.db
-        .query("DELETE FROM schema_revisions WHERE revision=?")
-        .run(DATABASE_SCHEMA_REVISION);
+        .query("DELETE FROM schema_revisions WHERE revision IN (?, ?)")
+        .run(DATABASE_OTEL_ATTRIBUTION_REVISION, DATABASE_SCHEMA_REVISION);
       expect(
         store.db
           .query<{ revision: string }, []>(

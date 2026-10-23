@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import {
   DATABASE_BASELINE_REVISION,
+  DATABASE_OTEL_ATTRIBUTION_REVISION,
   DATABASE_REQUEST_ACCOUNTS_REVISION,
   DATABASE_SCHEMA_REVISION,
   assertReadableSchema,
@@ -48,6 +49,17 @@ const REQUEST_ACCOUNT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 /** 超过这个行数才分批删除，避免一次长事务阻塞写入。 */
 const REQUEST_ACCOUNT_BULK_THRESHOLD = 10_000;
 const REQUEST_ACCOUNT_DELETE_BATCH = 5_000;
+
+/**
+ * 维护窗口内让估值触发器跳过变更日志的标记。维护代码在同一个事务里插入、删除，
+ * 其他连接只能看到事务提交后的状态，永远不会观察到这个键。触发器定义中的键名
+ * 必须与这里保持一致。
+ */
+export const CHANGE_LOG_SUPPRESSION_KEY = "maintenance:suppressChangeLog";
+/** 每批删除的估值行数；事务保持短小，避免长时间占住写锁。 */
+const VALUATION_DELETE_BATCH = 5_000;
+/** 每批删除的变更日志行数。 */
+const CHANGE_LOG_DELETE_BATCH = 5_000;
 
 export interface LedgerStoreOptions {
   readonly?: boolean;
@@ -377,7 +389,7 @@ export class LedgerStore {
     `),
       },
       {
-        revision: DATABASE_SCHEMA_REVISION,
+        revision: DATABASE_OTEL_ATTRIBUTION_REVISION,
         downRevision: DATABASE_REQUEST_ACCOUNTS_REVISION,
         // 归属结论改由用量事实自身保存，请求归属表只需保留一个短窗口。
         apply: (db) =>
@@ -398,6 +410,65 @@ export class LedgerStore {
               )
               AND ra.account_uuid = usage_facts.account_id
          );
+    `),
+      },
+      {
+        revision: DATABASE_SCHEMA_REVISION,
+        downRevision: DATABASE_OTEL_ATTRIBUTION_REVISION,
+        // 维护性删除旧价格表估值时不能制造索引变更；抑制标记只在一个事务内可见。
+        apply: (db) =>
+          db.exec(`
+      DROP TRIGGER IF EXISTS valuations_report_insert;
+      CREATE TRIGGER valuations_report_insert
+      AFTER INSERT ON valuations
+      WHEN NOT EXISTS (
+        SELECT 1 FROM sync_state WHERE key='${CHANGE_LOG_SUPPRESSION_KEY}'
+      )
+      BEGIN
+        INSERT INTO usage_change_log (revision, source_id, external_id)
+        VALUES (
+          COALESCE(
+            (SELECT CAST(value AS INTEGER) FROM sync_state WHERE key='ledger:dataRevision'),
+            0
+          ),
+          NEW.source_id,
+          NEW.external_id
+        );
+      END;
+      DROP TRIGGER IF EXISTS valuations_report_update;
+      CREATE TRIGGER valuations_report_update
+      AFTER UPDATE ON valuations
+      WHEN NOT EXISTS (
+        SELECT 1 FROM sync_state WHERE key='${CHANGE_LOG_SUPPRESSION_KEY}'
+      )
+      BEGIN
+        INSERT INTO usage_change_log (revision, source_id, external_id)
+        VALUES (
+          COALESCE(
+            (SELECT CAST(value AS INTEGER) FROM sync_state WHERE key='ledger:dataRevision'),
+            0
+          ),
+          NEW.source_id,
+          NEW.external_id
+        );
+      END;
+      DROP TRIGGER IF EXISTS valuations_report_delete;
+      CREATE TRIGGER valuations_report_delete
+      AFTER DELETE ON valuations
+      WHEN NOT EXISTS (
+        SELECT 1 FROM sync_state WHERE key='${CHANGE_LOG_SUPPRESSION_KEY}'
+      )
+      BEGIN
+        INSERT INTO usage_change_log (revision, source_id, external_id)
+        VALUES (
+          COALESCE(
+            (SELECT CAST(value AS INTEGER) FROM sync_state WHERE key='ledger:dataRevision'),
+            0
+          ),
+          OLD.source_id,
+          OLD.external_id
+        );
+      END;
     `),
       },
     ]);
@@ -1091,6 +1162,91 @@ export class LedgerStore {
       return;
     }
     if (removed > 0) this.onRequestAccountsExpired?.(removed);
+  }
+
+  /**
+   * 删除非当前价格表版本的估值。读取路径只使用当前价格表，缺少估值时按事实现场计算，
+   * 所以旧版本金额可以丢弃；价格表本身继续保留，回滚后仍能重新算出旧结果。
+   *
+   * 每批一个事务，并在事务内临时插入变更日志抑制标记：旧估值删除不应制造几十万条
+   * 无意义的索引变更。批与批之间让出事件循环，避免长时间占用主线程和写锁。
+   */
+  async pruneStaleValuations(): Promise<number> {
+    const version = priceBookKey(this.book);
+    let removed = 0;
+    for (;;) {
+      const batch = this.db.transaction(() => {
+        this.db
+          .query(
+            "INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, '1')",
+          )
+          .run(CHANGE_LOG_SUPPRESSION_KEY);
+        try {
+          return this.db
+            .query(
+              `DELETE FROM valuations WHERE rowid IN (
+                 SELECT rowid FROM valuations WHERE version <> ?
+                 ORDER BY rowid LIMIT ?
+               )`,
+            )
+            .run(version, VALUATION_DELETE_BATCH).changes;
+        } finally {
+          this.db
+            .query("DELETE FROM sync_state WHERE key=?")
+            .run(CHANGE_LOG_SUPPRESSION_KEY);
+        }
+      })();
+      removed += batch;
+      if (batch < VALUATION_DELETE_BATCH) return removed;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
+  /**
+   * 删除报表索引和累计索引都已消费的变更记录。上界取 consumedThrough 与当前最大序号
+   * 的较小值，并严格删除小于它的行：最大的一行始终保留，索引不会把空日志误判成
+   * “账本被清空”并触发全量重建。游标落在现存最小序号之前的情况由索引侧检测并重建。
+   */
+  async pruneUsageChangeLog(consumedThrough: number): Promise<number> {
+    if (!Number.isFinite(consumedThrough)) return 0;
+    const max =
+      this.db
+        .query<{ sequence: number | null }, []>(
+          "SELECT MAX(change_id) AS sequence FROM usage_change_log",
+        )
+        .get()?.sequence ?? null;
+    if (max === null) return 0;
+    const upper = Math.min(Math.floor(consumedThrough), max);
+    if (upper <= 0) return 0;
+    let removed = 0;
+    for (;;) {
+      const batch = this.db.transaction(
+        () =>
+          this.db
+            .query(
+              `DELETE FROM usage_change_log WHERE change_id IN (
+                 SELECT change_id FROM usage_change_log
+                  WHERE change_id < ?
+                  ORDER BY change_id LIMIT ?
+               )`,
+            )
+            .run(upper, CHANGE_LOG_DELETE_BATCH).changes,
+      )();
+      removed += batch;
+      if (batch < CHANGE_LOG_DELETE_BATCH) return removed;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
+  /** 变更日志现存的最小序号；游标落在它之前说明需要的变更已经被清理。 */
+  reportUsageChangeFloor(): number | null {
+    if (!this.hasReportChangeLog()) return null;
+    const sequence = this.db
+      .query<{ sequence: number | null }, []>(
+        "SELECT MIN(change_id) AS sequence FROM usage_change_log",
+      )
+      .get()?.sequence;
+    return sequence ?? null;
   }
 
   /** 请求先到、用量后到时由 writeFacts 覆盖；这里处理相反顺序。 */
