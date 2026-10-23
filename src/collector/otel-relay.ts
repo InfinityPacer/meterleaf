@@ -100,7 +100,11 @@ export function startOtelRelay(
       if (!records) return invalid("invalid otlp payload", 400);
 
       try {
-        state.enqueueOtel(records);
+        const { dropped } = state.enqueueOtel(records);
+        if (dropped > 0)
+          log(
+            `${now().toISOString()} 本机 OTEL 待发送已达上限，丢弃最早的 ${dropped} 条；请检查同步能否连上服务端`,
+          );
       } catch {
         // 数据库暂时不可写时让 Claude Code 按导出器的重试策略再发一次。
         log(`${now().toISOString()} 本机 OTEL 中转写库失败，返回 503 等待重试`);

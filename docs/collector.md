@@ -80,7 +80,7 @@ meterleaf-collector claude-profiles \
 
 ### 开启 OTEL 导出
 
-推荐让 Claude Code 把日志发给这台电脑上的采集器中转。`install-launchd` 会同时启动一个只监听 `127.0.0.1:4319` 的常驻进程，它把日志写进采集器的本机待发送队列，每分钟的同步再把这些记录和用量一起推送到 Meterleaf。服务端或网络暂时不可用时记录留在本机，恢复后自动补发。
+推荐让 Claude Code 把日志发给这台电脑上的采集器中转。`install-launchd` 会同时启动一个只监听 `127.0.0.1:4319` 的常驻进程，它把日志写进采集器的本机待发送队列，每分钟的同步再把这些记录和用量一起推送到 Meterleaf。服务端或网络暂时不可用时记录留在本机，恢复后自动补发。队列最多保留最近 5 万条，长期连不上时更早的记录会被丢弃，这些请求退回按登录时间线归属，日志里会有提示。
 
 在 `~/.claude/settings.json` 中加上下面的设置。不需要 `otelHeadersHelper`，中转只接受本机回环地址上的请求，也不再单独传递写入密钥。
 
@@ -173,7 +173,7 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
    系统每分钟以低优先级运行一次同步，同时常驻运行接收 Claude Code OTEL 日志的本机中转。「系统设置 → 通用 → 登录项与扩展」中会显示带图标的 Meterleaf.app。如果命令提示等待批准，在那里打开 Meterleaf 的开关即可。那里会标注「来自身份不明的开发者」，因为构建使用的是本机临时签名，不影响运行。
 
-   Claude Code 会删除较早的会话记录，后台任务需要保持运行，才能在删除前把用量记入账本。后台任务的输出写在数据目录的 `logs` 下。
+   Claude Code 会删除较早的会话记录，后台任务需要保持运行，才能在删除前把用量记入账本。后台任务的输出写在数据目录的 `logs` 下，同步和 OTEL 中转共用这些文件。每个文件超过 1 MB 时改名为 `.1` 并重新开始，只保留这一份旧文件，日志总共不超过约 4 MB。
 
    后台任务随 Meterleaf.app 注册，应用需要留在原位置。如果设置了 `METERLEAF_COLLECTOR_HOME`、`CLAUDE_CONFIG_DIR`、`METERLEAF_CLAUDE_JSON` 或 `--claude-json`，这些路径只能通过环境变量传给后台任务，命令会改为在 `~/Library/LaunchAgents` 安装普通的后台任务，登录项中显示为可执行文件名。
 

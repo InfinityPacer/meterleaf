@@ -11,7 +11,7 @@ import {
   pushOutbox,
   serializeOtelRequests,
 } from "../src/collector/push";
-import { CollectorState } from "../src/collector/state";
+import { CollectorState, OTEL_QUEUE_LIMIT } from "../src/collector/state";
 import {
   INGEST_BATCHES_PATH,
   ingestBatchSchema,
@@ -407,6 +407,30 @@ describe("推送 OTEL 请求归属", () => {
       server.otel.map((payload) => parseOtelRequestAccounts(payload)?.length),
     ).toEqual([OTEL_MAX_PUSH_RECORDS, 5]);
     expect(state.pendingCounts().otel).toBe(0);
+  });
+
+  test("待发送队列超过上限时丢弃最早的记录", () => {
+    const state = new CollectorState(":memory:");
+    cleanup.push(() => state.close());
+    const records = Array.from({ length: OTEL_QUEUE_LIMIT }, (_, index) =>
+      otelRecord({ requestId: `req_${index}` }),
+    );
+    expect(state.enqueueOtel(records)).toEqual({
+      queued: OTEL_QUEUE_LIMIT,
+      dropped: 0,
+    });
+    expect(
+      state.enqueueOtel([
+        otelRecord({ requestId: "req_new_1" }),
+        otelRecord({ requestId: "req_new_2" }),
+      ]),
+    ).toEqual({ queued: 2, dropped: 2 });
+    const pending = state
+      .pending<OtelRequestAccount>("otel", OTEL_QUEUE_LIMIT)
+      .map((item) => item.payload.requestId);
+    expect(pending).toHaveLength(OTEL_QUEUE_LIMIT);
+    expect(pending[0]).toBe("req_2");
+    expect(pending.slice(-2)).toEqual(["req_new_1", "req_new_2"]);
   });
 
   test("接收进程写入期间运行 sync 不出现 SQLITE_BUSY", async () => {
