@@ -154,7 +154,13 @@ meterleaf-collector statusline-cache ~/.cache/claude-statusline/rate-limits.tsv
 
 Paseo 以无界面模式启动 Claude Code，状态栏命令不会执行，额度缓存因此停在最后一次在终端使用的时候，页面上的 5 小时窗口长期显示「等待更新」。无界面模式下，Claude Code 每次请求后会在输出流里给出同样的 5 小时与 7 天额度，Paseo 收到后并不保存。仓库里的 `scripts/paseo-claude-quota.sh` 包在 Claude Code 外面，参数和输入原样交给它，Paseo 收到的输出不变，脚本只把其中的额度写进上一节的额度文件。
 
-在 `~/.paseo/config.json` 中把 Claude 的启动命令换成这个脚本（需要 `jq`），路径改为实际位置，再执行 `paseo reload`。之后新启动的 Claude 代理生效，已在运行的代理要重新开始才会经过脚本。
+先把脚本复制到不随仓库分支变化的位置，Paseo 每次启动 Claude 代理都要用到它，文件不在时代理无法启动。
+
+```sh
+install -m 755 scripts/paseo-claude-quota.sh ~/.local/bin/meterleaf-paseo-claude
+```
+
+再在 `~/.paseo/config.json` 中把 Claude 的启动命令换成它（需要 `jq`），执行 `paseo reload`。之后新启动的 Claude 代理生效，已在运行的代理要重新开始才会经过脚本。
 
 ```json
 {
