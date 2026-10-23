@@ -2,11 +2,13 @@ import type { Database } from "bun:sqlite";
 
 /** 首次公开发行的统一结构基线；费用表版本与数据库结构版本相互独立。 */
 export const DATABASE_BASELINE_REVISION = "a17c9e4b620f";
+/** 0.12.0 的请求归属表，仍然是当前迁移的父修订。 */
+export const DATABASE_REQUEST_ACCOUNTS_REVISION = "c4f1a9d7e250";
 /**
  * 当前账本结构版本。升级后旧版本镜像读不了迁移过的账本，升级前必须备份数据目录。
  * 报表、累计与视图缓存不随账本结构变化，仍停留在基线 revision。
  */
-export const DATABASE_SCHEMA_REVISION = "c4f1a9d7e250";
+export const DATABASE_SCHEMA_REVISION = "d5a8c2e71b40";
 export type SchemaRevision = string;
 export type DatabaseKind = "ledger" | "report" | "lifetime" | "view-cache";
 
@@ -36,8 +38,13 @@ const DEFAULT_MIGRATIONS: readonly SchemaMigration[] = [
     apply: () => {},
   },
   {
-    revision: DATABASE_SCHEMA_REVISION,
+    revision: DATABASE_REQUEST_ACCOUNTS_REVISION,
     downRevision: DATABASE_BASELINE_REVISION,
+    apply: () => {},
+  },
+  {
+    revision: DATABASE_SCHEMA_REVISION,
+    downRevision: DATABASE_REQUEST_ACCOUNTS_REVISION,
     apply: () => {},
   },
 ];
