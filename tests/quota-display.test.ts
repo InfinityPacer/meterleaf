@@ -187,6 +187,46 @@ test("a reported five-hour window keeps its place while waiting for a new sample
   );
 });
 
+test("a just-reset weekly window waits beside an active five-hour window", () => {
+  // 周额度 4 小时前重置，5h 已用满，账户发不出请求，新的周快照还没到。
+  const expiredWeek = {
+    ...window,
+    percent: 93,
+    resetsAt: "2026-09-08T08:00:00Z",
+  };
+  const fiveHour = { ...window, percent: 100 };
+  const shown = (sevenDay: AccountWindow | null, five = fiveHour) =>
+    visibleQuotaWindows({ fiveHour: five, sevenDay }, now).map((item) => [
+      item.key,
+      item.waiting ?? false,
+    ]);
+  expect(shown(expiredWeek)).toEqual([
+    ["fiveHour", false],
+    ["sevenDay", true],
+  ]);
+  // 占位周额度不带旧百分比，账户是否用满只看有效的 5h。
+  expect(
+    accountQuotaExhausted(
+      { fiveHour: { ...window, percent: 40 }, sevenDay: expiredWeek },
+      now,
+    ),
+  ).toBe(false);
+  // 上一周期结束超过一周、上游从未报过周额度，或 5h 也无效时，都不占位。
+  expect(shown({ ...expiredWeek, resetsAt: "2026-08-31T08:00:00Z" })).toEqual([
+    ["fiveHour", false],
+  ]);
+  expect(shown(null)).toEqual([["fiveHour", false]]);
+  expect(shown(expiredWeek, { ...window, resetsAt: now })).toEqual([]);
+  // Fable 占位依赖有效的共享周额度，周额度本身在等待时不再叠加 Fable 占位。
+  expect(
+    withFableQuotaWindow(
+      visibleQuotaWindows({ fiveHour, sevenDay: expiredWeek }, now),
+      { sevenDayFable: expiredWeek },
+      now,
+    ).map((item) => item.key),
+  ).toEqual(["fiveHour", "sevenDay"]);
+});
+
 test("an expired Fable window waits for a new sample instead of disappearing", () => {
   const week = { ...window, percent: 10 };
   const shown = (sevenDayFable: AccountWindow, sevenDay = week) =>
@@ -243,8 +283,15 @@ test("weekly reset restores five-hour visibility instead of keeping an expired e
     fiveHour: { ...window, percent: 75 },
     sevenDay: { ...window, resetsAt: now },
   };
-  expect(visibleQuotaWindows(account, now).map((item) => item.key)).toEqual([
-    "fiveHour",
+  // 重置后的周额度只留不带旧百分比的占位，等新快照到达。
+  expect(
+    visibleQuotaWindows(account, now).map((item) => [
+      item.key,
+      item.waiting ?? false,
+    ]),
+  ).toEqual([
+    ["fiveHour", false],
+    ["sevenDay", true],
   ]);
   expect(accountQuotaExhausted(account, now)).toBe(false);
 });
