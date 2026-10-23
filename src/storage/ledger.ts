@@ -55,6 +55,72 @@ export interface LedgerStoreOptions {
   onRequestAccountsExpired?: (removed: number) => void;
 }
 
+/** 一个来源账户窗口的最新读数；同一采样时刻可能有多条。 */
+interface ReportQuotaWindow {
+  sourceId: string;
+  accountId: string;
+  window: string;
+  /** 全部采样时间均为标准 UTC 格式时才能按文本截取。 */
+  comparable: boolean;
+  latest: QuotaFact[];
+}
+
+/**
+ * 某一时刻读取的报表额度候选。行按 quotas() 的顺序排列，覆盖该时刻截取点之后的全部快照；
+ * 只能用于同一账本版本、不早于 now 的时刻。
+ */
+export interface ReportQuotaCandidates {
+  readonly now: string;
+  readonly windows: ReadonlyMap<string, ReportQuotaWindow>;
+  readonly rows: readonly {
+    window: ReportQuotaWindow;
+    sampledAt: string | null;
+    quota: StoredQuota;
+  }[];
+}
+
+/** 每个窗口按最新读数求截取点；无法比较或缺少读数时为空串，即保留全部历史。 */
+function reportQuotaBounds(
+  windows: ReadonlyMap<string, ReportQuotaWindow>,
+  now: string,
+): Map<ReportQuotaWindow, string> {
+  const bounds = new Map<ReportQuotaWindow, string>();
+  for (const window of windows.values()) {
+    let since: string | null = null;
+    if (!window.comparable || !window.latest.length) since = "";
+    // 同一采样时刻可能有多条读数，取最早的截取点。
+    for (const fact of since === null ? window.latest : []) {
+      const start = quotaHistoryStart(fact, now);
+      const bound = Number.isFinite(start) ? new Date(start).toISOString() : "";
+      if (since === null || bound < since) since = bound;
+    }
+    bounds.set(window, since ?? "");
+  }
+  return bounds;
+}
+
+/**
+ * 按 now 截取候选，结果与在同一账本上直接调用 reportQuotas(now) 相同。截取点随时间单调后移，
+ * 所以较早读取的候选是较晚结果的超集；now 早于候选时刻时返回 null，调用方需重新读取。
+ */
+export function selectReportQuotas(
+  candidates: ReportQuotaCandidates,
+  now: string,
+): StoredQuota[] | null {
+  if (!(Date.parse(now) >= Date.parse(candidates.now))) return null;
+  return filterReportQuotas(candidates, now);
+}
+
+function filterReportQuotas(candidates: ReportQuotaCandidates, now: string) {
+  const bounds = reportQuotaBounds(candidates.windows, now);
+  return candidates.rows
+    .filter(
+      (row) =>
+        row.sampledAt === null || row.sampledAt >= bounds.get(row.window)!,
+    )
+    .map((row) => row.quota);
+}
+
 export interface StoredUsage {
   fact: UsageFact;
   valuation: Valuation;
@@ -566,8 +632,8 @@ export class LedgerStore {
     sourceId: string,
     accountUuid: string,
     organizationUuid: string | null,
-  ) {
-    this.db
+  ): boolean {
+    const write = this.db
       .query(
         `INSERT INTO accounts (source_id, external_id, payload) VALUES (?, ?, ?)
          ON CONFLICT(source_id, external_id) DO NOTHING`,
@@ -586,11 +652,13 @@ export class LedgerStore {
           subjectKey: subjectKeyFrom(accountUuid, organizationUuid),
         } satisfies SourceAccount),
       );
+    return write.changes > 0;
   }
 
   /**
    * 为一条事实查找可覆盖的 OTEL 账户；不能覆盖时返回 null。账户与传入值相同也返回，
    * 因为调用方需要把 otel 归属写进事实，才能在请求归属记录过期后继续保留结论。
+   * 补写占位账户时置 created，即使事实本身是重放，账户资料的变化也要推进账本版本。
    */
   private accountOverride(
     sourceId: string,
@@ -599,6 +667,7 @@ export class LedgerStore {
       string,
       { account_uuid: string | null; organization_uuid: string | null } | null
     >,
+    state: { created: boolean },
   ): string | null {
     if (fact.metadata.attribution === "model") return null;
     const requestId = LedgerStore.requestIdOf(fact.externalId);
@@ -607,11 +676,14 @@ export class LedgerStore {
       cache.set(requestId, this.requestAccount(sourceId, requestId) ?? null);
     const mapping = cache.get(requestId);
     if (!mapping?.account_uuid) return null;
-    this.ensureRequestAccount(
-      sourceId,
-      mapping.account_uuid,
-      mapping.organization_uuid,
-    );
+    if (
+      this.ensureRequestAccount(
+        sourceId,
+        mapping.account_uuid,
+        mapping.organization_uuid,
+      )
+    )
+      state.created = true;
     return mapping.account_uuid;
   }
 
@@ -641,6 +713,7 @@ export class LedgerStore {
       string,
       { account_uuid: string | null; organization_uuid: string | null } | null
     >();
+    const accounts = { created: false };
     for (const original of facts) {
       if (original.sourceId !== sourceId)
         throw new Error("Connector returned a foreign source record");
@@ -649,6 +722,7 @@ export class LedgerStore {
         sourceId,
         original,
         requestAccounts,
+        accounts,
       );
       if (override !== null) {
         fact = {
@@ -692,7 +766,7 @@ export class LedgerStore {
         changed = true;
       }
     }
-    return changed;
+    return changed || accounts.created;
   }
 
   /**
@@ -1172,6 +1246,14 @@ export class LedgerStore {
    * 非标准 UTC 格式的采样时间无法比较，所在窗口保留全部历史。
    */
   reportQuotas(now: string): StoredQuota[] {
+    return filterReportQuotas(this.reportQuotaCandidates(now), now);
+  }
+
+  /**
+   * 读取 now 时刻截取点之后的额度快照，连同各窗口的最新读数，供 selectReportQuotas 按
+   * 不早于 now 的时刻再次截取。截取点只会随时间后移，同一账本版本内候选可以重复使用。
+   */
+  reportQuotaCandidates(now: string): ReportQuotaCandidates {
     const groups = this.db
       .query<
         {
@@ -1195,32 +1277,41 @@ export class LedgerStore {
       `,
       )
       .all(isoTimestampGlob);
-    const bounds = new Map<string, [string, string, string, string]>();
+    const windows = new Map<string, ReportQuotaWindow>();
     for (const group of groups) {
       const key = JSON.stringify([
         group.source_id,
         group.account_id,
         group.window,
       ]);
-      const start =
-        group.odd || !group.payload
-          ? NaN
-          : quotaHistoryStart(JSON.parse(group.payload) as QuotaFact, now);
-      // 同一采样时刻可能有多条读数，取最早的截取点。
-      const since = Number.isFinite(start) ? new Date(start).toISOString() : "";
-      const previous = bounds.get(key);
-      if (!previous || since < previous[3])
-        bounds.set(key, [
-          group.source_id,
-          group.account_id,
-          group.window,
-          since,
-        ]);
+      let window = windows.get(key);
+      if (!window) {
+        window = {
+          sourceId: group.source_id,
+          accountId: group.account_id,
+          window: group.window,
+          comparable: !group.odd,
+          latest: [],
+        };
+        windows.set(key, window);
+      }
+      if (group.payload)
+        window.latest.push(JSON.parse(group.payload) as QuotaFact);
     }
-    return this.storedQuotas(
-      this.db
-        .query<{ payload: string; collected_at: string }, [string]>(
-          `
+    const bounds = reportQuotaBounds(windows, now);
+    const rows = this.db
+      .query<
+        {
+          source_id: string;
+          account_id: string;
+          window: string;
+          sampled_at: string | null;
+          payload: string;
+          collected_at: string;
+        },
+        [string]
+      >(
+        `
           WITH bound AS (
             SELECT json_extract(value, '$[0]') AS source_id,
               json_extract(value, '$[1]') AS account_id,
@@ -1228,14 +1319,35 @@ export class LedgerStore {
               json_extract(value, '$[3]') AS since
             FROM json_each(?)
           )
-          SELECT q.payload, q.collected_at FROM bound b
+          SELECT q.source_id, q.account_id, q.window, q.sampled_at, q.payload, q.collected_at
+          FROM bound b
           JOIN quota_snapshots q ON q.source_id=b.source_id AND q.account_id=b.account_id
             AND q.window=b.window AND (q.sampled_at IS NULL OR q.sampled_at >= b.since)
           ORDER BY q.sampled_at, q.collected_at, q.rowid
         `,
-        )
-        .all(JSON.stringify([...bounds.values()])),
-    );
+      )
+      .all(
+        JSON.stringify(
+          [...windows.values()].map((window) => [
+            window.sourceId,
+            window.accountId,
+            window.window,
+            bounds.get(window)!,
+          ]),
+        ),
+      );
+    const quotas = this.storedQuotas(rows);
+    return {
+      now,
+      windows,
+      rows: rows.map((row, index) => ({
+        window: windows.get(
+          JSON.stringify([row.source_id, row.account_id, row.window]),
+        )!,
+        sampledAt: row.sampled_at,
+        quota: quotas[index]!,
+      })),
+    };
   }
 
   /**
