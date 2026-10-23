@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { IngestAccount, IngestUsage } from "../shared/ingest";
+import type { OtelRequestAccount } from "../shared/otel";
 import {
   attribute,
   type AccountSegment,
@@ -33,7 +34,10 @@ export interface FileObservation {
   fact: UsageFact;
 }
 
-export type OutboxKind = "usage" | "account" | "quota";
+export type OutboxKind = "usage" | "account" | "quota" | "otel";
+
+/** 待发送的请求归属记录上限；超出时丢弃最早的。 */
+export const OTEL_QUEUE_LIMIT = 50_000;
 
 export interface OutboxItem<T> {
   seq: number;
@@ -317,14 +321,41 @@ export class CollectorState {
     this.enqueue("usage", fact.externalId, payload);
   }
 
+  private enqueueRow(kind: OutboxKind, itemId: string, payload: unknown) {
+    this.db
+      .query("DELETE FROM outbox WHERE kind = ? AND item_id = ?")
+      .run(kind, itemId);
+    this.db
+      .query("INSERT INTO outbox (kind, item_id, payload) VALUES (?, ?, ?)")
+      .run(kind, itemId, JSON.stringify(payload));
+  }
+
   private enqueue(kind: OutboxKind, itemId: string, payload: unknown) {
-    this.db.transaction(() => {
-      this.db
-        .query("DELETE FROM outbox WHERE kind = ? AND item_id = ?")
-        .run(kind, itemId);
-      this.db
-        .query("INSERT INTO outbox (kind, item_id, payload) VALUES (?, ?, ?)")
-        .run(kind, itemId, JSON.stringify(payload));
+    this.db.transaction(() => this.enqueueRow(kind, itemId, payload))();
+  }
+
+  /**
+   * 本机 OTEL 中继写入待发送队列。一次请求的多条记录在一个事务中提交，
+   * 同一请求 ID 重复到达时只保留最后一条；写库失败会抛出，由中继返回 503。
+   */
+  enqueueOtel(records: readonly OtelRequestAccount[]): {
+    queued: number;
+    dropped: number;
+  } {
+    if (records.length === 0) return { queued: 0, dropped: 0 };
+    return this.db.transaction(() => {
+      for (const record of records)
+        this.enqueueRow("otel", record.requestId, record);
+      // 服务端长期收不到时队列不能无限增长：只保留最新的一批，更早的请求
+      // 退回按登录时间线归属。上限约合数周的请求量，库内占用十几 MB。
+      const dropped = this.db
+        .query(
+          `DELETE FROM outbox WHERE kind = 'otel' AND seq <= (
+             SELECT seq FROM outbox WHERE kind = 'otel'
+             ORDER BY seq DESC LIMIT 1 OFFSET ?)`,
+        )
+        .run(OTEL_QUEUE_LIMIT).changes;
+      return { queued: records.length, dropped };
     })();
   }
 
@@ -526,6 +557,7 @@ export class CollectorState {
       usage: 0,
       account: 0,
       quota: 0,
+      otel: 0,
     };
     for (const row of this.db
       .query<{ kind: OutboxKind; count: number }, []>(

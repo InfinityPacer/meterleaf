@@ -30,6 +30,11 @@ async function main() {
     store = new LedgerStore(
       resolve(config.METERLEAF_DATA_DIR, "meterleaf.sqlite"),
       book,
+      {
+        // 请求归属记录只需保留一个短窗口；只记删除条数，不记请求或账户内容。
+        onRequestAccountsExpired: (removed) =>
+          logger.info("otel.request_accounts_expired", { removed }),
+      },
     );
   }
   // 只接收本机采集器推送时没有拉取任务，页面仍通过账本状态观察更新。

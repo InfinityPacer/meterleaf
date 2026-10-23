@@ -62,6 +62,8 @@ Claude Code 的 OpenTelemetry 日志能补上这个信息。开启导出后，�
 
 Token 用量仍由采集器读取会话记录，因为 OTEL 没有 1 小时与 5 分钟缓存写入的拆分、推理 Tokens 和 web search 次数等计价需要的字段。OTEL 只回答这次请求属于哪个账户。归属优先级从高到低是采集器的模型映射、OTEL 给出的请求账户、登录时间线。模型映射是用户明确指定的，服务端不会覆盖。
 
+服务端只保留最近 30 天的请求归属记录。已经被 OTEL 确定的账户会写进用量事实本身，所以采集器之后重发旧用量（元数据升级、模型映射变化或文件重读）不会把账户改回登录时间线。
+
 ### 登记额外账户
 
 先为每个额外账户登记配置目录，可以同时指定该账户的状态栏额度缓存。
@@ -80,7 +82,27 @@ meterleaf-collector claude-profiles \
 
 ### 开启 OTEL 导出
 
-在 `~/.claude/settings.json` 中加上下面的设置，地址换成这台电脑访问 Meterleaf 的地址。`otelHeadersHelper` 让 Claude Code 每次导出前向采集器取一次写入密钥，密钥只在本机传递。
+推荐让 Claude Code 把日志发给这台电脑上的采集器中转。`install-launchd` 会同时启动一个只监听 `127.0.0.1:4319` 的常驻进程，它把日志写进采集器的本机待发送队列，每分钟的同步再把这些记录和用量一起推送到 Meterleaf。服务端或网络暂时不可用时记录留在本机，恢复后自动补发。队列最多保留最近 5 万条，长期连不上时更早的记录会被丢弃，这些请求退回按登录时间线归属，日志里会有提示。
+
+在 `~/.claude/settings.json` 中加上下面的设置。不需要 `otelHeadersHelper`，中转只接受本机回环地址上的请求，也不再单独传递写入密钥。
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_METRICS_EXPORTER": "none",
+    "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/json",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "http://127.0.0.1:4319/v1/logs"
+  }
+}
+```
+
+修改设置后重新打开 Claude Code 会话才会生效。`meterleaf-collector status` 的待发送一行会列出 `OTEL` 数量，可以确认记录已经进入队列。后台任务未安装时，也可以手动运行 `meterleaf-collector otel-relay` 启动同一个入口。
+
+端口与其他 OTLP 工具冲突时，在采集器 `config.json` 里加入 `"otelRelay": { "port": 4320 }`，端口范围是 1024 到 65535。保存后重新执行一次 `meterleaf-collector install-launchd`，让后台任务按新端口重启；同时把 `settings.json` 里的地址改成同一个端口。
+
+希望 Claude Code 直接连服务端时，旧配置仍然可用。把地址换成这台电脑访问 Meterleaf 的地址，并保留 `otelHeadersHelper`。
 
 ```json
 {
@@ -95,9 +117,9 @@ meterleaf-collector claude-profiles \
 }
 ```
 
-`meterleaf-collector otel-headers` 从采集器配置读取写入密钥，向标准输出打印一行 `{"Authorization":"Bearer ..."}`，不输出其他内容。没有初始化时命令报错并以非 0 退出，Claude Code 的日志导出会失败，但用量仍由采集器正常推送，不受影响。服务端要先升级到支持该入口的版本，见[部署指南](deployment.md#让采集器访问服务)。
+`meterleaf-collector otel-headers` 从采集器配置读取写入密钥，向标准输出打印一行 `{"Authorization":"Bearer ..."}`，不输出其他内容。没有初始化时命令报错并以非 0 退出，Claude Code 的日志导出会失败，但用量仍由采集器正常推送，不受影响。直连方式要求服务端先升级到支持该入口的版本，见[部署指南](deployment.md#让采集器访问服务)。
 
-这些日志只发到你自己的 Meterleaf，不发给 Anthropic。Claude Code 默认不导出提示词与回复；Meterleaf 也只保存请求 ID、账户 UUID、组织 UUID、会话 ID、模型和请求时间，其余属性即使到达也不落库。
+这些日志只发到你自己的 Meterleaf，不发给 Anthropic。Claude Code 默认不导出提示词与回复；采集器的本机中转与 Meterleaf 服务端都只保留请求 ID、账户 UUID、组织 UUID、会话 ID、模型和请求时间，其余属性即使到达也不落库，也不写进日志。
 
 服务端比采集器先升级时，旧采集器推送的用量还没有 `attribution` 字段。如果配置过 `modelAccounts`，这段时间里 OTEL 会暂时覆盖模型映射的归属；采集器升级后会重发全部已推送用量，归属随之恢复。所以用过模型映射时，请在升级服务端后尽快升级采集器。
 
@@ -151,9 +173,9 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
    meterleaf-collector install-launchd
    ```
 
-   系统每分钟以低优先级运行一次同步，「系统设置 → 通用 → 登录项与扩展」中会显示带图标的 Meterleaf.app。如果命令提示等待批准，在那里打开 Meterleaf 的开关即可。那里会标注「来自身份不明的开发者」，因为构建使用的是本机临时签名，不影响运行。
+   系统每分钟以低优先级运行一次同步，同时常驻运行接收 Claude Code OTEL 日志的本机中转。「系统设置 → 通用 → 登录项与扩展」中会显示带图标的 Meterleaf.app。如果命令提示等待批准，在那里打开 Meterleaf 的开关即可。那里会标注「来自身份不明的开发者」，因为构建使用的是本机临时签名，不影响运行。
 
-   Claude Code 会删除较早的会话记录，后台任务需要保持运行，才能在删除前把用量记入账本。后台任务的输出写在数据目录的 `logs` 下。
+   Claude Code 会删除较早的会话记录，后台任务需要保持运行，才能在删除前把用量记入账本。后台任务的输出写在数据目录的 `logs` 下，同步和 OTEL 中转共用这些文件。每个文件超过 1 MB 时改名为 `.1` 并重新开始，只保留这一份旧文件，日志总共不超过约 4 MB。
 
    后台任务随 Meterleaf.app 注册，应用需要留在原位置。如果设置了 `METERLEAF_COLLECTOR_HOME`、`CLAUDE_CONFIG_DIR`、`METERLEAF_CLAUDE_JSON` 或 `--claude-json`，这些路径只能通过环境变量传给后台任务，命令会改为在 `~/Library/LaunchAgents` 安装普通的后台任务，登录项中显示为可执行文件名。
 
@@ -161,7 +183,7 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
 先升级 Meterleaf 服务端，再升级采集器。新版采集器可能推送旧服务端不认识的额度类型（例如 Fable 周额度），旧服务端会拒收整批数据；数据留在采集器的待发送队列里，服务端升级后自动补推，不会丢失。
 
-重新构建后，用新的 `dist/Meterleaf.app` 替换「应用程序」中的旧版本，再执行一次 `meterleaf-collector install-launchd`。读取进度、账户归属和写入密钥都在数据目录中，替换应用不会丢失。
+重新构建后，用新的 `dist/Meterleaf.app` 替换「应用程序」中的旧版本，再执行一次 `meterleaf-collector install-launchd`。这条命令会按新应用包重新登记同步和 OTEL 中继两个后台任务。读取进度、账户归属和写入密钥都在数据目录中，替换应用不会丢失。
 
 如果 `status` 显示后台任务已启用，但「最近成功」的时间几分钟都不更新，把问题和 `launchctl print gui/$(id -u)/io.meterleaf.collector.background` 的输出反馈给维护者。
 
@@ -238,7 +260,8 @@ install -m 755 scripts/paseo-claude-quota.sh ~/.local/bin/meterleaf-paseo-claude
 
 `meterleaf-collector status` 显示同步进度、待发送数量、最近一次成功或失败的原因，以及账户归属情况，不会显示密钥。
 
-- **网络不通或 Meterleaf 暂停**：未送达的数据保存在本机，恢复后自动补发，不会重复计数。
+- **网络不通或 Meterleaf 暂停**：未送达的数据保存在本机，恢复后自动补发，不会重复计数。OTEL 请求归属也走同一个队列，等待期间 `status` 的 `OTEL` 数量会逐渐增加。
+- **账户归属没有按 OTEL 更新**：先看 `status` 里 OTEL 中继是否显示「已启用」，再确认 `status` 的 `OTEL` 数量在请求后增加。数量长期不变时，检查 `settings.json` 的地址端口与采集器 `config.json` 的 `otelRelay.port` 是否一致，以及该端口是否被其他程序占用。中继只记接收条数，日志在数据目录的 `logs` 下。
 - **更换服务地址**：比如从局域网地址改为公网 HTTPS 地址，执行 `meterleaf-collector server https://meterleaf.example.com`。写入密钥不变，服务端不用改。
 - **提示密钥无效**：确认 Meterleaf 的 `METERLEAF_INGEST_KEYS` 包含 `init` 输出的那一行并已重启。换电脑或重新生成密钥时，用 `init --force` 并替换服务端对应的行。
 - **额度显示为过时**：Claude Code 并不在每次请求后刷新 `~/.claude.json` 里的额度缓存，观察到的刷新发生在打开设置中的用量面板时。采集器不会主动请求额度，可以启用上面的状态栏额度缓存获得更新的数据。

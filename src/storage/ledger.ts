@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import {
   DATABASE_BASELINE_REVISION,
+  DATABASE_REQUEST_ACCOUNTS_REVISION,
   DATABASE_SCHEMA_REVISION,
   assertReadableSchema,
   migrateSchema,
@@ -37,6 +38,22 @@ import { quotaHistoryStart } from "../domain/quota";
 /** toISOString 的固定宽度格式，同格式的时间按文本比较即按时间先后。 */
 const isoTimestampGlob =
   "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z";
+
+/**
+ * 请求归属记录的保留期。Claude Code 默认保留 30 天会话记录，采集器离线补推也不会
+ * 晚于这个窗口；归属结论已写进用量事实，过期记录只影响尚未到达的历史重放。
+ */
+export const REQUEST_ACCOUNT_RETENTION_DAYS = 30;
+const REQUEST_ACCOUNT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+/** 超过这个行数才分批删除，避免一次长事务阻塞写入。 */
+const REQUEST_ACCOUNT_BULK_THRESHOLD = 10_000;
+const REQUEST_ACCOUNT_DELETE_BATCH = 5_000;
+
+export interface LedgerStoreOptions {
+  readonly?: boolean;
+  /** 清理过期请求归属记录后的回调，只传删除条数。 */
+  onRequestAccountsExpired?: (removed: number) => void;
+}
 
 export interface StoredUsage {
   fact: UsageFact;
@@ -147,11 +164,15 @@ function isPlanChange(previous: string | null, next: string | null) {
 export class LedgerStore {
   readonly db: Database;
   private reportChangeLogAvailable: boolean | undefined;
+  /** 进程内节流；重启后第一次写入会重新检查一次过期记录。 */
+  private lastRequestAccountCleanupMs = 0;
+  private readonly onRequestAccountsExpired?: (removed: number) => void;
   constructor(
     path: string,
     readonly book: PriceBook,
-    options: { readonly?: boolean } = {},
+    options: LedgerStoreOptions = {},
   ) {
+    this.onRequestAccountsExpired = options.onRequestAccountsExpired;
     if (options.readonly) {
       this.db = new Database(path, { readonly: true, strict: true });
       assertReadableSchema(this.db, "ledger");
@@ -272,7 +293,7 @@ export class LedgerStore {
     `),
       },
       {
-        revision: DATABASE_SCHEMA_REVISION,
+        revision: DATABASE_REQUEST_ACCOUNTS_REVISION,
         downRevision: DATABASE_BASELINE_REVISION,
         apply: (db) =>
           db.exec(`
@@ -287,6 +308,30 @@ export class LedgerStore {
         received_at TEXT NOT NULL,
         PRIMARY KEY (source_id, request_id)
       );
+    `),
+      },
+      {
+        revision: DATABASE_SCHEMA_REVISION,
+        downRevision: DATABASE_REQUEST_ACCOUNTS_REVISION,
+        // 归属结论改由用量事实自身保存，请求归属表只需保留一个短窗口。
+        apply: (db) =>
+          db.exec(`
+      CREATE INDEX IF NOT EXISTS request_accounts_received_at
+        ON request_accounts(received_at);
+      UPDATE usage_facts
+         SET payload = json_set(payload, '$.metadata.attribution', 'otel')
+       WHERE instr(external_id, ':') > 0
+         AND external_id NOT LIKE 'nr:%'
+         AND EXISTS (
+           SELECT 1 FROM request_accounts ra
+            WHERE ra.source_id = usage_facts.source_id
+              AND ra.request_id = substr(
+                usage_facts.external_id,
+                1,
+                instr(usage_facts.external_id, ':') - 1
+              )
+              AND ra.account_uuid = usage_facts.account_id
+         );
     `),
       },
     ]);
@@ -543,7 +588,10 @@ export class LedgerStore {
       );
   }
 
-  /** 为一条事实查找可覆盖的 OTEL 账户；不能覆盖时返回 null。 */
+  /**
+   * 为一条事实查找可覆盖的 OTEL 账户；不能覆盖时返回 null。账户与传入值相同也返回，
+   * 因为调用方需要把 otel 归属写进事实，才能在请求归属记录过期后继续保留结论。
+   */
   private accountOverride(
     sourceId: string,
     fact: UsageFact,
@@ -558,17 +606,28 @@ export class LedgerStore {
     if (!cache.has(requestId))
       cache.set(requestId, this.requestAccount(sourceId, requestId) ?? null);
     const mapping = cache.get(requestId);
-    if (
-      !mapping?.account_uuid ||
-      mapping.account_uuid === fact.accountExternalId
-    )
-      return null;
+    if (!mapping?.account_uuid) return null;
     this.ensureRequestAccount(
       sourceId,
       mapping.account_uuid,
       mapping.organization_uuid,
     );
     return mapping.account_uuid;
+  }
+
+  /** 已存事实的 otel 归属；请求归属记录过期后由它保持账户不再翻转。 */
+  private storedOtelAccount(
+    sourceId: string,
+    externalId: string,
+  ): string | null {
+    const row = this.db
+      .query<{ account_id: string; payload: string }, [string, string]>(
+        "SELECT account_id, payload FROM usage_facts WHERE source_id=? AND external_id=?",
+      )
+      .get(sourceId, externalId);
+    if (!row) return null;
+    const fact = JSON.parse(row.payload) as UsageFact;
+    return fact.metadata.attribution === "otel" ? row.account_id : null;
   }
 
   /** 事实与当前价格表估值同步写入；内容未变的重放不产生变更。调用方负责事务。 */
@@ -585,11 +644,28 @@ export class LedgerStore {
     for (const original of facts) {
       if (original.sourceId !== sourceId)
         throw new Error("Connector returned a foreign source record");
-      const account = this.accountOverride(sourceId, original, requestAccounts);
-      const fact =
-        account === null
-          ? original
-          : { ...original, accountExternalId: account };
+      let fact = original;
+      const override = this.accountOverride(
+        sourceId,
+        original,
+        requestAccounts,
+      );
+      if (override !== null) {
+        fact = {
+          ...original,
+          accountExternalId: override,
+          metadata: { ...original.metadata, attribution: "otel" },
+        };
+      } else if (original.metadata.attribution !== "model") {
+        // 没有新映射时沿用已存结论，采集器补推旧用量不会把账户改回登录时间线。
+        const stored = this.storedOtelAccount(sourceId, original.externalId);
+        if (stored !== null)
+          fact = {
+            ...original,
+            accountExternalId: stored,
+            metadata: { ...original.metadata, attribution: "otel" },
+          };
+      }
       const factWrite = this.db
         .query(
           `INSERT INTO usage_facts VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET account_id=excluded.account_id, occurred_at=excluded.occurred_at, payload=excluded.payload WHERE usage_facts.payload<>excluded.payload`,
@@ -832,6 +908,7 @@ export class LedgerStore {
       });
       if (changed) this.bumpRevision();
     })();
+    this.expireRequestAccounts(now);
   }
 
   /**
@@ -883,7 +960,63 @@ export class LedgerStore {
       }
       if (rewritten > 0) this.bumpRevision();
     })();
+    this.expireRequestAccounts(receivedAt);
     return { stored, rewritten };
+  }
+
+  /**
+   * 删除超过保留期的请求归属记录。归属结论已经写进用量事实，删除只影响尚未到达的历史
+   * 重放。每小时最多执行一次；大量过期行按 rowid 分批，每批使用自己的小事务。
+   */
+  private expireRequestAccounts(now: string) {
+    const parsed = Date.parse(now);
+    const currentMs = Number.isFinite(parsed) ? parsed : Date.now();
+    if (
+      currentMs - this.lastRequestAccountCleanupMs <
+      REQUEST_ACCOUNT_CLEANUP_INTERVAL_MS
+    )
+      return;
+    // 先记节流时间，清理失败或没有过期行时也不在下一批写入里反复扫描。
+    this.lastRequestAccountCleanupMs = currentMs;
+    const cutoff = new Date(
+      currentMs - REQUEST_ACCOUNT_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const count =
+      this.db
+        .query<{ count: number }, [string]>(
+          "SELECT COUNT(*) AS count FROM request_accounts WHERE received_at < ?",
+        )
+        .get(cutoff)?.count ?? 0;
+    if (count === 0) return;
+    let removed = 0;
+    try {
+      if (count <= REQUEST_ACCOUNT_BULK_THRESHOLD) {
+        removed = this.db.transaction(
+          () =>
+            this.db
+              .query("DELETE FROM request_accounts WHERE received_at < ?")
+              .run(cutoff).changes,
+        )();
+      } else {
+        const removeBatch = this.db.query(
+          `DELETE FROM request_accounts WHERE rowid IN (
+             SELECT rowid FROM request_accounts WHERE received_at < ?
+             ORDER BY rowid LIMIT ?
+           )`,
+        );
+        while (true) {
+          const batch = this.db.transaction(
+            () => removeBatch.run(cutoff, REQUEST_ACCOUNT_DELETE_BATCH).changes,
+          )();
+          removed += batch;
+          if (batch < REQUEST_ACCOUNT_DELETE_BATCH) break;
+        }
+      }
+    } catch {
+      // 维护性清理失败不能影响已经写入的用量或遥测，留到下一小时再试。
+      return;
+    }
+    if (removed > 0) this.onRequestAccountsExpired?.(removed);
   }
 
   /** 请求先到、用量后到时由 writeFacts 覆盖；这里处理相反顺序。 */
@@ -910,18 +1043,19 @@ export class LedgerStore {
       if (row.external_id.startsWith("nr:")) continue;
       const fact = JSON.parse(row.payload) as UsageFact;
       if (fact.metadata.attribution === "model") continue;
-      if (fact.accountExternalId === accountUuid) continue;
+      // 账户相同时也要补上 otel 标记，否则请求归属记录过期后会退回传入的账户。
+      const payload = JSON.stringify({
+        ...fact,
+        accountExternalId: accountUuid,
+        metadata: { ...fact.metadata, attribution: "otel" },
+      });
+      if (payload === row.payload) continue;
       this.ensureRequestAccount(sourceId, accountUuid, organizationUuid);
       this.db
         .query(
           "UPDATE usage_facts SET account_id=?, payload=? WHERE source_id=? AND external_id=?",
         )
-        .run(
-          accountUuid,
-          JSON.stringify({ ...fact, accountExternalId: accountUuid }),
-          sourceId,
-          row.external_id,
-        );
+        .run(accountUuid, payload, sourceId, row.external_id);
       rewritten += 1;
     }
     return rewritten;
