@@ -2,6 +2,8 @@
 
 ## [未发布]
 
+## [0.12.0] - 2026-10-23
+
 - 一台 Mac 上的多个 Claude 订阅账户可以分别记账。采集器新增 `claude-profiles`，登记其他账户的 `CLAUDE_CONFIG_DIR` 并读取各自的账户、套餐与额度；Claude Code 开启 OpenTelemetry 日志导出后，服务端按每次请求的 `request_id` 把用量归到实际账户，不再一律记到默认账户。用法见[本机采集器](docs/collector.md#多个-claude-账户)。
 - 采集器推送的用量新增 `attribution` 元数据，标明归属来自模型映射还是登录时间线。升级后采集器会把已推送的用量重发一次，服务端据此补正历史请求。模型映射优先于 OTEL，OTEL 优先于登录时间线。用过模型映射时，服务端升级后要尽快升级采集器，否则旧采集器推送的用量会在升级完成前暂时被 OTEL 覆盖。
 - 服务端新增 `POST /api/otel/v1/logs`，只接收 `application/json`（可 gzip），只保存请求 ID、账户、组织、会话、模型与请求时间，不保存提示词、回复或其他属性。使用反向代理时需放行这个路径，见[部署指南](docs/deployment.md#让采集器访问服务)。
