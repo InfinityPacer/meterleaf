@@ -5,6 +5,16 @@ import { z } from "zod";
 import { INGEST_KEY_PREFIX, sourceIdSchema } from "../shared/ingest";
 import { modelAccountRuleSchema } from "./model-accounts";
 
+/** 额外 Claude 订阅账户：各自的 CLAUDE_CONFIG_DIR，以及可选的额度缓存。 */
+export const claudeProfileSchema = z
+  .object({
+    configDir: z.string().startsWith("/"),
+    statuslineCache: z.string().startsWith("/").optional(),
+  })
+  .strict();
+
+export type ClaudeProfile = z.infer<typeof claudeProfileSchema>;
+
 const configSchema = z.object({
   server: z.string().url(),
   sourceId: sourceIdSchema,
@@ -14,6 +24,8 @@ const configSchema = z.object({
   statuslineCache: z.string().startsWith("/").optional(),
   /** 可选：按模型名把用量归入独立账户，按顺序取第一条命中的规则。 */
   modelAccounts: z.array(modelAccountRuleSchema).max(50).optional(),
+  /** 可选：同一台电脑上通过 CLAUDE_CONFIG_DIR 登录的其他 Claude 账户。 */
+  claudeProfiles: z.array(claudeProfileSchema).max(20).optional(),
 });
 
 export type CollectorConfig = z.infer<typeof configSchema>;

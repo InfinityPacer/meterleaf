@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import {
-  DATABASE_SCHEMA_REVISION,
+  DATABASE_BASELINE_REVISION,
   assertReadableSchema,
   migrateSchema,
 } from "./schema";
@@ -351,7 +351,7 @@ export class LifetimeIndex {
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
     migrateSchema(this.db, "lifetime", [
       {
-        revision: DATABASE_SCHEMA_REVISION,
+        revision: DATABASE_BASELINE_REVISION,
         downRevision: null,
         apply: (db) =>
           db.exec(`
