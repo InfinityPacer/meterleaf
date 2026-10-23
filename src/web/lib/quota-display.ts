@@ -66,10 +66,27 @@ export function visibleQuotaWindows(
       { key: "fiveHour", label: "5h", window: account.fiveHour, waiting: true },
       week,
     ];
+  // 周额度刚重置时，新快照要等这个账户再发出请求才会到；5h 用满时可能要等几个小时。
+  // 5h 有效期间保留周额度占位，但上一周期结束超过一周仍无新快照就不再占位。
+  if (
+    !week &&
+    account.sevenDay &&
+    windows.length &&
+    recentlyEnded(account.sevenDay, asOf)
+  )
+    return [
+      ...windows,
+      { key: "sevenDay", label: "7d", window: account.sevenDay, waiting: true },
+    ];
   return windows;
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function recentlyEnded(window: AccountWindow, asOf: string) {
+  const endedAt = Date.parse(window.resetsAt ?? "");
+  return Number.isFinite(endedAt) && Date.parse(asOf) - endedAt < WEEK_MS;
+}
 
 /**
  * Fable 周额度只计 Fable 请求，排在共享窗口之后。账户整体周额度用尽时所有模型都不可用，
@@ -94,10 +111,10 @@ export function withFableQuotaWindow(
     return [...windows, { key: "sevenDayFable", label: "Fable", window }];
   // Fable 额度只随 Claude Code 的用量缓存刷新，可能晚于共享周额度很久才更新。共享周额度有效时
   // 保留占位，但上一周期结束超过一周仍无新快照，就不再推定上游还在上报这个窗口。
-  const endedAt = Date.parse(window.resetsAt ?? "");
-  const recentlyEnded =
-    Number.isFinite(endedAt) && Date.parse(asOf) - endedAt < WEEK_MS;
-  if (!recentlyEnded || !windows.some(({ key }) => key === "sevenDay"))
+  if (
+    !recentlyEnded(window, asOf) ||
+    !windows.some(({ key, waiting }) => key === "sevenDay" && !waiting)
+  )
     return windows;
   return [
     ...windows,
