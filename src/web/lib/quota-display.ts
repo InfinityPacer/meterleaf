@@ -26,7 +26,7 @@ export function showQuotaEstimate(window: AccountWindow | null, asOf: string) {
 
 export interface VisibleQuotaWindow {
   key: "fiveHour" | "sevenDay" | "sevenDayFable" | "monthly";
-  label: "5h" | "7d" | "Fable" | "月";
+  label: "5h" | "7d" | "Fable" | "1m";
   window: AccountWindow;
   /** 上游报过这个窗口，但当前快照已过期或缺值；只占位，不展示旧用量。 */
   waiting?: boolean;
@@ -127,7 +127,7 @@ export function withExtraQuotaWindows(
     quotaPercent(window, asOf) === null
   )
     return result;
-  return [...result, { key: "monthly", label: "月", window }];
+  return [...result, { key: "monthly", label: "1m", window }];
 }
 
 /**
