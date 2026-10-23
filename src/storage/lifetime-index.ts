@@ -26,6 +26,8 @@ export interface LifetimeIndexSource {
   /** 流必须在来源事务结束前耗尽；旧来源可继续使用数组接口。 */
   reportUsageChangeStream?(afterSequence: number): ReportUsageChangeStream;
   reportUsageMetricStream?(): Iterable<ReportUsageMetric>;
+  /** 变更日志现存的最小序号；游标落在它之前说明需要的变更已被清理。 */
+  reportUsageChangeFloor?(): number | null;
 }
 
 /** ensure 的源状态；dataVersion 只用于当前连接内快速跳过稳定读，不会落盘。 */
@@ -480,6 +482,15 @@ export class LifetimeIndex {
     return this.complete(dataVersion, changed);
   }
 
+  /**
+   * 当前价格表已提交的消费水位；索引尚未建立或来源不使用变更日志时返回 null。
+   * 只有两个派生索引都给出水位时，调用方才清理它们都消费过的变更记录。
+   */
+  committedCheckpoint(): number | null {
+    const state = this.loadState();
+    return state?.tracked ? state.checkpoint : null;
+  }
+
   /** 返回与现有 API 相同的全历史累计契约；金额只有存在已知行时才返回字符串。 */
   /**
    * transitional 用于后台重建期间：当前价格表尚无累计值时，读取文件中已有的其他价格表
@@ -602,6 +613,17 @@ export class LifetimeIndex {
         };
       }
       if (changeState.lastSequence < state.checkpoint) {
+        return {
+          revision,
+          changeState,
+          changes: null,
+          resetRequired: true,
+        };
+      }
+      // 变更日志可能已被清理。检查点等于“现存最小序号 - 1”时下一条正好还在，
+      // 更早则说明游标与现存记录之间缺了一段，只能全量重建而不能静默跳过。
+      const floor = this.source.reportUsageChangeFloor?.() ?? null;
+      if (floor !== null && state.checkpoint < floor - 1) {
         return {
           revision,
           changeState,

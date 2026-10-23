@@ -11,9 +11,8 @@ import { join, resolve } from "node:path";
 import packageJson from "../package.json";
 import {
   BUNDLE_IDENTIFIER,
-  renderServicePlist,
   SERVICE_HELPER,
-  SERVICE_PLIST,
+  writeServicePlists,
 } from "../src/collector/launchd";
 
 /**
@@ -145,7 +144,8 @@ if (process.platform === "darwin") {
   mkdirSync(agents, { recursive: true });
   writeFileSync(join(contents, "Info.plist"), infoPlist());
   copyFileSync(binary, join(macos, "meterleaf-collector"));
-  writeFileSync(join(agents, SERVICE_PLIST), renderServicePlist());
+  // 同步与 OTEL 中继各自一个 plist，安装时由注册助手按名称分别登记。
+  writeServicePlists(agents);
   // SMAppService 需要 macOS 13；目标版本与 Info.plist 的 LSMinimumSystemVersion 一致。
   const arch = process.arch === "arm64" ? "arm64" : "x86_64";
   run([

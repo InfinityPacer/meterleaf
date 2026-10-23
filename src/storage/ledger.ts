@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite";
 import {
   DATABASE_BASELINE_REVISION,
+  DATABASE_OTEL_ATTRIBUTION_REVISION,
+  DATABASE_REQUEST_ACCOUNTS_REVISION,
   DATABASE_SCHEMA_REVISION,
   assertReadableSchema,
   migrateSchema,
@@ -37,6 +39,99 @@ import { quotaHistoryStart } from "../domain/quota";
 /** toISOString 的固定宽度格式，同格式的时间按文本比较即按时间先后。 */
 const isoTimestampGlob =
   "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z";
+
+/**
+ * 请求归属记录的保留期。Claude Code 默认保留 30 天会话记录，采集器离线补推也不会
+ * 晚于这个窗口；归属结论已写进用量事实，过期记录只影响尚未到达的历史重放。
+ */
+export const REQUEST_ACCOUNT_RETENTION_DAYS = 30;
+const REQUEST_ACCOUNT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+/** 超过这个行数才分批删除，避免一次长事务阻塞写入。 */
+const REQUEST_ACCOUNT_BULK_THRESHOLD = 10_000;
+const REQUEST_ACCOUNT_DELETE_BATCH = 5_000;
+
+/**
+ * 维护窗口内让估值触发器跳过变更日志的标记。维护代码在同一个事务里插入、删除，
+ * 其他连接只能看到事务提交后的状态，永远不会观察到这个键。触发器定义中的键名
+ * 必须与这里保持一致。
+ */
+export const CHANGE_LOG_SUPPRESSION_KEY = "maintenance:suppressChangeLog";
+/** 每批删除的估值行数；事务保持短小，避免长时间占住写锁。 */
+const VALUATION_DELETE_BATCH = 5_000;
+/** 每批删除的变更日志行数。 */
+const CHANGE_LOG_DELETE_BATCH = 5_000;
+
+export interface LedgerStoreOptions {
+  readonly?: boolean;
+  /** 清理过期请求归属记录后的回调，只传删除条数。 */
+  onRequestAccountsExpired?: (removed: number) => void;
+}
+
+/** 一个来源账户窗口的最新读数；同一采样时刻可能有多条。 */
+interface ReportQuotaWindow {
+  sourceId: string;
+  accountId: string;
+  window: string;
+  /** 全部采样时间均为标准 UTC 格式时才能按文本截取。 */
+  comparable: boolean;
+  latest: QuotaFact[];
+}
+
+/**
+ * 某一时刻读取的报表额度候选。行按 quotas() 的顺序排列，覆盖该时刻截取点之后的全部快照；
+ * 只能用于同一账本版本、不早于 now 的时刻。
+ */
+export interface ReportQuotaCandidates {
+  readonly now: string;
+  readonly windows: ReadonlyMap<string, ReportQuotaWindow>;
+  readonly rows: readonly {
+    window: ReportQuotaWindow;
+    sampledAt: string | null;
+    quota: StoredQuota;
+  }[];
+}
+
+/** 每个窗口按最新读数求截取点；无法比较或缺少读数时为空串，即保留全部历史。 */
+function reportQuotaBounds(
+  windows: ReadonlyMap<string, ReportQuotaWindow>,
+  now: string,
+): Map<ReportQuotaWindow, string> {
+  const bounds = new Map<ReportQuotaWindow, string>();
+  for (const window of windows.values()) {
+    let since: string | null = null;
+    if (!window.comparable || !window.latest.length) since = "";
+    // 同一采样时刻可能有多条读数，取最早的截取点。
+    for (const fact of since === null ? window.latest : []) {
+      const start = quotaHistoryStart(fact, now);
+      const bound = Number.isFinite(start) ? new Date(start).toISOString() : "";
+      if (since === null || bound < since) since = bound;
+    }
+    bounds.set(window, since ?? "");
+  }
+  return bounds;
+}
+
+/**
+ * 按 now 截取候选，结果与在同一账本上直接调用 reportQuotas(now) 相同。截取点随时间单调后移，
+ * 所以较早读取的候选是较晚结果的超集；now 早于候选时刻时返回 null，调用方需重新读取。
+ */
+export function selectReportQuotas(
+  candidates: ReportQuotaCandidates,
+  now: string,
+): StoredQuota[] | null {
+  if (!(Date.parse(now) >= Date.parse(candidates.now))) return null;
+  return filterReportQuotas(candidates, now);
+}
+
+function filterReportQuotas(candidates: ReportQuotaCandidates, now: string) {
+  const bounds = reportQuotaBounds(candidates.windows, now);
+  return candidates.rows
+    .filter(
+      (row) =>
+        row.sampledAt === null || row.sampledAt >= bounds.get(row.window)!,
+    )
+    .map((row) => row.quota);
+}
 
 export interface StoredUsage {
   fact: UsageFact;
@@ -147,11 +242,15 @@ function isPlanChange(previous: string | null, next: string | null) {
 export class LedgerStore {
   readonly db: Database;
   private reportChangeLogAvailable: boolean | undefined;
+  /** 进程内节流；重启后第一次写入会重新检查一次过期记录。 */
+  private lastRequestAccountCleanupMs = 0;
+  private readonly onRequestAccountsExpired?: (removed: number) => void;
   constructor(
     path: string,
     readonly book: PriceBook,
-    options: { readonly?: boolean } = {},
+    options: LedgerStoreOptions = {},
   ) {
+    this.onRequestAccountsExpired = options.onRequestAccountsExpired;
     if (options.readonly) {
       this.db = new Database(path, { readonly: true, strict: true });
       assertReadableSchema(this.db, "ledger");
@@ -272,7 +371,7 @@ export class LedgerStore {
     `),
       },
       {
-        revision: DATABASE_SCHEMA_REVISION,
+        revision: DATABASE_REQUEST_ACCOUNTS_REVISION,
         downRevision: DATABASE_BASELINE_REVISION,
         apply: (db) =>
           db.exec(`
@@ -287,6 +386,89 @@ export class LedgerStore {
         received_at TEXT NOT NULL,
         PRIMARY KEY (source_id, request_id)
       );
+    `),
+      },
+      {
+        revision: DATABASE_OTEL_ATTRIBUTION_REVISION,
+        downRevision: DATABASE_REQUEST_ACCOUNTS_REVISION,
+        // 归属结论改由用量事实自身保存，请求归属表只需保留一个短窗口。
+        apply: (db) =>
+          db.exec(`
+      CREATE INDEX IF NOT EXISTS request_accounts_received_at
+        ON request_accounts(received_at);
+      UPDATE usage_facts
+         SET payload = json_set(payload, '$.metadata.attribution', 'otel')
+       WHERE instr(external_id, ':') > 0
+         AND external_id NOT LIKE 'nr:%'
+         AND EXISTS (
+           SELECT 1 FROM request_accounts ra
+            WHERE ra.source_id = usage_facts.source_id
+              AND ra.request_id = substr(
+                usage_facts.external_id,
+                1,
+                instr(usage_facts.external_id, ':') - 1
+              )
+              AND ra.account_uuid = usage_facts.account_id
+         );
+    `),
+      },
+      {
+        revision: DATABASE_SCHEMA_REVISION,
+        downRevision: DATABASE_OTEL_ATTRIBUTION_REVISION,
+        // 维护性删除旧价格表估值时不能制造索引变更；抑制标记只在一个事务内可见。
+        apply: (db) =>
+          db.exec(`
+      DROP TRIGGER IF EXISTS valuations_report_insert;
+      CREATE TRIGGER valuations_report_insert
+      AFTER INSERT ON valuations
+      WHEN NOT EXISTS (
+        SELECT 1 FROM sync_state WHERE key='${CHANGE_LOG_SUPPRESSION_KEY}'
+      )
+      BEGIN
+        INSERT INTO usage_change_log (revision, source_id, external_id)
+        VALUES (
+          COALESCE(
+            (SELECT CAST(value AS INTEGER) FROM sync_state WHERE key='ledger:dataRevision'),
+            0
+          ),
+          NEW.source_id,
+          NEW.external_id
+        );
+      END;
+      DROP TRIGGER IF EXISTS valuations_report_update;
+      CREATE TRIGGER valuations_report_update
+      AFTER UPDATE ON valuations
+      WHEN NOT EXISTS (
+        SELECT 1 FROM sync_state WHERE key='${CHANGE_LOG_SUPPRESSION_KEY}'
+      )
+      BEGIN
+        INSERT INTO usage_change_log (revision, source_id, external_id)
+        VALUES (
+          COALESCE(
+            (SELECT CAST(value AS INTEGER) FROM sync_state WHERE key='ledger:dataRevision'),
+            0
+          ),
+          NEW.source_id,
+          NEW.external_id
+        );
+      END;
+      DROP TRIGGER IF EXISTS valuations_report_delete;
+      CREATE TRIGGER valuations_report_delete
+      AFTER DELETE ON valuations
+      WHEN NOT EXISTS (
+        SELECT 1 FROM sync_state WHERE key='${CHANGE_LOG_SUPPRESSION_KEY}'
+      )
+      BEGIN
+        INSERT INTO usage_change_log (revision, source_id, external_id)
+        VALUES (
+          COALESCE(
+            (SELECT CAST(value AS INTEGER) FROM sync_state WHERE key='ledger:dataRevision'),
+            0
+          ),
+          OLD.source_id,
+          OLD.external_id
+        );
+      END;
     `),
       },
     ]);
@@ -521,8 +703,8 @@ export class LedgerStore {
     sourceId: string,
     accountUuid: string,
     organizationUuid: string | null,
-  ) {
-    this.db
+  ): boolean {
+    const write = this.db
       .query(
         `INSERT INTO accounts (source_id, external_id, payload) VALUES (?, ?, ?)
          ON CONFLICT(source_id, external_id) DO NOTHING`,
@@ -541,9 +723,14 @@ export class LedgerStore {
           subjectKey: subjectKeyFrom(accountUuid, organizationUuid),
         } satisfies SourceAccount),
       );
+    return write.changes > 0;
   }
 
-  /** 为一条事实查找可覆盖的 OTEL 账户；不能覆盖时返回 null。 */
+  /**
+   * 为一条事实查找可覆盖的 OTEL 账户；不能覆盖时返回 null。账户与传入值相同也返回，
+   * 因为调用方需要把 otel 归属写进事实，才能在请求归属记录过期后继续保留结论。
+   * 补写占位账户时置 created，即使事实本身是重放，账户资料的变化也要推进账本版本。
+   */
   private accountOverride(
     sourceId: string,
     fact: UsageFact,
@@ -551,6 +738,7 @@ export class LedgerStore {
       string,
       { account_uuid: string | null; organization_uuid: string | null } | null
     >,
+    state: { created: boolean },
   ): string | null {
     if (fact.metadata.attribution === "model") return null;
     const requestId = LedgerStore.requestIdOf(fact.externalId);
@@ -558,17 +746,31 @@ export class LedgerStore {
     if (!cache.has(requestId))
       cache.set(requestId, this.requestAccount(sourceId, requestId) ?? null);
     const mapping = cache.get(requestId);
+    if (!mapping?.account_uuid) return null;
     if (
-      !mapping?.account_uuid ||
-      mapping.account_uuid === fact.accountExternalId
+      this.ensureRequestAccount(
+        sourceId,
+        mapping.account_uuid,
+        mapping.organization_uuid,
+      )
     )
-      return null;
-    this.ensureRequestAccount(
-      sourceId,
-      mapping.account_uuid,
-      mapping.organization_uuid,
-    );
+      state.created = true;
     return mapping.account_uuid;
+  }
+
+  /** 已存事实的 otel 归属；请求归属记录过期后由它保持账户不再翻转。 */
+  private storedOtelAccount(
+    sourceId: string,
+    externalId: string,
+  ): string | null {
+    const row = this.db
+      .query<{ account_id: string; payload: string }, [string, string]>(
+        "SELECT account_id, payload FROM usage_facts WHERE source_id=? AND external_id=?",
+      )
+      .get(sourceId, externalId);
+    if (!row) return null;
+    const fact = JSON.parse(row.payload) as UsageFact;
+    return fact.metadata.attribution === "otel" ? row.account_id : null;
   }
 
   /** 事实与当前价格表估值同步写入；内容未变的重放不产生变更。调用方负责事务。 */
@@ -582,14 +784,33 @@ export class LedgerStore {
       string,
       { account_uuid: string | null; organization_uuid: string | null } | null
     >();
+    const accounts = { created: false };
     for (const original of facts) {
       if (original.sourceId !== sourceId)
         throw new Error("Connector returned a foreign source record");
-      const account = this.accountOverride(sourceId, original, requestAccounts);
-      const fact =
-        account === null
-          ? original
-          : { ...original, accountExternalId: account };
+      let fact = original;
+      const override = this.accountOverride(
+        sourceId,
+        original,
+        requestAccounts,
+        accounts,
+      );
+      if (override !== null) {
+        fact = {
+          ...original,
+          accountExternalId: override,
+          metadata: { ...original.metadata, attribution: "otel" },
+        };
+      } else if (original.metadata.attribution !== "model") {
+        // 没有新映射时沿用已存结论，采集器补推旧用量不会把账户改回登录时间线。
+        const stored = this.storedOtelAccount(sourceId, original.externalId);
+        if (stored !== null)
+          fact = {
+            ...original,
+            accountExternalId: stored,
+            metadata: { ...original.metadata, attribution: "otel" },
+          };
+      }
       const factWrite = this.db
         .query(
           `INSERT INTO usage_facts VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET account_id=excluded.account_id, occurred_at=excluded.occurred_at, payload=excluded.payload WHERE usage_facts.payload<>excluded.payload`,
@@ -616,7 +837,7 @@ export class LedgerStore {
         changed = true;
       }
     }
-    return changed;
+    return changed || accounts.created;
   }
 
   /**
@@ -832,6 +1053,7 @@ export class LedgerStore {
       });
       if (changed) this.bumpRevision();
     })();
+    this.expireRequestAccounts(now);
   }
 
   /**
@@ -883,7 +1105,156 @@ export class LedgerStore {
       }
       if (rewritten > 0) this.bumpRevision();
     })();
+    this.expireRequestAccounts(receivedAt);
     return { stored, rewritten };
+  }
+
+  /**
+   * 删除超过保留期的请求归属记录。归属结论已经写进用量事实，删除只影响尚未到达的历史
+   * 重放。每小时最多执行一次；大量过期行按 rowid 分批，每批使用自己的小事务。
+   */
+  private expireRequestAccounts(now: string) {
+    const parsed = Date.parse(now);
+    const currentMs = Number.isFinite(parsed) ? parsed : Date.now();
+    if (
+      currentMs - this.lastRequestAccountCleanupMs <
+      REQUEST_ACCOUNT_CLEANUP_INTERVAL_MS
+    )
+      return;
+    // 先记节流时间，清理失败或没有过期行时也不在下一批写入里反复扫描。
+    this.lastRequestAccountCleanupMs = currentMs;
+    const cutoff = new Date(
+      currentMs - REQUEST_ACCOUNT_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const count =
+      this.db
+        .query<{ count: number }, [string]>(
+          "SELECT COUNT(*) AS count FROM request_accounts WHERE received_at < ?",
+        )
+        .get(cutoff)?.count ?? 0;
+    if (count === 0) return;
+    let removed = 0;
+    try {
+      if (count <= REQUEST_ACCOUNT_BULK_THRESHOLD) {
+        removed = this.db.transaction(
+          () =>
+            this.db
+              .query("DELETE FROM request_accounts WHERE received_at < ?")
+              .run(cutoff).changes,
+        )();
+      } else {
+        const removeBatch = this.db.query(
+          `DELETE FROM request_accounts WHERE rowid IN (
+             SELECT rowid FROM request_accounts WHERE received_at < ?
+             ORDER BY rowid LIMIT ?
+           )`,
+        );
+        while (true) {
+          const batch = this.db.transaction(
+            () => removeBatch.run(cutoff, REQUEST_ACCOUNT_DELETE_BATCH).changes,
+          )();
+          removed += batch;
+          if (batch < REQUEST_ACCOUNT_DELETE_BATCH) break;
+        }
+      }
+    } catch {
+      // 维护性清理失败不能影响已经写入的用量或遥测，留到下一小时再试。
+      return;
+    }
+    if (removed > 0) this.onRequestAccountsExpired?.(removed);
+  }
+
+  /**
+   * 删除非当前价格表版本的估值。读取路径只使用当前价格表，缺少估值时按事实现场计算，
+   * 所以旧版本金额可以丢弃；价格表本身继续保留，回滚后仍能重新算出旧结果。
+   *
+   * 每批一个事务，并在事务内临时插入变更日志抑制标记：旧估值删除不应制造几十万条
+   * 无意义的索引变更。批与批之间让出事件循环，避免长时间占用主线程和写锁。
+   */
+  async pruneStaleValuations(): Promise<number> {
+    const version = priceBookKey(this.book);
+    let removed = 0;
+    // 按 rowid 向前推进，每批只扫描上一批之后的行，总代价与表大小成正比。
+    let after = 0;
+    for (;;) {
+      const batch = this.db.transaction(() => {
+        this.db
+          .query(
+            "INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, '1')",
+          )
+          .run(CHANGE_LOG_SUPPRESSION_KEY);
+        try {
+          const rows = this.db
+            .query<{ id: number }, [number, string, number]>(
+              `SELECT rowid AS id FROM valuations
+                WHERE rowid > ? AND version <> ?
+                ORDER BY rowid LIMIT ?`,
+            )
+            .all(after, version, VALUATION_DELETE_BATCH);
+          if (!rows.length) return 0;
+          after = rows[rows.length - 1]!.id;
+          return this.db
+            .query(
+              "DELETE FROM valuations WHERE rowid >= ? AND rowid <= ? AND version <> ?",
+            )
+            .run(rows[0]!.id, after, version).changes;
+        } finally {
+          this.db
+            .query("DELETE FROM sync_state WHERE key=?")
+            .run(CHANGE_LOG_SUPPRESSION_KEY);
+        }
+      })();
+      removed += batch;
+      if (batch < VALUATION_DELETE_BATCH) return removed;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
+  /**
+   * 删除报表索引和累计索引都已消费的变更记录。上界取 consumedThrough 与当前最大序号
+   * 的较小值，并严格删除小于它的行：最大的一行始终保留，索引不会把空日志误判成
+   * “账本被清空”并触发全量重建。游标落在现存最小序号之前的情况由索引侧检测并重建。
+   */
+  async pruneUsageChangeLog(consumedThrough: number): Promise<number> {
+    if (!Number.isFinite(consumedThrough)) return 0;
+    const max =
+      this.db
+        .query<{ sequence: number | null }, []>(
+          "SELECT MAX(change_id) AS sequence FROM usage_change_log",
+        )
+        .get()?.sequence ?? null;
+    if (max === null) return 0;
+    const upper = Math.min(Math.floor(consumedThrough), max);
+    if (upper <= 0) return 0;
+    let removed = 0;
+    for (;;) {
+      const batch = this.db.transaction(
+        () =>
+          this.db
+            .query(
+              `DELETE FROM usage_change_log WHERE change_id IN (
+                 SELECT change_id FROM usage_change_log
+                  WHERE change_id < ?
+                  ORDER BY change_id LIMIT ?
+               )`,
+            )
+            .run(upper, CHANGE_LOG_DELETE_BATCH).changes,
+      )();
+      removed += batch;
+      if (batch < CHANGE_LOG_DELETE_BATCH) return removed;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
+  /** 变更日志现存的最小序号；游标落在它之前说明需要的变更已经被清理。 */
+  reportUsageChangeFloor(): number | null {
+    if (!this.hasReportChangeLog()) return null;
+    const sequence = this.db
+      .query<{ sequence: number | null }, []>(
+        "SELECT MIN(change_id) AS sequence FROM usage_change_log",
+      )
+      .get()?.sequence;
+    return sequence ?? null;
   }
 
   /** 请求先到、用量后到时由 writeFacts 覆盖；这里处理相反顺序。 */
@@ -910,18 +1281,19 @@ export class LedgerStore {
       if (row.external_id.startsWith("nr:")) continue;
       const fact = JSON.parse(row.payload) as UsageFact;
       if (fact.metadata.attribution === "model") continue;
-      if (fact.accountExternalId === accountUuid) continue;
+      // 账户相同时也要补上 otel 标记，否则请求归属记录过期后会退回传入的账户。
+      const payload = JSON.stringify({
+        ...fact,
+        accountExternalId: accountUuid,
+        metadata: { ...fact.metadata, attribution: "otel" },
+      });
+      if (payload === row.payload) continue;
       this.ensureRequestAccount(sourceId, accountUuid, organizationUuid);
       this.db
         .query(
           "UPDATE usage_facts SET account_id=?, payload=? WHERE source_id=? AND external_id=?",
         )
-        .run(
-          accountUuid,
-          JSON.stringify({ ...fact, accountExternalId: accountUuid }),
-          sourceId,
-          row.external_id,
-        );
+        .run(accountUuid, payload, sourceId, row.external_id);
       rewritten += 1;
     }
     return rewritten;
@@ -1038,6 +1410,14 @@ export class LedgerStore {
    * 非标准 UTC 格式的采样时间无法比较，所在窗口保留全部历史。
    */
   reportQuotas(now: string): StoredQuota[] {
+    return filterReportQuotas(this.reportQuotaCandidates(now), now);
+  }
+
+  /**
+   * 读取 now 时刻截取点之后的额度快照，连同各窗口的最新读数，供 selectReportQuotas 按
+   * 不早于 now 的时刻再次截取。截取点只会随时间后移，同一账本版本内候选可以重复使用。
+   */
+  reportQuotaCandidates(now: string): ReportQuotaCandidates {
     const groups = this.db
       .query<
         {
@@ -1061,32 +1441,41 @@ export class LedgerStore {
       `,
       )
       .all(isoTimestampGlob);
-    const bounds = new Map<string, [string, string, string, string]>();
+    const windows = new Map<string, ReportQuotaWindow>();
     for (const group of groups) {
       const key = JSON.stringify([
         group.source_id,
         group.account_id,
         group.window,
       ]);
-      const start =
-        group.odd || !group.payload
-          ? NaN
-          : quotaHistoryStart(JSON.parse(group.payload) as QuotaFact, now);
-      // 同一采样时刻可能有多条读数，取最早的截取点。
-      const since = Number.isFinite(start) ? new Date(start).toISOString() : "";
-      const previous = bounds.get(key);
-      if (!previous || since < previous[3])
-        bounds.set(key, [
-          group.source_id,
-          group.account_id,
-          group.window,
-          since,
-        ]);
+      let window = windows.get(key);
+      if (!window) {
+        window = {
+          sourceId: group.source_id,
+          accountId: group.account_id,
+          window: group.window,
+          comparable: !group.odd,
+          latest: [],
+        };
+        windows.set(key, window);
+      }
+      if (group.payload)
+        window.latest.push(JSON.parse(group.payload) as QuotaFact);
     }
-    return this.storedQuotas(
-      this.db
-        .query<{ payload: string; collected_at: string }, [string]>(
-          `
+    const bounds = reportQuotaBounds(windows, now);
+    const rows = this.db
+      .query<
+        {
+          source_id: string;
+          account_id: string;
+          window: string;
+          sampled_at: string | null;
+          payload: string;
+          collected_at: string;
+        },
+        [string]
+      >(
+        `
           WITH bound AS (
             SELECT json_extract(value, '$[0]') AS source_id,
               json_extract(value, '$[1]') AS account_id,
@@ -1094,14 +1483,35 @@ export class LedgerStore {
               json_extract(value, '$[3]') AS since
             FROM json_each(?)
           )
-          SELECT q.payload, q.collected_at FROM bound b
+          SELECT q.source_id, q.account_id, q.window, q.sampled_at, q.payload, q.collected_at
+          FROM bound b
           JOIN quota_snapshots q ON q.source_id=b.source_id AND q.account_id=b.account_id
             AND q.window=b.window AND (q.sampled_at IS NULL OR q.sampled_at >= b.since)
           ORDER BY q.sampled_at, q.collected_at, q.rowid
         `,
-        )
-        .all(JSON.stringify([...bounds.values()])),
-    );
+      )
+      .all(
+        JSON.stringify(
+          [...windows.values()].map((window) => [
+            window.sourceId,
+            window.accountId,
+            window.window,
+            bounds.get(window)!,
+          ]),
+        ),
+      );
+    const quotas = this.storedQuotas(rows);
+    return {
+      now,
+      windows,
+      rows: rows.map((row, index) => ({
+        window: windows.get(
+          JSON.stringify([row.source_id, row.account_id, row.window]),
+        )!,
+        sampledAt: row.sampled_at,
+        quota: quotas[index]!,
+      })),
+    };
   }
 
   /**

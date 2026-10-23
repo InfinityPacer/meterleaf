@@ -223,6 +223,16 @@ docker compose up -d --no-build --pull never
 
 升级会自动执行数据库迁移；遇到不兼容或无法识别的结构时服务会停止，不要通过清空数据绕过。
 
+本版升级后，服务端会在启动和运行期间自动删除旧价格表版本的估值，以及报表索引和累计索引都已处理的用量变更记录。账本文件会明显变小，已有金额不受影响，价格表本身继续保留。删除腾出的空间由 SQLite 在后续写入中复用，日常不需要额外维护。如果想立即把空间还给磁盘，可以在停服时执行一次：
+
+```sh
+docker compose stop meterleaf
+sqlite3 app_data/meterleaf.sqlite 'VACUUM'
+docker compose up -d --no-build --pull never
+```
+
+VACUUM 会临时重写整个文件，需要约等于账本文件大小的可用磁盘空间。不执行 VACUUM 也不影响使用。
+
 ## 数据文件与缓存
 
 备份需包含整个 `app_data`，其中保存了账本、账户状态和额度快照。报表缓存可从账本重建，不需要备份，刷新页面也不需要清空数据。

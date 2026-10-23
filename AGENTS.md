@@ -15,7 +15,7 @@ Meterleaf 是独立 AI 用量账本，只读采集上游用量并在本地计价
 
 ## 开发与验证命令
 
-使用 Bun 1.4.2 或更新版本，依赖变更提交 `bun.lock`。
+使用 Bun 1.4.4 或更新版本，依赖变更提交 `bun.lock`。
 
 - `bun install --frozen-lockfile`：按锁文件安装依赖。
 - `bun run dev:demo`：启动可辨识的演示界面。

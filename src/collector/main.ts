@@ -11,6 +11,7 @@ import {
 import { readStatuslineCache } from "./claude-code/statusline-cache";
 import { collect, type CollectReport, type ProfileReport } from "./collect";
 import {
+  DEFAULT_OTEL_RELAY_PORT,
   defaultSourceId,
   generateKey,
   isLoopback,
@@ -25,12 +26,15 @@ import {
   appendLog,
   installLaunchd,
   installService,
-  plistPath,
+  legacyAgents,
+  otelRelayProgramArguments,
   serviceStatus,
   syncProgramArguments,
   uninstallLaunchd,
+  SERVICE_AGENTS,
 } from "./launchd";
 import { acquireLock } from "./lock";
+import { startOtelRelay, type OtelRelay } from "./otel-relay";
 import { resolvePaths, type CollectorPaths } from "./paths";
 import { COLLECTOR_VERSION, pushOutbox } from "./push";
 import { CollectorState, type UsageTotals } from "./state";
@@ -50,11 +54,14 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
   claude-profiles <configDir>[=<statuslineCache>] ... | off
                       登记同一台电脑上其他 Claude 账户的 CLAUDE_CONFIG_DIR，
                       读取各自的账户、套餐与额度；off 清除
-  otel-headers        输出 Claude Code 的 otelHeadersHelper 所需的鉴权请求头（JSON 一行）
+  otel-headers        直连服务端时输出 otelHeadersHelper 所需的鉴权请求头（JSON 一行）；
+                      推荐改用 otel-relay，直连配置仍然可用
+  otel-relay          在 127.0.0.1:4319 常驻接收 Claude Code 的 OTEL 日志并排队，
+                      由 sync 随用量一起推送；后台任务会自动启动
   scan [--json]       只在本地解析并汇总，不联网、不改变同步进度
   sync                增量采集并推送；供后台任务每分钟运行，已有实例运行时直接退出
   status              查看同步进度、待发送数量与最近结果（不显示密钥）
-  install-launchd     安装 macOS 后台任务，每 60 秒以低优先级运行 sync
+  install-launchd     安装 macOS 后台任务：每分钟低优先级运行 sync，并常驻运行 OTEL 中继
                       从 Meterleaf.app 运行时以应用身份注册，登录项中显示 Meterleaf
   uninstall-launchd   停止并删除 macOS 后台任务
 
@@ -421,6 +428,55 @@ function runOtelHeaders(paths: CollectorPaths): number {
   return 0;
 }
 
+/**
+ * 常驻接收 Claude Code 的 OTEL 日志。只监听回环地址，不与 sync 争用同步锁；
+ * 两个进程通过 WAL 和 busy_timeout 并发读写同一个状态库。
+ */
+async function runOtelRelay(paths: CollectorPaths): Promise<number> {
+  const config = loadConfig(paths.configFile);
+  if (!config) {
+    console.error("尚未初始化，请先运行 meterleaf-collector init");
+    return 2;
+  }
+  mkdirSync(paths.dataDir, { recursive: true, mode: 0o700 });
+  const state = openState(paths);
+  const port = config.otelRelay?.port ?? DEFAULT_OTEL_RELAY_PORT;
+  let relay: OtelRelay;
+  try {
+    relay = startOtelRelay(state, { port });
+  } catch (error) {
+    state.close();
+    const message = error instanceof Error ? error.message : String(error);
+    const inUse =
+      (error as { code?: unknown }).code === "EADDRINUSE" ||
+      /in use|address already/i.test(message);
+    console.error(
+      inUse
+        ? `无法启动 OTEL 本机中转: 127.0.0.1:${port} 已被占用。可修改 config.json 的 otelRelay.port，或停止占用该端口的程序。`
+        : `无法启动 OTEL 本机中转: ${message}`,
+    );
+    return 1;
+  }
+  console.log(`OTEL 本机中转已启动: http://127.0.0.1:${relay.port}/v1/logs`);
+  // 长时间保持运行，收到停止信号后先关闭监听与数据库再退出。
+  return await new Promise<number>((resolve) => {
+    let stopping = false;
+    const shutdown = (signal: NodeJS.Signals) => {
+      if (stopping) return;
+      stopping = true;
+      console.log(
+        `${new Date().toISOString()} 收到 ${signal}，正在停止 OTEL 本机中转`,
+      );
+      void relay.stop().finally(() => {
+        state.close();
+        resolve(0);
+      });
+    };
+    process.once("SIGTERM", () => shutdown("SIGTERM"));
+    process.once("SIGINT", () => shutdown("SIGINT"));
+  });
+}
+
 function collectSources(
   paths: CollectorPaths,
   config: Pick<
@@ -559,7 +615,7 @@ async function runSync(paths: CollectorPaths): Promise<number> {
     state.setMeta("last_success_at", now);
     if (result.batches > 0 || report.rewound > 0 || report.malformed > 0) {
       console.log(
-        `${now} 已推送 ${result.batches} 批: 用量 ${result.usage}，账户 ${result.accounts}，额度 ${result.quotas}` +
+        `${now} 已推送 ${result.batches} 批: 用量 ${result.usage}，账户 ${result.accounts}，额度 ${result.quotas}，OTEL ${result.otel}` +
           (report.rewound > 0 ? `；重读文件 ${report.rewound}` : "") +
           (report.malformed > 0 ? `；损坏行 ${report.malformed}` : ""),
       );
@@ -624,10 +680,20 @@ const serviceStatusLabels = {
 } as const;
 
 function backgroundTaskStatus(): string {
-  if (existsSync(plistPath())) return "已安装（旧式 LaunchAgent）";
-  if (process.platform !== "darwin") return "未安装";
-  const bundle = appBundleOf();
-  return bundle ? serviceStatusLabels[serviceStatus(bundle)] : "未安装";
+  const legacy = new Map(
+    legacyAgents().map((agent) => [agent.label, agent.path]),
+  );
+  const bundle = process.platform === "darwin" ? appBundleOf() : null;
+  return SERVICE_AGENTS.map((agent) => {
+    const legacyPath = legacy.get(agent.label);
+    const status =
+      legacyPath && existsSync(legacyPath)
+        ? "已安装（旧式 LaunchAgent）"
+        : bundle
+          ? serviceStatusLabels[serviceStatus(bundle, agent.plistName)]
+          : "未安装";
+    return `${agent.name} ${status}`;
+  }).join("，");
 }
 
 /** 自定义路径只能通过环境变量传给后台任务，应用包内的固定 plist 无法携带。 */
@@ -661,20 +727,30 @@ function runInstall(
   mkdirSync(paths.logDir, { recursive: true, mode: 0o700 });
   const environment = customEnvironment(paths, claudeJsonOption);
   const bundle = appBundleOf();
+  const legacy = legacyAgents();
   let steps: string[];
   if (bundle && !environment) {
-    steps = installService(bundle, plistPath());
+    steps = installService(bundle, legacy);
   } else {
     if (bundle) {
       console.log(
         "使用了自定义路径，改为安装旧式 LaunchAgent；登录项中会显示为可执行文件名。",
       );
     }
-    steps = installLaunchd({
-      plistPath: plistPath(),
-      programArguments: syncProgramArguments(),
-      environment: environment ?? {},
-    });
+    steps = installLaunchd([
+      {
+        plistPath: legacy[0]!.path,
+        programArguments: syncProgramArguments(),
+        environment: environment ?? {},
+      },
+      {
+        plistPath: legacy[1]!.path,
+        programArguments: otelRelayProgramArguments(),
+        environment: environment ?? {},
+        label: legacy[1]!.label,
+        keepAlive: true,
+      },
+    ]);
   }
   for (const step of steps) console.log(step);
   console.log(`日志: ${paths.logDir}`);
@@ -742,7 +818,7 @@ function runStatus(paths: CollectorPaths) {
       `已跟踪文件: ${cursors.length}，已读取 ${format(cursors.reduce((sum, row) => sum + row.offset, 0))} 字节`,
     );
     console.log(
-      `待发送: 用量 ${pending.usage}，账户 ${pending.account}，额度 ${pending.quota}`,
+      `待发送: 用量 ${pending.usage}，账户 ${pending.account}，额度 ${pending.quota}，OTEL ${pending.otel}`,
     );
     console.log(`最近成功: ${state.getMeta("last_success_at") ?? "无"}`);
     const failureAt = state.getMeta("last_failure_at");
@@ -814,6 +890,8 @@ export async function main(argv: string[]): Promise<number> {
       return runClaudeProfiles(paths, positionals.slice(1));
     case "otel-headers":
       return runOtelHeaders(paths);
+    case "otel-relay":
+      return await runOtelRelay(paths);
     case "bind-history":
       return runBindHistory(paths);
     case "scan":
@@ -827,7 +905,7 @@ export async function main(argv: string[]): Promise<number> {
     case "install-launchd":
       return runInstall(paths, values["claude-json"]);
     case "uninstall-launchd":
-      for (const step of uninstallLaunchd(appBundleOf(), plistPath())) {
+      for (const step of uninstallLaunchd(appBundleOf(), legacyAgents())) {
         console.log(step);
       }
       return 0;

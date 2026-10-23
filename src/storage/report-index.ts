@@ -707,6 +707,11 @@ const HOUR_FIELDS = `
  */
 export class ReportIndex {
   readonly db: Database;
+  /** 最近一个窗口读取器用过的汇总，键含账户、起止时间与模型范围。 */
+  private recentWindows = new Map<string, Aggregate>();
+  /** 模型范围按函数身份编号，跨读取器保持一致，才能安全沿用汇总。 */
+  private readonly scopeIds = new WeakMap<(model: string) => boolean, number>();
+  private nextScopeId = 1;
 
   constructor(path: string) {
     this.db = new Database(path, { create: true, strict: true });
@@ -863,6 +868,7 @@ export class ReportIndex {
    * 是重建的主要耗时；整个过程在同一事务内，失败时索引定义随回滚恢复。
    */
   replace(records: Iterable<LedgerRecord>): void {
+    this.recentWindows = new Map();
     this.db.transaction(() => {
       const indexes = this.db
         .query<{ name: string; sql: string }, []>(
@@ -893,6 +899,7 @@ export class ReportIndex {
   applyChanges(
     changes: Iterable<{ id: string; record: LedgerRecord | null }>,
   ): void {
+    this.recentWindows = new Map();
     this.db.transaction(() => {
       const affectedHours = new Set<number>();
       const additions = new Map<
@@ -1055,6 +1062,10 @@ export class ReportIndex {
   /**
    * 返回按口径换算前的窗口读取器，供同一时刻的多个口径快照共享。额度预估会对每个
    * 采样点读取一次窗口，两个口径各查一遍会让快照耗时翻倍；汇总本身与口径无关。
+   *
+   * 固定起止时间的窗口汇总只取决于索引内容，因此新读取器沿用上一个读取器用过的汇总，
+   * 连续查询只需重读截至当前时刻的窗口。索引的任何写入都会清空沿用的汇总；
+   * 只沿用上一代，缓存大小不随运行时间增长。
    */
   windowReader(): (
     accountId: string,
@@ -1063,13 +1074,14 @@ export class ReportIndex {
     usdBasis: UsdBasis,
     modelScope: ((model: string) => boolean) | null,
   ) => ReturnType<ReportIndex["sumWindow"]> {
+    const previous = this.recentWindows;
     const aggregates = new Map<string, Aggregate>();
-    const scopes = new Map<(model: string) => boolean, number>();
+    this.recentWindows = aggregates;
     return (accountId, startInclusive, endInclusive, usdBasis, modelScope) => {
       let scope = 0;
       if (modelScope) {
-        scope = scopes.get(modelScope) ?? scopes.size + 1;
-        scopes.set(modelScope, scope);
+        scope = this.scopeIds.get(modelScope) ?? this.nextScopeId++;
+        this.scopeIds.set(modelScope, scope);
       }
       const key = JSON.stringify([
         accountId,
@@ -1077,16 +1089,15 @@ export class ReportIndex {
         endInclusive,
         scope,
       ]);
-      let aggregate = aggregates.get(key);
-      if (!aggregate) {
+      let aggregate = aggregates.get(key) ?? previous.get(key);
+      if (!aggregate)
         aggregate = this.windowAggregate(
           accountId,
           startInclusive,
           endInclusive,
           modelScope,
         );
-        aggregates.set(key, aggregate);
-      }
+      aggregates.set(key, aggregate);
       return windowSum(aggregate, usdBasis);
     };
   }

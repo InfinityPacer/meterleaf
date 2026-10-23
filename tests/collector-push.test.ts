@@ -98,7 +98,12 @@ describe("推送", () => {
     expect(result.error).toBeNull();
     expect(result.usage).toBe(5);
     expect(result.quotas).toBe(2);
-    expect(state.pendingCounts()).toEqual({ usage: 0, account: 0, quota: 0 });
+    expect(state.pendingCounts()).toEqual({
+      usage: 0,
+      account: 0,
+      quota: 0,
+      otel: 0,
+    });
     const batch = server.batches[0]!;
     expect(batch.collector.name).toBe("meterleaf-collector");
     const accountIds = new Set(batch.accounts.map((a) => a.externalId));

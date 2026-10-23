@@ -271,10 +271,10 @@ try {
   ).toEqual([]);
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(
-    page.getByRole("heading", { name: "Meterleaf 暂时离线" }),
+    page.getByRole("heading", { name: "Meterleaf 暂时连不上" }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "重新连接" })).toBeVisible();
-  expect(await page.title()).toBe("Meterleaf · 暂时离线");
+  expect(await page.title()).toBe("Meterleaf · 暂时连不上");
   expect(
     await page.evaluate(() => navigator.serviceWorker.controller?.scriptURL),
   ).toBe(`${baseUrl.origin}/sw.js`);
@@ -286,9 +286,9 @@ try {
   );
   await page.screenshot({ path: "test-results/pwa-offline.png" });
 
+  // 网络恢复后离线页自己探测并重新打开账本，不需要手动刷新。
   await setOffline(false);
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(page.locator(".app-shell")).toBeVisible({ timeout: 20_000 });
   await expect(page).toHaveTitle(onlineTitle);
   console.log(
     JSON.stringify({

@@ -1,5 +1,10 @@
 import type { LedgerUpdateStatus } from "../../shared/live-status";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Popover } from "@base-ui/react/popover";
 import { Bell, LogIn, RefreshCw } from "lucide-react";
@@ -163,6 +168,23 @@ function postPresence(pageId: string, visible: boolean, signal?: AbortSignal) {
     "/api/sync/presence",
     createSyncPresenceRequestInit(pageId, visible, signal),
   );
+}
+
+/**
+ * 账本版本变化后重新读取报表：只重读不是按该版本计算的结果，以及还没有结果的查询。
+ * 首屏结果已按当前版本计算时不必重读，否则每次打开页面都会把全部报表再读一遍，
+ * 刚算完、尚未进入刷新的结果还会被报表线程重算一次。
+ */
+export function invalidateOutdatedLedgerQueries(
+  client: QueryClient,
+  revision: number,
+) {
+  return client.invalidateQueries({
+    queryKey: ["ledger"],
+    predicate: (query) =>
+      (query.state.data as { ledgerRevision?: unknown } | undefined)
+        ?.ledgerRevision !== revision,
+  });
 }
 
 /** 查询失败时旧快照不再是当前运行状态的可靠依据。 */
@@ -392,7 +414,7 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
     // 首次状态读取也核对报表，覆盖首屏报表与心跳之间恰好提交的新批次。
     const changed = lastRevision.current !== revision;
     lastRevision.current = revision;
-    if (changed) void client.invalidateQueries({ queryKey: ["ledger"] });
+    if (changed) void invalidateOutdatedLedgerQueries(client, revision);
   }, [revision, paused, visible, client]);
 
   const queryFailed = query.isError;

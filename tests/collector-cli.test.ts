@@ -22,9 +22,14 @@ import { keyDigest } from "../src/collector/config";
 import {
   appBundleOf,
   appendLog,
+  OTEL_RELAY_LABEL,
+  renderOtelRelayPlist,
+  renderOtelRelayServicePlist,
   renderPlist,
   renderServicePlist,
+  SERVICE_AGENTS,
   syncProgramArguments,
+  writeServicePlists,
 } from "../src/collector/launchd";
 import { FIXTURE_ACCOUNT_UUID } from "./fixtures/claude-code/lines";
 
@@ -332,7 +337,7 @@ describe("采集器命令行", () => {
       "--log",
     ]);
 
-    // 包内缺少注册助手或 plist 时不按应用包注册。
+    // 包内缺少注册助手或任一 plist 时不按应用包注册。
     expect(appBundleOf(executable)).toBeNull();
     writeFileSync(join(bundle, "Contents/MacOS/meterleaf-service"), "");
     mkdirSync(join(bundle, "Contents/Library/LaunchAgents"), {
@@ -345,13 +350,29 @@ describe("采集器命令行", () => {
       ),
       "",
     );
+    expect(appBundleOf(executable)).toBeNull();
+    writeFileSync(
+      join(
+        bundle,
+        "Contents/Library/LaunchAgents/io.meterleaf.collector.otel-relay.plist",
+      ),
+      "",
+    );
     expect(appBundleOf(executable)).toBe(realpathSync(bundle));
 
     const service = renderServicePlist();
+    const relayService = renderOtelRelayServicePlist();
     const legacy = renderPlist({
       plistPath: join(root, "io.meterleaf.collector.plist"),
       programArguments,
       environment: { METERLEAF_COLLECTOR_HOME: join(root, "data & more") },
+    });
+    const relayLegacy = renderOtelRelayPlist({
+      plistPath: join(root, `${OTEL_RELAY_LABEL}.plist`),
+      programArguments: [executable, "otel-relay", "--log"],
+      environment: { METERLEAF_COLLECTOR_HOME: join(root, "data") },
+      label: OTEL_RELAY_LABEL,
+      keepAlive: true,
     });
     for (const plist of [service, legacy]) {
       for (const fragment of [
@@ -375,11 +396,39 @@ describe("采集器命令行", () => {
     expect(service).toContain(
       "<string>io.meterleaf.collector.background</string>",
     );
+
+    // OTEL 中继是常驻任务：RunAtLoad + KeepAlive，不设 StartInterval。
+    for (const plist of [relayService, relayLegacy]) {
+      expect(plist).toContain(`<string>${OTEL_RELAY_LABEL}</string>`);
+      expect(plist).toContain("<key>RunAtLoad</key>\n  <true/>");
+      expect(plist).toContain("<key>KeepAlive</key>\n  <true/>");
+      expect(plist).not.toContain("StartInterval");
+      expect(plist).toContain("<string>otel-relay</string>");
+    }
+    expect(relayService).toContain(
+      "<key>BundleProgram</key>\n  <string>Contents/MacOS/meterleaf-service</string>",
+    );
     expect(legacy).toContain("data &amp; more");
+
+    // 构建脚本使用的清单包含两个 plist，且写入后文件齐全。
+    expect(SERVICE_AGENTS.map((agent) => agent.plistName)).toEqual([
+      "io.meterleaf.collector.background.plist",
+      `${OTEL_RELAY_LABEL}.plist`,
+    ]);
+    const agentDir = join(root, "bundle-agents");
+    expect(writeServicePlists(agentDir)).toEqual(
+      SERVICE_AGENTS.map((agent) => agent.plistName),
+    );
+    expect(readdirSync(agentDir).sort()).toEqual(
+      SERVICE_AGENTS.map((agent) => agent.plistName).sort(),
+    );
+
     if (process.platform === "darwin") {
       for (const [name, plist] of [
         ["service.plist", service],
+        ["relay-service.plist", relayService],
         ["legacy.plist", legacy],
+        ["relay-legacy.plist", relayLegacy],
       ] as const) {
         const file = join(root, name);
         writeFileSync(file, plist);

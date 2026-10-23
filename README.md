@@ -104,7 +104,7 @@ bun run build:collector
 - [贡献指南](AGENTS.md)：目录结构、代码规范、测试与提交要求。
 - [版本与发布](docs/releasing.md)：版本递增、双架构镜像及 Release 流程。
 
-本地演示无需上游凭据，需要 Bun 1.4.2 或更新版本：
+本地演示无需上游凭据，需要 Bun 1.4.4 或更新版本：
 
 ```sh
 bun install --frozen-lockfile
