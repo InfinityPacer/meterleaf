@@ -9,17 +9,26 @@ import {
   type IngestQuota,
   type IngestUsage,
 } from "../shared/ingest";
+import {
+  OTEL_API_REQUEST_BODY,
+  OTEL_API_REQUEST_EVENT,
+  OTEL_LOGS_PATH,
+  type OtelRequestAccount,
+} from "../shared/otel";
 import type { CollectorConfig } from "./config";
 import type { CollectorState, OutboxItem } from "./state";
 import packageJson from "../../package.json";
 
 export const COLLECTOR_NAME = "meterleaf-collector";
 export const COLLECTOR_VERSION = packageJson.version;
+/** 单次 OTLP 请求最多携带的记录数，与服务端的记录上限无关。 */
+export const OTEL_MAX_PUSH_RECORDS = 1000;
 
 export interface PushLimits {
   usage: number;
   accounts: number;
   quotas: number;
+  otel: number;
 }
 
 export interface PushResult {
@@ -27,6 +36,8 @@ export interface PushResult {
   usage: number;
   accounts: number;
   quotas: number;
+  /** 本轮随 OTLP 日志推送的请求归属记录数。 */
+  otel: number;
   /** 失败原因；网络错误与 5xx 可重试，4xx 需要人工处理配置或服务端。 */
   error: { kind: "network" | "server" | "rejected"; message: string } | null;
 }
@@ -40,7 +51,47 @@ export interface PushOptions {
 const maxBatchesPerRun = 1000;
 
 /**
- * 按 seq 顺序分批推送待发送条目。每批附带被引用账户的最新资料，服务端不依赖先前批次；
+ * 把 outbox 中的请求归属记录还原成服务端认识的 OTLP JSON。字段与原导出器一致，
+ * 事件时间写回 event.timestamp，因此 parseOtelRequestAccounts 能还原出相同记录。
+ */
+export function serializeOtelRequests(
+  records: readonly OtelRequestAccount[],
+): unknown {
+  return {
+    resourceLogs: [
+      {
+        scopeLogs: [
+          {
+            logRecords: records.map((record) => {
+              const attributes: [string, string | null][] = [
+                ["event.name", OTEL_API_REQUEST_EVENT],
+                ["request_id", record.requestId],
+                ["user.account_uuid", record.accountUuid],
+                ["organization.id", record.organizationUuid],
+                ["session.id", record.sessionId],
+                ["model", record.model],
+                ["event.timestamp", record.occurredAt],
+              ];
+              return {
+                body: { stringValue: OTEL_API_REQUEST_BODY },
+                attributes: attributes
+                  .filter(([, value]) => value !== null)
+                  .map(([key, value]) => ({
+                    key,
+                    value: { stringValue: value as string },
+                  })),
+              };
+            }),
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * 按 seq 顺序分批推送待发送条目。OTEL 请求归属先于用量发送，服务端写用量时就能
+ * 按请求 ID 归属；每批附带被引用账户的最新资料，服务端不依赖先前批次。
  * 仅在 2xx 后确认本批实际发送的 seq。遇到失败立即停止，剩余条目留待下次。
  */
 export async function pushOutbox(
@@ -62,15 +113,80 @@ export async function pushOutbox(
       options.limits?.quotas ?? INGEST_MAX_QUOTAS,
       INGEST_MAX_QUOTAS,
     ),
+    otel: Math.min(
+      options.limits?.otel ?? OTEL_MAX_PUSH_RECORDS,
+      OTEL_MAX_PUSH_RECORDS,
+    ),
   };
   const result: PushResult = {
     batches: 0,
     usage: 0,
     accounts: 0,
     quotas: 0,
+    otel: 0,
     error: null,
   };
-  const url = `${config.server}${INGEST_BATCHES_PATH}`;
+  const ingestUrl = `${config.server}${INGEST_BATCHES_PATH}`;
+  const otelUrl = `${config.server}${OTEL_LOGS_PATH}`;
+
+  /** 发送一个请求体；网络错误归类为可重试的 network。 */
+  const post = async (
+    url: string,
+    body: string,
+  ): Promise<
+    { response: Response } | { failure: NonNullable<PushResult["error"]> }
+  > => {
+    try {
+      return {
+        response: await doFetch(url, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${config.key}`,
+            "content-type": "application/json",
+          },
+          body,
+          signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+        }),
+      };
+    } catch (error) {
+      return {
+        failure: {
+          kind: "network",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  };
+
+  const rejected = async (response: Response) => {
+    const body = (await response.text().catch(() => "")).slice(0, 500);
+    return {
+      kind:
+        response.status >= 500 ? ("server" as const) : ("rejected" as const),
+      message: `HTTP ${response.status}${body ? `: ${body}` : ""}`,
+    };
+  };
+
+  // 请求归属先推：服务端写入后面的用量时已经知道请求属于哪个账户。
+  for (let round = 0; round < maxBatchesPerRun; round += 1) {
+    const otel = state.pending<OtelRequestAccount>("otel", limits.otel);
+    if (otel.length === 0) break;
+    const sent = await post(
+      otelUrl,
+      JSON.stringify(serializeOtelRequests(otel.map((item) => item.payload))),
+    );
+    if ("failure" in sent) {
+      result.error = sent.failure;
+      return result;
+    }
+    if (!sent.response.ok) {
+      result.error = await rejected(sent.response);
+      return result;
+    }
+    state.acknowledge(otel.map((item) => item.seq));
+    result.batches += 1;
+    result.otel += otel.length;
+  }
 
   for (let round = 0; round < maxBatchesPerRun; round += 1) {
     const usage = state.pending<IngestUsage>("usage", limits.usage);
@@ -106,34 +222,21 @@ export async function pushOutbox(
       quotas: quotas.map((item) => item.payload),
     };
 
-    let response: Response;
-    try {
-      response = await doFetch(url, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${config.key}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(batch),
-        signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
-      });
-    } catch (error) {
-      result.error = {
-        kind: "network",
-        message: error instanceof Error ? error.message : String(error),
-      };
+    const sent = await post(ingestUrl, JSON.stringify(batch));
+    if ("failure" in sent) {
+      result.error = sent.failure;
       return result;
     }
-    if (!response.ok) {
-      const body = (await response.text().catch(() => "")).slice(0, 500);
-      result.error = {
-        kind: response.status >= 500 ? "server" : "rejected",
-        message: `HTTP ${response.status}${body ? `: ${body}` : ""}`,
-      };
+    if (!sent.response.ok) {
+      result.error = await rejected(sent.response);
       return result;
     }
-    const sent: OutboxItem<unknown>[] = [...usage, ...quotas, ...accountItems];
-    state.acknowledge(sent.map((item) => item.seq));
+    const acknowledged: OutboxItem<unknown>[] = [
+      ...usage,
+      ...quotas,
+      ...accountItems,
+    ];
+    state.acknowledge(acknowledged.map((item) => item.seq));
     result.batches += 1;
     result.usage += usage.length;
     result.quotas += quotas.length;

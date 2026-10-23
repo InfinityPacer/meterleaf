@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { IngestAccount, IngestUsage } from "../shared/ingest";
+import type { OtelRequestAccount } from "../shared/otel";
 import {
   attribute,
   type AccountSegment,
@@ -33,7 +34,7 @@ export interface FileObservation {
   fact: UsageFact;
 }
 
-export type OutboxKind = "usage" | "account" | "quota";
+export type OutboxKind = "usage" | "account" | "quota" | "otel";
 
 export interface OutboxItem<T> {
   seq: number;
@@ -317,15 +318,30 @@ export class CollectorState {
     this.enqueue("usage", fact.externalId, payload);
   }
 
+  private enqueueRow(kind: OutboxKind, itemId: string, payload: unknown) {
+    this.db
+      .query("DELETE FROM outbox WHERE kind = ? AND item_id = ?")
+      .run(kind, itemId);
+    this.db
+      .query("INSERT INTO outbox (kind, item_id, payload) VALUES (?, ?, ?)")
+      .run(kind, itemId, JSON.stringify(payload));
+  }
+
   private enqueue(kind: OutboxKind, itemId: string, payload: unknown) {
+    this.db.transaction(() => this.enqueueRow(kind, itemId, payload))();
+  }
+
+  /**
+   * 本机 OTEL 中继写入待发送队列。一次请求的多条记录在一个事务中提交，
+   * 同一请求 ID 重复到达时只保留最后一条；写库失败会抛出，由中继返回 503。
+   */
+  enqueueOtel(records: readonly OtelRequestAccount[]): number {
+    if (records.length === 0) return 0;
     this.db.transaction(() => {
-      this.db
-        .query("DELETE FROM outbox WHERE kind = ? AND item_id = ?")
-        .run(kind, itemId);
-      this.db
-        .query("INSERT INTO outbox (kind, item_id, payload) VALUES (?, ?, ?)")
-        .run(kind, itemId, JSON.stringify(payload));
+      for (const record of records)
+        this.enqueueRow("otel", record.requestId, record);
     })();
+    return records.length;
   }
 
   /** 账户资料变化才进入待发送；返回是否有变化。 */
@@ -526,6 +542,7 @@ export class CollectorState {
       usage: 0,
       account: 0,
       quota: 0,
+      otel: 0,
     };
     for (const row of this.db
       .query<{ kind: OutboxKind; count: number }, []>(

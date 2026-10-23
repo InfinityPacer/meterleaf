@@ -15,6 +15,16 @@ export const claudeProfileSchema = z
 
 export type ClaudeProfile = z.infer<typeof claudeProfileSchema>;
 
+/** 本机 OTEL 中继的默认端口；避开其他 OTLP 采集器常用的 4318。 */
+export const DEFAULT_OTEL_RELAY_PORT = 4319;
+
+/** 只监听回环地址，因此端口可以自行调整，不需要鉴权。 */
+export const otelRelaySchema = z
+  .object({
+    port: z.number().int().min(1024).max(65535),
+  })
+  .strict();
+
 const configSchema = z.object({
   server: z.string().url(),
   sourceId: sourceIdSchema,
@@ -26,6 +36,8 @@ const configSchema = z.object({
   modelAccounts: z.array(modelAccountRuleSchema).max(50).optional(),
   /** 可选：同一台电脑上通过 CLAUDE_CONFIG_DIR 登录的其他 Claude 账户。 */
   claudeProfiles: z.array(claudeProfileSchema).max(20).optional(),
+  /** 可选：本机 OTEL 中转的监听端口，省略时使用 4319。 */
+  otelRelay: otelRelaySchema.optional(),
 });
 
 export type CollectorConfig = z.infer<typeof configSchema>;

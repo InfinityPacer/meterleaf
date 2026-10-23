@@ -2,6 +2,10 @@
 
 ## [未发布]
 
+- 采集器新增本机 OTEL 中转，Claude Code 的请求归属日志不再需要直接连服务端。Claude Code 把日志发到 `http://127.0.0.1:4319/v1/logs`，常驻进程写入本机待发送队列，再由每分钟的同步和用量一起推送。服务端或网络暂时不可用时记录留在本机，恢复后自动补发。`install-launchd` 会同时注册同步和 OTEL 中继两个后台任务，配置见[本机采集器](docs/collector.md#开启-otel-导出)。
+- 直连 `POST /api/otel/v1/logs` 并配置 `otelHeadersHelper` 的旧方式仍然可用。升级采集器后重新执行一次 `install-launchd`，中继任务才会注册。
+- 本版服务端接口与数据库结构未变，0.12.0 及以上可直接接收。服务端版本较早时 OTEL 记录会留在待发送队列，升级服务端后补发。
+
 ## [0.12.0] - 2026-10-23
 
 - 一台 Mac 上的多个 Claude 订阅账户可以分别记账。采集器新增 `claude-profiles`，登记其他账户的 `CLAUDE_CONFIG_DIR` 并读取各自的账户、套餐与额度；Claude Code 开启 OpenTelemetry 日志导出后，服务端按每次请求的 `request_id` 把用量归到实际账户，不再一律记到默认账户。用法见[本机采集器](docs/collector.md#多个-claude-账户)。
