@@ -11,6 +11,7 @@
 - `~/.claude/projects` 下的会话记录，从中读取每次请求的模型与 Token 用量，以及会话里 `/login` 成功的时间。
 - `~/.claude.json`，从中读取登录账户的 UUID、组织类型、席位档位，以及 Claude Code 缓存的最近一次额度数据，包括 5 小时、7 天和 Fable 独立周额度。
 - 当前登录账户的套餐字段。新版 Claude Code 只把订阅类型和速率档位保存在登录凭据里，macOS 上是钥匙串中的「Claude Code-credentials」，其他系统是 Claude 配置目录下的 `.credentials.json`。采集器用系统自带的 `security` 命令或直接读文件取出整条凭据，只保留这两个字段，访问令牌和刷新令牌不解析、不保存、不记录、不上传。
+- 如果登记了额外 Claude 账户，还会读取每个目录下的 `.claude.json` 和该目录对应的登录凭据，读取方式与默认账户相同，见[多个 Claude 账户](#多个-claude-账户)。
 
 它不会在 Claude Code 的目录里写入、改名、加锁或改权限，不改设置、hooks 或状态栏，不运行 Claude Code 命令，也不调用任何 Anthropic 接口，读取凭据不会产生网络请求。上传内容只有计量数字、模型、时间、账户标识和套餐，不包含对话、工具输出、文件路径、工作目录、邮箱、显示名或令牌。
 
@@ -52,6 +53,51 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
 保存后下一次同步生效，不需要重启后台任务。映射有变化时，采集器会把已经推送过的用量按新映射重新归属并补推一次，服务端的报表随之更新。`meterleaf-collector status` 会列出当前的映射。
 
 想在 Meterleaf 里看到 OpenCode Go 的额度，需要在服务端单独配置 Go 的 Key，见[部署指南](deployment.md#opencode-go-额度可选)。采集器本身不读取 Go 的 Key，也不调用任何供应商接口。
+
+## 多个 Claude 账户
+
+一台 Mac 上可以用多个 Claude 订阅账户。默认账户使用 `~/.claude`，其他账户分别设 `CLAUDE_CONFIG_DIR` 登录，例如 `~/.claude-profiles/work`。如果把这些目录的 `projects` 软链接到 `~/.claude/projects`，会话记录集中在一处，方便跨账户恢复，但 JSONL 的每一行都没有账户字段。采集器只能按登录时间线归属，而时间线只代表默认目录当前登录的账户，额外账户的用量会被记到默认账户。
+
+Claude Code 的 OpenTelemetry 日志能补上这个信息。开启导出后，每次 API 请求都会发出一条 `claude_code.api_request` 日志，带 `user.account_uuid`、`organization.id`、`session.id` 和 `request_id`。`request_id` 与会话记录里的 `requestId` 相同，服务端据此把那次请求归到正确的账户。
+
+Token 用量仍由采集器读取会话记录，因为 OTEL 没有 1 小时与 5 分钟缓存写入的拆分、推理 Tokens 和 web search 次数等计价需要的字段。OTEL 只回答这次请求属于哪个账户。归属优先级从高到低是采集器的模型映射、OTEL 给出的请求账户、登录时间线。模型映射是用户明确指定的，服务端不会覆盖。
+
+### 登记额外账户
+
+先为每个额外账户登记配置目录，可以同时指定该账户的状态栏额度缓存。
+
+```sh
+meterleaf-collector claude-profiles \
+  "$HOME/.claude-profiles/work" \
+  "$HOME/.claude-profiles/personal=$HOME/.cache/claude-statusline/personal.tsv"
+```
+
+每个参数是 `CLAUDE_CONFIG_DIR` 的绝对路径，可用 `=` 接该账户的状态栏额度缓存。最多 20 个，目录不能是默认 Claude 目录。保存后下一轮同步生效，`meterleaf-collector status` 会列出已登记的目录与最近一次结果，执行 `meterleaf-collector claude-profiles off` 清除。
+
+采集器从每个目录的 `.claude.json` 读取账户与额度，从该目录对应的登录凭据读取订阅类型，再把账户资料推送到 Meterleaf。额外账户不进入默认账户的登录时间线，因此不会改变已有会话的归属；目录读不到或未登录时只跳过该项，不影响默认账户和其他目录。状态栏额度缓存按读取前后两次看到的同一账户归属，前后不一致时跳过并在 `status` 中说明。
+
+额外账户的 `projects` 通常是指回 `~/.claude/projects` 的软链接，采集器仍然只扫描默认目录。会话被拆到独立的 `projects` 目录时，这部分会话目前不会被采集。
+
+### 开启 OTEL 导出
+
+在 `~/.claude/settings.json` 中加上下面的设置，地址换成这台电脑访问 Meterleaf 的地址。`otelHeadersHelper` 让 Claude Code 每次导出前向采集器取一次写入密钥，密钥只在本机传递。
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_METRICS_EXPORTER": "none",
+    "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/json",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "https://meterleaf.example.com/api/otel/v1/logs"
+  },
+  "otelHeadersHelper": "/Applications/Meterleaf.app/Contents/MacOS/meterleaf-collector otel-headers"
+}
+```
+
+`meterleaf-collector otel-headers` 从采集器配置读取写入密钥，向标准输出打印一行 `{"Authorization":"Bearer ..."}`，不输出其他内容。没有初始化时命令报错并以非 0 退出，Claude Code 的日志导出会失败，但用量仍由采集器正常推送，不受影响。服务端要先升级到支持该入口的版本，见[部署指南](deployment.md#让采集器访问服务)。
+
+这些日志只发到你自己的 Meterleaf，不发给 Anthropic。Claude Code 默认不导出提示词与回复；Meterleaf 也只保存请求 ID、账户 UUID、组织 UUID、会话 ID、模型和请求时间，其余属性即使到达也不落库。
 
 ## 安装
 
