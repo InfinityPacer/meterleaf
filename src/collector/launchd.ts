@@ -15,6 +15,9 @@ export const BUNDLE_IDENTIFIER = "io.meterleaf.collector";
 /** 包内后台任务的标签。系统按标签记住被启动程序的签名，修改注册助手后需换新标签。 */
 export const SERVICE_LABEL = "io.meterleaf.collector.background";
 export const SERVICE_PLIST = `${SERVICE_LABEL}.plist`;
+/** 常驻接收 Claude Code OTEL 日志的本机中转。 */
+export const OTEL_RELAY_LABEL = "io.meterleaf.collector.otel-relay";
+export const OTEL_RELAY_PLIST = `${OTEL_RELAY_LABEL}.plist`;
 export const SERVICE_HELPER = "meterleaf-service";
 /** 旧式 LaunchAgent，只在无法使用应用包注册时安装。 */
 export const LAUNCHD_LABEL = "io.meterleaf.collector";
@@ -26,6 +29,14 @@ export interface LaunchdPlan {
   plistPath: string;
   programArguments: string[];
   environment: Record<string, string>;
+  /** 省略时为每分钟一次同步任务；本机 OTEL 中继使用常驻任务。 */
+  label?: string;
+  keepAlive?: boolean;
+}
+
+export interface LegacyAgent {
+  path: string;
+  label: string;
 }
 
 function escapeXml(value: string): string {
@@ -43,12 +54,13 @@ function stringArray(values: readonly string[]): string {
 }
 
 /**
- * 定时运行 sync 的程序参数。编译后的可执行文件（含 Meterleaf.app 内的
+ * 后台任务的程序参数。编译后的可执行文件（含 Meterleaf.app 内的
  * Contents/MacOS/meterleaf-collector）直接运行；用 bun 运行源码时带上入口脚本。
  */
-export function syncProgramArguments(
-  execPath: string = process.execPath,
-  mainScript: string = Bun.main,
+function programArguments(
+  command: "sync" | "otel-relay",
+  execPath: string,
+  mainScript: string,
 ): string[] {
   const executable = realpathSync(execPath);
   const name = basename(executable);
@@ -56,16 +68,30 @@ export function syncProgramArguments(
     (name === "bun" || name === "bun.exe") &&
     !mainScript.startsWith("/$bunfs/")
   ) {
-    return [executable, realpathSync(mainScript), "sync", LOG_FLAG];
+    return [executable, realpathSync(mainScript), command, LOG_FLAG];
   }
-  return [executable, "sync", LOG_FLAG];
+  return [executable, command, LOG_FLAG];
+}
+
+export function syncProgramArguments(
+  execPath: string = process.execPath,
+  mainScript: string = Bun.main,
+): string[] {
+  return programArguments("sync", execPath, mainScript);
+}
+
+export function otelRelayProgramArguments(
+  execPath: string = process.execPath,
+  mainScript: string = Bun.main,
+): string[] {
+  return programArguments("otel-relay", execPath, mainScript);
 }
 
 /**
- * 两种后台任务共用的调度：每 60 秒一次，ProcessType Background、低优先级 IO
+ * 同步任务的调度：每 60 秒一次，ProcessType Background、低优先级 IO
  * 与 Nice 10，不与 Claude Code 争抢资源。
  */
-const schedule = `  <key>StartInterval</key>
+const syncSchedule = `  <key>StartInterval</key>
   <integer>60</integer>
   <key>RunAtLoad</key>
   <true/>
@@ -76,20 +102,27 @@ const schedule = `  <key>StartInterval</key>
   <key>Nice</key>
   <integer>10</integer>`;
 
+/** 本机中转是常驻服务，由 launchd 保持运行，不按间隔启动。 */
+const relaySchedule = `  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>`;
+
 const plistHeader = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">`;
 
-/**
- * 打包在 Meterleaf.app/Contents/Library/LaunchAgents 内的 plist。BundleProgram 相对
- * 应用包解析，因此应用移动后仍然有效；内容固定，不能携带环境变量。启动的是注册助手，
- * 由它 exec 采集器，原因见 macos/meterleaf-service.swift。
- */
-export function renderServicePlist(): string {
+function renderServiceAgent(
+  label: string,
+  command: string,
+  schedule: string,
+): string {
   return `${plistHeader}
 <dict>
   <key>Label</key>
-  <string>${SERVICE_LABEL}</string>
+  <string>${label}</string>
   <key>AssociatedBundleIdentifiers</key>
   <array>
     <string>${BUNDLE_IDENTIFIER}</string>
@@ -100,13 +133,27 @@ export function renderServicePlist(): string {
   <array>
     <string>${SERVICE_HELPER}</string>
     <string>exec</string>
-    <string>sync</string>
+    <string>${command}</string>
     <string>${LOG_FLAG}</string>
   </array>
 ${schedule}
 </dict>
 </plist>
 `;
+}
+
+/**
+ * 打包在 Meterleaf.app/Contents/Library/LaunchAgents 内的 plist。BundleProgram 相对
+ * 应用包解析，因此应用移动后仍然有效；内容固定，不能携带环境变量。启动的是注册助手，
+ * 由它 exec 采集器，原因见 macos/meterleaf-service.swift。
+ */
+export function renderServicePlist(): string {
+  return renderServiceAgent(SERVICE_LABEL, "sync", syncSchedule);
+}
+
+/** 常驻接收 Claude Code OTEL 日志的包内任务，与同步任务各自独立注册。 */
+export function renderOtelRelayServicePlist(): string {
+  return renderServiceAgent(OTEL_RELAY_LABEL, "otel-relay", relaySchedule);
 }
 
 /** 旧式 LaunchAgent：可携带自定义环境变量，但登录项中显示为可执行文件名。 */
@@ -120,7 +167,7 @@ export function renderPlist(plan: LaunchdPlan): string {
   return `${plistHeader}
 <dict>
   <key>Label</key>
-  <string>${LAUNCHD_LABEL}</string>
+  <string>${plan.label ?? LAUNCHD_LABEL}</string>
   <key>AssociatedBundleIdentifiers</key>
   <array>
     <string>${BUNDLE_IDENTIFIER}</string>
@@ -133,14 +180,65 @@ ${stringArray(plan.programArguments)}
   <dict>
 ${environment}
   </dict>
-${schedule}
+${plan.keepAlive ? relaySchedule : syncSchedule}
 </dict>
 </plist>
 `;
 }
 
+export function renderOtelRelayPlist(plan: LaunchdPlan): string {
+  return renderPlist({ ...plan, label: OTEL_RELAY_LABEL, keepAlive: true });
+}
+
 export function plistPath(home: string = homedir()): string {
   return join(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+}
+
+export function otelRelayPlistPath(home: string = homedir()): string {
+  return join(home, "Library", "LaunchAgents", `${OTEL_RELAY_LABEL}.plist`);
+}
+
+/** 旧式安装路径下的两个后台任务；应用包方式使用包内 plist。 */
+export function legacyAgents(home: string = homedir()): LegacyAgent[] {
+  return [
+    { path: plistPath(home), label: LAUNCHD_LABEL },
+    { path: otelRelayPlistPath(home), label: OTEL_RELAY_LABEL },
+  ];
+}
+
+export interface ServiceAgent {
+  name: string;
+  label: string;
+  plistName: string;
+  summary: string;
+  render(): string;
+}
+
+/** 包内后台任务的完整清单；构建脚本按此写入 plist，安装与状态也按此遍历。 */
+export const SERVICE_AGENTS: readonly ServiceAgent[] = [
+  {
+    name: "同步",
+    label: SERVICE_LABEL,
+    plistName: SERVICE_PLIST,
+    summary: "每 60 秒运行一次 sync",
+    render: renderServicePlist,
+  },
+  {
+    name: "OTEL 中继",
+    label: OTEL_RELAY_LABEL,
+    plistName: OTEL_RELAY_PLIST,
+    summary: "常驻接收 Claude Code 的 OTEL 日志",
+    render: renderOtelRelayServicePlist,
+  },
+];
+
+/** 构建应用包时写入包内 LaunchAgents 目录。 */
+export function writeServicePlists(dir: string): string[] {
+  mkdirSync(dir, { recursive: true });
+  return SERVICE_AGENTS.map((agent) => {
+    writeFileSync(join(dir, agent.plistName), agent.render(), { mode: 0o644 });
+    return agent.plistName;
+  });
 }
 
 /**
@@ -165,7 +263,9 @@ export function appBundleOf(
   if (!bundle.endsWith(".app")) return null;
   const complete =
     existsSync(join(macos, SERVICE_HELPER)) &&
-    existsSync(join(contents, "Library", "LaunchAgents", SERVICE_PLIST));
+    SERVICE_AGENTS.every((agent) =>
+      existsSync(join(contents, "Library", "LaunchAgents", agent.plistName)),
+    );
   return complete ? bundle : null;
 }
 
@@ -189,11 +289,12 @@ function spawn(command: string[]): {
 function helper(
   bundle: string,
   action: "register" | "unregister" | "status",
+  plistName: string = SERVICE_PLIST,
 ): { ok: boolean; status: ServiceStatus; output: string } {
   const result = spawn([
     join(bundle, "Contents", "MacOS", SERVICE_HELPER),
     action,
-    SERVICE_PLIST,
+    plistName,
   ]);
   const last = result.stdout.split("\n").pop() ?? "";
   const known: ServiceStatus[] = [
@@ -211,24 +312,27 @@ function helper(
   };
 }
 
-export function serviceStatus(bundle: string): ServiceStatus {
-  return helper(bundle, "status").status;
+export function serviceStatus(
+  bundle: string,
+  plistName: string = SERVICE_PLIST,
+): ServiceStatus {
+  return helper(bundle, "status", plistName).status;
 }
 
 function domain(): string {
   return `gui/${process.getuid?.() ?? 0}`;
 }
 
-function removeLegacy(path: string, steps: string[]) {
+function removeLegacy(agent: LegacyAgent, steps: string[]) {
   const stopped = spawn([
     "/bin/launchctl",
     "bootout",
-    `${domain()}/${LAUNCHD_LABEL}`,
+    `${domain()}/${agent.label}`,
   ]);
-  if (stopped.ok) steps.push("已停止旧式后台任务");
-  if (existsSync(path)) {
-    rmSync(path);
-    steps.push(`已删除 ${path}`);
+  if (stopped.ok) steps.push(`已停止旧式后台任务 ${agent.label}`);
+  if (existsSync(agent.path)) {
+    rmSync(agent.path);
+    steps.push(`已删除 ${agent.path}`);
   }
 }
 
@@ -238,67 +342,89 @@ function requireDarwin(command: string) {
   }
 }
 
-/** 通过应用包注册后台任务，并清理旧式 LaunchAgent，保证同一时刻只有一种在运行。 */
-export function installService(bundle: string, legacyPath: string): string[] {
+/**
+ * 通过应用包注册两个后台任务（同步与 OTEL 中转），并清理旧式 LaunchAgent，
+ * 保证同一时刻只有一种在运行。
+ */
+export function installService(
+  bundle: string,
+  legacy: readonly LegacyAgent[],
+): string[] {
   requireDarwin("install-launchd");
   const steps: string[] = [];
-  removeLegacy(legacyPath, steps);
+  for (const agent of legacy) removeLegacy(agent, steps);
   // 已登记时先注销再注册，让系统按当前应用包重新登记。
-  if (serviceStatus(bundle) !== "not-registered") {
-    helper(bundle, "unregister");
+  for (const agent of SERVICE_AGENTS) {
+    if (serviceStatus(bundle, agent.plistName) !== "not-registered") {
+      helper(bundle, "unregister", agent.plistName);
+    }
   }
-  const result = helper(bundle, "register");
-  if (result.status === "requires-approval") {
-    steps.push(
-      "后台任务已登记，等待批准: 请在「系统设置 → 通用 → 登录项与扩展」中打开 Meterleaf",
-    );
-    return steps;
+  for (const agent of SERVICE_AGENTS) {
+    const result = helper(bundle, "register", agent.plistName);
+    if (result.status === "requires-approval") {
+      steps.push(
+        `后台任务 ${agent.label} 已登记，等待批准: 请在「系统设置 → 通用 → 登录项与扩展」中打开 Meterleaf`,
+      );
+      continue;
+    }
+    if (!result.ok || result.status !== "enabled") {
+      throw new Error(
+        `注册后台任务 ${agent.label} 失败（${result.status}）: ${result.output}`,
+      );
+    }
+    steps.push(`已注册后台任务 ${agent.label}，${agent.summary}`);
   }
-  if (!result.ok || result.status !== "enabled") {
-    throw new Error(`注册后台任务失败（${result.status}）: ${result.output}`);
-  }
-  steps.push(`已注册后台任务 ${SERVICE_LABEL}，每 60 秒运行一次 sync`);
   return steps;
 }
 
-export function installLaunchd(plan: LaunchdPlan): string[] {
+export function installLaunchd(plans: readonly LaunchdPlan[]): string[] {
   requireDarwin("install-launchd");
   const steps: string[] = [];
-  mkdirSync(dirname(plan.plistPath), { recursive: true });
-  if (existsSync(plan.plistPath)) {
-    spawn(["/bin/launchctl", "bootout", `${domain()}/${LAUNCHD_LABEL}`]);
-    steps.push("已停止旧的后台任务");
+  for (const plan of plans) {
+    const label = plan.label ?? LAUNCHD_LABEL;
+    mkdirSync(dirname(plan.plistPath), { recursive: true });
+    if (existsSync(plan.plistPath)) {
+      spawn(["/bin/launchctl", "bootout", `${domain()}/${label}`]);
+      steps.push(`已停止旧的后台任务 ${label}`);
+    }
+    writeFileSync(plan.plistPath, renderPlist(plan), { mode: 0o644 });
+    steps.push(`已写入 ${plan.plistPath}`);
+    const loaded = spawn([
+      "/bin/launchctl",
+      "bootstrap",
+      domain(),
+      plan.plistPath,
+    ]);
+    if (!loaded.ok) {
+      throw new Error(`launchctl bootstrap 失败: ${loaded.output}`);
+    }
+    steps.push(
+      `已加载后台任务 ${label}，${
+        plan.keepAlive ? "常驻运行" : "每 60 秒运行一次 sync"
+      }`,
+    );
   }
-  writeFileSync(plan.plistPath, renderPlist(plan), { mode: 0o644 });
-  steps.push(`已写入 ${plan.plistPath}`);
-  const loaded = spawn([
-    "/bin/launchctl",
-    "bootstrap",
-    domain(),
-    plan.plistPath,
-  ]);
-  if (!loaded.ok) {
-    throw new Error(`launchctl bootstrap 失败: ${loaded.output}`);
-  }
-  steps.push(`已加载后台任务 ${LAUNCHD_LABEL}，每 60 秒运行一次 sync`);
   return steps;
 }
 
-/** 两种形式都尝试停止，任何一种残留都会继续定时运行。 */
+/** 两种形式都尝试停止，任何一种残留都会继续运行。 */
 export function uninstallLaunchd(
   bundle: string | null,
-  legacyPath: string,
+  legacy: readonly LegacyAgent[],
 ): string[] {
   requireDarwin("uninstall-launchd");
   const steps: string[] = [];
-  if (bundle && serviceStatus(bundle) !== "not-registered") {
-    const result = helper(bundle, "unregister");
-    if (!result.ok) {
-      throw new Error(`注销后台任务失败: ${result.output}`);
+  if (bundle) {
+    for (const agent of SERVICE_AGENTS) {
+      if (serviceStatus(bundle, agent.plistName) === "not-registered") continue;
+      const result = helper(bundle, "unregister", agent.plistName);
+      if (!result.ok) {
+        throw new Error(`注销后台任务 ${agent.label} 失败: ${result.output}`);
+      }
+      steps.push(`已注销后台任务 ${agent.label}`);
     }
-    steps.push(`已注销后台任务 ${SERVICE_LABEL}`);
   }
-  removeLegacy(legacyPath, steps);
+  for (const agent of legacy) removeLegacy(agent, steps);
   if (steps.length === 0) steps.push("后台任务未安装");
   return steps;
 }

@@ -90,6 +90,9 @@ export class ReportProjection {
     const previous = row
       ? (JSON.parse(row.payload) as ProjectionCheckpoint)
       : null;
+    // 变更日志可能已被清理。检查点等于“现存最小序号 - 1”时下一条正好还在，
+    // 更早则说明中间那段变更已经不可读，只能全量重建。
+    const changeFloor = this.store.reportUsageChangeFloor();
     const checkpoint: ProjectionCheckpoint = {
       format: 1,
       schemaRevision: currentSchemaRevision(this.index.db, "report"),
@@ -109,6 +112,9 @@ export class ReportProjection {
       previous.accounts !== mapping ||
       previous.tracked !== state.tracked ||
       previous.sequence > state.lastSequence ||
+      (previous.tracked &&
+        changeFloor !== null &&
+        previous.sequence < changeFloor - 1) ||
       previous.revision > checkpoint.revision ||
       (this.initialized && this.revision > checkpoint.revision) ||
       (!state.tracked && previous.stamp !== file.stamp);
@@ -182,6 +188,21 @@ export class ReportProjection {
   accountsCurrent(): boolean {
     const { previous, checkpoint } = this.plan();
     return previous?.accounts === checkpoint.accounts;
+  }
+
+  /**
+   * 报表索引已提交的消费水位；索引尚未建立或来源不使用变更日志时返回 null。
+   * 与累计索引的水位取较小值，才能安全清理两者都已消费的变更记录。
+   */
+  committedSequence(): number | null {
+    const row = this.index.db
+      .query<{ payload: string }, []>(
+        "SELECT payload FROM projection_checkpoint WHERE id=1",
+      )
+      .get();
+    if (!row) return null;
+    const checkpoint = JSON.parse(row.payload) as ProjectionCheckpoint;
+    return checkpoint.tracked ? checkpoint.sequence : null;
   }
 
   private pricing(): IndexedPricing {

@@ -30,6 +30,11 @@ async function main() {
     store = new LedgerStore(
       resolve(config.METERLEAF_DATA_DIR, "meterleaf.sqlite"),
       book,
+      {
+        // 请求归属记录只需保留一个短窗口；只记删除条数，不记请求或账户内容。
+        onRequestAccountsExpired: (removed) =>
+          logger.info("otel.request_accounts_expired", { removed }),
+      },
     );
   }
   // 只接收本机采集器推送时没有拉取任务，页面仍通过账本状态观察更新。
@@ -77,6 +82,9 @@ async function main() {
           diagnostics: logger,
           getSyncStatus: sync ? sync.status.bind(sync) : undefined,
           accountMappingVersion: () => String(store!.accountMergeVersion()),
+          // 游标由报表线程的两个索引共同给出，清理在这里的可写连接上执行。
+          pruneUsageChangeLog: (consumedThrough) =>
+            store!.pruneUsageChangeLog(consumedThrough),
         },
       )
     : null;
@@ -161,6 +169,19 @@ async function main() {
       usdBasis: config.METERLEAF_USD_BASIS,
     });
     sync?.start();
+    // 价格表切换后旧版本估值不再被读取，启动后空闲时清理一次；每批让出事件循环，
+    // 不阻塞首个请求。价格表本身和当前版本估值都保留。
+    setImmediate(() => {
+      void store
+        ?.pruneStaleValuations()
+        .then((removed) => {
+          if (removed > 0)
+            logger.info("ledger.stale_valuations_pruned", { removed });
+        })
+        .catch((error: unknown) => {
+          logger.warn("ledger.stale_valuations_prune_failed", { error });
+        });
+    });
   } catch (error) {
     await app.close();
     throw error;

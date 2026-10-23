@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f7f8fa" />
-    <title>Meterleaf · 暂时离线</title>
+    <title>Meterleaf · 暂时连不上</title>
     <style>
       :root {
         color-scheme: light;
@@ -68,10 +68,52 @@
         width="72"
         height="72"
       />
-      <h1>Meterleaf 暂时离线</h1>
-      <p>网络恢复后重新打开或刷新页面。</p>
+      <h1>Meterleaf 暂时连不上</h1>
+      <p>正在自动重试，连上后会直接打开账本。</p>
       <p>账本需要联网查看。</p>
       <button type="button" onclick="location.reload()">重新连接</button>
     </main>
+    <script>
+      // 只探测服务是否可达，不读取任何账本数据；探测地址不能是 Worker 缓存过的资源，
+      // 否则离线时也会“成功”并反复刷新。网络切换后的旧连接可能挂住，
+      // 每次探测都有超时；间隔逐步拉长，回到前台或网络恢复时立即再试。
+      (() => {
+        const timeoutMs = 8000;
+        let delayMs = 3000;
+        let timer = 0;
+        let probing = false;
+        const schedule = (ms) => {
+          clearTimeout(timer);
+          timer = setTimeout(probe, ms);
+        };
+        async function probe() {
+          if (probing || document.visibilityState === "hidden") return;
+          probing = true;
+          try {
+            await fetch("/?probe=" + Date.now(), {
+              cache: "no-store",
+              redirect: "manual",
+              signal: AbortSignal.timeout(timeoutMs),
+            });
+            location.reload();
+            return;
+          } catch {
+            delayMs = Math.min(delayMs * 2, 60000);
+            schedule(delayMs);
+          } finally {
+            probing = false;
+          }
+        }
+        const retryNow = () => {
+          delayMs = 3000;
+          schedule(0);
+        };
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") retryNow();
+        });
+        addEventListener("online", retryNow);
+        schedule(delayMs);
+      })();
+    </script>
   </body>
 </html>

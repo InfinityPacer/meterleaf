@@ -1,5 +1,10 @@
-const CACHE_NAME = "meterleaf-offline-v5";
+const CACHE_NAME = "meterleaf-offline-v6";
 const OFFLINE_URL = "/offline.html";
+/**
+ * 导航等待网络的上限。网络切换或公网地址变更后，旧连接可能既不失败也不返回，
+ * 不设上限时独立窗口会一直白屏；超时后改显示离线页，由离线页自动重试。
+ */
+const NAVIGATION_TIMEOUT_MS = 8000;
 const PRECACHE_URLS = [
   OFFLINE_URL,
   // 品牌图标在登录过期时也要可读，否则认证网关的重定向会让页面显示破图。
@@ -59,11 +64,24 @@ self.addEventListener("fetch", (event) => {
 
   event.respondWith(
     (async () => {
+      const controller = new AbortController();
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("navigation timeout"));
+        }, NAVIGATION_TIMEOUT_MS);
+      });
       try {
         // 网络导航仍需经过外部认证；预加载与 Worker 启动并行，避免冷 Worker 先阻塞网络。
-        return (await event.preloadResponse) ?? (await fetch(event.request));
+        const network = (async () =>
+          (await event.preloadResponse) ??
+          (await fetch(event.request, { signal: controller.signal })))();
+        return await Promise.race([network, timeout]);
       } catch {
         return caches.match(OFFLINE_URL);
+      } finally {
+        clearTimeout(timer);
       }
     })(),
   );

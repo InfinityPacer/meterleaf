@@ -78,6 +78,11 @@ export interface LifetimeTotals {
 export interface LedgerView extends Omit<LedgerSnapshot, "records"> {
   /** 两套美元口径共享采样时刻；每套保留独立的金额、额度与排序后分页。 */
   usdVariants?: Record<UsdBasis, UsdViewVariant>;
+  /**
+   * 计算该结果时的账本版本，与同步状态里的 ledger.revision 对应；只判断是否相等。
+   * 演示数据和旧缓存结果没有此字段，应视为可能过时。
+   */
+  ledgerRevision?: number;
   /** 刷新失败时数据仍是最近成功快照，状态不应令前端丢弃可用账本。 */
   reportStatus?: {
     refreshing: boolean;

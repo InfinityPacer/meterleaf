@@ -47,13 +47,22 @@ export interface ViewServiceOptions {
   diagnostics?: DiagnosticsLogger;
   /** 配置了拉取来源时提供；未提供表示只接收推送，报表照常计算和刷新。 */
   getSyncStatus?: () => SyncStatus;
+  /**
+   * 清理报表索引和累计索引都已消费的变更记录。游标由报表线程计算，这里负责在
+   * 可写账本连接上执行；未提供时不清理。
+   */
+  pruneUsageChangeLog?: (consumedThrough: number) => number | Promise<number>;
   now?: () => number;
 }
 
 interface WorkerMessage {
-  /** index-rebuilt 表示后台重建结束（成功或放弃），此前的过渡结果需要重新计算。 */
-  type?: "index-rebuilt" | "caught-up";
+  /**
+   * index-rebuilt 表示后台重建结束（成功或放弃），此前的过渡结果需要重新计算；
+   * prune-change-log 携带两个索引都已消费的变更序号，由主线程的可写连接执行清理。
+   */
+  type?: "index-rebuilt" | "caught-up" | "prune-change-log";
   id: number;
+  consumedThrough?: number;
   /** 后台补齐的结果；changed 表示补进了新推送的用量。 */
   catchUp?: {
     mode: "current" | "transitional" | "building";
@@ -255,9 +264,11 @@ export class ViewService {
   private cachePersistenceDisabled = false;
 
   private readonly accountMappingVersion?: () => string;
+  private readonly pruneUsageChangeLogCallback?: ViewServiceOptions["pruneUsageChangeLog"];
 
   constructor(path: string, book: PriceBook, options: ViewServiceOptions = {}) {
     this.accountMappingVersion = options.accountMappingVersion;
+    this.pruneUsageChangeLogCallback = options.pruneUsageChangeLog;
     this.diagnostics = options.diagnostics ?? silentLogger;
     this.refreshIntervalMs =
       options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
@@ -282,6 +293,10 @@ export class ViewService {
       },
     });
     this.worker.on("message", (message: WorkerMessage) => {
+      if (message.type === "prune-change-log") {
+        this.pruneChangeLog(message.consumedThrough);
+        return;
+      }
       if (message.type === "caught-up") {
         this.diagnostics.log(
           message.catchUp?.changed ? "info" : "debug",
@@ -659,6 +674,26 @@ export class ViewService {
     } finally {
       await this.terminateCacheWriter();
     }
+  }
+
+  /**
+   * 清理两个派生索引都已消费的变更记录。维护性操作失败不能影响报表读取，
+   * 下一个小时会重新请求；只记录删除条数，不记录序号或事实内容。
+   */
+  private pruneChangeLog(consumedThrough: number | undefined) {
+    const prune = this.pruneUsageChangeLogCallback;
+    if (!prune || consumedThrough === undefined || this.closed) return;
+    void Promise.resolve()
+      .then(() => prune(consumedThrough))
+      .then((removed) => {
+        if (removed > 0)
+          this.diagnostics.info("report.change_log_pruned", { removed });
+      })
+      .catch((error: unknown) => {
+        this.diagnostics.warn("report.change_log_prune_failed", {
+          error: summarizeError(error),
+        });
+      });
   }
 
   private readSyncStatus(): SyncStatus | undefined {
