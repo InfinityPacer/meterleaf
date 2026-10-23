@@ -78,6 +78,7 @@ test("live snapshot preserves full quota periods across report ranges and USD br
     expect(subscription.accounts[0]!.sevenDay!.periodTokens).toBe(
       fact.tokens.input! + fact.tokens.cacheRead! + fact.tokens.cacheWrite! + fact.tokens.output!,
     );
+    expect(subscription.accounts[0]!.sevenDay!.periodCacheRate).toBe(0);
     expect(api.accounts[0]!.sevenDay!.periodUsd).toBe("6.075");
     expect(api.accounts[0]!.sevenDay!.periodCredits).toBe(
       subscription.accounts[0]!.sevenDay!.periodCredits,
@@ -90,6 +91,7 @@ test("live snapshot preserves full quota periods across report ranges and USD br
     expect(expired.accounts[0]!.sevenDay!.periodUsd).toBeNull();
     expect(expired.accounts[0]!.sevenDay!.periodRequests).toBeNull();
     expect(expired.accounts[0]!.sevenDay!.periodTokens).toBeNull();
+    expect(expired.accounts[0]!.sevenDay!.periodCacheRate).toBeNull();
     quota = {
       ...quota,
       percent: 0,
@@ -102,6 +104,8 @@ test("live snapshot preserves full quota periods across report ranges and USD br
     expect(reset.accounts[0]!.sevenDay!.periodUsd).toBe("0");
     expect(reset.accounts[0]!.sevenDay!.periodRequests).toBe(0);
     expect(reset.accounts[0]!.sevenDay!.periodTokens).toBe(0);
+    // 新周期还没有请求，命中率没有分母，不能显示成 0%。
+    expect(reset.accounts[0]!.sevenDay!.periodCacheRate).toBeNull();
     expect(store.usage()).toHaveLength(1);
   } finally {
     await sync.stop();

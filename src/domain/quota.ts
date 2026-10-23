@@ -33,6 +33,8 @@ export type QuotaChargeReader = (
   credits: string | null;
   count?: number;
   tokens?: number | null;
+  /** 缓存读取占输入侧三个桶的百分比，只统计三个桶都已知的请求；没有这类请求时为 null。 */
+  cacheRate?: number | null;
 };
 
 /**
@@ -62,6 +64,7 @@ export interface QuotaView {
   /** 当前窗口起点至查询时刻的请求数与不重复 token 桶；到期后清空。 */
   periodRequests: number | null;
   periodTokens: number | null;
+  periodCacheRate: number | null;
   estimate: {
     usd: string | null;
     credits: string | null;
@@ -145,6 +148,14 @@ function rowsChargeReader(rows: readonly PricedUsage[]): QuotaChargeReader {
         (!modelScope || modelScope(row.fact.model))
       );
     });
+    let cacheInput = 0;
+    let cacheRead = 0;
+    for (const { fact } of selected) {
+      const { input, cacheRead: read, cacheWrite } = fact.tokens;
+      if (input === null || read === null || cacheWrite === null) continue;
+      cacheInput += input + read + cacheWrite;
+      cacheRead += read;
+    }
     return {
       usd: sumCharges(selected, "usd"),
       credits: sumCharges(selected, "credits"),
@@ -164,6 +175,7 @@ function rowsChargeReader(rows: readonly PricedUsage[]): QuotaChargeReader {
               (row.fact.tokens.output ?? 0),
             0,
           ),
+      cacheRate: cacheInput ? (cacheRead / cacheInput) * 100 : null,
     };
   };
 }
@@ -253,7 +265,7 @@ export function quotaView(
     known && !expired
       ? start <= time
         ? readCharges(startsAt!, now)
-        : { usd: "0", credits: "0", count: 0, tokens: 0 }
+        : { usd: "0", credits: "0", count: 0, tokens: 0, cacheRate: null }
       : null;
   // 合并账户可能同时持有多个采样来源，只用最新来源比较百分比。
   const sameSource = ordered
@@ -346,6 +358,7 @@ export function quotaView(
     periodCredits: periodCharges?.credits ?? null,
     periodRequests: periodCharges?.count ?? null,
     periodTokens: periodCharges?.tokens ?? null,
+    periodCacheRate: periodCharges?.cacheRate ?? null,
     estimate: {
       usd: null,
       credits: null,

@@ -55,6 +55,20 @@
   font-weight: 400;
 }
 
+/* 命中率是已用比例的附注，同色同号；放不下时整项换到下一行，不拆开数字。 */
+.quota-window-cache {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.quota-window-cache::before {
+  content: "·";
+  margin-right: 7px;
+}
+
 .quota-window[data-exhausted="true"] .quota-window-status {
   color: var(--quota-alert);
 }
