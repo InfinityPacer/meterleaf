@@ -170,7 +170,9 @@ function rowsChargeReader(rows: readonly PricedUsage[]): QuotaChargeReader {
 
 /**
  * 档位已知时用公布的模型上限反推整窗价值，不再按取整后的百分比外推。
- * 本周期有上限表之外的模型花费、或费用缺少可计价部分时返回 null，调用方沿用旧逻辑。
+ * 只有本周期每一次请求都来自上限表里的模型时才成立，按请求数对账而不是按金额：
+ * 缺价请求不计入金额，按金额对账会漏掉它们，把表内模型的上限当成整窗价值。
+ * 本周期没有请求时也无从知道将用哪个模型，同样返回 null，调用方沿用旧逻辑。
  */
 function planLimitUsd(
   budget: GoPlanBudget,
@@ -178,33 +180,34 @@ function planLimitUsd(
   startsAt: string,
   now: string,
   readSource: QuotaChargeReader,
-  periodUsd: string | null,
+  periodRequests: number | null,
 ): string | null {
-  if (periodUsd === null) return null;
+  if (!periodRequests) return null;
   const share = new Decimal(budget.windowShare[window]);
   const charges: { cap: Decimal; spend: Decimal }[] = [];
+  let tracked = 0;
   for (const limit of budget.models) {
-    const { usd } = readSource(startsAt, now, limit.scope);
+    const { usd, count } = readSource(startsAt, now, limit.scope);
+    if (count === undefined) return null;
+    if (count === 0) continue;
     if (usd === null) return null;
+    tracked += count;
     charges.push({
       cap: new Decimal(limit.monthlyUsd).mul(share),
       spend: new Decimal(usd),
     });
   }
-  const spent = new Decimal(periodUsd);
-  const tracked = charges.reduce(
+  // 表外模型（包括缺价模型）的上限未知，混入后无法按模型构成折算。
+  if (tracked !== periodRequests) return null;
+  const spent = charges.reduce(
     (total, { spend }) => total.add(spend),
     new Decimal(0),
   );
-  // 表外模型的上限未知，混入后无法按模型构成折算，整窗价值也没有公布依据。
-  if (spent.sub(tracked).gt(0)) return null;
-  if (spent.eq(0))
-    return charges.length === 1 ? charges[0]!.cap.toString() : null;
   const fraction = charges.reduce(
     (total, { cap, spend }) => total.add(spend.div(cap)),
     new Decimal(0),
   );
-  return fraction.eq(0) ? null : spent.div(fraction).toString();
+  return fraction.gt(0) ? spent.div(fraction).toString() : null;
 }
 
 /** 百分比为整个上游账号，费用只覆盖本连接器；推算是条件性观测值而非订阅承诺额度。 */
@@ -373,7 +376,7 @@ export function quotaView(
       startsAt!,
       now,
       readSource,
-      result.periodUsd,
+      result.periodRequests,
     );
     if (quota !== null) {
       result.estimate.usd = quota;
