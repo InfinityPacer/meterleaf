@@ -38,7 +38,8 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
       "id": "opencode-go",
       "name": "OpenCode Go",
       "platform": "opencode-go",
-      "kind": "subscription"
+      "kind": "subscription",
+      "plan": "go"
     }
   ]
 }
@@ -46,7 +47,7 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
 
 - `match` 是模型名，`*` 匹配任意字符。规则按顺序取第一条命中的，所以也能把某个 `claude-` 模型单独分出去。
 - `id` 是账户在这台电脑来源里的标识，只能用字母、数字、`-` 和 `_`。改 `name` 只改显示名；改 `id` 会把历史用量整体移到新账户。
-- `kind` 可填 `subscription`、`api` 或 `unknown`，省略时为 `unknown`；`plan` 可选，省略时不显示套餐。
+- `kind` 可填 `subscription`、`api` 或 `unknown`，省略时为 `unknown`。`plan` 可选，省略时不显示套餐；`platform` 为 `opencode-go` 时填 `go` 或 `go-plus`，页面显示为 Go 或 Go Plus。
 
 保存后下一次同步生效，不需要重启后台任务。映射有变化时，采集器会把已经推送过的用量按新映射重新归属并补推一次，服务端的报表随之更新。`meterleaf-collector status` 会列出当前的映射。
 
@@ -118,6 +119,8 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
 ## 状态栏额度缓存（可选）
 
+`~/.claude.json` 里的额度缓存只在打开用量面板时刷新，平时很快过期。更新的额度只在 Claude Code 运行时出现：在终端里交给状态栏命令，在无界面模式下写进输出流。采集器不运行 Claude Code，也不调用额度接口，所以它只约定一个额度文件，由你按自己使用 Claude Code 的方式写出这个文件。仓库提供两种写法：终端用户用状态栏脚本，通过 Paseo 使用的见[下一节](#通过-paseo-使用-claude-code)。其他工具可以照文件格式自己实现，只要数据来自 Claude Code 本身给出的额度，不要用登录令牌另行请求额度接口。
+
 Claude Code 每一轮都会把最新的 5 小时与 7 天额度传给状态栏命令。如果你的状态栏脚本把它写成文件，采集器可以读取这个文件，额度会比 `~/.claude.json` 里的缓存新得多。
 
 没有现成状态栏脚本时，可使用仓库中的 `scripts/claude-statusline.sh`（需要 Bash 与 `jq`）。在 Claude Code 的 `~/.claude/settings.json` 中添加下面一项，将路径改为脚本的实际绝对路径；如果已配置状态栏，请把额度缓存逻辑整合进现有脚本，不要覆盖原命令：
@@ -146,6 +149,36 @@ meterleaf-collector statusline-cache ~/.cache/claude-statusline/rate-limits.tsv
 ```
 
 采集器同样只读这个文件。文件里没有账户和采样时间，采集器把文件修改时间当作采样时间，并按那一刻观察到的登录账户归属；切换账户前后无法判断时跳过这次采样。Meterleaf 对同一账户和窗口使用采样时间最新的一份，两个来源不会相加。格式不对或窗口名不认识的行会被跳过，其余行照常使用，跳过时采集日志会记一行说明。停用时执行 `meterleaf-collector statusline-cache off`。
+
+## 通过 Paseo 使用 Claude Code
+
+Paseo 以无界面模式启动 Claude Code，状态栏命令不会执行，额度缓存因此停在最后一次在终端使用的时候，页面上的 5 小时窗口长期显示「等待更新」。无界面模式下，Claude Code 每次请求后会在输出流里给出同样的 5 小时与 7 天额度，Paseo 收到后并不保存。仓库里的 `scripts/paseo-claude-quota.sh` 包在 Claude Code 外面，参数和输入原样交给它，Paseo 收到的输出不变，脚本只把其中的额度写进上一节的额度文件。
+
+在 `~/.paseo/config.json` 中把 Claude 的启动命令换成这个脚本（需要 `jq`），路径改为实际位置，再执行 `paseo reload`。之后新启动的 Claude 代理生效，已在运行的代理要重新开始才会经过脚本。
+
+```json
+{
+  "agents": {
+    "providers": {
+      "claude": {
+        "command": [
+          "/absolute/path/to/meterleaf/scripts/paseo-claude-quota.sh"
+        ],
+        "env": {
+          "METERLEAF_STATUSLINE_CACHE": "/Users/you/.cache/claude-statusline/rate-limits.tsv"
+        }
+      }
+    }
+  }
+}
+```
+
+- `METERLEAF_STATUSLINE_CACHE` 填 `meterleaf-collector statusline-cache` 配置的同一个路径，省略时用采集器数据目录里的默认文件。终端里的状态栏脚本可以同时写这个文件，采集器取修改时间最新的一份。
+- Claude Code 不在 `~/.local/bin/claude` 时，用 `METERLEAF_CLAUDE_BIN` 指定实际位置。
+- 设置了 `ANTHROPIC_BASE_URL`、Bedrock 或 Vertex 的代理（例如经 OpenCode Go 使用其他模型）不属于 Claude 订阅，脚本直接运行 Claude Code，不写额度。
+- 输出流里没有 Fable 周额度，Fable 仍然只来自 `~/.claude.json` 的缓存。
+
+脚本不读取登录凭据，也不发出额外请求。Paseo 自带的用量面板会用 Claude Code 的登录令牌请求 Anthropic 的额度接口，不要把那份结果转给采集器。
 
 ## 日常查看与排障
 
