@@ -31,3 +31,14 @@ test("unknown platforms or plans keep a label without guessing a tier", () => {
     planBadge({ platform: "openai", plan: "未提供", kind: "api" }),
   ).toEqual({ label: "API", tier: null });
 });
+
+test("OpenCode Go plans show their names without a usage tier", () => {
+  expect(subscription("opencode-go", "go")).toEqual({
+    label: "Go",
+    tier: null,
+  });
+  expect(subscription("opencode-go", "go-plus")).toEqual({
+    label: "Go Plus",
+    tier: null,
+  });
+});

@@ -2,6 +2,13 @@
 
 ## [未发布]
 
+## [0.11.1] - 2026-10-23
+
+- 通过 Paseo 使用 Claude Code 时额度也能保持更新。Paseo 不运行状态栏命令，新增的 `scripts/paseo-claude-quota.sh` 作为 Paseo 的 Claude 启动命令，从 Claude Code 的输出流里抄下 5 小时与 7 天额度，写进采集器读取的状态栏额度缓存，不读凭据、不发额外请求，用法见[本机采集器](docs/collector.md#通过-paseo-使用-claude-code)。
+- OpenCode Go 账户可在 `modelAccounts` 里设置 `"plan": "go"` 或 `"go-plus"`，徽标显示 Go 或 Go Plus。设了档位后，「7d 预估」和「1m 预估」直接显示套餐公布的上限，例如 Go 档 DeepSeek V4.1 Flash 每周 40 美元、每月 80 美元，不再按取整后的百分比外推。
+- 月额度窗口改称「1m」，与 5h、7d 的写法一致。
+- 服务端与网页改动需要升级服务端镜像，本机采集器不用替换。数据库结构未变，升级无需先备份。
+
 ## [0.11.0] - 2026-10-23
 
 - 本机采集器按模型名分账户。Claude Code 经 OpenCode Go 等兼容接口使用的非 Claude 模型（例如 DeepSeek）不再按登录时间记到 Claude 账户，默认归到「其他模型」，也可以在采集器 `config.json` 的 `modelAccounts` 里映射到独立账户，例如「OpenCode Go」。升级后，以前记错的用量会自动改归并补推一次，Claude 账户的用量和额度预估随之回落到真实值。

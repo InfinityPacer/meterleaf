@@ -1,4 +1,5 @@
 import type { SourceAccount, UsageFact } from "../domain/connector";
+import { goPlanBudget } from "../domain/opencode-go-plan";
 import { quotaView, type QuotaChargeReader } from "../domain/quota";
 import { priceBookKey } from "../domain/pricing";
 import { reportBounds, type DateRange } from "../shared/date-range";
@@ -212,6 +213,7 @@ export function liveSnapshot(
     const quotaHistory = history.filter(
       (row) => root(row.fact.sourceId, row.fact.accountExternalId) === id,
     );
+    const planBudget = goPlanBudget(account.platform, account.plan);
     const fiveHour = quotaView(
       quotaHistory.filter((row) => row.fact.window === "five-hour"),
       periodAccountUsage,
@@ -221,6 +223,7 @@ export function liveSnapshot(
       quotaHistory.filter((row) => row.fact.window === "seven-day"),
       periodAccountUsage,
       now,
+      planBudget,
     );
     const sevenDayFable = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day-fable"),
@@ -231,6 +234,7 @@ export function liveSnapshot(
       quotaHistory.filter((row) => row.fact.window === "monthly"),
       periodAccountUsage,
       now,
+      planBudget,
     );
     return {
       id,
@@ -355,6 +359,7 @@ export function indexedSnapshot(
     const quotaHistory = quotaByAccount.get(id) ?? [];
     const reader: QuotaChargeReader = (startInclusive, endInclusive, scope) =>
       sumWindow(id, startInclusive, endInclusive, usdBasis, scope);
+    const planBudget = goPlanBudget(account.platform, account.plan);
     const fiveHour = quotaView(
       quotaHistory.filter((row) => row.fact.window === "five-hour"),
       reader,
@@ -364,6 +369,7 @@ export function indexedSnapshot(
       quotaHistory.filter((row) => row.fact.window === "seven-day"),
       reader,
       now,
+      planBudget,
     );
     const sevenDayFable = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day-fable"),
@@ -374,6 +380,7 @@ export function indexedSnapshot(
       quotaHistory.filter((row) => row.fact.window === "monthly"),
       reader,
       now,
+      planBudget,
     );
     return {
       id,
