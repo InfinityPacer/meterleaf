@@ -181,6 +181,9 @@ export async function pushOutbox(
     }
     if (!sent.response.ok) {
       result.error = await rejected(sent.response);
+      // 服务端拒收请求归属（例如尚未开放 OTEL 入口）时，用量仍照常推送，
+      // 只是退回按登录时间线归属；归属记录留在队列里，服务端修好后补发。
+      if (result.error.kind === "rejected") break;
       return result;
     }
     state.acknowledge(otel.map((item) => item.seq));

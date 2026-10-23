@@ -267,7 +267,7 @@ interface FakeServer {
   stop: () => void;
 }
 
-function fakeServer(status = 200): FakeServer {
+function fakeServer(status = 200, otelStatus = status): FakeServer {
   const paths: string[] = [];
   const otel: unknown[] = [];
   const batches: IngestBatch[] = [];
@@ -279,6 +279,8 @@ function fakeServer(status = 200): FakeServer {
       paths.push(path);
       if (request.headers.get("authorization") !== `Bearer ${key}`)
         return new Response("invalid key", { status: 401 });
+      if (path === OTEL_LOGS_PATH && otelStatus !== 200)
+        return new Response("unavailable", { status: otelStatus });
       if (status !== 200) return new Response("unavailable", { status });
       if (path === OTEL_LOGS_PATH) {
         otel.push(await request.json());
@@ -347,7 +349,7 @@ describe("推送 OTEL 请求归属", () => {
     });
   });
 
-  test("网络错误、5xx 与 4xx 都保留 OTEL 项且不再推用量", async () => {
+  test("网络错误、5xx 与 4xx 都保留 OTEL 项；只有 4xx 时仍尝试推用量", async () => {
     for (const status of [503, 401]) {
       const state = usageState();
       const server = fakeServer(status);
@@ -356,7 +358,11 @@ describe("推送 OTEL 请求归属", () => {
       const result = await pushOutbox(state, config(server.url));
       expect(result.error?.kind).toBe(status === 503 ? "server" : "rejected");
       expect(result.usage).toBe(0);
-      expect(server.paths).toEqual([OTEL_LOGS_PATH]);
+      expect(server.paths).toEqual(
+        status === 503
+          ? [OTEL_LOGS_PATH]
+          : [OTEL_LOGS_PATH, INGEST_BATCHES_PATH],
+      );
       expect(state.pendingCounts()).toEqual(before);
     }
 
@@ -370,6 +376,17 @@ describe("推送 OTEL 请求归属", () => {
     expect(result.error?.kind).toBe("network");
     expect(state.pendingCounts().otel).toBe(1);
     expect(state.pendingCounts().usage).toBeGreaterThan(0);
+  });
+
+  test("服务端拒收 OTEL 时用量照常推送，归属记录留待补发", async () => {
+    const state = usageState();
+    const server = fakeServer(200, 404);
+    state.enqueueOtel([otelRecord()]);
+    const result = await pushOutbox(state, config(server.url));
+    expect(result.error?.kind).toBe("rejected");
+    expect(result.usage).toBe(5);
+    expect(server.paths).toEqual([OTEL_LOGS_PATH, INGEST_BATCHES_PATH]);
+    expect(state.pendingCounts()).toMatchObject({ usage: 0, otel: 1 });
   });
 
   test(`超过 ${OTEL_MAX_PUSH_RECORDS} 条分多批发送`, async () => {

@@ -106,8 +106,7 @@ export function startOtelRelay(
         log(`${now().toISOString()} 本机 OTEL 中转写库失败，返回 503 等待重试`);
         return invalid("temporarily unavailable", 503);
       }
-      // 只记条数，不记请求 ID、账户或任何属性内容。
-      log(`${now().toISOString()} 本机 OTEL 中转接收 ${records.length} 条`);
+      // 每个会话约 5 秒导出一次，成功不逐次写日志；条数随 sync 的推送结果记录。
       return Response.json({});
     },
   });
