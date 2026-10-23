@@ -156,7 +156,7 @@ INSERT INTO usage_logs VALUES (1,1,'gpt-6-astra',now(),100,10,0,0),(2,1,'gpt-6-a
     "bun",
     "meterleaf",
     "-e",
-    `import {Database} from 'bun:sqlite'; const baseline='a17c9e4b620f'; for(const name of ['meterleaf.sqlite','meterleaf.sqlite.reports.sqlite','meterleaf.sqlite.reports.sqlite.lifetime','meterleaf.sqlite.reports.sqlite.views']) {const db=new Database('/app/app_data/'+name,{readonly:true}); const row=db.query('SELECT revision, down_revision FROM schema_revisions').get(); if(row?.revision!==baseline || row?.down_revision!==null)throw new Error('schema revision mismatch'); if(db.query('PRAGMA quick_check').get().quick_check!=='ok')throw new Error('integrity failure'); db.close();} console.log('schema-ok');`,
+    `import {Database} from 'bun:sqlite'; const baseline='a17c9e4b620f'; const current='c4f1a9d7e250'; const expected={'meterleaf.sqlite':[current,baseline],'meterleaf.sqlite.reports.sqlite':[baseline,null],'meterleaf.sqlite.reports.sqlite.lifetime':[baseline,null],'meterleaf.sqlite.reports.sqlite.views':[baseline,null]}; for(const [name,want] of Object.entries(expected)) {const db=new Database('/app/app_data/'+name,{readonly:true}); const row=db.query('SELECT revision, down_revision FROM schema_revisions').get(); if(row?.revision!==want[0] || (row?.down_revision??null)!==want[1])throw new Error('schema revision mismatch'); if(db.query('PRAGMA quick_check').get().quick_check!=='ok')throw new Error('integrity failure'); db.close();} console.log('schema-ok');`,
   ]);
   expect(versions).toBe("schema-ok");
   await cp(data, join(dir, "backup"), { recursive: true });

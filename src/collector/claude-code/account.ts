@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { subjectKeyFrom } from "../../shared/account-subject";
 import type { IngestAccount } from "../../shared/ingest";
 import type { ClaudeCredentialPlan } from "./credential";
 
@@ -159,18 +159,9 @@ export function kindFor(
     : "subscription";
 }
 
-/**
- * 同一上游主体的稳定摘要，用于服务端跨来源识别同一账户；只含 UUID，不含邮箱或名称。
- * 组织 UUID 缺失时无法构成完整主体，保留未知。
- */
+/** 公式与 `src/shared/account-subject.ts` 共用，服务端补建账户时保持一致。 */
 export function subjectKeyFor(account: ClaudeAccount): string | null {
-  if (!account.organizationUuid) return null;
-  const digest = createHash("sha256")
-    .update(
-      `anthropic_account_uuid=${account.accountUuid}\nanthropic_organization_uuid=${account.organizationUuid}`,
-    )
-    .digest("hex");
-  return `sha256:${digest}`;
+  return subjectKeyFrom(account.accountUuid, account.organizationUuid);
 }
 
 /**

@@ -121,6 +121,8 @@ async function main() {
           keys: config.ingestKeys,
           save: (sourceId, batch) =>
             store.saveIngestBatch(sourceId, batch, new Date().toISOString()),
+          saveOtel: (sourceId, records, receivedAt) =>
+            store.saveRequestAccounts(sourceId, records, receivedAt),
         }
       : undefined,
     diagnostics: logger,

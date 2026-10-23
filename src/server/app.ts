@@ -11,6 +11,7 @@ import { encodeLedger } from "../shared/ledger-wire";
 import type { SyncStatus } from "./sync";
 import { registerResponseCompression } from "./response-compression";
 import { registerIngestRoutes, type IngestTarget } from "./ingest";
+import { registerOtelRoutes } from "./otel";
 import {
   registerGithubAuth,
   type GithubAuthConfig,
@@ -158,7 +159,11 @@ export function createApp({
       throw error;
     }
   });
-  if (ingest) registerIngestRoutes(app, ingest, diagnostics);
+  if (ingest) {
+    registerIngestRoutes(app, ingest, diagnostics);
+    // 同一把写入密钥也接收 Claude Code 的 OTEL 日志；只补充请求归属。
+    registerOtelRoutes(app, ingest, diagnostics);
+  }
   const displayState = () => ({
     archived: accountArchive?.read() ?? [],
     hidden: accountArchive?.hidden() ?? [],
@@ -400,6 +405,17 @@ export function createApp({
     return request.query.compact === "1" ? encodeLedger(result) : result;
   });
   app.setErrorHandler((error, request, reply) => {
+    // 超限在 Fastify 解析阶段抛出。5xx 会让采集器与 OTLP 导出器反复重试同一批，
+    // 413 才会让它们丢弃并继续后续批次。
+    if ((error as { code?: unknown }).code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+      diagnostics.log("warn", "http.payload_too_large", {
+        requestId: request.id,
+        route: request.routeOptions.url ?? "unmatched",
+      });
+      return reply
+        .code(413)
+        .send({ error: "payload-too-large", requestId: request.id });
+    }
     diagnostics.error("http.failed", {
       requestId: request.id,
       route: request.routeOptions.url ?? "unmatched",

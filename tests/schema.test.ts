@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import {
-  DATABASE_SCHEMA_REVISION,
+  DATABASE_BASELINE_REVISION,
   assertReadableSchema,
   migrateSchema,
 } from "../src/storage/schema";
@@ -11,7 +11,7 @@ const UNKNOWN_REVISION = "deadbeefcafe";
 
 function baseline(apply: (db: Database) => void = () => {}) {
   return {
-    revision: DATABASE_SCHEMA_REVISION,
+    revision: DATABASE_BASELINE_REVISION,
     downRevision: null,
     apply,
   };
@@ -24,11 +24,11 @@ test("adopts production schema_version=1 and legacy report user_version=2", () =
   );
   migrateSchema(ledger, "ledger", [baseline()]);
   expect(assertReadableSchema(ledger, "ledger", [baseline()])).toBe(
-    DATABASE_SCHEMA_REVISION,
+    DATABASE_BASELINE_REVISION,
   );
   expect(
     ledger.query("SELECT revision, down_revision FROM schema_revisions").get(),
-  ).toEqual({ revision: DATABASE_SCHEMA_REVISION, down_revision: null });
+  ).toEqual({ revision: DATABASE_BASELINE_REVISION, down_revision: null });
   expect(ledger.query("SELECT * FROM evidence").get()).toEqual({
     value: "ledger",
   });
@@ -44,7 +44,7 @@ test("adopts production schema_version=1 and legacy report user_version=2", () =
   migrateSchema(report, "report", [baseline()]);
   expect(
     report.query("SELECT revision, down_revision FROM schema_revisions").get(),
-  ).toEqual({ revision: DATABASE_SCHEMA_REVISION, down_revision: null });
+  ).toEqual({ revision: DATABASE_BASELINE_REVISION, down_revision: null });
   expect(report.query("SELECT * FROM evidence").get()).toEqual({
     value: "report",
   });
@@ -71,7 +71,7 @@ test("migrations are atomic, repeatable and refuse unknown revisions", () => {
 
   const failing = {
     revision: NEXT_REVISION,
-    downRevision: DATABASE_SCHEMA_REVISION,
+    downRevision: DATABASE_BASELINE_REVISION,
     apply: (database: Database) => {
       secondRuns++;
       database.exec("ALTER TABLE evidence ADD COLUMN extra TEXT");
@@ -84,14 +84,14 @@ test("migrations are atomic, repeatable and refuse unknown revisions", () => {
   expect(db.query("PRAGMA table_info(evidence)").all()).toHaveLength(1);
   expect(
     db.query("SELECT revision, down_revision FROM schema_revisions").all(),
-  ).toEqual([{ revision: DATABASE_SCHEMA_REVISION, down_revision: null }]);
+  ).toEqual([{ revision: DATABASE_BASELINE_REVISION, down_revision: null }]);
   expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 0 });
 
   migrateSchema(db, "ledger", [
     first,
     {
       revision: NEXT_REVISION,
-      downRevision: DATABASE_SCHEMA_REVISION,
+      downRevision: DATABASE_BASELINE_REVISION,
       apply: (database) => {
         secondRuns++;
         database.exec("ALTER TABLE evidence ADD COLUMN extra TEXT");
@@ -102,7 +102,7 @@ test("migrations are atomic, repeatable and refuse unknown revisions", () => {
     first,
     {
       revision: NEXT_REVISION,
-      downRevision: DATABASE_SCHEMA_REVISION,
+      downRevision: DATABASE_BASELINE_REVISION,
       apply: () => {
         secondRuns++;
       },
@@ -119,7 +119,7 @@ test("migrations are atomic, repeatable and refuse unknown revisions", () => {
       first,
       {
         revision: NEXT_REVISION,
-        downRevision: DATABASE_SCHEMA_REVISION,
+        downRevision: DATABASE_BASELINE_REVISION,
         apply: () => {},
       },
     ]),

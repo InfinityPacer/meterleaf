@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   accountFact,
   readClaudeJson,
@@ -16,6 +16,7 @@ import {
 } from "./claude-code/credential";
 import { loginMoment } from "./claude-code/login";
 import { quotaSnapshot } from "./claude-code/quota";
+import type { ClaudeProfile } from "./config";
 import {
   readStatuslineCache,
   statuslineQuotaSnapshot,
@@ -40,6 +41,25 @@ export interface CollectSources {
   } | null;
   /** 可选：模型到独立账户的映射，见 model-accounts.ts。 */
   modelAccounts?: readonly ModelAccountRule[];
+  /** 可选：同一台电脑上通过 CLAUDE_CONFIG_DIR 登录的其他账户。 */
+  claudeProfiles?: readonly ClaudeProfile[];
+}
+
+/** 额外账户本轮的结果；默认账户仍使用 CollectReport 顶部字段。 */
+export interface ProfileReport {
+  configDir: string;
+  accountUuid: string | null;
+  /** 跳过该项的原因；已处理时为 null。 */
+  skipped: string | null;
+  plan: string | null;
+  credentialChecked: boolean;
+  credentialPlanPending: boolean;
+  pendingPlan: string | null;
+  quotaRecorded: boolean;
+  quotaSkipped: string | null;
+  statuslineQuotaRecorded: boolean;
+  statuslineQuotaSkipped: string | null;
+  statuslineIgnoredLines: number;
 }
 
 export interface CollectReport {
@@ -69,6 +89,8 @@ export interface CollectReport {
   statuslineQuotaSkipped: string | null;
   /** 状态栏额度缓存中被忽略的行数；其余有效行仍会上报。 */
   statuslineIgnoredLines: number;
+  /** 额外 Claude 账户的本轮结果。 */
+  profiles: ProfileReport[];
 }
 
 const chunkBytes = 4 * 1024 * 1024;
@@ -244,6 +266,7 @@ export function emptyReport(): CollectReport {
     statuslineQuotaRecorded: false,
     statuslineQuotaSkipped: null,
     statuslineIgnoredLines: 0,
+    profiles: [],
   };
 }
 
@@ -253,6 +276,13 @@ const attributionRulesKey = "attribution_rules";
  * 3 起非 Claude 模型按模型映射归入独立账户，映射内容变化也触发重新归属。
  */
 const attributionRules = "3";
+/**
+ * 推送的用量元数据从这一版起带 attribution（model / timeline）。升级时要把已推送事件
+ * 重发一次，服务端才能区分模型映射与时间线归属；这与归属规则版本分开记录，
+ * 避免只因载荷字段变化就重新计算归属。
+ */
+const usageMetadataKey = "usage_metadata_version";
+const usageMetadataVersion = "1";
 const credentialCandidateKey = "credential_plan_candidate";
 const credentialCheckKey = "credential_plan_check";
 /** 读不到凭据修改标记时，退回按此间隔复查。 */
@@ -279,8 +309,18 @@ function credentialSignals(account: ClaudeAccount): string {
   ]);
 }
 
-function readCredentialCheck(state: CollectorState): CredentialCheck | null {
-  const raw = state.getMeta(credentialCheckKey);
+/** 默认账户与每个额外账户分别保存待确认状态，避免切换目录时互相覆盖。 */
+interface CredentialReport {
+  credentialChecked: boolean;
+  credentialPlanPending: boolean;
+  pendingPlan: string | null;
+}
+
+function readCredentialCheck(
+  state: CollectorState,
+  key: string,
+): CredentialCheck | null {
+  const raw = state.getMeta(key);
   if (!raw) return null;
   try {
     return JSON.parse(raw) as CredentialCheck;
@@ -300,6 +340,7 @@ function credentialDue(
   account: ClaudeAccount,
   version: string | null,
   now: Date,
+  candidateKey: string,
 ): boolean {
   if (
     !check ||
@@ -307,7 +348,7 @@ function credentialDue(
     check.signals !== credentialSignals(account)
   )
     return true;
-  const candidate = state.getMeta(credentialCandidateKey) ?? "";
+  const candidate = state.getMeta(candidateKey) ?? "";
   const confirmed = check.plan
     ? JSON.stringify({ accountUuid: check.accountUuid, plan: check.plan })
     : "";
@@ -326,20 +367,26 @@ function credentialDue(
  */
 function currentCredentialPlan(
   state: CollectorState,
-  sources: CollectSources,
+  sources: Pick<CollectSources, "claudeJson" | "credential">,
   account: ClaudeAccount,
-  report: CollectReport,
+  report: CredentialReport,
   now: Date,
   version: string | null,
+  options: { keySuffix?: string; location?: CredentialLocation } = {},
 ): ClaudeCredentialPlan | null {
   if (!sources.credential) return null;
-  const { location, read } = sources.credential;
-  const check = readCredentialCheck(state);
+  const { read } = sources.credential;
+  const location = options.location ?? sources.credential.location;
+  const suffix = options.keySuffix ? `:${options.keySuffix}` : "";
+  const candidateKey = `${credentialCandidateKey}${suffix}`;
+  const checkKey = `${credentialCheckKey}${suffix}`;
+  const check = readCredentialCheck(state, checkKey);
   const sameAccount =
     check?.accountUuid === account.accountUuid &&
     check.signals === credentialSignals(account);
   const known = sameAccount ? check.plan : null;
-  if (!credentialDue(state, check, account, version, now)) return known;
+  if (!credentialDue(state, check, account, version, now, candidateKey))
+    return known;
 
   report.credentialChecked = true;
   const plan = credentialPlanFrom(read(location));
@@ -348,11 +395,11 @@ function currentCredentialPlan(
     plan && confirmed?.account?.accountUuid === account.accountUuid
       ? JSON.stringify({ accountUuid: account.accountUuid, plan })
       : "";
-  const previous = state.getMeta(credentialCandidateKey);
-  if (previous !== candidate) state.setMeta(credentialCandidateKey, candidate);
+  const previous = state.getMeta(candidateKey);
+  if (previous !== candidate) state.setMeta(candidateKey, candidate);
   const record = (result: ClaudeCredentialPlan | null) =>
     state.setMeta(
-      credentialCheckKey,
+      checkKey,
       JSON.stringify({
         accountUuid: account.accountUuid,
         signals: credentialSignals(account),
@@ -452,6 +499,10 @@ export function collect(
     report.reattributed += state.reattribute(null);
     state.setMeta(attributionRulesKey, rules);
   }
+  if (state.getMeta(usageMetadataKey) !== usageMetadataVersion) {
+    state.requeueUsage();
+    state.setMeta(usageMetadataKey, usageMetadataVersion);
+  }
 
   const files = listSessionFiles(sources.projectsDir);
   report.files = files.length;
@@ -514,5 +565,109 @@ export function collect(
       }
     }
   }
+
+  for (const profile of sources.claudeProfiles ?? [])
+    report.profiles.push(
+      collectProfile(state, sources, profile, report.accountUuid, now),
+    );
   return report;
+}
+
+/** 额外账户的本地状态键后缀；默认账户不带后缀，已有安装不必重新确认。 */
+function profileKeySuffix(configDir: string): string {
+  return createHash("sha256").update(configDir).digest("hex").slice(0, 8);
+}
+
+/**
+ * 额外账户从自己的 CLAUDE_CONFIG_DIR 读取账户、凭据套餐与额度，但不写入登录时间线：
+ * 会话记录只有默认目录，时间线也只代表默认账户。额度归属不靠时间线，
+ * 而是凭这个目录自己的 .claude.json 与配置的额度缓存。
+ */
+function collectProfile(
+  state: CollectorState,
+  sources: CollectSources,
+  profile: ClaudeProfile,
+  defaultAccountUuid: string | null,
+  now: Date,
+): ProfileReport {
+  const configDir = resolve(profile.configDir);
+  const claudeJson = join(configDir, ".claude.json");
+  // 钥匙串条目名按用户设置的原始 CLAUDE_CONFIG_DIR 计算，不能用解析后的路径。
+  const keySuffix = profileKeySuffix(profile.configDir);
+  const result: ProfileReport = {
+    configDir: profile.configDir,
+    accountUuid: null,
+    skipped: null,
+    plan: null,
+    credentialChecked: false,
+    credentialPlanPending: false,
+    pendingPlan: null,
+    quotaRecorded: false,
+    quotaSkipped: null,
+    statuslineQuotaRecorded: false,
+    statuslineQuotaSkipped: null,
+    statuslineIgnoredLines: 0,
+  };
+  const snapshot = readClaudeJson(claudeJson);
+  if (!snapshot?.account) {
+    result.skipped = "未能读取 .claude.json 或未登录";
+    return result;
+  }
+  const account = snapshot.account;
+  result.accountUuid = account.accountUuid;
+  // 同一账户可能同时是默认目录的登录账户，重复上报只会互相覆盖。
+  if (defaultAccountUuid && account.accountUuid === defaultAccountUuid) {
+    result.skipped = "与默认账户相同";
+    return result;
+  }
+  const location: CredentialLocation = {
+    claudeRoot: configDir,
+    configDir: profile.configDir,
+  };
+  const version = sources.credential?.version(location) ?? null;
+  const credential = currentCredentialPlan(
+    state,
+    { claudeJson, credential: sources.credential },
+    account,
+    result,
+    now,
+    version,
+    { keySuffix, location },
+  );
+  state.upsertAccount(stickyAccountFact(state, account, credential));
+  result.plan = state.account(account.accountUuid)?.plan ?? null;
+
+  if (snapshot.utilization) {
+    const quota = quotaSnapshot(snapshot.utilization);
+    if (!quota) {
+      result.quotaSkipped = "额度缓存缺少账户或窗口";
+    } else if (quota.quotas[0]!.accountExternalId !== account.accountUuid) {
+      result.quotaSkipped = "额度缓存属于其他账户";
+    } else {
+      result.quotaRecorded = state.recordQuota(
+        quota,
+        `claude-json:${keySuffix}`,
+      );
+    }
+  }
+
+  if (profile.statuslineCache) {
+    const cache = readStatuslineCache(profile.statuslineCache);
+    if (!cache) {
+      result.statuslineQuotaSkipped = "状态栏额度缓存不存在或格式无效";
+    } else {
+      result.statuslineIgnoredLines = cache.ignoredLines;
+      // 文件不带账户：只有同一目录在读缓存前后仍是同一账户时才归属。
+      const confirmed = readClaudeJson(claudeJson);
+      if (confirmed?.account?.accountUuid !== account.accountUuid) {
+        result.statuslineQuotaSkipped = "读取前后登录账户不一致";
+      } else {
+        result.statuslineQuotaRecorded = state.recordQuota(
+          statuslineQuotaSnapshot(cache, account.accountUuid),
+          `statusline:${keySuffix}`,
+        );
+      }
+    }
+  }
+  return result;
 }

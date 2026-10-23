@@ -1,9 +1,12 @@
 import { Database } from "bun:sqlite";
 import {
+  DATABASE_BASELINE_REVISION,
   DATABASE_SCHEMA_REVISION,
   assertReadableSchema,
   migrateSchema,
 } from "./schema";
+import { subjectKeyFrom } from "../shared/account-subject";
+import type { OtelRequestAccount } from "../shared/otel";
 import Decimal from "decimal.js";
 import { createHash } from "node:crypto";
 import type {
@@ -162,7 +165,7 @@ export class LedgerStore {
     );
     migrateSchema(this.db, "ledger", [
       {
-        revision: DATABASE_SCHEMA_REVISION,
+        revision: DATABASE_BASELINE_REVISION,
         downRevision: null,
         apply: (db) =>
           db.exec(`
@@ -266,6 +269,24 @@ export class LedgerStore {
           OLD.external_id
         );
       END;
+    `),
+      },
+      {
+        revision: DATABASE_SCHEMA_REVISION,
+        downRevision: DATABASE_BASELINE_REVISION,
+        apply: (db) =>
+          db.exec(`
+      CREATE TABLE IF NOT EXISTS request_accounts (
+        source_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        account_uuid TEXT,
+        organization_uuid TEXT,
+        session_id TEXT,
+        model TEXT,
+        occurred_at TEXT,
+        received_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, request_id)
+      );
     `),
       },
     ]);
@@ -473,6 +494,83 @@ export class LedgerStore {
     })();
   }
 
+  /** 请求来自事件键 `${requestId}:${messageId}`；`nr:` 开头的没有请求 ID。 */
+  private static requestIdOf(externalId: string): string | null {
+    if (externalId.startsWith("nr:")) return null;
+    const colon = externalId.indexOf(":");
+    return colon > 0 ? externalId.slice(0, colon) : null;
+  }
+
+  private requestAccount(sourceId: string, requestId: string) {
+    return this.db
+      .query<
+        { account_uuid: string | null; organization_uuid: string | null },
+        [string, string]
+      >(
+        "SELECT account_uuid, organization_uuid FROM request_accounts WHERE source_id=? AND request_id=?",
+      )
+      .get(sourceId, requestId);
+  }
+
+  /**
+   * OTEL 只证明请求属于哪个账户，因此覆盖按请求生效：模型映射（attribution=model）
+   * 是用户明确指定的归属，优先于 OTEL。账户尚不存在时补一条占位资料，
+   * 采集器之后推来的真实资料会覆盖它。
+   */
+  private ensureRequestAccount(
+    sourceId: string,
+    accountUuid: string,
+    organizationUuid: string | null,
+  ) {
+    this.db
+      .query(
+        `INSERT INTO accounts (source_id, external_id, payload) VALUES (?, ?, ?)
+         ON CONFLICT(source_id, external_id) DO NOTHING`,
+      )
+      .run(
+        sourceId,
+        accountUuid,
+        JSON.stringify({
+          sourceId,
+          externalId: accountUuid,
+          name: "Claude Code",
+          platform: "anthropic",
+          kind: "unknown",
+          plan: null,
+          parentExternalId: null,
+          subjectKey: subjectKeyFrom(accountUuid, organizationUuid),
+        } satisfies SourceAccount),
+      );
+  }
+
+  /** 为一条事实查找可覆盖的 OTEL 账户；不能覆盖时返回 null。 */
+  private accountOverride(
+    sourceId: string,
+    fact: UsageFact,
+    cache: Map<
+      string,
+      { account_uuid: string | null; organization_uuid: string | null } | null
+    >,
+  ): string | null {
+    if (fact.metadata.attribution === "model") return null;
+    const requestId = LedgerStore.requestIdOf(fact.externalId);
+    if (!requestId) return null;
+    if (!cache.has(requestId))
+      cache.set(requestId, this.requestAccount(sourceId, requestId) ?? null);
+    const mapping = cache.get(requestId);
+    if (
+      !mapping?.account_uuid ||
+      mapping.account_uuid === fact.accountExternalId
+    )
+      return null;
+    this.ensureRequestAccount(
+      sourceId,
+      mapping.account_uuid,
+      mapping.organization_uuid,
+    );
+    return mapping.account_uuid;
+  }
+
   /** 事实与当前价格表估值同步写入；内容未变的重放不产生变更。调用方负责事务。 */
   private writeFacts(
     sourceId: string,
@@ -480,9 +578,18 @@ export class LedgerStore {
     now: string,
   ): boolean {
     let changed = false;
-    for (const fact of facts) {
-      if (fact.sourceId !== sourceId)
+    const requestAccounts = new Map<
+      string,
+      { account_uuid: string | null; organization_uuid: string | null } | null
+    >();
+    for (const original of facts) {
+      if (original.sourceId !== sourceId)
         throw new Error("Connector returned a foreign source record");
+      const account = this.accountOverride(sourceId, original, requestAccounts);
+      const fact =
+        account === null
+          ? original
+          : { ...original, accountExternalId: account };
       const factWrite = this.db
         .query(
           `INSERT INTO usage_facts VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET account_id=excluded.account_id, occurred_at=excluded.occurred_at, payload=excluded.payload WHERE usage_facts.payload<>excluded.payload`,
@@ -725,6 +832,99 @@ export class LedgerStore {
       });
       if (changed) this.bumpRevision();
     })();
+  }
+
+  /**
+   * 记录 OTEL 请求到账户的映射，并把同一请求已经写入的用量改到该账户。
+   * 同一请求重复到达时以先到的非空账户为准，空值只补缺，不覆盖已有值。
+   */
+  saveRequestAccounts(
+    sourceId: string,
+    records: readonly OtelRequestAccount[],
+    receivedAt: string,
+  ): { stored: number; rewritten: number } {
+    let stored = 0;
+    let rewritten = 0;
+    this.db.transaction(() => {
+      for (const record of records) {
+        this.db
+          .query(
+            `INSERT INTO request_accounts
+               (source_id, request_id, account_uuid, organization_uuid, session_id, model, occurred_at, received_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(source_id, request_id) DO UPDATE SET
+               account_uuid = COALESCE(request_accounts.account_uuid, excluded.account_uuid),
+               organization_uuid = COALESCE(request_accounts.organization_uuid, excluded.organization_uuid),
+               session_id = COALESCE(request_accounts.session_id, excluded.session_id),
+               model = COALESCE(request_accounts.model, excluded.model),
+               occurred_at = COALESCE(request_accounts.occurred_at, excluded.occurred_at)`,
+          )
+          .run(
+            sourceId,
+            record.requestId,
+            record.accountUuid,
+            record.organizationUuid,
+            record.sessionId,
+            record.model,
+            record.occurredAt,
+            receivedAt,
+          );
+        stored += 1;
+        // 后到的空值没有新信息，可能只是导出重试，不必再扫描已有事实。
+        if (!record.accountUuid) continue;
+        const mapping = this.requestAccount(sourceId, record.requestId);
+        if (!mapping?.account_uuid) continue;
+        rewritten += this.rewriteRequestFacts(
+          sourceId,
+          record.requestId,
+          mapping.account_uuid,
+          mapping.organization_uuid,
+        );
+      }
+      if (rewritten > 0) this.bumpRevision();
+    })();
+    return { stored, rewritten };
+  }
+
+  /** 请求先到、用量后到时由 writeFacts 覆盖；这里处理相反顺序。 */
+  private rewriteRequestFacts(
+    sourceId: string,
+    requestId: string,
+    accountUuid: string,
+    organizationUuid: string | null,
+  ): number {
+    const prefix = `${requestId}:`;
+    // advisor 子事件的键是 `${requestId}:${messageId}:advisor:${n}`，同一前缀即可覆盖。
+    // 用主键前缀范围而不是 substr，避免每次 OTEL 事件扫描该来源的全部历史事实。
+    const rows = this.db
+      .query<
+        { external_id: string; payload: string },
+        [string, string, string]
+      >(
+        "SELECT external_id, payload FROM usage_facts WHERE source_id=? AND external_id>=? AND external_id<?",
+      )
+      .all(sourceId, prefix, `${prefix}\u{ffff}`);
+    let rewritten = 0;
+    for (const row of rows) {
+      // `nr:` 事件按会话与消息去重，没有请求 ID 可与 OTEL 对应。
+      if (row.external_id.startsWith("nr:")) continue;
+      const fact = JSON.parse(row.payload) as UsageFact;
+      if (fact.metadata.attribution === "model") continue;
+      if (fact.accountExternalId === accountUuid) continue;
+      this.ensureRequestAccount(sourceId, accountUuid, organizationUuid);
+      this.db
+        .query(
+          "UPDATE usage_facts SET account_id=?, payload=? WHERE source_id=? AND external_id=?",
+        )
+        .run(
+          accountUuid,
+          JSON.stringify({ ...fact, accountExternalId: accountUuid }),
+          sourceId,
+          row.external_id,
+        );
+      rewritten += 1;
+    }
+    return rewritten;
   }
 
   /** 额度采样不得早于已观察的套餐边界或已有快照；未来日期不能充当水位。 */

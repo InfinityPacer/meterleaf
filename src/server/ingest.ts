@@ -9,6 +9,7 @@ import {
   type IngestBatch,
   type IngestResult,
 } from "../shared/ingest";
+import type { OtelRequestAccount } from "../shared/otel";
 import type { IngestKey } from "./config";
 import type { DiagnosticsLogger } from "./diagnostics";
 
@@ -24,6 +25,12 @@ export interface IngestTarget {
       quotas: QuotaFact[];
     },
   ): void;
+  /** OTEL 日志只补充请求归属；未提供时仍接收，但不会改变用量。 */
+  saveOtel?(
+    sourceId: string,
+    records: readonly OtelRequestAccount[],
+    receivedAt: string,
+  ): { rewritten: number } | void;
 }
 
 /** 推送来源没有网关扣费或上游金额，这些字段固定为未知，由本地价格表独立估值。 */
@@ -53,8 +60,8 @@ export function ingestToDomain(sourceId: string, batch: IngestBatch) {
   };
 }
 
-/** 只比较摘要；密钥明文不落盘、不进日志。 */
-function matchKey(
+/** 只比较摘要；密钥明文不落盘、不进日志。OTEL 日志入口复用同一套鉴权。 */
+export function matchIngestKey(
   header: string | undefined,
   keys: readonly IngestKey[],
 ): IngestKey | null {
@@ -82,7 +89,7 @@ export function registerIngestRoutes(
     INGEST_BATCHES_PATH,
     { bodyLimit: INGEST_BODY_LIMIT_BYTES },
     async (request, reply) => {
-      const key = matchKey(request.headers.authorization, target.keys);
+      const key = matchIngestKey(request.headers.authorization, target.keys);
       if (!key) return reply.code(401).send({ error: "invalid ingest key" });
       const parsed = ingestBatchSchema.safeParse(request.body);
       if (!parsed.success)

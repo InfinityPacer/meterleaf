@@ -105,7 +105,7 @@ docker compose up -d --no-build --pull never  # 已发布镜像
 
 采集器需要能访问 Meterleaf。采集器与服务在同一台电脑时使用 `http://127.0.0.1:4318`。服务在 NAS 等其他主机时，随附 Compose 默认只监听回环地址，局域网访问需把 `METERLEAF_BIND_ADDRESS` 改为 `0.0.0.0` 或宿主机局域网地址，或者经由已有的反向代理访问。HTTP 下写入密钥明文传输，只在可信局域网中使用。
 
-若要让外网的电脑推送，地址必须走 HTTPS。开启了 [GitHub 登录](#github-登录)时采集器写入已绕过登录；如果改由反向代理做登录保护，只为 `POST /api/ingest/v1/batches` 绕过它，其余页面照旧。这个地址用写入密钥鉴权。反向代理的请求体上限至少设为 8 MB，Nginx 默认 1 MB 会拒绝大批次。以 Nginx 为例：
+若要让外网的电脑推送，地址必须走 HTTPS。开启了 [GitHub 登录](#github-登录)时采集器写入与 OTEL 日志已绕过登录；如果改由反向代理做登录保护，只为 `POST /api/ingest/v1/batches` 和 `POST /api/otel/v1/logs` 绕过它，其余页面照旧。这两个地址都用写入密钥鉴权。反向代理的请求体上限至少设为 8 MB，Nginx 默认 1 MB 会拒绝大批次。以 Nginx 为例：
 
 ```nginx
 location = /api/ingest/v1/batches {
@@ -115,7 +115,17 @@ location = /api/ingest/v1/batches {
     proxy_set_header Host $http_host;
     proxy_set_header X-Forwarded-Proto $scheme;
 }
+
+location = /api/otel/v1/logs {
+    limit_except POST { deny all; }
+    client_max_body_size 8m;
+    proxy_pass http://meterleaf:4318;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
 ```
+
+OTEL 日志只在采集器配置了 `claudeProfiles`、用来区分多个 Claude 账户时才需要放行，见[本机采集器](collector.md#多个-claude-账户)。
 
 ## OpenCode Go 额度（可选）
 

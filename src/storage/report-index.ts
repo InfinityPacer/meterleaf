@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import {
-  DATABASE_SCHEMA_REVISION,
+  DATABASE_BASELINE_REVISION,
   assertReadableSchema,
   migrateSchema,
 } from "./schema";
@@ -831,7 +831,7 @@ export class ReportIndex {
     `);
     migrateSchema(this.db, "report", [
       {
-        revision: DATABASE_SCHEMA_REVISION,
+        revision: DATABASE_BASELINE_REVISION,
         downRevision: null,
         apply: initializeSchema,
       },

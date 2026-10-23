@@ -1,7 +1,12 @@
 import type { Database } from "bun:sqlite";
 
 /** 首次公开发行的统一结构基线；费用表版本与数据库结构版本相互独立。 */
-export const DATABASE_SCHEMA_REVISION = "a17c9e4b620f";
+export const DATABASE_BASELINE_REVISION = "a17c9e4b620f";
+/**
+ * 当前账本结构版本。升级后旧版本镜像读不了迁移过的账本，升级前必须备份数据目录。
+ * 报表、累计与视图缓存不随账本结构变化，仍停留在基线 revision。
+ */
+export const DATABASE_SCHEMA_REVISION = "c4f1a9d7e250";
 export type SchemaRevision = string;
 export type DatabaseKind = "ledger" | "report" | "lifetime" | "view-cache";
 
@@ -23,10 +28,16 @@ interface SchemaState {
 }
 
 const REVISION_PATTERN = /^[0-9a-f]{12}$/;
+/** 只用于校验可读 revision；实际建表语句由各 store 在与自身种类相符的事务里执行。 */
 const DEFAULT_MIGRATIONS: readonly SchemaMigration[] = [
   {
-    revision: DATABASE_SCHEMA_REVISION,
+    revision: DATABASE_BASELINE_REVISION,
     downRevision: null,
+    apply: () => {},
+  },
+  {
+    revision: DATABASE_SCHEMA_REVISION,
+    downRevision: DATABASE_BASELINE_REVISION,
     apply: () => {},
   },
 ];
@@ -76,7 +87,7 @@ function readLegacyRevision(
         "SELECT MAX(version) AS version FROM schema_version",
       )
       .get()?.version;
-    if (version === 1) return DATABASE_SCHEMA_REVISION;
+    if (version === 1) return DATABASE_BASELINE_REVISION;
     if (version !== null && version !== undefined)
       throw new Error(
         `Unsupported ${kind} database schema version: ${version}`,
@@ -88,7 +99,7 @@ function readLegacyRevision(
     const userVersion = db
       .query<{ user_version: number }, []>("PRAGMA user_version")
       .get()!.user_version;
-    if (userVersion === 2) return DATABASE_SCHEMA_REVISION;
+    if (userVersion === 2) return DATABASE_BASELINE_REVISION;
   }
   return null;
 }
