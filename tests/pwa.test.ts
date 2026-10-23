@@ -73,7 +73,7 @@ test("service worker only precaches independent offline resources", async () => 
   expect(worker).toContain("/icons/meterleaf-leaf-512.png");
   expect(worker).toContain("/icons/meterleaf-192.png");
   expect(worker).toContain("/icons/meterleaf-512.png");
-  expect(worker).toContain('const CACHE_NAME = "meterleaf-offline-v5"');
+  expect(worker).toContain('const CACHE_NAME = "meterleaf-offline-v6"');
   expect(worker).toContain("navigationPreload.enable");
   expect(worker).toContain("event.preloadResponse");
   expect(worker).toContain('event.request.mode !== "navigate"');
@@ -87,7 +87,88 @@ test("offline page does not expose a stale ledger", async () => {
   expect(offline).toContain("账本需要联网查看");
   expect(offline).toContain('src="/icons/meterleaf-leaf-192.png"');
   expect(offline).toContain("重新连接");
-  expect(offline).not.toContain("<script");
+  expect(offline).not.toContain("/api/");
+});
+
+test("offline page probes a path the service worker never answers from cache", async () => {
+  const offline = await readFile(join(root, "public/offline.html"), "utf8");
+  const worker = await readFile(join(root, "public/sw.js"), "utf8");
+  const probe = /fetch\("([^"?]+)\?probe=/.exec(offline)?.[1];
+  expect(probe).toBe("/");
+  const precached = /const PRECACHE_URLS = \[([\s\S]*?)\];/.exec(worker)![1]!;
+  expect(precached).not.toContain(`"${probe}"`);
+  expect(offline).toContain("AbortSignal.timeout");
+});
+
+type FetchHandler = (event: {
+  request: { method: string; url: string; mode: string };
+  preloadResponse: Promise<Response | undefined>;
+  respondWith(response: Promise<Response | undefined>): void;
+}) => void;
+
+/** 在最小的 Worker 环境里加载 sw.js，导航超时缩短到 50 毫秒。 */
+async function loadWorker(
+  network: (signal?: AbortSignal) => Promise<Response>,
+) {
+  const source = (await readFile(join(root, "public/sw.js"), "utf8")).replace(
+    "const NAVIGATION_TIMEOUT_MS = 8000;",
+    "const NAVIGATION_TIMEOUT_MS = 50;",
+  );
+  const handlers = new Map<string, FetchHandler>();
+  const offline = new Response("offline");
+  const self = {
+    location: { origin: "https://meterleaf.test" },
+    addEventListener: (type: string, handler: FetchHandler) =>
+      handlers.set(type, handler),
+  };
+  const caches = { match: async () => offline };
+  const fetchStub = (_request: unknown, init?: { signal?: AbortSignal }) =>
+    network(init?.signal);
+  new Function("self", "caches", "fetch", source)(self, caches, fetchStub);
+  const navigate = (preload: Promise<Response | undefined>) =>
+    new Promise<Response | undefined>((resolve) =>
+      handlers.get("fetch")!({
+        request: {
+          method: "GET",
+          url: "https://meterleaf.test/",
+          mode: "navigate",
+        },
+        preloadResponse: preload,
+        respondWith: (response) => void response.then(resolve),
+      }),
+    );
+  return { navigate, offline };
+}
+
+test("a navigation that never answers falls back to the offline page and aborts the request", async () => {
+  let aborted = false;
+  const { navigate, offline } = await loadWorker(
+    (signal) =>
+      new Promise((_, reject) =>
+        signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new Error("aborted"));
+        }),
+      ),
+  );
+  expect(await navigate(Promise.resolve(undefined))).toBe(offline);
+  expect(aborted).toBe(true);
+  // 挂住的预加载同样不能让窗口一直空白。
+  expect(await navigate(new Promise(() => undefined))).toBe(offline);
+});
+
+test("a navigation that answers in time is passed through, and a failure still shows the offline page", async () => {
+  const page = new Response("page");
+  const preloaded = new Response("preloaded");
+  const { navigate } = await loadWorker(async () => page);
+  expect(await navigate(Promise.resolve(undefined))).toBe(page);
+  expect(await navigate(Promise.resolve(preloaded))).toBe(preloaded);
+  const failing = await loadWorker(async () => {
+    throw new TypeError("network");
+  });
+  expect(await failing.navigate(Promise.resolve(undefined))).toBe(
+    failing.offline,
+  );
 });
 
 test("HTML exposes the manifest and Apple touch icon for native browser install", async () => {
