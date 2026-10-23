@@ -55,6 +55,8 @@ export interface AccountWindow {
   /** 当前额度周期的用量，与页面时间筛选和全历史累计相互独立。 */
   periodRequests?: number | null;
   periodTokens?: number | null;
+  /** 当前额度周期的缓存命中率（百分比），口径与报表汇总的命中率一致。 */
+  periodCacheRate?: number | null;
   estimate?: import("../domain/quota").QuotaView["estimate"];
 }
 

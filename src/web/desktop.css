@@ -731,6 +731,19 @@
       text-align: right;
       white-space: nowrap;
     }
+    /* 有命中率时比例列分两行：已用比例对齐窗口名，命中率对齐重置时间与用量。 */
+    .app-shell .account-windows .quota-window:has(.quota-window-cache) {
+      grid-template-areas:
+        "label bar status amount"
+        "reset bar cache volume";
+    }
+    .app-shell .account-windows .quota-window-cache {
+      grid-area: cache;
+      text-align: right;
+    }
+    .app-shell .account-windows .quota-window-cache::before {
+      content: none;
+    }
     .app-shell .account-windows .quota-window-amount {
       grid-area: amount;
       justify-self: end;

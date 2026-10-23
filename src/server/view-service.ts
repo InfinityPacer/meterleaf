@@ -193,6 +193,7 @@ function expireWindow(window: AccountWindow | null, now: number) {
     periodCredits: null,
     periodRequests: null,
     periodTokens: null,
+    periodCacheRate: null,
     estimate,
     ...(typeof window === "object" && "startsAt" in window
       ? { startsAt: null }

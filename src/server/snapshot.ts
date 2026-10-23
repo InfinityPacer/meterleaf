@@ -313,6 +313,7 @@ export function indexedSnapshot(
     credits: string | null;
     count?: number;
     tokens?: number | null;
+    cacheRate?: number | null;
   },
   observedAccountIds: string[] = [],
 ): Omit<LedgerSnapshot, "records"> {
