@@ -382,12 +382,9 @@ describe("claude-profiles 配置命令", () => {
   function cliSetup() {
     const root = mkdtempSync(join(tmpdir(), "meterleaf-profiles-cli-"));
     temporary.push(root);
-    const claudeDir = join(root, "claude");
-    mkdirSync(claudeDir);
     const env = {
       PATH: process.env.PATH ?? "",
       HOME: join(root, "home"),
-      CLAUDE_CONFIG_DIR: claudeDir,
       METERLEAF_COLLECTOR_HOME: join(root, "data"),
     };
     mkdirSync(env.HOME);
@@ -401,17 +398,17 @@ describe("claude-profiles 配置命令", () => {
     );
     expect(init.code).toBe(0);
     const configPath = join(env.METERLEAF_COLLECTOR_HOME, "config.json");
-    return { root, claudeDir, env, configPath };
+    return { root, env, configPath };
   }
 
   test("校验绝对路径、默认目录、重复项与 off", () => {
-    const { root, claudeDir, env, configPath } = cliSetup();
+    const { root, env, configPath } = cliSetup();
     const first = join(root, "profiles", "one");
     const second = join(root, "profiles", "two");
     for (const dir of [first, second]) mkdirSync(dir, { recursive: true });
 
     expect(run(env, "claude-profiles", "relative/path").code).toBe(2);
-    expect(run(env, "claude-profiles", claudeDir).code).toBe(2);
+    expect(run(env, "claude-profiles", join(env.HOME, ".claude")).code).toBe(2);
     expect(run(env, "claude-profiles", first, first).code).toBe(2);
     expect(run(env, "claude-profiles", `${first}=relative-cache`).code).toBe(2);
     expect(run(env, "claude-profiles", first, "off").code).toBe(2);
@@ -424,6 +421,13 @@ describe("claude-profiles 配置命令", () => {
       { configDir: first },
       { configDir: second, statuslineCache: `${second}.tsv` },
     ]);
+
+    // 用户在切换账户的 shell 里导出了 CLAUDE_CONFIG_DIR，不应把该目录误判为默认目录。
+    const switched = { ...env, CLAUDE_CONFIG_DIR: second };
+    expect(run(switched, "claude-profiles", second).code).toBe(0);
+    expect(JSON.parse(readFileSync(configPath, "utf8")).claudeProfiles).toEqual(
+      [{ configDir: second }],
+    );
 
     expect(run(env, "claude-profiles", "off").code).toBe(0);
     expect(

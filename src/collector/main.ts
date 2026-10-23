@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { readClaudeJson } from "./claude-code/account";
@@ -348,7 +349,9 @@ function runClaudeProfiles(paths: CollectorPaths, args: string[]): number {
   if (args.length === 1 && args[0] === "off") {
     delete next.claudeProfiles;
   } else {
-    const defaultDir = resolve(paths.claudeRoot);
+    // 默认目录取用户主目录下的 .claude，而不是当前 shell 的 CLAUDE_CONFIG_DIR：
+    // 用户切换账户时可能在 shell 里先导出这个变量，后台任务仍以主目录为默认账户。
+    const defaultDir = resolve(process.env.HOME || homedir(), ".claude");
     const profiles: NonNullable<CollectorConfig["claudeProfiles"]> = [];
     const seen = new Set<string>();
     for (const arg of args) {
