@@ -53,6 +53,7 @@ function formatRequests(value: number | null | undefined) {
 
 /**
  * 首页卡片、账户列表共用的额度窗口：标题行、进度条、费用行，周额度在费用后附整周预估。
+ * 标题行在已用比例后附本周期缓存命中率。
  * 每行内容固定，窗口数量变化只增减行或列，不需要为某个数量单独写布局。
  * 整体用 span 渲染，可以放进可点击的账户按钮内。
  */
@@ -109,6 +110,14 @@ export function QuotaWindow({
     showQuotaEstimate(window, asOf) &&
     estimateText !== "N/A";
   const status = usable ? quotaLabel(window, asOf) : "N/A";
+  // 命中率没有分母时不补 0%，整项不显示；口径与统计页的缓存命中率相同。
+  const cacheRate =
+    usable &&
+    window.periodCacheRate !== null &&
+    window.periodCacheRate !== undefined &&
+    Number.isFinite(window.periodCacheRate)
+      ? window.periodCacheRate
+      : null;
 
   return (
     <span
@@ -120,6 +129,14 @@ export function QuotaWindow({
         <span className="quota-window-title">
           <strong className="quota-window-label">{label}</strong>
           <span className="quota-window-status">{status}</span>
+          {cacheRate !== null && (
+            <span
+              className="quota-window-cache"
+              title="本周期缓存命中率，即缓存读取占输入的比例"
+            >
+              命中 {cacheRate.toFixed(1)}%
+            </span>
+          )}
         </span>
         <span className="quota-window-reset">
           {formatResetTime(window.resetsAt, asOf)}

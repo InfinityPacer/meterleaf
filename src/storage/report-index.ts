@@ -328,11 +328,15 @@ function addAmount(
 }
 
 function windowSum(aggregate: Aggregate, usdBasis: UsdBasis) {
-  if (!aggregate.count) return { count: 0, tokens: 0, usd: "0", credits: "0" };
+  if (!aggregate.count)
+    return { count: 0, tokens: 0, usd: "0", credits: "0", cacheRate: null };
   const usd = summaryAmount(aggregate, usdBasis);
   return {
     count: aggregate.count,
     tokens: aggregate.tokenIncompleteRows === 0 ? aggregate.tokenValue : null,
+    cacheRate: aggregate.completeCacheInput
+      ? (aggregate.completeCacheRead / aggregate.completeCacheInput) * 100
+      : null,
     // 与明细路径一致：缺价记录不抹除同一周期内已经计价的金额。
     usd: usd.knownRows > 0 ? usd.value.toString() : null,
     credits:
@@ -1052,6 +1056,7 @@ export class ReportIndex {
     tokens: number | null;
     usd: string | null;
     credits: string | null;
+    cacheRate: number | null;
   } {
     return windowSum(
       this.windowAggregate(accountId, startInclusive, endInclusive, modelScope),

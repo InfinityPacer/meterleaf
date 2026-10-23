@@ -184,6 +184,12 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
       (sum, row) => sum.add(row.credits ?? 0),
       new Decimal(0),
     );
+    const cacheInput = rows.reduce(
+      (sum, row) =>
+        sum + (row.input ?? 0) + (row.cacheRead ?? 0) + (row.cacheWrite ?? 0),
+      0,
+    );
+    const cacheRead = rows.reduce((sum, row) => sum + (row.cacheRead ?? 0), 0);
     const project = (value: Decimal.Value) =>
       new Decimal(value).mul(100).div(percent).toFixed(6);
     return {
@@ -195,6 +201,7 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
       periodCredits: hasCredits ? credits.toFixed(6) : null,
       periodRequests: period.count,
       periodTokens: period.tokens,
+      periodCacheRate: cacheInput ? (cacheRead / cacheInput) * 100 : null,
       ...(hours === 168
         ? {
             estimate: {

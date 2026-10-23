@@ -104,6 +104,7 @@ test("quota boundaries seek hours instead of scanning the account period", () =>
           tokens: 300,
           usd: basis === "api" ? "0.6" : "0.3",
           credits: "3",
+          cacheRate: (1 / 3) * 100,
         });
       }
       const boundaries = queries.mock.calls
@@ -667,12 +668,14 @@ describe("ReportIndex", () => {
         tokens: 5_000_100,
         usd: "5000.1",
         credits: "50001",
+        cacheRate: (1 / 3) * 100,
       });
       expect(index.sumWindow("account-a", at, at, "api")).toEqual({
         count: 50_001,
         tokens: 5_000_100,
         usd: "10000.2",
         credits: "50001",
+        cacheRate: (1 / 3) * 100,
       });
       const correction = row("scale-00000", at, { accountId: "account-b" });
       index.apply([correction], ["scale-00001"]);
@@ -683,12 +686,14 @@ describe("ReportIndex", () => {
         tokens: 4_999_900,
         usd: "4999.9",
         credits: "49999",
+        cacheRate: (1 / 3) * 100,
       });
       expect(index.sumWindow("account-b", at, at, "subscription")).toEqual({
         count: 1,
         tokens: 100,
         usd: "0.1",
         credits: "1",
+        cacheRate: (1 / 3) * 100,
       });
     } finally {
       index.close();
@@ -920,6 +925,7 @@ describe("ReportIndex", () => {
         tokens: null,
         usd: "0.6",
         credits: "11",
+        cacheRate: (1 / 3) * 100,
       });
       expect(
         index.sumWindow(
@@ -928,7 +934,13 @@ describe("ReportIndex", () => {
           "2026-09-08T02:30:00.000Z",
           "subscription",
         ),
-      ).toEqual({ count: 1, tokens: null, usd: null, credits: "4.4" });
+      ).toEqual({
+        count: 1,
+        tokens: null,
+        usd: null,
+        credits: "4.4",
+        cacheRate: null,
+      });
       expect(
         index.sumWindow(
           "quota-account",
@@ -941,6 +953,7 @@ describe("ReportIndex", () => {
         tokens: null,
         usd: "2",
         credits: "11",
+        cacheRate: (1 / 3) * 100,
       });
       expect(
         index.sumWindow(
@@ -949,7 +962,13 @@ describe("ReportIndex", () => {
           "2026-09-08T03:00:00.000Z",
           "subscription",
         ),
-      ).toEqual({ count: 0, tokens: 0, usd: "0", credits: "0" });
+      ).toEqual({
+        count: 0,
+        tokens: 0,
+        usd: "0",
+        credits: "0",
+        cacheRate: null,
+      });
 
       // 两个口径的快照共享读取器：结果与逐次读取一致，同一窗口只查询一次。
       const target = index as unknown as {
@@ -1027,7 +1046,13 @@ describe("ReportIndex", () => {
           "2026-09-08T01:30:00.000Z",
           "subscription",
         ),
-      ).toEqual({ count: 3, tokens: 300, usd: "3", credits: "3" });
+      ).toEqual({
+        count: 3,
+        tokens: 300,
+        usd: "3",
+        credits: "3",
+        cacheRate: (1 / 3) * 100,
+      });
     } finally {
       index.close();
       await rm(directory, { recursive: true, force: true });
@@ -1059,6 +1084,7 @@ test("model-scoped quota windows sum only the scoped models across full hours an
       tokens: 200,
       usd: "0.2",
       credits: "2",
+      cacheRate: (1 / 3) * 100,
     });
     expect(index.sumWindow(...window).count).toBe(4);
   } finally {
