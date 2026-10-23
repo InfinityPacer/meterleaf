@@ -113,6 +113,7 @@ describe("Claude Code 用量行解析", () => {
   test("元数据只含白名单字段", () => {
     const { usage } = collectFixture();
     expect(usage.get("req_A:msg_A")!.metadata).toEqual({
+      attribution: "timeline",
       reasoning_effort: "high",
       is_sidechain: false,
       web_search_requests: 1,

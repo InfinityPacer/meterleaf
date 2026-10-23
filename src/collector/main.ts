@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { readClaudeJson } from "./claude-code/account";
 import {
@@ -8,7 +8,7 @@ import {
   readCredentialVersion,
 } from "./claude-code/credential";
 import { readStatuslineCache } from "./claude-code/statusline-cache";
-import { collect, type CollectReport } from "./collect";
+import { collect, type CollectReport, type ProfileReport } from "./collect";
 import {
   defaultSourceId,
   generateKey,
@@ -46,6 +46,10 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
   bind-history        声明首次观察之前的历史用量属于当前登录账户
   statusline-cache <path>|off
                       （可选）读取状态栏脚本写出的额度缓存 TSV，获得比 .claude.json 更新的额度
+  claude-profiles <configDir>[=<statuslineCache>] ... | off
+                      登记同一台电脑上其他 Claude 账户的 CLAUDE_CONFIG_DIR，
+                      读取各自的账户、套餐与额度；off 清除
+  otel-headers        输出 Claude Code 的 otelHeadersHelper 所需的鉴权请求头（JSON 一行）
   scan [--json]       只在本地解析并汇总，不联网、不改变同步进度
   sync                增量采集并推送；供后台任务每分钟运行，已有实例运行时直接退出
   status              查看同步进度、待发送数量与最近结果（不显示密钥）
@@ -58,8 +62,9 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
   --log                 输出追加到数据目录 logs 下的日志文件，供后台任务使用
 
 对 Claude Code 的保证:
-  - 只以只读方式打开 ~/.claude/projects 下的 JSONL 与 ~/.claude.json，
-    不在 Claude Code 目录内写入、改名、加锁或修改权限，也不改设置、hooks 或状态栏。
+  - 只以只读方式打开 ~/.claude/projects 下的 JSONL，以及默认目录和已登记额外账户
+    目录中的 .claude.json。不在 Claude Code 目录内写入、改名、加锁或修改权限，
+    也不改设置、hooks 或状态栏。
   - 只在登录凭据（macOS 钥匙串或 .credentials.json）被改写或登录账户变化时读取，
     只取订阅类型和速率档位。OAuth 令牌不解析、不保存、不上传，不调用任何
     Anthropic 接口。
@@ -130,17 +135,60 @@ function printTotals(totals: UsageTotals[]) {
   }
 }
 
-/** 两个额度来源的异常合成一行；没有异常时为空字符串。 */
+/** 额度与额外账户的异常合成一行；没有异常时为空字符串。 */
 function quotaIssueText(report: CollectReport) {
+  const profileIssues = report.profiles.flatMap((profile) => {
+    if (profile.skipped)
+      return [`额外账户 ${profile.configDir}: ${profile.skipped}`];
+    return [
+      profile.quotaSkipped &&
+        `额外账户 ${profile.configDir} 额度: ${profile.quotaSkipped}`,
+      profile.statuslineQuotaSkipped &&
+        `额外账户 ${profile.configDir} 状态栏额度: ${profile.statuslineQuotaSkipped}`,
+      profile.statuslineIgnoredLines > 0 &&
+        `额外账户 ${profile.configDir} 状态栏额度: 忽略 ${profile.statuslineIgnoredLines} 行`,
+    ].filter(Boolean);
+  });
   return [
     report.quotaSkipped && `额度: ${report.quotaSkipped}`,
     report.statuslineQuotaSkipped &&
       `状态栏额度: ${report.statuslineQuotaSkipped}`,
     report.statuslineIgnoredLines > 0 &&
       `状态栏额度: 忽略 ${report.statuslineIgnoredLines} 行无法识别的内容`,
+    ...profileIssues,
   ]
     .filter(Boolean)
     .join("；");
+}
+
+/** scan 与 status 共用的额外账户摘要；只说明账户、套餐与额度是否读到。 */
+function profileSummary(profile: {
+  configDir: string;
+  skipped?: string | null;
+  accountUuid?: string | null;
+  plan?: string | null;
+  credentialPlanPending?: boolean;
+  pendingPlan?: string | null;
+  quotaRecorded?: boolean;
+  quotaSkipped?: string | null;
+  statuslineQuotaRecorded?: boolean;
+  statuslineQuotaSkipped?: string | null;
+}) {
+  if (profile.skipped) return `${profile.configDir}: ${profile.skipped}`;
+  const parts = [
+    `账户 ${profile.accountUuid ? shortId(profile.accountUuid) : "未知"}`,
+    `套餐 ${profile.plan ?? "未识别"}`,
+  ];
+  if (profile.credentialPlanPending)
+    parts.push(
+      `凭据套餐待确认${profile.pendingPlan ? `（${profile.pendingPlan}）` : ""}`,
+    );
+  if (profile.quotaSkipped) parts.push(`额度: ${profile.quotaSkipped}`);
+  else if (profile.quotaRecorded) parts.push("额度已记录");
+  if (profile.statuslineQuotaSkipped)
+    parts.push(`状态栏额度: ${profile.statuslineQuotaSkipped}`);
+  else if (profile.statuslineQuotaRecorded) parts.push("状态栏额度已记录");
+  return `${profile.configDir}: ${parts.join("，")}`;
 }
 
 function printReport(report: CollectReport) {
@@ -271,14 +319,117 @@ function runStatuslineCache(paths: CollectorPaths, value: string | undefined) {
   return 0;
 }
 
+/**
+ * 登记额外账户。每项是 CLAUDE_CONFIG_DIR 的绝对路径，可选用 `=` 接该账户的状态栏额度缓存。
+ * 目录不能是默认 Claude 目录本身，否则会和默认账户重复读取同一份数据。
+ */
+function runClaudeProfiles(paths: CollectorPaths, args: string[]): number {
+  const config = loadConfig(paths.configFile);
+  if (!config) {
+    console.error("尚未初始化，请先运行 meterleaf-collector init");
+    return 2;
+  }
+  const current = (config.claudeProfiles ?? [])
+    .map(
+      (profile) =>
+        `${profile.configDir}${
+          profile.statuslineCache ? `=${profile.statuslineCache}` : ""
+        }`,
+    )
+    .join(" ");
+  if (args.length === 0) {
+    console.error(
+      "用法: meterleaf-collector claude-profiles <configDir>[=<statuslineCache>] ... | off\n" +
+        `当前: ${current || "未配置"}`,
+    );
+    return 2;
+  }
+  const next = { ...config };
+  if (args.length === 1 && args[0] === "off") {
+    delete next.claudeProfiles;
+  } else {
+    const defaultDir = resolve(paths.claudeRoot);
+    const profiles: NonNullable<CollectorConfig["claudeProfiles"]> = [];
+    const seen = new Set<string>();
+    for (const arg of args) {
+      if (arg === "off") {
+        console.error("off 只能单独使用");
+        return 2;
+      }
+      const separator = arg.indexOf("=");
+      const configDir = separator >= 0 ? arg.slice(0, separator) : arg;
+      const statuslineCache =
+        separator >= 0 ? arg.slice(separator + 1) : undefined;
+      if (!isAbsolute(configDir)) {
+        console.error(`请提供绝对路径: ${configDir}`);
+        return 2;
+      }
+      if (resolve(configDir) === defaultDir) {
+        console.error("额外账户不能使用默认 Claude 配置目录");
+        return 2;
+      }
+      if (statuslineCache !== undefined && !isAbsolute(statuslineCache)) {
+        console.error(`请提供额度缓存的绝对路径: ${statuslineCache}`);
+        return 2;
+      }
+      const key = resolve(configDir);
+      if (seen.has(key)) {
+        console.error(`重复的配置目录: ${configDir}`);
+        return 2;
+      }
+      seen.add(key);
+      profiles.push({
+        configDir,
+        ...(statuslineCache ? { statuslineCache } : {}),
+      });
+    }
+    if (profiles.length > 20) {
+      console.error("最多登记 20 个额外账户");
+      return 2;
+    }
+    next.claudeProfiles = profiles;
+  }
+  saveConfig(paths.dataDir, paths.configFile, next, true);
+  if (args.length === 1 && args[0] === "off") {
+    console.log("已清除额外 Claude 账户。");
+    return 0;
+  }
+  console.log("已配置额外 Claude 账户:");
+  for (const profile of next.claudeProfiles ?? []) {
+    console.log(
+      `  ${profile.configDir}${
+        profile.statuslineCache
+          ? `（状态栏额度: ${profile.statuslineCache}）`
+          : ""
+      }`,
+    );
+  }
+  return 0;
+}
+
+/** Claude Code 的 otelHeadersHelper 直接读取这一行 JSON，不作为其他输出。 */
+function runOtelHeaders(paths: CollectorPaths): number {
+  const config = loadConfig(paths.configFile);
+  if (!config) {
+    console.error("尚未初始化，请先运行 meterleaf-collector init");
+    return 2;
+  }
+  console.log(JSON.stringify({ Authorization: `Bearer ${config.key}` }));
+  return 0;
+}
+
 function collectSources(
   paths: CollectorPaths,
-  config: Pick<CollectorConfig, "statuslineCache" | "modelAccounts"> | null,
+  config: Pick<
+    CollectorConfig,
+    "statuslineCache" | "modelAccounts" | "claudeProfiles"
+  > | null,
 ) {
   return {
     ...paths,
     statuslineCache: config?.statuslineCache ?? null,
     modelAccounts: config?.modelAccounts ?? [],
+    claudeProfiles: config?.claudeProfiles ?? [],
     credential: {
       location: {
         claudeRoot: paths.claudeRoot,
@@ -353,6 +504,8 @@ function runScan(paths: CollectorPaths, json: boolean) {
     }
     const quotaIssue = quotaIssueText(report);
     if (quotaIssue) console.log(quotaIssue);
+    for (const profile of report.profiles)
+      console.log(`额外账户 ${profileSummary(profile)}`);
     console.log("");
     printTotals(totals);
     console.log("");
@@ -387,6 +540,10 @@ async function runSync(paths: CollectorPaths): Promise<number> {
       state.setMeta("last_quota_issue", quotaIssue);
       console.log(`${now} ${quotaIssue || "额度来源已恢复正常"}`);
     }
+    // status 不运行采集，保留本轮结果供它显示额外账户的状态。
+    const profileState = JSON.stringify(report.profiles);
+    if (profileState !== (state.getMeta("last_profiles") ?? ""))
+      state.setMeta("last_profiles", profileState);
     const result = await pushOutbox(state, config);
     if (result.error) {
       state.setMeta("last_failure_at", now);
@@ -553,6 +710,21 @@ function runStatus(paths: CollectorPaths) {
           : "未配置（非 claude- 模型归入「其他模型」）"
       }`,
     );
+    const profiles = config.claudeProfiles ?? [];
+    console.log(
+      `额外 Claude 账户: ${
+        profiles.length
+          ? profiles
+              .map(
+                (profile) =>
+                  `${profile.configDir}${
+                    profile.statuslineCache ? `=${profile.statuslineCache}` : ""
+                  }`,
+              )
+              .join("，")
+          : "未配置"
+      }`,
+    );
   }
   console.log(`后台任务: ${backgroundTaskStatus()}`);
   if (!existsSync(paths.stateFile)) {
@@ -590,6 +762,15 @@ function runStatus(paths: CollectorPaths) {
     for (const row of state.eventsByAccount()) {
       console.log(`事件归属: ${shortId(row.account)} ${format(row.events)}`);
     }
+    const lastProfiles = state.getMeta("last_profiles");
+    if (lastProfiles) {
+      try {
+        for (const profile of JSON.parse(lastProfiles) as ProfileReport[])
+          console.log(`额外账户 ${profileSummary(profile)}`);
+      } catch {
+        // 旧版本或损坏的记录不影响其他状态输出。
+      }
+    }
   } finally {
     state.close();
   }
@@ -626,6 +807,10 @@ export async function main(argv: string[]): Promise<number> {
       return runServer(paths, positionals[1]);
     case "statusline-cache":
       return runStatuslineCache(paths, positionals[1]);
+    case "claude-profiles":
+      return runClaudeProfiles(paths, positionals.slice(1));
+    case "otel-headers":
+      return runOtelHeaders(paths);
     case "bind-history":
       return runBindHistory(paths);
     case "scan":

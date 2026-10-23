@@ -125,21 +125,28 @@ export class CollectorState {
     this.modelAccounts = rules;
   }
 
-  /**
-   * 事件归属：映射到固定账户的模型直接归该账户，并保存账户资料供推送时带上；
-   * Claude 模型按登录时间线推断。
-   */
-  private accountFor(model: string, occurredAt: string): string {
+  /** 账户来源随用量上报：服务端据此决定 OTEL 能否覆盖，模型映射优先于 OTEL。 */
+  private accountFor(
+    model: string,
+    occurredAt: string,
+  ): { account: string; attribution: "model" | "timeline" } {
     const routed = routeModel(model, this.modelAccounts);
     if (!routed)
-      return attribute(
-        occurredAt,
-        this.segments(),
-        this.binding(),
-        this.loginHints(),
-      );
+      return {
+        account: attribute(
+          occurredAt,
+          this.segments(),
+          this.binding(),
+          this.loginHints(),
+        ),
+        attribution: "timeline",
+      };
     this.upsertAccount(routed);
-    return routed.externalId;
+    return { account: routed.externalId, attribution: "model" };
+  }
+
+  private attributionOf(model: string): "model" | "timeline" {
+    return routeModel(model, this.modelAccounts) ? "model" : "timeline";
   }
 
   getMeta(key: string): string | null {
@@ -244,7 +251,7 @@ export class CollectorState {
       .get(observation.key);
     const serialized = JSON.stringify(observation.fact);
     if (!existing) {
-      const account = this.accountFor(
+      const { account, attribution } = this.accountFor(
         observation.fact.model,
         observation.firstTimestamp,
       );
@@ -264,6 +271,7 @@ export class CollectorState {
           observation.fact,
           observation.firstTimestamp,
           account,
+          attribution,
         );
         return true;
       }
@@ -273,11 +281,21 @@ export class CollectorState {
     this.db
       .query("UPDATE events SET total = ?, observation = ? WHERE key = ?")
       .run(observation.total, serialized, observation.key);
-    this.enqueueUsage(observation.fact, existing.occurred_at, existing.account);
+    this.enqueueUsage(
+      observation.fact,
+      existing.occurred_at,
+      existing.account,
+      this.attributionOf(observation.fact.model),
+    );
     return true;
   }
 
-  private enqueueUsage(fact: UsageFact, occurredAt: string, account: string) {
+  private enqueueUsage(
+    fact: UsageFact,
+    occurredAt: string,
+    account: string,
+    attribution: "model" | "timeline",
+  ) {
     // 只保存资料、不单独入队：推送时由引用它的用量带上。同一轮内被重新归属的事件
     // 会替换待发送条目，未归属账户就不会因短暂的中间状态出现在服务端。
     if (account === UNATTRIBUTED_ACCOUNT_ID) {
@@ -294,7 +312,7 @@ export class CollectorState {
       model: fact.model,
       tier: fact.tier,
       tokens: fact.tokens,
-      metadata: fact.metadata,
+      metadata: { ...fact.metadata, attribution },
     };
     this.enqueue("usage", fact.externalId, payload);
   }
@@ -431,13 +449,16 @@ export class CollectorState {
     this.db.transaction(() => {
       for (const row of rows) {
         const fact = JSON.parse(row.observation) as UsageFact;
-        const account = this.accountFor(fact.model, row.occurred_at);
+        const { account, attribution } = this.accountFor(
+          fact.model,
+          row.occurred_at,
+        );
         if (account === row.account) continue;
         this.db
           .query("UPDATE events SET account = ? WHERE key = ?")
           .run(account, row.key);
         if (row.total > 0) {
-          this.enqueueUsage(fact, row.occurred_at, account);
+          this.enqueueUsage(fact, row.occurred_at, account, attribution);
           changed += 1;
         }
       }
@@ -445,12 +466,34 @@ export class CollectorState {
     return changed;
   }
 
+  /**
+   * 把全部非零事件重新放入待发送队列。用于推送内容新增字段后让服务端更新已有事实，
+   * 不改变归属，也不计入重新归属的条数。
+   */
+  requeueUsage(): number {
+    let queued = 0;
+    this.db.transaction(() => {
+      for (const row of this.db
+        .query<EventRow, []>(
+          "SELECT key, occurred_at, total, account, observation FROM events WHERE total > 0",
+        )
+        .all()) {
+        const fact = JSON.parse(row.observation) as UsageFact;
+        this.enqueueUsage(
+          fact,
+          row.occurred_at,
+          row.account,
+          this.attributionOf(fact.model),
+        );
+        queued += 1;
+      }
+    })();
+    return queued;
+  }
+
   /** 同一次上游采样只上报一次；每次采样各自保留，离线期间的历史采样不会被覆盖。 */
   /** 每个额度来源分别记住最近一次上报的内容，同一采样重复读取时不再入队。 */
-  recordQuota(
-    snapshot: QuotaSnapshot,
-    source: "claude-json" | "statusline" = "claude-json",
-  ): boolean {
+  recordQuota(snapshot: QuotaSnapshot, source = "claude-json"): boolean {
     const metaKey =
       source === "claude-json"
         ? "last_quota_hash"
