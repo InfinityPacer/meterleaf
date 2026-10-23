@@ -125,7 +125,7 @@ meterleaf-collector claude-profiles \
 
 ## 安装
 
-采集器需要 macOS 13 或更新版本，目前不提供下载，需要在这台 Mac 上从仓库构建。构建需要 Bun 1.4.2 或更新版本，以及 Xcode 命令行工具（没有时执行 `xcode-select --install`）。
+采集器需要 macOS 13 或更新版本，目前不提供下载，需要在这台 Mac 上从仓库构建。构建需要 Bun 1.4.4 或更新版本，以及 Xcode 命令行工具（没有时执行 `xcode-select --install`）。
 
 ```sh
 bun install --frozen-lockfile

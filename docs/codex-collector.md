@@ -10,7 +10,7 @@ Codex 本地采集器只读扫描 `$CODEX_HOME/sessions` 和 `$CODEX_HOME/archiv
 
 ## 安装与连接
 
-从仓库构建，需要 Bun 1.4.2 或更新版本：
+从仓库构建，需要 Bun 1.4.4 或更新版本：
 
 ```sh
 bun install --frozen-lockfile
