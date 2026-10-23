@@ -32,16 +32,29 @@ function sample(
   };
 }
 
-/** 按模型汇总本周期费用，scope 为空时返回账户全部模型。 */
+/**
+ * 按模型汇总本周期费用，每个模型记一次请求；金额为 null 表示该模型缺价，
+ * 与索引一致，缺价请求计入次数但不计入金额。scope 为空时返回账户全部模型。
+ */
 const spends =
-  (byModel: Record<string, string>): QuotaChargeReader =>
-  (_start, _end, scope) => ({
-    usd: Object.entries(byModel)
-      .filter(([model]) => !scope || scope(model))
-      .reduce((total, [, usd]) => total.add(usd), new Decimal(0))
-      .toString(),
-    credits: null,
-  });
+  (byModel: Record<string, string | null>): QuotaChargeReader =>
+  (_start, _end, scope) => {
+    const rows = Object.entries(byModel).filter(
+      ([model]) => !scope || scope(model),
+    );
+    const priced = rows.filter(([, usd]) => usd !== null);
+    return {
+      usd: priced.length
+        ? priced
+            .reduce((total, [, usd]) => total.add(usd!), new Decimal(0))
+            .toString()
+        : rows.length
+          ? null
+          : "0",
+      credits: null,
+      count: rows.length,
+    };
+  };
 
 test("go weekly cap replaces the percent extrapolation with the published limit", () => {
   const result = quotaView(
@@ -69,15 +82,33 @@ test("go-plus monthly cap is the published monthly limit", () => {
   expect(result.estimate.methods?.usd).toBe("plan-limit");
 });
 
-test("a fresh window without spend still reports the published weekly limit", () => {
+test("a window without requests does not assume which model will be used", () => {
+  const history = [sample("seven-day", 0)];
   const result = quotaView(
-    [sample("seven-day", 0)],
+    history,
     spends({}),
     now,
     goPlanBudget("opencode-go", "go"),
   )!;
-  expect(result.estimate.usd).toBe("40");
-  expect(result.estimate.methods?.usd).toBe("plan-limit");
+  expect(result.estimate.methods?.usd).not.toBe("plan-limit");
+  expect(result).toEqual(quotaView(history, spends({}), now)!);
+});
+
+test("unpriced requests from another model keep the extrapolated estimate", () => {
+  // 缺价模型不计入金额，按金额对账会误以为本周期只用了表内模型。
+  const history = [sample("seven-day", 2)];
+  const reader = spends({
+    "deepseek-v4.1-flash": "0.44",
+    "gemini-4-argon": null,
+  });
+  const result = quotaView(
+    history,
+    reader,
+    now,
+    goPlanBudget("opencode-go", "go"),
+  )!;
+  expect(result.estimate.methods?.usd).not.toBe("plan-limit");
+  expect(result).toEqual(quotaView(history, reader, now)!);
 });
 
 test("spend from a model outside the plan table falls back to the old estimate", () => {
