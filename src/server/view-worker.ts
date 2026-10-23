@@ -4,11 +4,12 @@ import { LedgerStore } from "../storage/ledger";
 import { LifetimeIndex } from "../storage/lifetime-index";
 import { sourceFileState } from "../storage/source-file-state";
 import { priceBookKey, type PriceBook } from "../domain/pricing";
-import { withUsdVariants, type ViewQuery } from "../shared/ledger-view";
+import type { ViewQuery } from "../shared/ledger-view";
 import type { UsdBasis } from "../shared/report";
-import { indexedSnapshot } from "./snapshot";
 import { indexFiles } from "./index-files";
 import { ReportProjection, type IndexedPricing } from "./report-projection";
+import { ReportInputCache } from "./report-inputs";
+import { readReportView } from "./report-read";
 import { createDiagnosticsLogger, summarizeError } from "./diagnostics";
 import type { SyncStatus } from "./sync";
 
@@ -39,6 +40,7 @@ function openIndexes() {
 }
 
 let { projection, lifetime } = openIndexes();
+const inputs = new ReportInputCache(store);
 let initialized = false;
 /**
  * 后台重建进行中。previousPricing 非空时旧索引可用，查询沿用旧索引并标记为过渡结果；
@@ -275,69 +277,18 @@ parentPort!.on(
         const transitional = state.mode === "transitional";
         const now = new Date().toISOString();
         const readStarted = performance.now();
-        // 两个口径在同一事务内读取相同的账户与近期额度历史，只读一次；窗口汇总同理。
-        const sumWindow = projection.index.windowReader();
-        const accounts = store.accounts();
-        const quotas = store.reportQuotas(now);
-        const merges = store.accountMerges();
-        const ledger = {
-          book: store.book,
-          accounts: () => accounts,
-          quotas: () => quotas,
-          accountMerges: () => merges,
-        };
-        const snapshots = {
-          subscription: indexedSnapshot(
-            ledger,
-            request.sync ? { status: () => request.sync! } : null,
-            now,
-            "subscription",
-            sumWindow,
-            projection.accountIds(),
-          ),
-          api: indexedSnapshot(
-            ledger,
-            request.sync ? { status: () => request.sync! } : null,
-            now,
-            "api",
-            sumWindow,
-            projection.accountIds(),
-          ),
-        } as const;
-        snapshotMs = performance.now() - readStarted;
-        const aggregateStarted = performance.now();
-        const prepared = projection.index.prepare(
-          snapshots.subscription,
-          request.query,
+        const read = readReportView(
+          { store, projection, lifetime, inputs },
+          request,
+          now,
+          transitional,
         );
-        aggregateMs = performance.now() - aggregateStarted;
-        const materializeStarted = performance.now();
-        const read = (basis: UsdBasis) => {
-          const view = projection.index.materialize(
-            prepared,
-            basis,
-            snapshots[basis],
-          );
-          return {
-            ...view,
-            accounts: view.accounts.map((account) => ({
-              ...account,
-              lifetime: projection.index.accountLifetime(account.id, basis),
-            })),
-            lifetimeTotals: lifetime.value(basis, now, { transitional }),
-          };
-        };
-        const result = withUsdVariants(
-          read("subscription"),
-          read("api"),
-          request.basis,
-        );
-        materializeMs = performance.now() - materializeStarted;
+        ({ snapshotMs, aggregateMs, materializeMs } = read.timings);
         readMs = performance.now() - readStarted;
         // 过渡结果的金额来自旧索引，价格版本也必须是旧的。
         return state.mode === "transitional"
-          ? { ...result, pricing: state.pricing }
-          : result;
+          ? { ...read.result, pricing: state.pricing }
+          : read.result;
       })();
       if (state.mode === "building") {
         parentPort!.postMessage({
