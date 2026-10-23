@@ -1174,6 +1174,8 @@ export class LedgerStore {
   async pruneStaleValuations(): Promise<number> {
     const version = priceBookKey(this.book);
     let removed = 0;
+    // 按 rowid 向前推进，每批只扫描上一批之后的行，总代价与表大小成正比。
+    let after = 0;
     for (;;) {
       const batch = this.db.transaction(() => {
         this.db
@@ -1182,14 +1184,20 @@ export class LedgerStore {
           )
           .run(CHANGE_LOG_SUPPRESSION_KEY);
         try {
+          const rows = this.db
+            .query<{ id: number }, [number, string, number]>(
+              `SELECT rowid AS id FROM valuations
+                WHERE rowid > ? AND version <> ?
+                ORDER BY rowid LIMIT ?`,
+            )
+            .all(after, version, VALUATION_DELETE_BATCH);
+          if (!rows.length) return 0;
+          after = rows[rows.length - 1]!.id;
           return this.db
             .query(
-              `DELETE FROM valuations WHERE rowid IN (
-                 SELECT rowid FROM valuations WHERE version <> ?
-                 ORDER BY rowid LIMIT ?
-               )`,
+              "DELETE FROM valuations WHERE rowid >= ? AND rowid <= ? AND version <> ?",
             )
-            .run(version, VALUATION_DELETE_BATCH).changes;
+            .run(rows[0]!.id, after, version).changes;
         } finally {
           this.db
             .query("DELETE FROM sync_state WHERE key=?")
