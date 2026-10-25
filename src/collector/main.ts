@@ -38,6 +38,19 @@ import { startOtelRelay, type OtelRelay } from "./otel-relay";
 import { resolvePaths, type CollectorPaths } from "./paths";
 import { COLLECTOR_VERSION, pushOutbox } from "./push";
 import { CollectorState, type UsageTotals } from "./state";
+import {
+  checkExecutable,
+  DEFAULT_TASK_EVERY_MINUTES,
+  DEFAULT_TASK_TIMEOUT_SECONDS,
+  describeResult,
+  lastTaskResult,
+  recordTaskResult,
+  runDueTasks,
+  runTask,
+  taskSchema,
+  taskSucceeded,
+  type CollectorTask,
+} from "./tasks";
 
 const help = `Meterleaf Collector ${COLLECTOR_VERSION}
 读取本机 Claude Code 的用量记录，推送到 Meterleaf 账本。
@@ -59,7 +72,13 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
   otel-relay          在 127.0.0.1:4319 常驻接收 Claude Code 的 OTEL 日志并排队，
                       由 sync 随用量一起推送；后台任务会自动启动
   scan [--json]       只在本地解析并汇总，不联网、不改变同步进度
-  sync                增量采集并推送；供后台任务每分钟运行，已有实例运行时直接退出
+  sync                增量采集并推送，再运行到期的额外任务；供后台任务每分钟运行，
+                      已有实例运行时直接退出
+  tasks [list]        列出额外任务及最近一次结果
+  tasks add <name> [--every <分钟>] [--timeout <秒>] [--force] -- <绝对路径> [参数...]
+                      登记额外任务，默认每 ${DEFAULT_TASK_EVERY_MINUTES} 分钟运行一次、限时 ${DEFAULT_TASK_TIMEOUT_SECONDS} 秒；--force 覆盖同名任务
+  tasks remove <name> 删除额外任务
+  tasks run <name>    立即运行一次额外任务并显示输出
   status              查看同步进度、待发送数量与最近结果（不显示密钥）
   install-launchd     安装 macOS 后台任务：每分钟低优先级运行 sync，并常驻运行 OTEL 中继
                       从 Meterleaf.app 运行时以应用身份注册，登录项中显示 Meterleaf
@@ -78,6 +97,8 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
     Anthropic 接口。
   - 只上传计量数字、模型、时间、套餐和账户 UUID 派生信息；不上传对话内容、工具输出、
     文件路径、工作目录、Git 分支、邮箱、显示名或组织名。
+  - 以上保证只针对采集器本身。用 tasks add 登记的额外任务由登记者负责，
+    采集器只按时运行它们，不检查它们读写什么。
 
 数据目录: $METERLEAF_COLLECTOR_HOME，默认 ~/Library/Application Support/Meterleaf Collector
 `;
@@ -628,9 +649,204 @@ async function runSync(paths: CollectorPaths): Promise<number> {
     console.error(`${new Date().toISOString()} 同步失败: ${message}`);
     return 1;
   } finally {
+    if (state) {
+      try {
+        await runDueTasks(
+          state,
+          paths,
+          config.tasks ?? [],
+          claudeConfigDirs(paths, config),
+        );
+      } catch (error) {
+        console.error(
+          `${new Date().toISOString()} 额外任务调度失败: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
     state?.close();
     release();
   }
+}
+
+/** 传给额外任务的 Claude 配置目录：默认目录在前，随后是登记的额外账户。 */
+function claudeConfigDirs(
+  paths: CollectorPaths,
+  config: Pick<CollectorConfig, "claudeProfiles">,
+): string[] {
+  return [
+    paths.claudeRoot,
+    ...(config.claudeProfiles ?? []).map((profile) => profile.configDir),
+  ];
+}
+
+function parseTaskNumber(
+  raw: string | undefined,
+  fallback: number,
+  label: string,
+): number | string {
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  return Number.isInteger(value) ? value : `${label}必须是整数: ${raw}`;
+}
+
+async function runTasks(
+  paths: CollectorPaths,
+  args: string[],
+  command: string[] | null,
+  values: { every?: string; timeout?: string; force?: boolean },
+): Promise<number> {
+  const config = loadConfig(paths.configFile);
+  if (!config) {
+    console.error("尚未初始化，请先运行 meterleaf-collector init");
+    return 2;
+  }
+  const tasks = config.tasks ?? [];
+  const action = args[0] ?? "list";
+  const name = args[1];
+  const usage =
+    "用法: meterleaf-collector tasks [list] | add <name> [--every <分钟>] [--timeout <秒>] [--force] -- <绝对路径> [参数...] | remove <name> | run <name>";
+  if (action === "list") {
+    if (tasks.length === 0) {
+      console.log("额外任务: 未配置");
+      return 0;
+    }
+    const state = existsSync(paths.stateFile)
+      ? new CollectorState(paths.stateFile)
+      : null;
+    try {
+      for (const task of tasks) {
+        const last = state ? lastTaskResult(state, task.name) : null;
+        console.log(
+          `${task.name}: 每 ${task.everyMinutes} 分钟，限时 ${task.timeoutSeconds} 秒\n` +
+            `  命令: ${task.command.join(" ")}\n` +
+            `  最近一次: ${
+              last
+                ? `${last.startedAt} ${describeResult({ ...last, output: "" })}`
+                : "尚未运行"
+            }`,
+        );
+      }
+    } finally {
+      state?.close();
+    }
+    return 0;
+  }
+  if (!name || args.length > 2) {
+    console.error(usage);
+    return 2;
+  }
+  if (action === "add") {
+    if (!command || command.length === 0) {
+      console.error(`缺少要运行的命令，命令写在 -- 之后。\n${usage}`);
+      return 2;
+    }
+    const everyMinutes = parseTaskNumber(
+      values.every,
+      DEFAULT_TASK_EVERY_MINUTES,
+      "--every ",
+    );
+    const timeoutSeconds = parseTaskNumber(
+      values.timeout,
+      DEFAULT_TASK_TIMEOUT_SECONDS,
+      "--timeout ",
+    );
+    if (
+      typeof everyMinutes === "string" ||
+      typeof timeoutSeconds === "string"
+    ) {
+      console.error(
+        [everyMinutes, timeoutSeconds]
+          .filter((v) => typeof v === "string")
+          .join("\n"),
+      );
+      return 2;
+    }
+    const parsed = taskSchema.safeParse({
+      name,
+      command,
+      everyMinutes,
+      timeoutSeconds,
+    });
+    if (!parsed.success) {
+      console.error(
+        `任务无效: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "命令"} ${issue.message}`).join("；")}\n` +
+          "名称只能用小写字母、数字和 -；间隔 1 到 1440 分钟；限时 1 到 600 秒。",
+      );
+      return 2;
+    }
+    const missing = checkExecutable(command[0]!);
+    if (missing) {
+      console.error(missing);
+      return 2;
+    }
+    const exists = tasks.some((task) => task.name === name);
+    if (exists && !values.force) {
+      console.error(`已有同名任务 ${name}，用 --force 覆盖`);
+      return 2;
+    }
+    if (!exists && tasks.length >= 20) {
+      console.error("最多登记 20 个额外任务");
+      return 2;
+    }
+    const next: CollectorTask[] = exists
+      ? tasks.map((task) => (task.name === name ? parsed.data : task))
+      : [...tasks, parsed.data];
+    saveConfig(
+      paths.dataDir,
+      paths.configFile,
+      { ...config, tasks: next },
+      true,
+    );
+    console.log(
+      `已登记任务 ${name}: 每 ${everyMinutes} 分钟，限时 ${timeoutSeconds} 秒，下一次 sync 开始运行。`,
+    );
+    return 0;
+  }
+  const task = tasks.find((item) => item.name === name);
+  if (!task) {
+    console.error(`没有名为 ${name} 的任务`);
+    return 2;
+  }
+  if (action === "remove") {
+    const rest = tasks.filter((item) => item.name !== name);
+    const next = { ...config };
+    if (rest.length) next.tasks = rest;
+    else delete next.tasks;
+    saveConfig(paths.dataDir, paths.configFile, next, true);
+    console.log(
+      `已删除任务 ${name}，它在数据目录 tasks/${name} 下留下的状态未删除。`,
+    );
+    return 0;
+  }
+  if (action === "run") {
+    mkdirSync(paths.dataDir, { recursive: true, mode: 0o700 });
+    // 与后台 sync 共用运行锁，手动运行不会与同一任务的定时运行重叠。
+    const release = acquireLock(paths.lockFile);
+    if (!release) {
+      console.error("后台同步正在运行，稍后再试");
+      return 1;
+    }
+    let state: CollectorState | null = null;
+    try {
+      state = openState(paths);
+      const result = await runTask(
+        paths,
+        task,
+        claudeConfigDirs(paths, config),
+      );
+      recordTaskResult(state, task.name, result);
+      if (result.output) console.log(result.output);
+      console.log(`任务 ${task.name}: ${describeResult(result)}`);
+      return taskSucceeded(result) ? 0 : 1;
+    } finally {
+      state?.close();
+      release();
+    }
+  }
+  console.error(usage);
+  return 2;
 }
 
 function runBindHistory(paths: CollectorPaths): number {
@@ -805,6 +1021,18 @@ function runStatus(paths: CollectorPaths) {
       }`,
     );
   }
+  if (config) {
+    const tasks = config.tasks ?? [];
+    console.log(
+      `额外任务: ${
+        tasks.length
+          ? tasks
+              .map((task) => `${task.name}（每 ${task.everyMinutes} 分钟）`)
+              .join("，")
+          : "未配置"
+      }`,
+    );
+  }
   console.log(`后台任务: ${backgroundTaskStatus()}`);
   if (!existsSync(paths.stateFile)) {
     console.log("同步状态: 尚未运行 sync");
@@ -856,8 +1084,11 @@ function runStatus(paths: CollectorPaths) {
 }
 
 export async function main(argv: string[]): Promise<number> {
+  // tasks add 的命令写在 -- 之后，原样保存，不当作采集器自己的选项解析。
+  const separator = argv.indexOf("--");
+  const trailing = separator >= 0 ? argv.slice(separator + 1) : null;
   const { positionals, values } = parseArgs({
-    args: argv,
+    args: separator >= 0 ? argv.slice(0, separator) : argv,
     allowPositionals: true,
     options: {
       server: { type: "string" },
@@ -866,6 +1097,8 @@ export async function main(argv: string[]): Promise<number> {
       json: { type: "boolean" },
       "claude-json": { type: "string" },
       log: { type: "boolean" },
+      every: { type: "string" },
+      timeout: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -902,6 +1135,8 @@ export async function main(argv: string[]): Promise<number> {
     case "status":
       runStatus(paths);
       return 0;
+    case "tasks":
+      return await runTasks(paths, positionals.slice(1), trailing, values);
     case "install-launchd":
       return runInstall(paths, values["claude-json"]);
     case "uninstall-launchd":
