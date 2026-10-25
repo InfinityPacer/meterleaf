@@ -166,12 +166,11 @@ function setup() {
 }
 
 describe("让 Paseo 会话出现在 resume 列表", () => {
-  test("只改你开启、未在运行的 Paseo 会话，原地等长改写开头一段", () => {
+  test("只改你开启的 Paseo 会话，仍开着的也改，原地等长改写开头一段", () => {
     const { env, files, original } = setup();
     const before = statSync(files.main);
     const report = reveal(env);
-    expect(report.revealed).toEqual([ids.main]);
-    expect(report.skippedLive).toEqual([ids.live]);
+    expect(report.revealed.sort()).toEqual([ids.main, ids.live].sort());
     expect(report.notEligible).toBe(3);
 
     const after = statSync(files.main);
@@ -195,7 +194,8 @@ describe("让 Paseo 会话出现在 resume 列表", () => {
     // 正文里的同名文字被转义，不是记录字段，不改。
     expect(text).toContain('\\"entrypoint\\":\\"sdk-cli\\"');
 
-    for (const key of ["child", "solo", "live", "labeled", "silent"] as const)
+    expect(listedEntrypoint(files.live)).toBe("cli");
+    for (const key of ["child", "solo", "labeled", "silent"] as const)
       expect(readFileSync(files[key]).equals(original[key])).toBe(true);
   });
 
@@ -214,7 +214,7 @@ describe("让 Paseo 会话出现在 resume 列表", () => {
   test("预演不写文件也不留状态", () => {
     const { env, files, original } = setup();
     const report = reveal(env, { dryRun: true });
-    expect(report.revealed).toEqual([ids.main]);
+    expect(report.revealed.sort()).toEqual([ids.main, ids.live].sort());
     expect(readFileSync(files.main).equals(original.main)).toBe(true);
     expect(() =>
       readFileSync(join(env.METERLEAF_TASK_STATE_DIR, "changes.jsonl")),
@@ -224,19 +224,10 @@ describe("让 Paseo 会话出现在 resume 列表", () => {
   test("按修改记录逐字节改回", () => {
     const { env, files, original } = setup();
     reveal(env);
-    expect(revert(env)).toEqual({ reverted: 3, skipped: 0 });
+    expect(revert(env)).toEqual({ reverted: 4, skipped: 0 });
     expect(readFileSync(files.main).equals(original.main)).toBe(true);
+    expect(readFileSync(files.live).equals(original.live)).toBe(true);
     expect(revert(env)).toEqual({ reverted: 0, skipped: 0 });
-  });
-
-  test("会话结束后的下一轮再处理", () => {
-    const { env, files } = setup();
-    reveal(env);
-    rmSync(join(env.METERLEAF_CLAUDE_CONFIG_DIRS, "sessions"), {
-      recursive: true,
-    });
-    expect(reveal(env).revealed).toEqual([ids.live]);
-    expect(listedEntrypoint(files.live)).toBe("cli");
   });
 
   test("识别 SDK 的三种来源和冒号后带空格的写法，替换后长度不变", () => {

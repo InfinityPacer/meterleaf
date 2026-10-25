@@ -2,7 +2,7 @@
 
 ## [未发布]
 
-## [0.12.5] - 2026-10-25
+## [0.12.6] - 2026-10-25
 
-- `scripts/claude-resume-visibility.ts` 只列出你在 Paseo 里开的主会话。其他代理派出的子代理不再列出，即使之后你直接和它对话过；从未收到你消息的代理也不列出。用 `paseo run` 派出代理时加上 `--label paseo.parent-agent-id=<派出者>`，它也会被识别为子代理。
+- `scripts/claude-resume-visibility.ts` 不再等 Paseo 代理结束才处理，在 Paseo 里仍开着的主会话也会出现在 `claude --resume` 的列表里。想在终端里接着用时，先在 Paseo 里归档它，避免两边的对话分叉。
 - 只需更新这个脚本，采集器和服务端都不用替换。数据库结构未变，升级无需先备份。

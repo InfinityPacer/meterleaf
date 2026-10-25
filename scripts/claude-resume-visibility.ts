@@ -8,11 +8,11 @@
  * 这些值改成 "cli"，并在值后补空格保持字节数不变。
  *
  * 只处理同时满足下列条件的会话：被某个 Paseo 代理记录为它恢复的 Claude 会话；
- * 这个代理由你开启，而不是由其他代理派出（子代理之后你再和它对话，也仍是子代理）；
- * 没有正在运行的 Claude Code 进程登记这个会话。
+ * 这个代理由你开启，而不是由其他代理派出（子代理之后你再和它对话，也仍是子代理）。
+ * 在 Paseo 里仍开着的代理同样处理：列出不会改变它的运行，是否在终端里接着用由你决定。
  *
  * 写入方式是原地覆盖等长字节：文件身份与长度不变，Claude Code 只在文件末尾追加，
- * 不会与这里的写入重叠；Meterleaf 采集器按文件身份与已读位置之前的字节续读，
+ * 正在运行的进程也不会与这里的写入重叠；Meterleaf 采集器按文件身份与已读位置之前的字节续读，
  * 也不会因此重读。每处修改记在任务状态目录的 changes.jsonl，`--revert` 按它改回。
  *
  * 用法: bun scripts/claude-resume-visibility.ts [--dry-run | --revert]
@@ -55,7 +55,6 @@ export interface Change {
 
 export interface Report {
   revealed: string[];
-  skippedLive: string[];
   notEligible: number;
   changes: Change[];
 }
@@ -71,7 +70,7 @@ function configDirs(env: Env): string[] {
     .map((line) => line.trim())
     .filter(Boolean);
   if (listed.length) return listed;
-  // 单独运行时当前 shell 可能指向某个额外账户，默认目录里的运行登记也要算上。
+  // 单独运行时当前 shell 可能指向某个额外账户，默认目录的会话记录也要算上。
   const fallback = join(env.HOME || homedir(), ".claude");
   return [...new Set([env.CLAUDE_CONFIG_DIR || fallback, fallback])];
 }
@@ -96,40 +95,6 @@ function readJson(path: string): unknown {
   } catch {
     return null;
   }
-}
-
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-/** Claude Code 在每个配置目录的 sessions 下登记正在运行的进程与它的会话。 */
-function liveSessions(dirs: string[]): Set<string> {
-  const live = new Set<string>();
-  for (const dir of dirs) {
-    const sessions = join(dir, "sessions");
-    if (!existsSync(sessions)) continue;
-    for (const name of readdirSync(sessions)) {
-      if (!name.endsWith(".json")) continue;
-      const record = readJson(join(sessions, name)) as {
-        pid?: unknown;
-        sessionId?: unknown;
-      } | null;
-      const pid = Number(record?.pid);
-      if (
-        typeof record?.sessionId === "string" &&
-        Number.isInteger(pid) &&
-        pid > 0 &&
-        alive(pid)
-      )
-        live.add(record.sessionId);
-    }
-  }
-  return live;
 }
 
 /**
@@ -321,11 +286,9 @@ export function reveal(
   mkdirSync(state, { recursive: true, mode: 0o700 });
   const checkedPath = join(state, "checked.json");
   const checked = loadChecked(checkedPath);
-  const live = liveSessions(dirs);
   const index = transcriptIndex(dirs);
   const report: Report = {
     revealed: [],
-    skippedLive: [],
     notEligible: 0,
     changes: [],
   };
@@ -348,10 +311,6 @@ export function reveal(
       if (targets.length === 0) continue;
       if (dispatched) {
         report.notEligible += 1;
-        continue;
-      }
-      if (live.has(sessionId)) {
-        report.skippedLive.push(sessionId);
         continue;
       }
       // 不符合条件的会话只在文件变化后重新判断，避免每轮都通读大文件。
@@ -459,10 +418,6 @@ if (import.meta.main) {
   if (report.revealed.length)
     console.log(
       `${dryRun ? "将显示" : "已显示"} ${report.revealed.length} 个会话: ${short(report.revealed)}`,
-    );
-  if (dryRun && report.skippedLive.length)
-    console.log(
-      `正在运行，暂不处理 ${report.skippedLive.length} 个: ${short(report.skippedLive)}`,
     );
   if (dryRun) console.log(`不符合条件 ${report.notEligible} 个。`);
 }
