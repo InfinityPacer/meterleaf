@@ -281,10 +281,10 @@ meterleaf-collector tasks remove <名称>
 
 Paseo 以无界面模式启动 Claude Code，这样产生的会话不会出现在 `claude --resume` 和 `/resume` 的会话列表里，只能用会话 ID 打开。Claude Code 是按会话记录开头标着的启动来源决定是否列出的，与会话内容无关。
 
-仓库里的 `scripts/claude-resume-visibility.ts` 把符合条件的会话改成按普通终端会话列出。它只处理同时满足下面三点的会话。
+仓库里的 `scripts/claude-resume-visibility.ts` 把你在 Paseo 里开的主会话改成按普通终端会话列出。它只处理同时满足下面三点的会话。
 
 - 属于某个 Paseo 代理，也就是 Paseo 恢复这个代理时用的那个 Claude 会话。
-- 里面至少有一条你直接发出的消息。Paseo 子代理只收到其他代理转来的任务，不会被列出。
+- 这个代理是你开的，不是其他代理派出的。Paseo 内派出的代理带有父代理标签，第一条消息也是上级代理转来的任务，这样的子代理即使之后你直接和它对话过，也不会被列出。代理之外用 `paseo run` 派出的代理，Paseo 不记录派出者，派出时加上 `--label paseo.parent-agent-id=<派出者>` 就会被识别为子代理。
 - 没有正在运行的 Claude Code 进程在使用它。还在运行的代理等它结束后，下一轮再处理。这也避免了 Paseo 和终端同时往一个会话里写。
 
 改动只涉及会话记录开头那一段的启动来源字段，在原位置写入同样长度的内容，文件大小不变，对话内容不动。Claude Code 只在文件末尾追加，不会和这里的写入冲突，采集器也不会因此重新读取这些文件。

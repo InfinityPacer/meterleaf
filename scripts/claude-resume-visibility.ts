@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * 让 Paseo 里与你对话过的 Claude Code 会话出现在 `claude --resume` 的会话列表里。
+ * 让你在 Paseo 里开的 Claude Code 主会话出现在 `claude --resume` 的会话列表里。
  *
  * Paseo 以无界面模式启动 Claude Code，会话记录的每一行都标着 "entrypoint":"sdk-cli"。
  * Claude Code 的会话列表只看文件前 64 KiB 里第一次出现的 entrypoint，是 sdk-cli、
@@ -8,7 +8,7 @@
  * 这些值改成 "cli"，并在值后补空格保持字节数不变。
  *
  * 只处理同时满足下列条件的会话：被某个 Paseo 代理记录为它恢复的 Claude 会话；
- * 记录里至少有一条你直接发出的消息（子代理只收到其他代理转来的任务，不处理）；
+ * 这个代理由你开启，而不是由其他代理派出（子代理之后你再和它对话，也仍是子代理）；
  * 没有正在运行的 Claude Code 进程登记这个会话。
  *
  * 写入方式是原地覆盖等长字节：文件身份与长度不变，Claude Code 只在文件末尾追加，
@@ -40,6 +40,8 @@ import { join } from "node:path";
 /** Claude Code 读取会话列表摘要时读入的文件开头字节数。 */
 const HEAD_BYTES = 65536;
 const PROGRAMMATIC = ["sdk-cli", "sdk-ts", "sdk-py"];
+/** Paseo 给由其他代理派出的代理加的标签；`paseo run --label` 也可以手动带上。 */
+const PARENT_LABEL = "paseo.parent-agent-id";
 
 type Env = Record<string, string | undefined>;
 
@@ -130,11 +132,16 @@ function liveSessions(dirs: string[]): Set<string> {
   return live;
 }
 
-/** Paseo 每个代理一个 JSON；persistence.sessionId 是它恢复的会话。 */
-function paseoClaudeSessions(paseoHome: string): Set<string> {
-  const ids = new Set<string>();
+/**
+ * Paseo 每个代理一个 JSON；persistence.sessionId 是它恢复的会话。值为 true 表示
+ * 记录显示这个代理由其他代理派出：Paseo 内派出的代理带 paseo.parent-agent-id
+ * 标签；从未收到过你在 Paseo 里发的消息时 lastUserMessageAt 为 null。
+ * 同一会话被多个代理引用时，任何一个显示是派出的就按派出处理。
+ */
+function paseoClaudeSessions(paseoHome: string): Map<string, boolean> {
+  const sessions = new Map<string, boolean>();
   const agents = join(paseoHome, "agents");
-  if (!existsSync(agents)) return ids;
+  if (!existsSync(agents)) return sessions;
   for (const workspace of readdirSync(agents, { withFileTypes: true })) {
     if (!workspace.isDirectory()) continue;
     const dir = join(agents, workspace.name);
@@ -142,17 +149,23 @@ function paseoClaudeSessions(paseoHome: string): Set<string> {
       if (!name.endsWith(".json")) continue;
       const record = readJson(join(dir, name)) as {
         provider?: unknown;
+        labels?: Record<string, unknown> | null;
+        lastUserMessageAt?: unknown;
         persistence?: { provider?: unknown; sessionId?: unknown };
       } | null;
       const provider = String(
         record?.persistence?.provider ?? record?.provider ?? "",
       );
       const sessionId = record?.persistence?.sessionId;
-      if (provider.startsWith("claude") && typeof sessionId === "string")
-        ids.add(sessionId);
+      if (!provider.startsWith("claude") || typeof sessionId !== "string")
+        continue;
+      const dispatched =
+        Boolean(record?.labels?.[PARENT_LABEL]) ||
+        record?.lastUserMessageAt === null;
+      sessions.set(sessionId, (sessions.get(sessionId) ?? false) || dispatched);
     }
   }
-  return ids;
+  return sessions;
 }
 
 /** 各配置目录的 projects 常软链接到同一处，按真实路径去重。 */
@@ -229,11 +242,12 @@ function messageText(content: unknown): string {
 }
 
 /**
- * 是否有你直接发出的消息。其他代理转来的任务、命令输出和注入的上下文都以
- * 尖括号标签开头，不算；侧链是子代理自己的记录，上下文压缩摘要和中断提示
- * 由 Claude Code 生成，也不算。
+ * 会话的第一条消息是不是你发的。其他代理派任务时，Paseo 把任务包在
+ * <paseo-system kind="agent-message"> 里作为第一条消息，这样的会话是子代理，
+ * 之后你再和它对话也不改变。注入的上下文、命令输出等其他尖括号标签开头的内容，
+ * 侧链（子代理自己的记录）、上下文压缩摘要和中断提示都不是消息本身，跳过。
  */
-export function hasHumanMessage(path: string): boolean {
+export function startedByYou(path: string): boolean {
   const text = readFileSync(path, "utf8");
   let start = 0;
   while (start < text.length) {
@@ -264,12 +278,10 @@ export function hasHumanMessage(path: string): boolean {
     )
       continue;
     const body = messageText(record.message?.content).trim();
-    if (
-      body &&
-      !body.startsWith("<") &&
-      !body.startsWith("[Request interrupted")
-    )
-      return true;
+    if (!body || body.startsWith("[Request interrupted")) continue;
+    if (body.startsWith("<paseo-system")) return false;
+    if (body.startsWith("<")) continue;
+    return true;
   }
   return false;
 }
@@ -317,7 +329,7 @@ export function reveal(
     notEligible: 0,
     changes: [],
   };
-  for (const sessionId of paseoClaudeSessions(
+  for (const [sessionId, dispatched] of paseoClaudeSessions(
     env.PASEO_HOME || join(env.HOME || homedir(), ".paseo"),
   )) {
     const path = index.get(sessionId);
@@ -334,6 +346,10 @@ export function reveal(
         readHead(fd, Math.min(stat.size, HEAD_BYTES + 32)),
       );
       if (targets.length === 0) continue;
+      if (dispatched) {
+        report.notEligible += 1;
+        continue;
+      }
       if (live.has(sessionId)) {
         report.skippedLive.push(sessionId);
         continue;
@@ -348,7 +364,7 @@ export function reveal(
         report.notEligible += 1;
         continue;
       }
-      if (!hasHumanMessage(path)) {
+      if (!startedByYou(path)) {
         checked[path] = { size: stat.size, mtimeMs: stat.mtimeMs };
         report.notEligible += 1;
         continue;
