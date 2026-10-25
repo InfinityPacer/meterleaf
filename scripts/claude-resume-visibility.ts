@@ -40,8 +40,14 @@ import { join } from "node:path";
 /** Claude Code 读取会话列表摘要时读入的文件开头字节数。 */
 const HEAD_BYTES = 65536;
 const PROGRAMMATIC = ["sdk-cli", "sdk-ts", "sdk-py"];
-/** Paseo 给由其他代理派出的代理加的标签；`paseo run --label` 也可以手动带上。 */
+/** Paseo 给在 Paseo 内由其他代理派出的代理加的标签，指向上级代理。 */
 const PARENT_LABEL = "paseo.parent-agent-id";
+/**
+ * 在 Paseo 之外用 `paseo run --label dispatched-by=<会话 ID>` 派出时带上的标签。
+ * 不能借用 PARENT_LABEL：Paseo 会把带它的代理当成该上级代理的子代理，
+ * 上级不是 Paseo 代理时，不会自动为它打开标签页，工作区的运行状态也不计入它。
+ */
+const DISPATCHED_LABEL = "dispatched-by";
 
 type Env = Record<string, string | undefined>;
 
@@ -100,7 +106,8 @@ function readJson(path: string): unknown {
 /**
  * Paseo 每个代理一个 JSON；persistence.sessionId 是它恢复的会话。值为 true 表示
  * 记录显示这个代理由其他代理派出：Paseo 内派出的代理带 paseo.parent-agent-id
- * 标签；从未收到过你在 Paseo 里发的消息时 lastUserMessageAt 为 null。
+ * 标签，Paseo 之外派出时可以带 dispatched-by 标签；从未收到过你在 Paseo 里
+ * 发的消息时 lastUserMessageAt 为 null。
  * 同一会话被多个代理引用时，任何一个显示是派出的就按派出处理。
  */
 function paseoClaudeSessions(paseoHome: string): Map<string, boolean> {
@@ -126,6 +133,7 @@ function paseoClaudeSessions(paseoHome: string): Map<string, boolean> {
         continue;
       const dispatched =
         Boolean(record?.labels?.[PARENT_LABEL]) ||
+        Boolean(record?.labels?.[DISPATCHED_LABEL]) ||
         record?.lastUserMessageAt === null;
       sessions.set(sessionId, (sessions.get(sessionId) ?? false) || dispatched);
     }

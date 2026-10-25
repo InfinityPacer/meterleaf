@@ -29,6 +29,7 @@ const ids = {
   live: "44444444-4444-4444-8444-444444444444",
   labeled: "55555555-5555-4555-8555-555555555555",
   silent: "66666666-6666-4666-8666-666666666666",
+  outside: "77777777-7777-4777-8777-777777777777",
 };
 
 function line(record: Record<string, unknown>): string {
@@ -77,6 +78,7 @@ function setup() {
     live: join(projects, `${ids.live}.jsonl`),
     labeled: join(projects, `${ids.labeled}.jsonl`),
     silent: join(projects, `${ids.silent}.jsonl`),
+    outside: join(projects, `${ids.outside}.jsonl`),
   };
 
   // 主会话：开头是注入的上下文和一段转义文本，随后是你的提问；后半部分超过 64 KiB。
@@ -121,6 +123,7 @@ function setup() {
   // 这两个会话的第一条消息看起来像人写的，但代理记录显示它们是派出的。
   writeFileSync(files.labeled, user(ids.labeled, "按计划实现第 2 项"));
   writeFileSync(files.silent, user(ids.silent, "Read and carry out the plan"));
+  writeFileSync(files.outside, user(ids.outside, "Read and carry out step 3"));
 
   const agent = (id: string, extra: Record<string, unknown> = {}) =>
     writeFileSync(
@@ -141,6 +144,10 @@ function setup() {
     labels: { "paseo.parent-agent-id": "agent-11111111" },
   });
   agent(ids.silent, { lastUserMessageAt: null });
+  // 终端里的 Claude Code 用 paseo run 派出，带上自己的会话 ID。
+  agent(ids.outside, {
+    labels: { "dispatched-by": "aaaaaaaa-0000-4000-8000-000000000000" },
+  });
   writeFileSync(
     join(paseo, "codex.json"),
     JSON.stringify({
@@ -171,7 +178,7 @@ describe("让 Paseo 会话出现在 resume 列表", () => {
     const before = statSync(files.main);
     const report = reveal(env);
     expect(report.revealed.sort()).toEqual([ids.main, ids.live].sort());
-    expect(report.notEligible).toBe(3);
+    expect(report.notEligible).toBe(4);
 
     const after = statSync(files.main);
     expect(after.ino).toBe(before.ino);
@@ -195,7 +202,13 @@ describe("让 Paseo 会话出现在 resume 列表", () => {
     expect(text).toContain('\\"entrypoint\\":\\"sdk-cli\\"');
 
     expect(listedEntrypoint(files.live)).toBe("cli");
-    for (const key of ["child", "solo", "labeled", "silent"] as const)
+    for (const key of [
+      "child",
+      "solo",
+      "labeled",
+      "silent",
+      "outside",
+    ] as const)
       expect(readFileSync(files[key]).equals(original[key])).toBe(true);
   });
 
@@ -204,7 +217,7 @@ describe("让 Paseo 会话出现在 resume 列表", () => {
     reveal(env);
     const second = reveal(env);
     expect(second.revealed).toEqual([]);
-    expect(second.notEligible).toBe(3);
+    expect(second.notEligible).toBe(4);
     const checked = JSON.parse(
       readFileSync(join(env.METERLEAF_TASK_STATE_DIR, "checked.json"), "utf8"),
     ) as Record<string, unknown>;
