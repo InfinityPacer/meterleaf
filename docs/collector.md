@@ -284,7 +284,7 @@ Paseo 以无界面模式启动 Claude Code，这样产生的会话不会出现�
 仓库里的 `scripts/claude-resume-visibility.ts` 把你在 Paseo 里开的主会话改成按普通终端会话列出。它只处理同时满足下面两点的会话。
 
 - 属于某个 Paseo 代理，也就是 Paseo 恢复这个代理时用的那个 Claude 会话。
-- 这个代理是你开的，不是其他代理派出的。Paseo 内派出的代理带有父代理标签，第一条消息也是上级代理转来的任务，这样的子代理即使之后你直接和它对话过，也不会被列出。在 Paseo 之外，例如普通终端里的 Claude Code 用 `paseo run` 派出的代理，Paseo 不记录派出者，派出时加上 `--label paseo.parent-agent-id=<派出者>` 就会被识别为子代理。
+- 这个代理是你开的，不是其他代理派出的。Paseo 内派出的代理带有父代理标签，第一条消息也是上级代理转来的任务，这样的子代理即使之后你直接和它对话过，也不会被列出。在 Paseo 之外，例如普通终端里的 Claude Code 用 `paseo run` 派出的代理，Paseo 不记录派出者，看起来和你开的一样。派出时加上 `--label dispatched-by=<派出者的会话 ID>` 就会被识别为子代理，在终端的 Claude Code 里可以用 `--label "dispatched-by=$CLAUDE_CODE_SESSION_ID"`。不要用 `paseo.parent-agent-id` 代替，Paseo 会把带这个标签的代理当成那个上级代理的子代理，上级不在 Paseo 里时，不会自动为它打开标签页，工作区的运行状态也不计入它。
 
 在 Paseo 里仍开着的代理也会列出。想在终端里接着用时，先在 Paseo 里归档它。Paseo 那边的进程不知道终端里新增的对话，之后在 Paseo 里再发消息，会从它自己的最后一条接着写，两边的对话就分叉了。
 
