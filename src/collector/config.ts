@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import { z } from "zod";
 import { INGEST_KEY_PREFIX, sourceIdSchema } from "../shared/ingest";
 import { modelAccountRuleSchema } from "./model-accounts";
+import { taskSchema } from "./tasks";
 
 /** 额外 Claude 订阅账户：各自的 CLAUDE_CONFIG_DIR，以及可选的额度缓存。 */
 export const claudeProfileSchema = z
@@ -38,6 +39,15 @@ const configSchema = z.object({
   claudeProfiles: z.array(claudeProfileSchema).max(20).optional(),
   /** 可选：本机 OTEL 中转的监听端口，省略时使用 4319。 */
   otelRelay: otelRelaySchema.optional(),
+  /** 可选：sync 收尾时按间隔运行的额外任务，按登记顺序执行，名称不能重复。 */
+  tasks: z
+    .array(taskSchema)
+    .max(20)
+    .refine(
+      (tasks) => new Set(tasks.map((task) => task.name)).size === tasks.length,
+      { message: "任务名称不能重复" },
+    )
+    .optional(),
 });
 
 export type CollectorConfig = z.infer<typeof configSchema>;
