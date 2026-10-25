@@ -27,6 +27,8 @@ const ids = {
   child: "22222222-2222-4222-8222-222222222222",
   solo: "33333333-3333-4333-8333-333333333333",
   live: "44444444-4444-4444-8444-444444444444",
+  labeled: "55555555-5555-4555-8555-555555555555",
+  silent: "66666666-6666-4666-8666-666666666666",
 };
 
 function line(record: Record<string, unknown>): string {
@@ -73,6 +75,8 @@ function setup() {
     child: join(projects, `${ids.child}.jsonl`),
     solo: join(projects, `${ids.solo}.jsonl`),
     live: join(projects, `${ids.live}.jsonl`),
+    labeled: join(projects, `${ids.labeled}.jsonl`),
+    silent: join(projects, `${ids.silent}.jsonl`),
   };
 
   // 主会话：开头是注入的上下文和一段转义文本，随后是你的提问；后半部分超过 64 KiB。
@@ -108,21 +112,35 @@ function setup() {
       ) +
       user(ids.child, [
         { type: "text", text: "[Request interrupted by user for tool use]" },
-      ]),
+      ]) +
+      // 之后你在 Paseo 里直接和子代理对话，它仍是子代理。
+      user(ids.child, "顺便把测试也补上"),
   );
   writeFileSync(files.solo, user(ids.solo, "一次性提问"));
   writeFileSync(files.live, user(ids.live, "还在进行的对话"));
+  // 这两个会话的第一条消息看起来像人写的，但代理记录显示它们是派出的。
+  writeFileSync(files.labeled, user(ids.labeled, "按计划实现第 2 项"));
+  writeFileSync(files.silent, user(ids.silent, "Read and carry out the plan"));
 
-  for (const id of [ids.main, ids.child, ids.live]) {
+  const agent = (id: string, extra: Record<string, unknown> = {}) =>
     writeFileSync(
       join(paseo, `${id.slice(0, 8)}.json`),
       JSON.stringify({
         id: `agent-${id.slice(0, 8)}`,
         provider: "claude-bo",
+        labels: {},
+        lastUserMessageAt: "2026-10-25T10:00:00.000Z",
         persistence: { provider: "claude-bo", sessionId: id },
+        ...extra,
       }),
     );
-  }
+  agent(ids.main);
+  agent(ids.child);
+  agent(ids.live);
+  agent(ids.labeled, {
+    labels: { "paseo.parent-agent-id": "agent-11111111" },
+  });
+  agent(ids.silent, { lastUserMessageAt: null });
   writeFileSync(
     join(paseo, "codex.json"),
     JSON.stringify({
@@ -148,13 +166,13 @@ function setup() {
 }
 
 describe("让 Paseo 会话出现在 resume 列表", () => {
-  test("只改有你提问、未在运行的 Paseo 会话，原地等长改写开头一段", () => {
+  test("只改你开启、未在运行的 Paseo 会话，原地等长改写开头一段", () => {
     const { env, files, original } = setup();
     const before = statSync(files.main);
     const report = reveal(env);
     expect(report.revealed).toEqual([ids.main]);
     expect(report.skippedLive).toEqual([ids.live]);
-    expect(report.notEligible).toBe(1);
+    expect(report.notEligible).toBe(3);
 
     const after = statSync(files.main);
     expect(after.ino).toBe(before.ino);
@@ -177,7 +195,7 @@ describe("让 Paseo 会话出现在 resume 列表", () => {
     // 正文里的同名文字被转义，不是记录字段，不改。
     expect(text).toContain('\\"entrypoint\\":\\"sdk-cli\\"');
 
-    for (const key of ["child", "solo", "live"] as const)
+    for (const key of ["child", "solo", "live", "labeled", "silent"] as const)
       expect(readFileSync(files[key]).equals(original[key])).toBe(true);
   });
 
@@ -186,7 +204,7 @@ describe("让 Paseo 会话出现在 resume 列表", () => {
     reveal(env);
     const second = reveal(env);
     expect(second.revealed).toEqual([]);
-    expect(second.notEligible).toBe(1);
+    expect(second.notEligible).toBe(3);
     const checked = JSON.parse(
       readFileSync(join(env.METERLEAF_TASK_STATE_DIR, "checked.json"), "utf8"),
     ) as Record<string, unknown>;

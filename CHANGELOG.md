@@ -2,8 +2,7 @@
 
 ## [未发布]
 
-## [0.12.4] - 2026-10-25
+## [0.12.5] - 2026-10-25
 
-- 本机采集器可以登记额外任务：`meterleaf-collector tasks add` 登记一条本机命令，由采集器的后台任务按间隔运行，有限时，失败只记日志，不影响同步，`status` 和 `tasks` 显示最近一次结果。用法见[本机采集器](docs/collector.md#额外任务可选)。
-- 新增可选脚本 `scripts/claude-resume-visibility.ts`，登记为额外任务后，你在 Paseo 里对话过的 Claude Code 会话会出现在 `claude --resume` 的会话列表里。子代理和仍在运行的会话不处理，改动可以按记录改回。
-- 需要重新构建并替换本机采集器，服务端不用升级。数据库结构未变，升级无需先备份。
+- `scripts/claude-resume-visibility.ts` 只列出你在 Paseo 里开的主会话。其他代理派出的子代理不再列出，即使之后你直接和它对话过；从未收到你消息的代理也不列出。用 `paseo run` 派出代理时加上 `--label paseo.parent-agent-id=<派出者>`，它也会被识别为子代理。
+- 只需更新这个脚本，采集器和服务端都不用替换。数据库结构未变，升级无需先备份。
