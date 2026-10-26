@@ -87,6 +87,7 @@ import {
   usePreference,
   useScopedPreference,
 } from "./lib/preferences";
+import { accountFilterOptions } from "./lib/account-filter";
 import {
   isEmptyAccount,
   moveAccount,
@@ -873,6 +874,12 @@ export function App() {
   const archivedAccounts = sortedAccounts.filter((account) =>
     archivedIds.has(account.id),
   );
+  const accountFilterChoices = accountFilterOptions(
+    activeAccounts,
+    quotaSnapshot?.accounts ?? [],
+    filter.account,
+    { archived: archivedIds, hidden: hiddenIds },
+  );
   const usdBasis = usdBasisOverride ?? snapshot?.usdBasis ?? "subscription";
   const showArchivedAccounts = (show: boolean) => {
     setEditingAccountOrder(false);
@@ -1390,9 +1397,11 @@ export function App() {
                 ? [rangeTitle, usdNote]
                 : [
                     filter.model !== "all" ? modelLabel(filter.model) : null,
-                    quotaSnapshot?.accounts.find(
-                      (account) => account.id === filter.account,
-                    )?.name ?? "全部账户",
+                    filter.account === "all"
+                      ? "全部账户"
+                      : (accountFilterChoices.find(
+                          (option) => option.value === filter.account,
+                        )?.label ?? filter.account),
                   ]
               )
                 .filter(Boolean)
@@ -1429,10 +1438,7 @@ export function App() {
                   icon={<Wallet size={15} />}
                   options={[
                     { value: "all", label: "全部账户" },
-                    ...(quotaSnapshot?.accounts.map((account) => ({
-                      value: account.id,
-                      label: account.name,
-                    })) ?? []),
+                    ...accountFilterChoices,
                   ]}
                 />
               )}
@@ -1743,13 +1749,7 @@ export function App() {
                                 ? "单次平均费用"
                                 : `单次平均 ${unitNames[unit]}`}
                             </dt>
-                            <dd>
-                              {unit === "usd" &&
-                              insights.perRequest !== null &&
-                              insights.perRequest < 0.01
-                                ? `$${insights.perRequest.toFixed(4)}`
-                                : amount(insights.perRequest, unit)}
-                            </dd>
+                            <dd>{amount(insights.perRequest, unit)}</dd>
                           </div>
                         </dl>
                       ) : null}

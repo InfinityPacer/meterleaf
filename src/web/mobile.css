@@ -510,12 +510,6 @@
       margin-top: 0;
       overflow-wrap: anywhere;
     }
-    .details-list {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
-    }
-    .details-list dd {
-      min-width: 0;
-    }
     .detail-amount {
       font-size: 28px;
       overflow-wrap: anywhere;

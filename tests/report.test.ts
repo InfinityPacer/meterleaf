@@ -3,6 +3,7 @@ import type { LedgerRecord } from "../src/shared/report";
 import { createDemoLedger } from "../src/web/demo/ledger";
 import { datePresets } from "../src/web/components/DateRangePicker";
 import {
+  amount,
   bucketTime,
   csv,
   filterRecords,
@@ -20,13 +21,30 @@ const filter = { days: 7, model: "all", account: "all", search: "" };
 
 describe("prototype report contract", () => {
   test("scientific decimal amounts remain known and aggregate without binary rounding", () => {
-    const rows = ["1e-7", "2E-7", "0.0000003"].map(usd => ({ ...snapshot.records[0]!, usd }));
-    expect(summarize(rows, "usd")).toEqual({ value: 6e-7, hasKnown: true, knownRows: 3, incompleteRows: 0 });
+    const rows = ["1e-7", "2E-7", "0.0000003"].map((usd) => ({
+      ...snapshot.records[0]!,
+      usd,
+    }));
+    expect(summarize(rows, "usd")).toEqual({
+      value: 6e-7,
+      hasKnown: true,
+      knownRows: 3,
+      incompleteRows: 0,
+    });
     expect(numericAmount("1e-7")).toBe(1e-7);
     expect(numericAmount("-1e-7")).toBeNull();
     expect(numericAmount("1e9999")).toBeNull();
     expect(numericAmount("Infinity")).toBeNull();
     expect(aggregateReport(rows, "model")[0]!.usd).toBe("6e-7");
+  });
+  test("usd display keeps low-priced requests readable instead of rounding to zero", () => {
+    expect(amount(0.04, "usd")).toBe("$0.04");
+    expect(amount(0.0123, "usd")).toBe("$0.0123");
+    expect(amount(0.0014, "usd")).toBe("$0.0014");
+    expect(amount(0.000123, "usd")).toBe("$0.000123");
+    expect(amount(1234.5, "usd")).toBe("$1,234.50");
+    expect(amount(0, "usd")).toBe("$0.00");
+    expect(amount(null, "usd")).toBe("N/A");
   });
   test("custom calendar dates include both selected days without overlapping comparison", () => {
     const rows = [
