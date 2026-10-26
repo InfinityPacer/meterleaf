@@ -86,11 +86,28 @@ const compactAxisFormat = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 1,
 });
-const usdFormat = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 2,
-});
+/**
+ * 金额按量级决定最多显示几位小数：常规金额保留两位，低于一美分时多留位数到能写出
+ * 有效数字，尾部的零由 Intl 省略。低价模型的单次费用因此不会都显示成 $0.00。
+ */
+const usdFormats = new Map<number, Intl.NumberFormat>();
+function usdFormat(value: number) {
+  const digits =
+    value === 0
+      ? 2
+      : Math.min(8, Math.max(2, 2 - Math.floor(Math.log10(Math.abs(value)))));
+  let format = usdFormats.get(digits);
+  if (!format) {
+    format = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: digits,
+    });
+    usdFormats.set(digits, format);
+  }
+  return format;
+}
 const creditsFormat = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1,
 });
@@ -110,7 +127,7 @@ export function compactAxis(value: number) {
 
 export function amount(value: number | null, unit: ReportUnit) {
   if (value === null || !Number.isFinite(value)) return "N/A";
-  if (unit === "usd") return usdFormat.format(value);
+  if (unit === "usd") return usdFormat(value).format(value);
   return unit === "tokens" ? compact(value) : creditsFormat.format(value);
 }
 

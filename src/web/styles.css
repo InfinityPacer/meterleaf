@@ -1229,13 +1229,15 @@ footer > span {
 }
 .details-list {
   display: grid;
-  grid-template-columns: 1fr auto;
+  /* 标签列按内容取宽，长 ID 只在数值列内折行，不能把标签挤成竖排。 */
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 17px 12px;
   margin: 24px 0;
   font-size: 14px;
 }
 .details-list dt {
   color: var(--muted);
+  white-space: nowrap;
 }
 .details-list dd {
   margin: 0;
