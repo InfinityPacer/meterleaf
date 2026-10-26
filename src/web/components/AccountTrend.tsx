@@ -9,6 +9,7 @@ import type { LedgerView, UnitView } from "../../shared/ledger-view";
 import { selectUsdView } from "../../shared/ledger-view";
 import type { UsdBasis } from "../../domain/pricing";
 import {
+  amount,
   compact,
   compactAxis,
   continuousPoints,
@@ -110,11 +111,6 @@ export function selectAccountTrendPoints(
   return view.view.units[metric].points;
 }
 
-const preciseUsdFormat = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 6,
-});
 const percentFormat = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
@@ -129,7 +125,7 @@ export function formatMetricValue(
 ) {
   if (value === null || !Number.isFinite(value)) return "N/A";
   if (metric === "tokens") return `${compact(value)} ${metricLabels[metric]}`;
-  if (metric === "usd") return preciseUsdFormat.format(value);
+  if (metric === "usd") return amount(value, "usd");
   const formatted = (metric === "percent" ? percentFormat : countFormat).format(
     value,
   );
