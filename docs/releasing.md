@@ -5,23 +5,15 @@
 ## 发布流程
 
 1. 更新版本：`bun pm version patch --no-git-tag-version`，新增功能可用 `minor`，也可明确指定版本。
-2. 将 `CHANGELOG.md` 未发布内容整理为 `## [版本号] - YYYY-MM-DD`，使用真实发布日期，保留新的未发布区。
-3. 运行 `bun test tests`、`bun run build`，提交版本与更新说明，例如 `chore(release): prepare 0.1.1`。
-4. 推送到 `main`。Release 工作流自动校验、测试和构建，创建版本标签，将 `linux/amd64`、`linux/arm64` 镜像同时发布到 GHCR 和 Docker Hub，并创建 GitHub Release。
+2. 运行 `bun test tests`、`bun run build`，提交版本，例如 `chore(release): prepare 0.1.1`。
+3. 推送到 `main`。Release 工作流自动校验、测试和构建，创建版本标签，将 `linux/amd64`、`linux/arm64` 镜像同时发布到 GHCR 和 Docker Hub，并创建 GitHub Release。
 
 ## 什么时候发版
 
-合并到 `main` 的提交只要改了 `package.json` 的版本，Release 工作流就会发布一个新版本。所以一件事讨论中的后续修正先留在同一个分支上，规则定下来后一次合并、一次发版，不要每改一轮就升一次版本。只改仓库里的可选脚本或文档、不影响镜像和采集器时，可以不升版本，等下一次正式发版一起写进更新说明。
+合并到 `main` 的提交只要改了 `package.json` 的版本，Release 工作流就会发布一个新版本。所以一件事讨论中的后续修正先留在同一个分支上，规则定下来后一次合并、一次发版，不要每改一轮就升一次版本。只改仓库里的可选脚本或文档、不影响镜像和采集器时，可以不升版本，等下一次正式发版一起发布。
 
-## 只保留最新版本
-
-仓库只保留最新的一个版本。新版本发布成功后，删除旧版本的 GitHub Release 和 Git 标签、GHCR 中旧版本的镜像，以及 Docker Hub 上除 `latest` 和最新版本以外的标签；`CHANGELOG.md` 也只保留最新版本的说明。
-
-- GHCR 里没有标签的条目大多是带标签版本实际指向的各架构镜像，只删除不属于保留版本的那些，否则保留的版本也拉不下来。
-- 删除前确认 NAS 等部署没有固定使用要删的版本号；已在运行的容器不受影响，但之后重新拉取会失败。
-
-版本未变时跳过自动发布。需要覆盖已有版本时，在 Actions 的 Release 工作流点击「Run workflow」，选择 `main`；这会按该提交重新构建，替换对应 Git 标签、同版本镜像及 Release 说明。
+版本未变时跳过自动发布。需要覆盖已有版本时，在 Actions 的 Release 工作流点击「Run workflow」，选择 `main`；这会按该提交重新构建，替换对应 Git 标签和同版本镜像。
 
 首次运行仍需按[部署指南](deployment.md)准备数据目录权限和来源配置。不执行删除数据卷的清理命令。
 
-升级时是否需要先备份，取决于数据库结构版本（`src/storage/schema.ts` 中的 `DATABASE_SCHEMA_REVISION`）有没有变化。没有变化时，旧版本镜像仍能读取升级后的数据，回滚只需换回旧镜像标签，不必为升级单独备份。有变化时，旧版本读不了迁移后的数据库，升级前必须停止服务并备份完整数据目录，更新说明里也要提醒用户先备份。
+升级时是否需要先备份，取决于数据库结构版本（`src/storage/schema.ts` 中的 `DATABASE_SCHEMA_REVISION`）有没有变化。没有变化时，旧版本镜像仍能读取升级后的数据，回滚只需换回旧镜像标签，不必为升级单独备份。有变化时，旧版本读不了迁移后的数据库，升级前必须停止服务并备份完整数据目录。

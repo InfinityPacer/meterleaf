@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { version } from "../package.json";
-import { releaseNotes, shouldPublish } from "../scripts/release";
+import { shouldPublish } from "../scripts/release";
 import {
   mkdtemp,
   mkdir,
@@ -12,20 +12,6 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-
-test("release requires matching version and dated nonempty notes", () => {
-  expect(
-    releaseNotes(
-      `v${version}`,
-      `# 更新日志\n## [${version}] - 2026-09-09\n\n- 发布说明\n## [0.0.1] - 2026-01-01\n旧版`,
-    ),
-  ).toBe("- 发布说明");
-  expect(() => releaseNotes("v99.0.0", "")).toThrow();
-  expect(() => releaseNotes(`v${version}`, "## [未发布]\n草稿")).toThrow();
-  expect(() =>
-    releaseNotes(`v${version}`, `## [${version}] - 2026-09-09\n`),
-  ).toThrow();
-});
 
 test("automatic publishing skips existing versions and manual runs allow replacement", () => {
   const current = "a".repeat(40);
@@ -63,10 +49,6 @@ test("release workflow creates and manually replaces tags using a local-only rem
       join(work, "scripts/release.ts"),
     );
     await writeFile(join(work, "package.json"), JSON.stringify({ version }));
-    await writeFile(
-      join(work, "CHANGELOG.md"),
-      `## [${version}] - 2026-09-09\n\n- Fixture release\n`,
-    );
     command("git", ["init", "--bare", remote]);
     command("git", ["init"]);
     command("git", ["config", "user.name", "Release Fixture"]);
