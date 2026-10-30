@@ -17,13 +17,22 @@ import {
 
 /**
  * 构建采集器：dist/meterleaf-collector 是通用命令行可执行文件；在 macOS 上另外打包
- * dist/Meterleaf.app。包内带 SMAppService 注册助手与后台任务 plist，
+ * 应用包。包内带 SMAppService 注册助手与后台任务 plist，
  * 让后台任务在“登录项与扩展”中显示 Meterleaf 名称与图标。
+ *
+ * 默认构建用于开发验证，生成标识不同的 `Meterleaf Dev.app`。系统按应用标识解析已登记的
+ * 后台任务，两个同标识的应用包同时存在时，后台任务可能改跑仓库里刚构建的那份。
+ * `--release` 才生成用于安装的 `Meterleaf.app`。
  */
+const release = process.argv.includes("--release");
+const bundleIdentifier = release
+  ? BUNDLE_IDENTIFIER
+  : `${BUNDLE_IDENTIFIER}.dev`;
+const displayName = release ? "Meterleaf" : "Meterleaf Dev";
 const root = resolve(import.meta.dir, "..");
 const dist = join(root, "dist");
 const binary = join(dist, "meterleaf-collector");
-const bundle = join(dist, "Meterleaf.app");
+const bundle = join(dist, `${displayName}.app`);
 
 function run(command: string[]) {
   const result = Bun.spawnSync(command, {
@@ -55,11 +64,11 @@ function infoPlist(): string {
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>${BUNDLE_IDENTIFIER}</string>
+  <string>${bundleIdentifier}</string>
   <key>CFBundleName</key>
-  <string>Meterleaf</string>
+  <string>${displayName}</string>
   <key>CFBundleDisplayName</key>
-  <string>Meterleaf</string>
+  <string>${displayName}</string>
   <key>CFBundleExecutable</key>
   <string>meterleaf-collector</string>
   <key>CFBundleIconFile</key>
@@ -145,7 +154,7 @@ if (process.platform === "darwin") {
   writeFileSync(join(contents, "Info.plist"), infoPlist());
   copyFileSync(binary, join(macos, "meterleaf-collector"));
   // 同步与 OTEL 中继各自一个 plist，安装时由注册助手按名称分别登记。
-  writeServicePlists(agents);
+  writeServicePlists(agents, bundleIdentifier);
   // SMAppService 需要 macOS 13；目标版本与 Info.plist 的 LSMinimumSystemVersion 一致。
   const arch = process.arch === "arm64" ? "arm64" : "x86_64";
   run([
@@ -166,7 +175,7 @@ if (process.platform === "darwin") {
     "--sign",
     "-",
     "--identifier",
-    `${BUNDLE_IDENTIFIER}.service`,
+    `${bundleIdentifier}.service`,
     join(macos, SERVICE_HELPER),
   ]);
   runQuiet(["/usr/bin/codesign", "--force", "--sign", "-", bundle]);

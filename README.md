@@ -83,7 +83,7 @@ docker compose up -d --pull never
 
 ```sh
 bun install --frozen-lockfile
-bun run build:collector
+bun run build:app
 ```
 
 把 `dist/Meterleaf.app` 移到「应用程序」，然后生成写入密钥。`--server` 填这台 Mac 能访问到的 Meterleaf 地址，服务端不在本机时先按[部署指南](docs/deployment.md#接入本机采集器)开放访问：
