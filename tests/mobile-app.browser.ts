@@ -622,26 +622,32 @@ async function assertMobileAccountManagement() {
   await expect.poll(ids).toEqual(initial);
   expect(archiveState.archived).toEqual([]);
 
+  const moveCardWithKeyboard = async (
+    index: number,
+    key: "ArrowUp" | "ArrowDown",
+  ) => {
+    const handle = cards.nth(index).getByRole("button", { name: /^拖动排序 / });
+    await handle.focus();
+    await page.keyboard.press("Space");
+    await page.waitForTimeout(30);
+    await page.keyboard.press(key);
+    await page.waitForTimeout(30);
+    await page.keyboard.press("Space");
+  };
   await section
     .getByRole("button", { name: "调整账户顺序", exact: true })
     .click();
-  await expect(
-    cards.first().getByRole("button", { name: /^上移 / }),
-  ).toBeDisabled();
-  await cards
-    .first()
-    .getByRole("button", { name: /^下移 / })
-    .click();
+  await expect(section.locator(".account-drag-handle")).toHaveCount(
+    initial.length,
+  );
+  await moveCardWithKeyboard(0, "ArrowDown");
   await expect.poll(ids).toEqual([initial[1], initial[0], ...initial.slice(2)]);
-  await cards
-    .nth(1)
-    .getByRole("button", { name: /^上移 / })
-    .click();
+  await moveCardWithKeyboard(1, "ArrowUp");
   await expect.poll(ids).toEqual(initial);
   await section
     .getByRole("button", { name: "完成账户排序", exact: true })
     .click();
-  await expect(section.locator(".account-order-actions")).toHaveCount(0);
+  await expect(section.locator(".account-drag-handle")).toHaveCount(0);
   await expect
     .poll(() =>
       page.evaluate(() =>
