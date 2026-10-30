@@ -823,10 +823,13 @@ async function assertSortingAndArchiveBehavior(width: number) {
   );
   const secondId = await rows.nth(1).getAttribute("data-account-id");
   await orderButton.click();
-  await rows
-    .nth(1)
-    .getByRole("button", { name: /^上移 / })
-    .click();
+  const secondHandle = rows.nth(1).getByRole("button", { name: /^拖动排序 / });
+  await secondHandle.focus();
+  await page.keyboard.press("Space");
+  await page.waitForTimeout(30);
+  await page.keyboard.press("ArrowUp");
+  await page.waitForTimeout(30);
+  await page.keyboard.press("Space");
   await expect(rows.first()).toHaveAttribute("data-account-id", secondId!);
   await page.reload();
   await ready();

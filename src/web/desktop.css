@@ -804,12 +804,24 @@
       minmax(150px, 0.8fr) 44px;
     gap: 24px;
   }
+  .app-shell .account-list-item[data-sorting="true"] > .account-row {
+    grid-template-columns:
+      minmax(200px, 1.05fr) minmax(0, 1.2fr) minmax(0, 1.2fr)
+      minmax(150px, 0.8fr) 84px;
+  }
   /* 账户 | 额度窗口 | 7d 预估 | 箭头；窗口区列数由宽度决定，见 styles.css 的 .account-windows。 */
   .app-shell .account-row[data-has-quota="true"] {
     grid-template-columns:
       minmax(220px, 1.05fr) minmax(0, 2.8fr) minmax(150px, 0.8fr)
       44px;
     grid-template-areas: "identity windows capacity arrow";
+  }
+  .app-shell
+    .account-list-item[data-sorting="true"]
+    > .account-row[data-has-quota="true"] {
+    grid-template-columns:
+      minmax(220px, 1.05fr) minmax(0, 2.8fr) minmax(150px, 0.8fr)
+      84px;
   }
   .app-shell .account-windows {
     align-self: center;
@@ -845,12 +857,48 @@
   .app-shell .account-lifetime .mini-trend {
     margin-top: 4px;
   }
-  .app-shell .account-menu-trigger {
+  .app-shell .account-menu-trigger,
+  .app-shell .account-drag-handle {
     top: 50%;
     transform: translateY(-50%);
-    right: 22px;
     color: var(--desktop-muted);
     background: transparent;
+  }
+  .app-shell .account-menu-trigger {
+    right: 22px;
+  }
+  .app-shell .account-drag-handle {
+    right: 60px;
+  }
+  .app-shell .account-list > .account-list-item[data-dragging="true"] {
+    z-index: 20;
+    border-radius: 12px;
+    background: var(--desktop-panel);
+    box-shadow:
+      0 12px 28px -6px rgb(24 24 27 / 16%),
+      0 0 0 1px var(--accent);
+  }
+  .dark .app-shell .account-list > .account-list-item[data-dragging="true"] {
+    background: var(--elevated);
+    box-shadow:
+      0 14px 32px -6px rgb(0 0 0 / 55%),
+      0 0 0 1px var(--accent);
+  }
+  .app-shell
+    .account-list
+    > .account-list-item[data-dragging="true"]
+    > .account-row,
+  .app-shell
+    .account-list
+    > .account-list-item[data-over="true"]
+    > .account-row {
+    border-radius: 11px;
+    background: transparent;
+    box-shadow: none;
+  }
+  .app-shell .account-list > .account-list-item[data-over="true"] {
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1px var(--accent-line);
   }
   .app-shell .account-lifetime strong {
     font-size: 22px;
@@ -1416,23 +1464,39 @@
   }
   .app-shell
     .account-list-item:has(> .account-row[data-has-quota="true"])
-    .account-menu-trigger {
+    .account-menu-trigger,
+  .app-shell
+    .account-list-item:has(> .account-row[data-has-quota="true"])
+    .account-drag-handle {
     top: 20px;
     transform: none;
   }
-  /* 右上角留给管理菜单，预估栏向左让出位置。 */
+  /* 右上角留给管理菜单与拖拽手柄，预估栏向左让出位置。 */
   .app-shell .account-row[data-has-quota="true"] .account-capacity {
     margin-right: 48px;
+  }
+  .app-shell
+    .account-list-item[data-sorting="true"]
+    .account-row[data-has-quota="true"]
+    .account-capacity {
+    margin-right: 86px;
   }
 }
 
 @media (min-width: 901px) and (max-width: 1000px) {
-  /* 两行排列时管理菜单放在右上角，不与预估金额重叠。 */
-  .app-shell .account-menu-trigger {
+  /* 两行排列时管理菜单与拖拽手柄放在右上角，不与预估金额重叠。 */
+  .app-shell .account-menu-trigger,
+  .app-shell .account-drag-handle {
     top: 20px;
     transform: none;
   }
   .app-shell .account-row .account-capacity {
     margin-right: 48px;
+  }
+  .app-shell
+    .account-list-item[data-sorting="true"]
+    .account-row
+    .account-capacity {
+    margin-right: 86px;
   }
 }

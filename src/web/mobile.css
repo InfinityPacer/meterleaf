@@ -331,12 +331,21 @@
     .account-lifetime strong {
       font-size: 15px;
     }
-    .account-menu-trigger {
-      right: 10px;
+    .account-menu-trigger,
+    .account-drag-handle {
       top: 12px;
       background: transparent;
       color: var(--muted);
       border-radius: 0;
+    }
+    .account-menu-trigger {
+      right: 10px;
+    }
+    .account-drag-handle {
+      right: 48px;
+    }
+    .account-list-item[data-sorting="true"] .account-identity {
+      padding-right: 76px;
     }
     .app-period {
       display: flex;

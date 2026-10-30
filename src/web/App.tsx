@@ -21,8 +21,6 @@ import { Menu as ActionMenu } from "@base-ui/react/menu";
 import {
   Activity,
   ArrowRight,
-  ArrowUp,
-  ArrowDown,
   Archive,
   ArchiveRestore,
   Trash2,
@@ -90,9 +88,14 @@ import {
 import { accountFilterOptions } from "./lib/account-filter";
 import {
   isEmptyAccount,
-  moveAccount,
   orderedAccounts,
+  reorderAccount,
 } from "./lib/account-order";
+import {
+  AccountDragHandle,
+  SortableAccountItem,
+  SortableAccountList,
+} from "./components/AccountSortable";
 import { useAccountArchive } from "./lib/use-account-archive";
 import { accountInitial, withAccountAliases } from "./lib/account-aliases";
 import { planBadge } from "./lib/plan";
@@ -546,6 +549,7 @@ function OverviewQuotas({
   onShowArchived,
   editingOrder,
   onEditingOrder,
+  onReorderAccount,
   asOf,
   onOpen,
   onRequests,
@@ -560,6 +564,7 @@ function OverviewQuotas({
   onShowArchived: (show: boolean) => void;
   editingOrder: boolean;
   onEditingOrder: (editing: boolean) => void;
+  onReorderAccount: (activeId: string, overId: string) => void;
   asOf: string;
   onOpen: (account: LedgerAccount) => void;
   onRequests: (account: LedgerAccount) => void;
@@ -568,6 +573,7 @@ function OverviewQuotas({
   usdBasis: UsdBasis;
   compactUsage?: boolean;
 }) {
+  const sorting = editingOrder && !showArchived;
   return (
     <section
       className="overview-quotas"
@@ -591,29 +597,35 @@ function OverviewQuotas({
         className="account-list"
         aria-label={showArchived ? "已归档账户列表" : "账户额度摘要"}
       >
-        {accounts.map((account) => (
-          <div
-            className="account-list-item"
-            key={account.id}
-            data-account-id={account.id}
-            data-manageable
-          >
-            <AccountRow
-              account={account}
-              asOf={asOf}
-              archived={showArchived}
-              usdBasis={usdBasis}
-              compactUsage={compactUsage}
-              usage={accountUsage?.[account.id]}
-              onOpen={() =>
-                !showArchived && (account.fiveHour || account.sevenDay)
-                  ? onOpen(account)
-                  : onRequests(account)
-              }
-            />
-            {renderActions(account)}
-          </div>
-        ))}
+        <SortableAccountList
+          accounts={accounts}
+          enabled={sorting}
+          onReorder={onReorderAccount}
+        >
+          {accounts.map((account) => (
+            <SortableAccountItem
+              className="account-list-item"
+              key={account.id}
+              id={account.id}
+              enabled={sorting}
+            >
+              <AccountRow
+                account={account}
+                asOf={asOf}
+                archived={showArchived}
+                usdBasis={usdBasis}
+                compactUsage={compactUsage}
+                usage={accountUsage?.[account.id]}
+                onOpen={() =>
+                  !showArchived && (account.fiveHour || account.sevenDay)
+                    ? onOpen(account)
+                    : onRequests(account)
+                }
+              />
+              {renderActions(account)}
+            </SortableAccountItem>
+          ))}
+        </SortableAccountList>
         {!accounts.length && (
           <p className="empty-chart">
             {showArchived ? "暂无归档账户" : "暂无账户"}
@@ -885,43 +897,22 @@ export function App() {
     setEditingAccountOrder(false);
     setShowArchived(show);
   };
-  /** 账户区每行的排序按钮与管理菜单，Web 总览和手机首页共用。 */
+  const reorderVisibleAccount = (activeId: string, overId: string) => {
+    setAccountOrder(
+      reorderAccount(
+        sortedAccounts.map((value) => value.id),
+        activeId,
+        overId,
+        (id) => !archivedIds.has(id),
+      ),
+    );
+  };
+  /** 账户区每行的拖拽手柄与管理菜单，Web 总览和手机首页共用。 */
   const renderAccountActions = (account: LedgerAccount) => {
-    const position = activeAccounts.indexOf(account);
     return (
       <>
         {editingAccountOrder && !showArchived && (
-          <div
-            className="account-order-actions"
-            aria-label={`${account.name} 排序`}
-          >
-            {([-1, 1] as const).map((direction) => (
-              <Button
-                key={direction}
-                variant="ghost"
-                size="icon"
-                aria-label={`${direction === -1 ? "上移" : "下移"} ${account.name}`}
-                title={direction === -1 ? "上移账户" : "下移账户"}
-                disabled={!activeAccounts[position + direction]}
-                onClick={() =>
-                  setAccountOrder(
-                    moveAccount(
-                      sortedAccounts.map((value) => value.id),
-                      account.id,
-                      direction,
-                      (id) => !archivedIds.has(id),
-                    ),
-                  )
-                }
-              >
-                {direction === -1 ? (
-                  <ArrowUp size={18} />
-                ) : (
-                  <ArrowDown size={18} />
-                )}
-              </Button>
-            ))}
-          </div>
+          <AccountDragHandle name={account.name} />
         )}
         <ActionMenu.Root>
           <ActionMenu.Trigger
@@ -1545,6 +1536,8 @@ export function App() {
                 onAccount={setSelectedAccount}
                 onRequests={(account) => openAccountRequests(account.id)}
                 showArchived={showArchived}
+                editingOrder={editingAccountOrder}
+                onReorderAccount={reorderVisibleAccount}
                 renderAccountActions={renderAccountActions}
                 accountHeadingActions={
                   <AccountHeadingActions
@@ -1581,6 +1574,7 @@ export function App() {
                   onShowArchived={showArchivedAccounts}
                   editingOrder={editingAccountOrder}
                   onEditingOrder={setEditingAccountOrder}
+                  onReorderAccount={reorderVisibleAccount}
                   asOf={quotaAsOf}
                   accountUsage={snapshot?.view.accountUsage}
                   compactUsage={smallScreen}
