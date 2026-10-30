@@ -150,31 +150,35 @@ try {
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
 
-  // 排序：上移后立即生效并在重新载入后保留。
+  // 排序：拖拽或方向键调整顺序后立即生效并在重新载入后保留。
   const [first, second, third, fourth] = (await ids()) as [
     string,
     string,
     string,
     string,
   ];
+  const moveHandleWithKeyboard = async (
+    index: number,
+    key: "ArrowUp" | "ArrowDown",
+  ) => {
+    const handle = rows.nth(index).getByRole("button", { name: /^拖动排序 / });
+    await handle.focus();
+    await page.keyboard.press("Space");
+    await page.waitForTimeout(30);
+    await page.keyboard.press(key);
+    await page.waitForTimeout(30);
+    await page.keyboard.press("Space");
+  };
   await sortButton.click();
   await expect(doneButton).toHaveAttribute("aria-pressed", "true");
-  await expect(
-    rows.first().getByRole("button", { name: /^上移 / }),
-  ).toBeDisabled();
-  await expect(
-    rows.last().getByRole("button", { name: /^下移 / }),
-  ).toBeDisabled();
-  await rows
-    .nth(1)
-    .getByRole("button", { name: /^上移 / })
-    .click();
+  await expect(page.locator(".account-drag-handle")).toHaveCount(4);
+  await moveHandleWithKeyboard(1, "ArrowUp");
   await expect.poll(ids).toEqual([second, first, third, fourth]);
   await doneButton.click();
-  await expect(page.locator(".account-order-actions")).toHaveCount(0);
+  await expect(page.locator(".account-drag-handle")).toHaveCount(0);
   await page.reload();
   await expect.poll(ids).toEqual([second, first, third, fourth]);
-  await expect(page.locator(".account-order-actions")).toHaveCount(0);
+  await expect(page.locator(".account-drag-handle")).toHaveCount(0);
 
   // 归档中间的账户后，已归档入口出现；排序只在使用中账户之间交换，归档账户在完整顺序中原位保留。
   await operate(1, "归档账户");
@@ -183,10 +187,7 @@ try {
   await sortButton.click();
   // 排序期间隐藏归档入口，避免在两份列表之间切换时丢失排序状态。
   await expect(archivedButton).toHaveCount(0);
-  await rows
-    .nth(1)
-    .getByRole("button", { name: /^上移 / })
-    .click();
+  await moveHandleWithKeyboard(1, "ArrowUp");
   await expect.poll(ids).toEqual([third, second, fourth]);
   await expect.poll(storedOrder).toEqual([third, first, second, fourth]);
   await doneButton.click();

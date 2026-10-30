@@ -15,6 +15,7 @@ import {
   quotaUnavailableNote,
 } from "../lib/report";
 import "./mobile-home.css";
+import { SortableAccountItem, SortableAccountList } from "./AccountSortable";
 import { QuotaWindow } from "./QuotaWindow";
 import { CompositionBar, type UsageSummaryData } from "./UsageSummary";
 
@@ -47,9 +48,12 @@ export interface MobileHomeProps {
   onRequests: (account: LedgerAccount) => void;
   /** 当前列出的是已归档账户。 */
   showArchived?: boolean;
+  /** 当前正在调整账户顺序。 */
+  editingOrder?: boolean;
+  onReorderAccount?: (activeId: string, overId: string) => void;
   /** 账户区标题右侧的归档与排序切换。 */
   accountHeadingActions?: ReactNode;
-  /** 每张账户卡片的排序按钮与管理菜单，与卡片按钮平级，不能嵌套在按钮里。 */
+  /** 每张账户卡片的拖拽手柄与管理菜单，与卡片按钮平级，不能嵌套在按钮里。 */
   renderAccountActions?: (account: LedgerAccount) => ReactNode;
 }
 
@@ -203,12 +207,15 @@ export function MobileHome({
   onAccount,
   onRequests,
   showArchived = false,
+  editingOrder = false,
+  onReorderAccount,
   accountHeadingActions,
   renderAccountActions,
   summary,
   rangeLabel,
   summaryUpdating = false,
 }: MobileHomeProps) {
+  const sorting = editingOrder && !showArchived;
   return (
     <div className="mobile-home">
       <header className="mobile-home-header">
@@ -239,87 +246,97 @@ export function MobileHome({
           className="mobile-home-account-list"
           aria-label={showArchived ? "已归档账户列表" : "账户额度摘要"}
         >
-          {accounts.map((account) => {
-            const quotas = showArchived
-              ? []
-              : withExtraQuotaWindows(
-                  visibleQuotaWindows(account, asOf),
-                  account,
-                  asOf,
+          <SortableAccountList
+            accounts={accounts}
+            enabled={sorting}
+            onReorder={onReorderAccount}
+          >
+            {accounts.map((account) => {
+              const quotas = showArchived
+                ? []
+                : withExtraQuotaWindows(
+                    visibleQuotaWindows(account, asOf),
+                    account,
+                    asOf,
+                  );
+              const hasQuota =
+                !showArchived &&
+                Boolean(
+                  account.fiveHour || account.sevenDay || account.monthly,
                 );
-            const hasQuota =
-              !showArchived &&
-              Boolean(account.fiveHour || account.sevenDay || account.monthly);
-            const plan = planBadge(account);
-            const open = () =>
-              hasQuota ? onAccount(account) : onRequests(account);
-            return (
-              <li
-                key={account.id}
-                data-account-id={account.id}
-                data-manageable={renderAccountActions ? "" : undefined}
-              >
-                <button
-                  type="button"
-                  className="mobile-home-account-card"
-                  data-quota-count={quotas.length}
-                  onClick={open}
-                  aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
+              const plan = planBadge(account);
+              const open = () =>
+                hasQuota ? onAccount(account) : onRequests(account);
+              return (
+                <SortableAccountItem
+                  as="li"
+                  key={account.id}
+                  id={account.id}
+                  enabled={sorting}
+                  manageable={Boolean(renderAccountActions)}
                 >
-                  <span className="mobile-home-account-head">
-                    <span
-                      className="mobile-home-account-avatar"
-                      data-kind={account.kind}
-                      aria-hidden="true"
-                    >
-                      {accountInitial(account.name)}
+                  <button
+                    type="button"
+                    className="mobile-home-account-card"
+                    data-quota-count={quotas.length}
+                    onClick={open}
+                    aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
+                  >
+                    <span className="mobile-home-account-head">
+                      <span
+                        className="mobile-home-account-avatar"
+                        data-kind={account.kind}
+                        aria-hidden="true"
+                      >
+                        {accountInitial(account.name)}
+                      </span>
+                      <span className="mobile-home-account-name">
+                        <strong title={account.name}>{account.name}</strong>
+                        {plan && (
+                          <span
+                            className="plan-chip"
+                            data-tier={plan.tier ?? undefined}
+                          >
+                            {plan.label}
+                          </span>
+                        )}
+                      </span>
+                      <ChevronRight
+                        className="mobile-home-account-chevron"
+                        size={18}
+                        aria-hidden="true"
+                      />
                     </span>
-                    <span className="mobile-home-account-name">
-                      <strong title={account.name}>{account.name}</strong>
-                      {plan && (
-                        <span
-                          className="plan-chip"
-                          data-tier={plan.tier ?? undefined}
-                        >
-                          {plan.label}
-                        </span>
-                      )}
-                    </span>
-                    <ChevronRight
-                      className="mobile-home-account-chevron"
-                      size={18}
-                      aria-hidden="true"
-                    />
-                  </span>
-                  {quotas.length ? (
-                    <span
-                      className="quota-window-list"
-                      data-count={quotas.length}
-                    >
-                      {quotas.map((quota) => (
-                        <QuotaWindow
-                          key={quota.key}
-                          selection={quota}
-                          asOf={asOf}
-                        />
-                      ))}
-                    </span>
-                  ) : hasQuota ? (
-                    <div className="mobile-home-quota-unavailable">
-                      {quotaUnavailableNote(account)}
-                    </div>
-                  ) : (
-                    <UsageSummary
-                      account={account}
-                      lifetime={account.lifetime}
-                      current={snapshot.view.accountUsage?.[account.id]}
-                    />
-                  )}
-                </button>
-                {renderAccountActions?.(account)}
-              </li>
-            );
-          })}
+                    {quotas.length ? (
+                      <span
+                        className="quota-window-list"
+                        data-count={quotas.length}
+                      >
+                        {quotas.map((quota) => (
+                          <QuotaWindow
+                            key={quota.key}
+                            selection={quota}
+                            asOf={asOf}
+                          />
+                        ))}
+                      </span>
+                    ) : hasQuota ? (
+                      <div className="mobile-home-quota-unavailable">
+                        {quotaUnavailableNote(account)}
+                      </div>
+                    ) : (
+                      <UsageSummary
+                        account={account}
+                        lifetime={account.lifetime}
+                        current={snapshot.view.accountUsage?.[account.id]}
+                      />
+                    )}
+                  </button>
+                  {renderAccountActions?.(account)}
+                </SortableAccountItem>
+              );
+            })}
+          </SortableAccountList>
           {!accounts.length && (
             <li className="mobile-home-empty">
               {showArchived ? "暂无归档账户" : "暂无账户"}

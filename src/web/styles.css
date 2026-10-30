@@ -2075,11 +2075,51 @@ button[data-size="icon-sm"],
 .account-list-item[data-manageable] .row-arrow {
   visibility: hidden;
 }
-.account-menu-trigger {
+.account-menu-trigger,
+.account-drag-handle {
   position: absolute;
-  right: 16px;
   top: 20px;
   z-index: 1;
+}
+.account-menu-trigger {
+  right: 16px;
+}
+.account-drag-handle {
+  right: 54px;
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
+}
+.account-drag-handle:active,
+.account-list-item[data-dragging="true"] .account-drag-handle,
+.mobile-home-account-list > li[data-dragging="true"] .account-drag-handle {
+  cursor: grabbing;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.account-list-item[data-sorting="true"] > .account-row {
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.account-list-item[data-dragging="true"] {
+  z-index: 20;
+}
+.account-list-item[data-dragging="true"] > .account-row {
+  cursor: grabbing;
+  background: var(--elevated);
+  box-shadow:
+    0 12px 28px -6px rgb(24 24 27 / 18%),
+    0 0 0 1px var(--accent);
+}
+.dark .account-list-item[data-dragging="true"] > .account-row {
+  box-shadow:
+    0 14px 32px -6px rgb(0 0 0 / 55%),
+    0 0 0 1px var(--accent);
+}
+.account-list-item[data-over="true"] > .account-row {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
 }
 .account-readonly-note {
   max-width: 230px;
@@ -2259,6 +2299,9 @@ button[data-size="icon-sm"],
   .account-list-item[data-manageable] .account-capacity {
     padding-right: 36px;
   }
+  .account-list-item[data-sorting="true"] .account-capacity {
+    padding-right: 74px;
+  }
 }
 @media (max-width: 650px) {
   .account-list-item[data-manageable] .account-capacity {
@@ -2267,12 +2310,9 @@ button[data-size="icon-sm"],
   .account-list-item[data-manageable] .account-identity {
     padding-right: 44px;
   }
-}
-.account-order-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding-bottom: 12px;
+  .account-list-item[data-sorting="true"] .account-identity {
+    padding-right: 82px;
+  }
 }
 .account-confirm-backdrop {
   position: fixed;
