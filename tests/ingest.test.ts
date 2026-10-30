@@ -228,7 +228,7 @@ function fact(tokens: Partial<UsageFact["tokens"]>, tier = "standard") {
   } satisfies UsageFact;
 }
 
-test("Claude valuation prices 1-hour cache writes separately and never guesses a missing TTL split", () => {
+test("Claude valuation prices 1-hour cache writes separately and prices a missing TTL split at the 1-hour rate", () => {
   // Opus 5.5 官方价：输入 4、5 分钟写入 5、1 小时写入 8、缓存读取 0.2（0.05x）、输出 20。
   const standard = valueUsage(fact({}), defaultPriceBook, "api");
   expect(standard.apiUsd.amount).toBe(String(4 + 0.2 + 5 + 2 * 8 + 20));
@@ -243,10 +243,16 @@ test("Claude valuation prices 1-hour cache writes separately and never guesses a
     defaultPriceBook,
     "api",
   );
-  expect(unknownSplit.apiUsd).toMatchObject({
-    amount: null,
-    reason: "missing-cache-ttl-split",
-  });
+  // 只知道 1M 是 5 分钟写入时，其余 2M 按 1 小时价 8 计。
+  expect(unknownSplit.apiUsd.amount).toBe(String(4 + 0.2 + 5 + 2 * 8 + 20));
+  // 两档都未知时整笔 3M 按 1 小时价计。
+  expect(
+    valueUsage(
+      fact({ cacheWrite5m: null, cacheWrite1h: null }),
+      defaultPriceBook,
+      "api",
+    ).apiUsd.amount,
+  ).toBe(String(4 + 0.2 + 3 * 8 + 20));
   expect(
     valueUsage(fact({ cacheWrite1h: 4_000_000 }), defaultPriceBook, "api")
       .apiUsd.reason,

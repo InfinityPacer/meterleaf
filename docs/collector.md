@@ -2,7 +2,9 @@
 
 [返回首页](../README.md)
 
-本地直连的 Claude Code 不经过网关，它的用量只保存在使用它的电脑上。本机采集器在这台电脑上读取 Claude Code 的本地记录，把用量、账户和额度快照推送到 Meterleaf。Meterleaf 可以部署在 NAS 或另一台主机上，与这台电脑分开。没有 Sub2API 网关时，Meterleaf 也可以只接收采集器的数据。
+本地直连的 Claude Code、Codex 和 OpenCode 不经过网关，它们的用量只保存在使用它们的电脑上。本机采集器在这台电脑上读取这些工具的本地记录，把用量、账户和额度快照推送到 Meterleaf。Meterleaf 可以部署在 NAS 或另一台主机上，与这台电脑分开。没有 Sub2API 网关时，Meterleaf 也可以只接收采集器的数据。
+
+一台电脑只运行一个采集器：一份配置、一个写入密钥、一个后台任务、一条上传路径。每轮同步依次读取 Claude Code、Codex 和 OpenCode，最后统一上传；以后接入新的来源时按同样的读取器结构加一项。
 
 ## 它读什么、不碰什么
 
@@ -13,7 +15,7 @@
 - 当前登录账户的套餐字段。新版 Claude Code 只把订阅类型和速率档位保存在登录凭据里，macOS 上是钥匙串中的「Claude Code-credentials」，其他系统是 Claude 配置目录下的 `.credentials.json`。采集器用系统自带的 `security` 命令或直接读文件取出整条凭据，只保留这两个字段，访问令牌和刷新令牌不解析、不保存、不记录、不上传。
 - 如果登记了额外 Claude 账户，还会读取每个目录下的 `.claude.json` 和该目录对应的登录凭据，读取方式与默认账户相同，见[多个 Claude 账户](#多个-claude-账户)。
 
-它不会在 Claude Code 的目录里写入、改名、加锁或改权限，不改设置、hooks 或状态栏，不运行 Claude Code 命令，也不调用任何 Anthropic 接口，读取凭据不会产生网络请求。上传内容只有计量数字、模型、时间、账户标识和套餐，不包含对话、工具输出、文件路径、工作目录、邮箱、显示名或令牌。
+它不会在 Claude Code 的目录里写入、改名、加锁或改权限，不改设置、hooks 或状态栏，不运行 Claude Code 命令，也不调用任何 Anthropic 接口，读取凭据不会产生网络请求。对 Codex 与 OpenCode 的读取边界见[下一节](#codex-与-opencode-来源)。上传内容只有计量数字、模型、时间、账户标识和套餐，不包含对话、工具输出、文件路径、工作目录、邮箱、显示名或令牌。
 
 这些保证只针对采集器本身。你自己登记的[额外任务](#额外任务可选)由采集器按时运行，它们读写什么由任务决定。
 
@@ -55,6 +57,57 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
 保存后下一次同步生效，不需要重启后台任务。映射有变化时，采集器会把已经推送过的用量按新映射重新归属并补推一次，服务端的报表随之更新。`meterleaf-collector status` 会列出当前的映射。
 
 想在 Meterleaf 里看到 OpenCode Go 的额度，需要在服务端单独配置 Go 的 Key，见[部署指南](deployment.md#opencode-go-额度可选)。采集器本身不读取 Go 的 Key，也不调用任何供应商接口。
+
+## Codex 与 OpenCode 来源
+
+采集器默认读取本机 Codex 与 OpenCode 的用量，两者各自维护读取进度；目录或数据库不存在时该来源本轮为空，不报错。`status` 与同步报告按来源列出读取数、入账数和按通道跳过的数量。
+
+- Codex：只读扫描 `$CODEX_HOME`（默认 `~/.codex`）下 `sessions` 与 `archived_sessions` 的会话记录，包括写完已压缩的 `.jsonl.zst` 文件。读会话开头声明的供应商通道、模型和每次请求的 Token 用量，顺便读记录里自带的套餐与 5 小时、7 天额度。不读 `auth.json`，不改配置、不改会话文件、不调用任何接口。历史较多时每轮最多读取约 64 MiB，先读最近修改的会话，其余顺延到后面的轮次。
+- OpenCode：只读打开本地数据库 `~/.local/share/opencode/opencode.db`（数据库是 WAL 模式，OpenCode 运行中也能读），取已完成的助手消息作为一次请求。消息记录与对话内容存在同一个字段里，解析时会一并读入内存，但只提取模型、通道、完成时间和 Token 用量，不保存也不上传对话内容、会话 ID 和路径。
+
+两个来源只上传发生时间不早于 `2026-09-20` 的记录，更早的历史在读取时丢弃；这个起点按当前接入的费率与账户推断能力设定，不影响 Claude Code。
+
+### 按通道归账
+
+这两个来源的日志自带供应商通道，账户在读取时就确定，不进入 Claude Code 的登录时间线，也不会被重新归属逻辑改写。通道与账户的对应关系按「来源加通道」决定，默认规则是：
+
+| 来源     | 通道          | 账户                                  |
+| -------- | ------------- | ------------------------------------- |
+| Codex    | `openai`      | `codex`（平台 openai，订阅）          |
+| Codex    | `go`          | `opencode-go`（平台 opencode-go，Go） |
+| OpenCode | `opencode-go` | `opencode-go`（平台 opencode-go，Go） |
+
+Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并计数，既不入账也不用来更新额度。OpenCode 里免费通道（例如 `opencode`）同样跳过。
+
+想自己指定对应关系，在采集器配置文件里加 `channelAccounts`。每条规则形如：
+
+```json
+{
+  "channelAccounts": [
+    {
+      "source": "codex",
+      "channel": "openai",
+      "id": "work-codex",
+      "name": "Codex 工作",
+      "platform": "openai",
+      "kind": "subscription",
+      "plan": null
+    }
+  ]
+}
+```
+
+- `source` 是 `codex` 或 `opencode`，`channel` 是 Codex 会话的 `model_provider` 或 OpenCode 消息的 `providerID`。
+- 账户字段与 `modelAccounts` 相同：`id` 是账户在本来源内的标识，其余与[其他供应商的模型](#其他供应商的模型)里的 `name`、`platform`、`kind`、`plan` 用法一致。
+- 配置了 `channelAccounts` 后内置默认规则完全被替代，不合并。没有匹配规则的通道跳过，按「来源加通道」计数。以后 Codex 或 OpenCode 接了新的供应商，只改这一份配置。
+- 同一个账户 `id` 若同时出现在 `modelAccounts` 与 `channelAccounts` 中，`name`、`platform`、`kind`、`plan` 必须一致，不一致时配置无效，采集器启动即报错。
+
+### 统计口径
+
+- Codex 按每次请求计量：缓存读取从输入中扣除，推理量保留为输出的子集；旧记录缺失的缓存写字段保持未知。重复的额度通知不作为新请求。额度只取路由到 openai 平台账户的会话；来源未公布 Codex 积分余额的换算，Credits 字段不参与估值。账户套餐取会话中最新的 `plan_type`，没有时保留配置值。
+- OpenCode 的 `tokens.input` 已是未缓存输入，直接计入；`output` 计为可见输出加推理，`reasoning` 是输出的子集；缓存读写取 `tokens.cache` 的值。任一字段缺失时该字段为未知，不补零。OpenCode 自带的 `cost` 不采用，费用由 Meterleaf 按[计价说明](pricing.md)估值。
+- OpenCode 生成会话标题、压缩上下文等内部请求不写进助手消息，本机数据里这类请求只差几千输入 token；这部分不补，也不按当前模型推算计入 Go 账户。
+- OpenCode Go 的额度不需要采集器读：服务端按[部署指南](deployment.md#opencode-go-额度可选)轮询 Go 的用量接口。`go` 通道的 Codex 记录也不上传额度，Go 额度由两处用量共同撑起账户的窗口估算。
 
 ## 多个 Claude 账户
 

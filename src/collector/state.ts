@@ -98,6 +98,17 @@ CREATE TABLE IF NOT EXISTS outbox (
   payload TEXT NOT NULL,
   UNIQUE (kind, item_id)
 );
+CREATE TABLE IF NOT EXISTS codex_files (
+  path TEXT PRIMARY KEY,
+  offset INTEGER,
+  inode TEXT,
+  tail TEXT,
+  context TEXT,
+  size INTEGER,
+  modified REAL
+);
+CREATE TABLE IF NOT EXISTS opencode_cursor (id TEXT PRIMARY KEY, time_updated INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS source_usage (external_id TEXT PRIMARY KEY, source TEXT NOT NULL);
 `;
 
 /**
@@ -213,6 +224,133 @@ export class CollectorState {
       }
     }
     return removed;
+  }
+
+  /**
+   * 新来源（Codex、OpenCode）的用量入账。已按 external_id 记录过的返回 false，
+   * 既不重复入队也不更新读取进度；出现过的用量无论被丢弃还是待发送都在记录中。
+   * 应在读取器自己的事务中调用，与其读取进度同一批提交，调用方负责回滚。
+   */
+  recordSourceUsage(source: "codex" | "opencode", usage: IngestUsage): boolean {
+    const inserted = this.db
+      .query(
+        "INSERT OR IGNORE INTO source_usage (external_id, source) VALUES (?, ?)",
+      )
+      .run(usage.externalId, source);
+    if (inserted.changes === 0) return false;
+    this.enqueueRow("usage", usage.externalId, usage);
+    return true;
+  }
+
+  /** 新来源的待上传条数；按 external_id 与 outbox 的用量条目对应。 */
+  sourcePendingCounts(): Record<"codex" | "opencode", number> {
+    const counts = { codex: 0, opencode: 0 };
+    for (const row of this.db
+      .query<{ source: string; count: number }, []>(
+        `SELECT source_usage.source AS source, COUNT(*) AS count
+         FROM outbox JOIN source_usage ON outbox.item_id = source_usage.external_id
+         WHERE outbox.kind = 'usage' GROUP BY source`,
+      )
+      .all()) {
+      if (row.source === "codex" || row.source === "opencode")
+        counts[row.source] = row.count;
+    }
+    return counts;
+  }
+
+  /** Codex 会话文件读取进度，只由读取器维护；结构与被删除的独立 Codex 采集器相同。 */
+  codexFile(path: string): {
+    offset: number;
+    inode: string;
+    tail: string;
+    context: string;
+    size: number;
+    modified: number;
+  } | null {
+    return (
+      this.db
+        .query<
+          {
+            offset: number;
+            inode: string;
+            tail: string;
+            context: string;
+            size: number;
+            modified: number;
+          },
+          [string]
+        >(
+          "SELECT offset, inode, tail, context, size, modified FROM codex_files WHERE path = ?",
+        )
+        .get(path) ?? null
+    );
+  }
+
+  codexFilePaths(): string[] {
+    return this.db
+      .query<{ path: string }, []>("SELECT path FROM codex_files")
+      .all()
+      .map((row) => row.path);
+  }
+
+  saveCodexFile(row: {
+    path: string;
+    offset: number;
+    inode: string;
+    tail: string;
+    context: string;
+    size: number;
+    modified: number;
+  }) {
+    this.db
+      .query(
+        `INSERT INTO codex_files (path, offset, inode, tail, context, size, modified)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (path) DO UPDATE SET offset = excluded.offset, inode = excluded.inode,
+           tail = excluded.tail, context = excluded.context, size = excluded.size,
+           modified = excluded.modified`,
+      )
+      .run(
+        row.path,
+        row.offset,
+        row.inode,
+        row.tail,
+        row.context,
+        row.size,
+        row.modified,
+      );
+  }
+
+  /** Codex 文件消失只清理读取进度；已入账的用量靠 source_usage 保持幂等。 */
+  forgetMissingCodexFiles(present: ReadonlySet<string>): number {
+    let removed = 0;
+    const remove = this.db.query("DELETE FROM codex_files WHERE path = ?");
+    for (const path of this.codexFilePaths()) {
+      if (!present.has(path)) {
+        remove.run(path);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  /** OpenCode 增量游标（毫秒时间戳），单行；游标与入账由读取器在同一事务提交。 */
+  opencodeCursor(): number | null {
+    const row = this.db
+      .query<{ time_updated: number }, [string]>(
+        "SELECT time_updated FROM opencode_cursor WHERE id = 'opencode'",
+      )
+      .get("opencode");
+    return row?.time_updated ?? null;
+  }
+
+  saveOpencodeCursor(timeUpdated: number) {
+    this.db
+      .query(
+        `INSERT INTO opencode_cursor (id, time_updated) VALUES ('opencode', ?)
+         ON CONFLICT (id) DO UPDATE SET time_updated = excluded.time_updated`,
+      )
+      .run(timeUpdated);
   }
 
   /** 事件合并与读取进度在同一事务提交，崩溃后不会出现进度前移而事件缺失。 */

@@ -1,15 +1,26 @@
-import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
-  ingestUsageSchema,
   ingestQuotaSchema,
-  type IngestBatch,
+  ingestUsageSchema,
   type IngestQuota,
   type IngestUsage,
 } from "../shared/ingest";
-import type { CollectorConfig } from "./config";
+import {
+  routeChannel,
+  type ChannelAccount,
+  type ChannelAccountRule,
+} from "./channel-accounts";
+import { emptySourceReport, type SourceReaderReport } from "./sources";
+import type { CollectorState } from "./state";
 
 type RecordValue = Record<string, unknown>;
 const object = (value: unknown): RecordValue | null =>
@@ -21,6 +32,8 @@ const hash = (text: string | Buffer) =>
 
 export interface CodexContext {
   session: string;
+  /** 会话声明的供应商通道，决定归属与额度；缺失时该会话跳过。 */
+  provider: string | null;
   model: string;
   effort: string | null;
   total: string | null;
@@ -28,7 +41,7 @@ export interface CodexContext {
 }
 
 export function emptyContext(): CodexContext {
-  return { session: "", model: "", effort: null, total: null };
+  return { session: "", provider: null, model: "", effort: null, total: null };
 }
 
 function token(tokens: RecordValue, key: string): number | null {
@@ -40,10 +53,20 @@ function token(tokens: RecordValue, key: string): number | null {
   return value;
 }
 
+export interface CodexQuotaSample {
+  window: "five-hour" | "seven-day";
+  percent: number | null;
+  sampledAt: string;
+  resetsAt: string;
+  windowMinutes: number;
+}
+
 /** Quota notifications are independent of token usage, including info:null and repeated totals. */
-export function codexSnapshot(
-  raw: unknown,
-): { sampledAt: string; plan: string | null; quotas: IngestQuota[] } | null {
+export function codexSnapshot(raw: unknown): {
+  sampledAt: string;
+  plan: string | null;
+  quotas: CodexQuotaSample[];
+} | null {
   const event = object(raw);
   const payload = object(event?.payload);
   if (event?.type !== "event_msg" || payload?.type !== "token_count")
@@ -63,14 +86,10 @@ export function codexSnapshot(
     /^[a-z][a-z0-9_-]{0,63}$/.test(limits.plan_type)
       ? limits.plan_type
       : null;
-  const quotas: IngestQuota[] = [];
+  const quotas: CodexQuotaSample[] = [];
   for (const name of ["primary", "secondary"]) {
     const bucket = object(limits[name]);
     if (!bucket) continue;
-    const minutes = bucket.window_minutes;
-    const window =
-      minutes === 300 ? "five-hour" : minutes === 10080 ? "seven-day" : null;
-    if (!window) continue;
     const reset =
       typeof bucket.resets_at === "number" &&
       Number.isSafeInteger(bucket.resets_at) &&
@@ -78,29 +97,45 @@ export function codexSnapshot(
       bucket.resets_at < 8640000000000
         ? new Date(bucket.resets_at * 1000).toISOString()
         : null;
-    const parsed = ingestQuotaSchema.safeParse({
-      accountExternalId: "codex-local",
+    const percent = bucket.used_percent;
+    const minutes = bucket.window_minutes;
+    // 窗口按实际时长识别：300 分钟映射 5 小时，10080 分钟映射 7 天；
+    // 上游百分比是四舍五入整数，负值或越界读数不当作额度。
+    const window =
+      minutes === 300 ? "five-hour" : minutes === 10080 ? "seven-day" : null;
+    if (
+      !reset ||
+      typeof minutes !== "number" ||
+      !window ||
+      typeof percent !== "number" ||
+      !Number.isFinite(percent) ||
+      percent < 0 ||
+      percent > 1000
+    )
+      continue;
+    quotas.push({
       window,
-      percent: bucket.used_percent,
+      percent,
       sampledAt,
       resetsAt: reset,
       windowMinutes: minutes,
     });
-    if (parsed.success && reset) quotas.push(parsed.data);
   }
   return plan || quotas.length ? { sampledAt, plan, quotas } : null;
 }
 
-/** Only inspect session identity, model context and token events, never message bodies. */
+/** Only inspect session identity, provider, model context and token events, never message bodies. */
 export function codexEvent(
   raw: unknown,
   context: CodexContext,
-): IngestUsage | null {
+): Omit<IngestUsage, "accountExternalId"> | null {
   const event = object(raw);
   const payload = object(event?.payload);
   if (!event || !payload) return null;
   if (event.type === "session_meta") {
     if (typeof payload.id === "string") context.session = payload.id;
+    if (typeof payload.model_provider === "string")
+      context.provider = payload.model_provider;
     return null;
   }
   if (event.type === "turn_context") {
@@ -151,7 +186,9 @@ export function codexEvent(
   ) {
     throw new Error("invalid_timestamp");
   }
-  const usage = ingestUsageSchema.parse({
+  // 账户由读取器按通道归属；解析函数之外的账户字段保持同一结构与校验。
+  // 签名只在完整解析成功后保存；失败或被跳过的计数不更新累计标记。
+  const usage = usageSchema.parse({
     externalId:
       "codex-" +
       hash(
@@ -163,7 +200,6 @@ export function codexEvent(
         ]),
       ),
     occurredAt: new Date(event.timestamp).toISOString(),
-    accountExternalId: "codex-local",
     model: context.model,
     tier: null,
     tokens: {
@@ -181,342 +217,474 @@ export function codexEvent(
   return usage;
 }
 
-interface FileState {
-  offset: number;
-  inode: string;
-  tail: string;
-  context: string;
-  size: number;
-  modified: number;
-}
-interface Pending {
-  id: string;
-  payload: string;
-}
-interface SnapshotRow {
-  key: string;
-  sampled_at: string;
-  payload: string;
-  sent: number;
+/** 与 ingestUsageSchema 相同的用量，但账户由通道路由决定，在入账前补上。 */
+const usageSchema = ingestUsageSchema.omit({ accountExternalId: true });
+
+export interface CodexReaderSources {
+  home: string;
+  start: string;
+  channelAccounts: readonly ChannelAccountRule[];
 }
 
-export class CodexCollector {
-  readonly db: Database;
-  constructor(stateFile: string) {
-    this.db = new Database(stateFile, { create: true });
-    this.db.exec(`PRAGMA journal_mode=WAL;
-      CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, offset INTEGER, inode TEXT, tail TEXT, context TEXT, size INTEGER, modified REAL);
-      CREATE TABLE IF NOT EXISTS usage(id TEXT PRIMARY KEY, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS snapshots(key TEXT PRIMARY KEY, sampled_at TEXT NOT NULL, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS diagnostics(key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
-    // Replay old offsets once to discover metadata that older collectors never parsed.
-    // Stable usage IDs and sent flags remain untouched; replay still uses the 64 MiB budget.
-    this.db.transaction(() => {
-      if (
-        !this.db
-          .query("SELECT 1 FROM diagnostics WHERE key='quota_reader_v1'")
-          .get()
-      ) {
-        this.db.exec("DELETE FROM files");
-        this.db
-          .query("INSERT INTO diagnostics VALUES ('quota_reader_v1','1')")
-          .run();
+export interface CodexReaderReport extends SourceReaderReport {
+  /** 本轮读取的会话文件数与字节数（压缩文件按解压后计）。 */
+  filesRead: number;
+  bytes: number;
+  /** 早于起点被丢弃的用量条数。 */
+  beforeStart: number;
+  unreadable: number;
+  /** 本轮是否到达读取预算，剩余会话顺延到下一轮。 */
+  deferred: boolean;
+  /** 本轮随额度上传的窗口读数条数。 */
+  quotas: number;
+}
+
+const chunkBytes = 1024 * 1024;
+const tailBytes = 256;
+const lineBudgetBytes = 16 * 1024 * 1024;
+const budgetBytes = 64 * 1024 * 1024;
+
+export function emptyCodexReport(): CodexReaderReport {
+  return {
+    ...emptySourceReport("codex"),
+    filesRead: 0,
+    bytes: 0,
+    beforeStart: 0,
+    unreadable: 0,
+    deferred: false,
+    quotas: 0,
+  };
+}
+
+/** 会话内各窗口保留采样时间最晚的一份读数；额度的归属账户在拿到快照时已知。 */
+interface WindowSample {
+  quota: IngestQuota;
+  sampledAt: string;
+}
+
+/** 套餐观察带采样时间保存。 */
+function readPlanMap(state: CollectorState): Record<string, PlanSample> {
+  const plans: Record<string, PlanSample> = {};
+  try {
+    const raw = JSON.parse(state.getMeta("codex_plans") ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    for (const [account, value] of Object.entries(raw)) {
+      // 早期版本只存套餐名；保留它，采样时间未知，任何新观察都会覆盖。
+      if (typeof value === "string") {
+        plans[account] = { plan: value, sampledAt: "" };
+        continue;
       }
-    })();
-  }
-
-  private saveSnapshot(raw: unknown) {
-    const snapshot = codexSnapshot(raw);
-    if (!snapshot) return;
-    const rows: [string, unknown][] = snapshot.quotas.map((quota) => [
-      quota.window,
-      quota,
-    ]);
-    if (snapshot.plan) rows.push(["plan", snapshot.plan]);
-    const save = this.db
-      .query(`INSERT INTO snapshots(key,sampled_at,payload,sent) VALUES (?,?,?,0)
-      ON CONFLICT(key) DO UPDATE SET sampled_at=excluded.sampled_at,payload=excluded.payload,sent=0
-      WHERE excluded.sampled_at > snapshots.sampled_at`);
-    for (const [key, payload] of rows)
-      save.run(key, snapshot.sampledAt, JSON.stringify(payload));
-  }
-
-  scanFile(
-    path: string,
-    maxBytes = Number.POSITIVE_INFINITY,
-  ): { bytes: number; events: number; invalid: number } {
-    const stats = statSync(path);
-    const saved = this.db
-      .query<FileState, [string]>(
-        "SELECT offset,inode,tail,context,size,modified FROM files WHERE path=?",
+      const sample = object(value);
+      if (
+        typeof sample?.plan === "string" &&
+        typeof sample.sampledAt === "string"
       )
-      .get(path);
-    if (
-      saved &&
-      saved.offset === stats.size &&
-      saved.inode === String(stats.ino) &&
-      saved.size === stats.size &&
-      saved.modified === stats.mtimeMs
-    ) {
-      return { bytes: 0, events: 0, invalid: 0 };
+        plans[account] = { plan: sample.plan, sampledAt: sample.sampledAt };
     }
-    const fd = openSync(path, "r");
-    const tailAt = (offset: number) => {
-      const size = Math.min(offset, 256);
-      const bytes = Buffer.alloc(size);
-      const n = readSync(fd, bytes, 0, size, offset - size);
-      return hash(bytes.subarray(0, n));
-    };
+  } catch {
+    // 记录损坏时等同没有观察，下一次额度通知会重新写入。
+  }
+  return plans;
+}
+
+function readJsonMap(
+  state: CollectorState,
+  key: string,
+): Record<string, string> {
+  try {
+    return JSON.parse(state.getMeta(key) ?? "{}") as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+/** 恢复读取进度需要确认上次读到的位置没有变化：按偏移前的短片段指纹判断。 */
+function tailFingerprint(fd: number, offset: number): string {
+  const size = Math.min(offset, tailBytes);
+  const bytes = Buffer.alloc(size);
+  const read = readSync(fd, bytes, 0, size, offset - size);
+  return hash(bytes.subarray(0, read));
+}
+
+function restoreContext(saved: string | null): CodexContext {
+  if (saved) {
     try {
-      const resume =
-        saved &&
-        saved.inode === String(stats.ino) &&
-        saved.offset <= stats.size &&
-        saved.tail === tailAt(saved.offset);
-      let offset = resume ? saved.offset : 0;
-      const context: CodexContext = resume
-        ? JSON.parse(saved.context)
-        : emptyContext();
-      const initial = offset;
-      const limit = Math.min(stats.size, initial + maxBytes);
-      let position = offset;
-      let fragment = Buffer.alloc(0);
-      let oversized = context.discarding ?? false;
-      let events = 0;
-      let invalid = 0;
-      const block = Buffer.alloc(1024 * 1024);
-      const insert = this.db.query(
-        "INSERT OR IGNORE INTO usage(id,payload) VALUES (?,?)",
-      );
-      this.db.transaction(() => {
-        while (position < limit) {
-          const n = readSync(
-            fd,
-            block,
-            0,
-            Math.min(block.length, limit - position),
-            position,
-          );
-          if (!n) break;
-          let start = 0;
-          for (
-            let end = block.indexOf(10, start);
-            end >= 0 && end < n;
-            end = block.indexOf(10, start)
-          ) {
-            if (!oversized) {
-              const line = Buffer.concat([
-                fragment,
-                block.subarray(start, end),
-              ]).toString("utf8");
-              if (/"(?:session_meta|turn_context|token_count)"/.test(line)) {
-                try {
-                  const raw: unknown = JSON.parse(line);
-                  this.saveSnapshot(raw);
-                  const usage = codexEvent(raw, context);
-                  if (usage)
-                    events += insert.run(
-                      usage.externalId,
-                      JSON.stringify(usage),
-                    ).changes;
-                } catch {
-                  invalid++;
-                }
-              }
-            }
-            fragment = Buffer.alloc(0);
-            oversized = false;
-            offset = position + end + 1;
-            start = end + 1;
-          }
-          if (!oversized)
-            fragment = Buffer.concat([fragment, block.subarray(start, n)]);
-          if (fragment.length > 16 * 1024 * 1024) {
-            fragment = Buffer.alloc(0);
-            oversized = true;
-            invalid++;
-          }
-          position += n;
-        }
-        // Skip oversized message lines across bounded cycles without retaining their content.
-        context.discarding = oversized;
-        if (oversized) offset = position;
-        // Persist only complete lines: a writer may still be appending the last JSON record.
-        this.db
-          .query("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?)")
-          .run(
-            path,
-            offset,
-            String(stats.ino),
-            tailAt(offset),
-            JSON.stringify(context),
-            stats.size,
-            stats.mtimeMs,
-          );
-      })();
-      return { bytes: position - initial, events, invalid };
-    } finally {
-      closeSync(fd);
+      const restored = JSON.parse(saved) as CodexContext;
+      if (
+        typeof restored?.session === "string" &&
+        restored.session !== "" &&
+        typeof restored.model === "string"
+      ) {
+        return {
+          session: restored.session,
+          provider:
+            typeof restored.provider === "string" ? restored.provider : null,
+          model: restored.model,
+          effort: typeof restored.effort === "string" ? restored.effort : null,
+          total: typeof restored.total === "string" ? restored.total : null,
+          discarding: restored.discarding === true,
+        };
+      }
+    } catch {
+      // 进度附带的上下文损坏时从头读起；重读靠用量键去重保证不重复入账。
     }
   }
+  return emptyContext();
+}
 
-  async scan(root: string, maxBytes = 64 * 1024 * 1024) {
-    const report = {
-      files: 0,
-      bytes: 0,
-      events: 0,
-      invalid: 0,
-      unreadable: 0,
-      deferred: false,
-    };
-    const paths: { path: string; modified: number }[] = [];
-    for (const directory of ["sessions", "archived_sessions"]) {
-      const cwd = join(root, directory);
-      if (!existsSync(cwd)) continue;
-      for await (const file of new Bun.Glob("**/*.jsonl").scan({
+interface FileSinks {
+  /** 键形如 `${账户}:${窗口}`，一个文件内只保留采样最晚的一份。 */
+  windows: Map<string, WindowSample>;
+  /** 一个文件内每个账户采样最晚的套餐。 */
+  plans: Map<string, PlanSample>;
+}
+
+interface PlanSample {
+  plan: string;
+  sampledAt: string;
+}
+
+/** 读取一轮 Codex 本地会话记录。
+ *
+ * 按「来源加通道」归属账户，额度只来自路由到 openai 平台账户的会话；压缩与未压缩
+ * 文件共用同一用量签名与每轮读取预算，先按修改时间新到旧处理。每个文件的用量、
+ * 相关账户资料与读取进度在同一事务提交，读取中断整体回滚后从原进度重读。
+ */
+export async function readCodex(
+  state: CollectorState,
+  sources: CodexReaderSources,
+  maxBytes = budgetBytes,
+): Promise<CodexReaderReport> {
+  const report = emptyCodexReport();
+  const rules = sources.channelAccounts;
+  if (!existsSync(sources.home)) return report;
+  const startMs = Date.parse(sources.start);
+  const startIso = new Date(startMs).toISOString();
+  const paths: { path: string; modified: number }[] = [];
+  for (const directory of ["sessions", "archived_sessions"]) {
+    const cwd = join(sources.home, directory);
+    if (!existsSync(cwd)) continue;
+    for (const pattern of ["**/*.jsonl", "**/*.jsonl.zst"]) {
+      for await (const file of new Bun.Glob(pattern).scan({
         cwd,
         followSymlinks: false,
       })) {
+        const path = join(cwd, file);
         try {
-          paths.push({
-            path: join(cwd, file),
-            modified: statSync(join(cwd, file)).mtimeMs,
-          });
+          paths.push({ path, modified: statSync(path).mtimeMs });
         } catch {
           report.unreadable++;
         }
       }
     }
-    paths.sort(
-      (a, b) => b.modified - a.modified || a.path.localeCompare(b.path),
-    );
-    for (const { path } of paths) {
-      if (report.bytes >= maxBytes) {
-        report.deferred = true;
-        break;
-      }
+  }
+  paths.sort((a, b) => b.modified - a.modified || a.path.localeCompare(b.path));
+  state.forgetMissingCodexFiles(new Set(paths.map((row) => row.path)));
+
+  // 额度与套餐的最新观察持久保存，随每个文件的读取进度同一事务提交；
+  // 同一窗口或账户只采用采样时间比此前更新的读数，与文件处理顺序无关。
+  const observed = readJsonMap(state, "codex_window_sampled");
+  const plans = readPlanMap(state);
+
+  const ensureAccount = (account: ChannelAccount) => {
+    state.upsertAccount({
+      externalId: account.id,
+      name: account.name,
+      platform: account.platform,
+      kind: account.kind,
+      plan: plans[account.id]?.plan ?? account.plan,
+      subjectKey: null,
+    });
+  };
+
+  /** 在文件事务内提交该文件的最新额度与套餐，并确保账户存在。 */
+  const commitObservations = (
+    sinks: FileSinks,
+    accounts: Map<string, ChannelAccount>,
+  ) => {
+    const quotas: IngestQuota[] = [];
+    // 按窗口名排序，让同一批额度的入队顺序稳定。
+    for (const [key, sample] of [...sinks.windows].sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      const last = observed[key];
+      if (
+        last !== undefined &&
+        Date.parse(last) >= Date.parse(sample.sampledAt)
+      )
+        continue;
+      quotas.push(sample.quota);
+      observed[key] = sample.sampledAt;
+    }
+    for (const [account, sample] of sinks.plans) {
+      const last = plans[account];
+      if (last && Date.parse(last.sampledAt) >= Date.parse(sample.sampledAt))
+        continue;
+      plans[account] = sample;
+    }
+    for (const account of accounts.values()) ensureAccount(account);
+    if (
+      quotas.length > 0 &&
+      state.recordQuota({ hash: hash(JSON.stringify(quotas)), quotas }, "codex")
+    )
+      report.quotas += quotas.length;
+    state.setMeta("codex_window_sampled", JSON.stringify(observed));
+    state.setMeta("codex_plans", JSON.stringify(plans));
+  };
+
+  /**
+   * 单行解析：元数据行更新会话上下文；token_count 事件先按通道归属，额度独立于
+   * 用量筛选，早于起点的用量在入账前丢弃。
+   */
+  const handleLine = (
+    line: string,
+    context: CodexContext,
+    sinks: FileSinks,
+    accounts: Map<string, ChannelAccount>,
+  ) => {
+    if (!/"(?:session_meta|turn_context|token_count)"/.test(line)) return;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      report.invalid++;
+      return;
+    }
+    const event = object(raw);
+    const payload = object(event?.payload);
+    if (event?.type !== "event_msg" || payload?.type !== "token_count") {
       try {
-        const result = this.scanFile(path, maxBytes - report.bytes);
-        report.files++;
-        report.bytes += result.bytes;
-        report.events += result.events;
-        report.invalid += result.invalid;
+        codexEvent(raw, context);
+      } catch {
+        report.invalid++;
+      }
+      return;
+    }
+    report.read++;
+    const routed = routeChannel("codex", context.provider, rules);
+    if (!routed) {
+      const key = context.provider ?? "(缺失)";
+      report.skipped[key] = (report.skipped[key] ?? 0) + 1;
+      return;
+    }
+    if (routed.platform === "openai") {
+      // 额度只取路由到 openai 平台账户的会话；套餐用观察到的 plan_type 覆盖规则值。
+      const snapshot = codexSnapshot(raw);
+      if (snapshot) {
+        // 只有额度通知、没有用量的文件也要建立账户，否则服务端不展示这份额度。
+        accounts.set(routed.id, routed);
+        const plan = sinks.plans.get(routed.id);
+        if (snapshot.plan && (!plan || plan.sampledAt <= snapshot.sampledAt))
+          sinks.plans.set(routed.id, {
+            plan: snapshot.plan,
+            sampledAt: snapshot.sampledAt,
+          });
+        for (const bucket of snapshot.quotas) {
+          if (bucket.sampledAt < startIso) continue;
+          const key = `${routed.id}:${bucket.window}`;
+          const ahead = sinks.windows.get(key);
+          if (ahead && ahead.sampledAt >= bucket.sampledAt) continue;
+          const parsed = ingestQuotaSchema.safeParse({
+            accountExternalId: routed.id,
+            window: bucket.window,
+            percent: bucket.percent,
+            sampledAt: bucket.sampledAt,
+            resetsAt: bucket.resetsAt,
+            windowMinutes: bucket.windowMinutes,
+          });
+          if (parsed.success)
+            sinks.windows.set(key, {
+              quota: parsed.data,
+              sampledAt: bucket.sampledAt,
+            });
+        }
+      }
+    }
+    let usage: Omit<IngestUsage, "accountExternalId"> | null;
+    try {
+      usage = codexEvent(raw, context);
+    } catch {
+      report.invalid++;
+      return;
+    }
+    if (!usage) return;
+    if (usage.occurredAt < startIso) {
+      report.beforeStart++;
+      return;
+    }
+    accounts.set(routed.id, routed);
+    if (
+      state.recordSourceUsage("codex", {
+        ...usage,
+        accountExternalId: routed.id,
+      })
+    )
+      report.recorded++;
+  };
+
+  /** 返回 false 表示文件超出本轮剩余预算，留待下一轮。 */
+  const processFile = (path: string): boolean => {
+    let stats;
+    try {
+      stats = statSync(path);
+    } catch {
+      report.unreadable++;
+      return true;
+    }
+    if (!stats.isFile()) return true;
+    const saved = state.codexFile(path);
+    const inode = String(stats.ino);
+    if (
+      saved &&
+      saved.inode === inode &&
+      saved.size === stats.size &&
+      saved.modified === stats.mtimeMs &&
+      saved.offset === stats.size
+    ) {
+      // 未变化的文件不重读正文。
+      return true;
+    }
+    const sinks: FileSinks = { windows: new Map(), plans: new Map() };
+    const accounts = new Map<string, ChannelAccount>();
+    const save = (offset: number, context: string, tail: string) =>
+      state.saveCodexFile({
+        path,
+        offset,
+        inode,
+        tail,
+        context,
+        size: stats.size,
+        modified: stats.mtimeMs,
+      });
+    if (path.endsWith(".jsonl.zst")) {
+      // 压缩文件写完即不再变化：整解压、整读逐行解析，进度只记整文件标记。
+      let text: Buffer;
+      try {
+        text = Bun.zstdDecompressSync(readFileSync(path));
       } catch {
         report.unreadable++;
+        return true;
       }
-    }
-    return report;
-  }
-
-  async push(
-    config: CollectorConfig,
-    send: (batch: IngestBatch) => Promise<unknown> = async (batch) => {
-      const response = await fetch(config.server + "/api/ingest/v1/batches", {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer " + config.key,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(batch),
-        signal: AbortSignal.timeout(45_000),
-      });
-      if (!response.ok) throw new Error(`ingest_http_${response.status}`);
-      return response.json();
-    },
-  ) {
-    let sent = 0;
-    while (true) {
-      const rows = this.db
-        .query<Pending, []>(
-          "SELECT id,payload FROM usage WHERE sent=0 ORDER BY rowid LIMIT 500",
-        )
-        .all();
-      const snapshots = this.db
-        .query<SnapshotRow, []>("SELECT * FROM snapshots WHERE sent=0")
-        .all();
-      if (!rows.length && !snapshots.length) break;
-      const planRow = this.db
-        .query<SnapshotRow, []>("SELECT * FROM snapshots WHERE key='plan'")
-        .get();
-      const plan: string | null = planRow ? JSON.parse(planRow.payload) : null;
-      const quotas: IngestQuota[] = snapshots
-        .filter((row) => row.key !== "plan")
-        .map((row) => JSON.parse(row.payload));
-      const batch: IngestBatch = {
-        schemaVersion: 1,
-        sourceId: config.sourceId,
-        batchId: crypto.randomUUID(),
-        collector: { name: "meterleaf-codex-collector", version: "0.2.0" },
-        accounts: [
-          {
-            externalId: "codex-local",
-            name: "Codex 本机",
-            platform: "openai",
-            kind: plan ? "subscription" : "unknown",
-            plan,
-            subjectKey: null,
-          },
-        ],
-        usage: rows.map((row) => JSON.parse(row.payload)),
-        quotas,
-      };
-      const result = object(await send(batch));
-      const accepted = object(result?.accepted);
-      if (
-        result?.batchId !== batch.batchId ||
-        accepted?.usage !== rows.length ||
-        accepted?.accounts !== 1 ||
-        accepted?.quotas !== quotas.length
-      ) {
-        throw new Error("invalid_ingest_acknowledgement");
-      }
-      this.db.transaction(() => {
-        const update = this.db.query("UPDATE usage SET sent=1 WHERE id=?");
-        for (const row of rows) update.run(row.id);
-        const mark = this.db.query(
-          "UPDATE snapshots SET sent=1 WHERE key=? AND sampled_at=? AND payload=?",
-        );
-        for (const row of snapshots)
-          mark.run(row.key, row.sampled_at, row.payload);
-        this.db
-          .query("INSERT OR REPLACE INTO diagnostics VALUES ('last_success',?)")
-          .run(new Date().toISOString());
+      // 本轮已读过其他文件时，放不下的压缩文件整体顺延，避免单轮无限拉长。
+      if (report.bytes > 0 && report.bytes + text.length > maxBytes)
+        return false;
+      report.filesRead += 1;
+      report.bytes += text.length;
+      const context = emptyContext();
+      state.db.transaction(() => {
+        const lines = text.toString("utf8");
+        let from = 0;
+        while (from < lines.length) {
+          const to = lines.indexOf("\n", from);
+          if (to < 0) break;
+          if (to > from)
+            handleLine(lines.slice(from, to), context, sinks, accounts);
+          from = to + 1;
+        }
+        commitObservations(sinks, accounts);
+        save(stats.size, "", "");
       })();
-      sent += rows.length;
+      return true;
     }
-    return sent;
-  }
+    // 未压缩文件仍会被追加：从上次完整行边界继续，未写完的行留到下一轮。
+    let fd: number;
+    try {
+      fd = openSync(path, "r");
+    } catch {
+      report.unreadable++;
+      return true;
+    }
+    report.filesRead += 1;
+    try {
+      const identity = String(stats.ino);
+      const length = stats.size;
+      const resume =
+        saved &&
+        saved.inode === identity &&
+        saved.offset <= length &&
+        saved.tail === tailFingerprint(fd, saved.offset)
+          ? saved
+          : null;
+      let offset = resume ? resume.offset : 0;
+      const context = restoreContext(resume ? resume.context : null);
+      let fragment = Buffer.alloc(0);
+      let discarding = context.discarding ?? false;
+      const block = Buffer.alloc(chunkBytes);
+      // 进度只推进到最后一个完整行之后；末尾未写完的行下一轮重读。
+      let consumed = offset;
+      state.db.transaction(() => {
+        while (offset < length) {
+          const chunkStart = offset;
+          const read = readSync(
+            fd,
+            block,
+            0,
+            Math.min(block.length, length - offset),
+            offset,
+          );
+          if (read <= 0) break;
+          offset += read;
+          report.bytes += read;
+          let start = 0;
+          for (;;) {
+            const newline = block.indexOf(10, start);
+            if (newline < 0 || newline >= read) break;
+            if (!discarding) {
+              const line = Buffer.concat([
+                fragment,
+                block.subarray(start, newline),
+              ]).toString("utf8");
+              handleLine(line, context, sinks, accounts);
+            }
+            fragment = Buffer.alloc(0);
+            discarding = false;
+            consumed = chunkStart + newline + 1;
+            start = newline + 1;
+          }
+          if (start < read) {
+            if (!discarding)
+              fragment = Buffer.concat([fragment, block.subarray(start, read)]);
+            if (fragment.length > lineBudgetBytes) {
+              // 超长行丢弃但进度照常推进到该行的读取边界，不反复重读。
+              fragment = Buffer.alloc(0);
+              discarding = true;
+              consumed = offset;
+            }
+          }
+        }
+        context.discarding = discarding;
+        commitObservations(sinks, accounts);
+        save(consumed, JSON.stringify(context), tailFingerprint(fd, consumed));
+      })();
+      return true;
+    } finally {
+      closeSync(fd);
+    }
+  };
 
-  status() {
-    const plan = this.db
-      .query<{ payload: string }, []>(
-        "SELECT payload FROM snapshots WHERE key='plan'",
-      )
-      .get();
-    return {
-      files: this.db
-        .query<{ n: number }, []>("SELECT count(*) AS n FROM files")
-        .get()!.n,
-      events: this.db
-        .query<{ n: number }, []>("SELECT count(*) AS n FROM usage")
-        .get()!.n,
-      pending: this.db
-        .query<{ n: number }, []>(
-          "SELECT count(*) AS n FROM usage WHERE sent=0",
-        )
-        .get()!.n,
-      pendingSnapshots: this.db
-        .query<{ n: number }, []>(
-          "SELECT count(*) AS n FROM snapshots WHERE sent=0",
-        )
-        .get()!.n,
-      plan: plan ? (JSON.parse(plan.payload) as string) : null,
-      lastSuccess:
-        this.db
-          .query<{ value: string }, []>(
-            "SELECT value FROM diagnostics WHERE key='last_success'",
-          )
-          .get()?.value ?? null,
-    };
+  // 上一轮顺延的文件本轮排在最前，作为首个文件不受剩余预算限制，避免持续活跃
+  // 或无法推进的较新文件每轮占满预算、让它永远轮不到。
+  const deferredPath = state.getMeta("codex_deferred");
+  const ordered = deferredPath
+    ? [
+        ...paths.filter((row) => row.path === deferredPath),
+        ...paths.filter((row) => row.path !== deferredPath),
+      ]
+    : paths;
+  let nextDeferred: string | null = null;
+  for (const { path, modified } of ordered) {
+    // 起点之前的文件直接跳过，不解压；预算耗尽或放不下的文件顺延到下一轮。
+    if (modified < startMs) continue;
+    if (report.bytes >= maxBytes || !processFile(path)) {
+      report.deferred = true;
+      nextDeferred = path;
+      break;
+    }
   }
+  if (nextDeferred !== deferredPath)
+    state.setMeta("codex_deferred", nextDeferred ?? "");
+
+  return report;
 }

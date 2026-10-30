@@ -7,11 +7,10 @@ import {
 } from "./quota-estimate";
 import type { QuotaFact } from "./connector";
 import type { UsageFact } from "./connector";
-import type { GoPlanBudget, GoPlanWindow } from "./opencode-go-plan";
 import type { Valuation } from "./pricing";
 
 export type QuotaEstimateMethod =
-  "segments" | "blended" | "previous-period" | "rough" | "plan-limit";
+  "segments" | "blended" | "previous-period" | "rough";
 
 export interface PricedUsage {
   fact: UsageFact;
@@ -181,53 +180,14 @@ function rowsChargeReader(rows: readonly PricedUsage[]): QuotaChargeReader {
 }
 
 /**
- * 档位已知时用公布的模型上限反推整窗价值，不再按取整后的百分比外推。
- * 只有本周期每一次请求都来自上限表里的模型时才成立，按请求数对账而不是按金额：
- * 缺价请求不计入金额，按金额对账会漏掉它们，把表内模型的上限当成整窗价值。
- * 本周期没有请求时也无从知道将用哪个模型，同样返回 null，调用方沿用旧逻辑。
+ * 百分比为整个上游账号，费用只覆盖本连接器；推算是条件性观测值而非订阅承诺额度。
+ * 七天与月度窗口与其他账户一样按百分比外推：同一周期会更换或混用模型，
+ * 按单一模型上限推算没有可靠依据。
  */
-function planLimitUsd(
-  budget: GoPlanBudget,
-  window: GoPlanWindow,
-  startsAt: string,
-  now: string,
-  readSource: QuotaChargeReader,
-  periodRequests: number | null,
-): string | null {
-  if (!periodRequests) return null;
-  const share = new Decimal(budget.windowShare[window]);
-  const charges: { cap: Decimal; spend: Decimal }[] = [];
-  let tracked = 0;
-  for (const limit of budget.models) {
-    const { usd, count } = readSource(startsAt, now, limit.scope);
-    if (count === undefined) return null;
-    if (count === 0) continue;
-    if (usd === null) return null;
-    tracked += count;
-    charges.push({
-      cap: new Decimal(limit.monthlyUsd).mul(share),
-      spend: new Decimal(usd),
-    });
-  }
-  // 表外模型（包括缺价模型）的上限未知，混入后无法按模型构成折算。
-  if (tracked !== periodRequests) return null;
-  const spent = charges.reduce(
-    (total, { spend }) => total.add(spend),
-    new Decimal(0),
-  );
-  const fraction = charges.reduce(
-    (total, { cap, spend }) => total.add(spend.div(cap)),
-    new Decimal(0),
-  );
-  return fraction.gt(0) ? spent.div(fraction).toString() : null;
-}
-
-/** 百分比为整个上游账号，费用只覆盖本连接器；推算是条件性观测值而非订阅承诺额度。 */
 export function quotaView(
   history: CollectedQuota[],
   rowsOrSumReader: readonly PricedUsage[] | QuotaChargeReader,
   now: string,
-  planBudget?: GoPlanBudget | null,
 ): QuotaView | null {
   if (!history.length) return null;
   // 每条读数只解析一次时间，历史较长时排序和逐周期筛选不再重复解析。
@@ -378,27 +338,6 @@ export function quotaView(
     fact.window === "five-hour"
   )
     return result;
-  // 周、月窗口的档位上限是整窗价值本身，不再套用「已花 + 整窗外推 × 剩余比例」。
-  if (
-    planBudget &&
-    (fact.window === "seven-day" || fact.window === "monthly")
-  ) {
-    const quota = planLimitUsd(
-      planBudget,
-      fact.window,
-      startsAt!,
-      now,
-      readSource,
-      result.periodRequests,
-    );
-    if (quota !== null) {
-      result.estimate.usd = quota;
-      result.estimate.credits = null;
-      result.estimate.methods = { usd: "plan-limit", credits: null };
-      result.estimate.reason = "eligible";
-      return result;
-    }
-  }
   const estimateCycle = (cycleReset: number, until: number) => {
     const cycleStart = cycleReset - duration;
     const readings = cycleReadings(cycleReset, until);

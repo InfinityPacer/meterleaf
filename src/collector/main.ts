@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { readClaudeJson } from "./claude-code/account";
 import {
@@ -10,6 +10,8 @@ import {
 } from "./claude-code/credential";
 import { readStatuslineCache } from "./claude-code/statusline-cache";
 import { collect, type CollectReport, type ProfileReport } from "./collect";
+import { effectiveChannelAccounts } from "./channel-accounts";
+import { readCodex, type CodexReaderSources } from "./codex";
 import {
   DEFAULT_OTEL_RELAY_PORT,
   defaultSourceId,
@@ -19,6 +21,7 @@ import {
   loadConfig,
   normalizeServer,
   saveConfig,
+  SOURCE_START,
   type CollectorConfig,
 } from "./config";
 import {
@@ -34,9 +37,12 @@ import {
   SERVICE_AGENTS,
 } from "./launchd";
 import { acquireLock } from "./lock";
+import type { OpenCodeReaderSources } from "./opencode";
+import { readOpenCode } from "./opencode";
 import { startOtelRelay, type OtelRelay } from "./otel-relay";
 import { resolvePaths, type CollectorPaths } from "./paths";
 import { COLLECTOR_VERSION, pushOutbox } from "./push";
+import type { SourceReaderReport } from "./sources";
 import { CollectorState, type UsageTotals } from "./state";
 import {
   checkExecutable,
@@ -53,7 +59,7 @@ import {
 } from "./tasks";
 
 const help = `Meterleaf Collector ${COLLECTOR_VERSION}
-读取本机 Claude Code 的用量记录，推送到 Meterleaf 账本。
+读取本机 Claude Code、Codex 与 OpenCode 的本地用量记录，推送到 Meterleaf 账本。
 
 用法: meterleaf-collector <命令> [选项]
 
@@ -97,6 +103,14 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
     Anthropic 接口。
   - 只上传计量数字、模型、时间、套餐和账户 UUID 派生信息；不上传对话内容、工具输出、
     文件路径、工作目录、Git 分支、邮箱、显示名或组织名。
+
+对 Codex 与 OpenCode 的保证:
+  - 只以只读方式打开 ~/.codex（或 CODEX_HOME）下的会话记录，以及 OpenCode 本地
+    数据库 ~/.local/share/opencode/opencode.db。不修改两处内容，不调用任何接口。
+  - 只上传计量数字、模型、推理档位、时间与套餐；会话标识、消息内容、路径与
+    凭据不读取、不上传。
+  - 新来源按「来源加通道」归属账户，只上传发生时间不早于 ${SOURCE_START.slice(0, 10)}
+    的记录，更早的历史在读取时丢弃。
   - 以上保证只针对采集器本身。用 tasks add 登记的额外任务由登记者负责，
     采集器只按时运行它们，不检查它们读写什么。
 
@@ -521,7 +535,67 @@ function collectSources(
   };
 }
 
-function runScan(paths: CollectorPaths, json: boolean) {
+/** 每个来源一份读取器配置；路径缺失只让该来源本轮为空，不报错。 */
+export function codexReaderConfig(
+  config: CollectorConfig | null,
+): CodexReaderSources | null {
+  if (config?.codex?.enabled === false) return null;
+  return {
+    home: resolve(
+      config?.codex?.home ??
+        process.env.CODEX_HOME ??
+        join(homedir(), ".codex"),
+    ),
+    start: SOURCE_START,
+    channelAccounts: effectiveChannelAccounts(config),
+  };
+}
+
+export function opencodeReaderConfig(
+  config: CollectorConfig | null,
+): OpenCodeReaderSources | null {
+  if (config?.opencode?.enabled === false) return null;
+  return {
+    database:
+      config?.opencode?.database ??
+      resolve(homedir(), ".local", "share", "opencode", "opencode.db"),
+    start: SOURCE_START,
+    channelAccounts: effectiveChannelAccounts(config),
+  };
+}
+
+/** 一轮同步里的新来源读取；来源停用或入口缺失时为空。 */
+export async function readNewSources(
+  state: CollectorState,
+  config: CollectorConfig | null,
+): Promise<SourceReaderReport[]> {
+  const reports: SourceReaderReport[] = [];
+  const codex = codexReaderConfig(config);
+  if (codex) reports.push(await readCodex(state, codex));
+  const opencode = opencodeReaderConfig(config);
+  if (opencode) reports.push(readOpenCode(state, opencode));
+  return reports;
+}
+
+/** 同步报告里的来源摘要行；没有活动时省略。 */
+export function sourceReportText(
+  reports: readonly SourceReaderReport[],
+): string {
+  return reports
+    .map((report) => {
+      const parts = [`读取 ${report.read}`, `入账 ${report.recorded}`];
+      const skipped = Object.entries(report.skipped);
+      if (skipped.length > 0)
+        parts.push(
+          `跳过 ${skipped.map(([key, count]) => `${key} ${count}`).join("、")}`,
+        );
+      if (report.invalid > 0) parts.push(`无效 ${report.invalid}`);
+      return `${report.source}: ${parts.join("，")}`;
+    })
+    .join("；");
+}
+
+async function runScan(paths: CollectorPaths, json: boolean) {
   const state = new CollectorState(":memory:");
   try {
     let config: CollectorConfig | null = null;
@@ -536,6 +610,8 @@ function runScan(paths: CollectorPaths, json: boolean) {
       new Date(),
       () => new Date(),
     );
+    // scan 只跑一轮：先解析 Claude Code，再按来源读取 Codex 与 OpenCode。
+    const sources = await readNewSources(state, config);
     const totals = state.usageTotals();
     const quotas = state
       .pending<{ window: string; percent: number | null; sampledAt: string }>(
@@ -546,7 +622,14 @@ function runScan(paths: CollectorPaths, json: boolean) {
     if (json) {
       console.log(
         JSON.stringify(
-          { report, totals, quotas, pending: state.pendingCounts() },
+          {
+            report,
+            sources,
+            totals,
+            quotas,
+            pending: state.pendingCounts(),
+            bySource: state.sourcePendingCounts(),
+          },
           null,
           2,
         ),
@@ -577,6 +660,20 @@ function runScan(paths: CollectorPaths, json: boolean) {
         }）`,
       );
     }
+    for (const item of sources) {
+      const skipped = Object.entries(item.skipped);
+      console.log(
+        `来源 ${item.source}: 读取 ${format(item.read)}，入账 ${format(item.recorded)}，` +
+          (skipped.length
+            ? `跳过 ${skipped.map(([key, count]) => `${key} ${format(count)}`).join("、")}，`
+            : "") +
+          `无效 ${format(item.invalid)}`,
+      );
+    }
+    const pendingBySource = state.sourcePendingCounts();
+    console.log(
+      `新来源待发送: codex ${format(pendingBySource.codex)}，opencode ${format(pendingBySource.opencode)}`,
+    );
     for (const quota of quotas) {
       console.log(
         `额度 ${quota.window}: ${quota.percent ?? "未知"}%（采样于 ${quota.sampledAt}）`,
@@ -613,6 +710,8 @@ async function runSync(paths: CollectorPaths): Promise<number> {
       new Date(),
       () => new Date(),
     );
+    // 新来源读取：Claude Code 之后处理 Codex 与 OpenCode，最后统一上传。
+    const sources = await readNewSources(state, config);
     const now = new Date().toISOString();
     // 额度来源的问题与推送无关，每轮都会重复，只在情况变化时记一行，恢复时也记一行。
     const quotaIssue = quotaIssueText(report);
@@ -620,10 +719,13 @@ async function runSync(paths: CollectorPaths): Promise<number> {
       state.setMeta("last_quota_issue", quotaIssue);
       console.log(`${now} ${quotaIssue || "额度来源已恢复正常"}`);
     }
-    // status 不运行采集，保留本轮结果供它显示额外账户的状态。
+    // status 不运行采集，保留本轮结果供它显示额外账户与各来源的状态。
     const profileState = JSON.stringify(report.profiles);
     if (profileState !== (state.getMeta("last_profiles") ?? ""))
       state.setMeta("last_profiles", profileState);
+    const summary = sourceReportText(sources);
+    if (summary !== (state.getMeta("last_sources") ?? ""))
+      state.setMeta("last_sources", summary);
     const result = await pushOutbox(state, config);
     if (result.error) {
       state.setMeta("last_failure_at", now);
@@ -634,9 +736,15 @@ async function runSync(paths: CollectorPaths): Promise<number> {
       return 1;
     }
     state.setMeta("last_success_at", now);
-    if (result.batches > 0 || report.rewound > 0 || report.malformed > 0) {
+    if (
+      result.batches > 0 ||
+      report.rewound > 0 ||
+      report.malformed > 0 ||
+      sources.some((item) => item.read > 0)
+    ) {
       console.log(
         `${now} 已推送 ${result.batches} 批: 用量 ${result.usage}，账户 ${result.accounts}，额度 ${result.quotas}，OTEL ${result.otel}` +
+          (summary ? `；来源 ${summary}` : "") +
           (report.rewound > 0 ? `；重读文件 ${report.rewound}` : "") +
           (report.malformed > 0 ? `；损坏行 ${report.malformed}` : ""),
       );
@@ -1005,6 +1113,26 @@ function runStatus(paths: CollectorPaths) {
           : "未配置（非 claude- 模型归入「其他模型」）"
       }`,
     );
+    const channels = config.channelAccounts;
+    console.log(
+      `渠道账户规则: ${
+        channels
+          ? channels
+              .map(
+                (rule) =>
+                  `${rule.source}:${rule.channel} → ${rule.name} (${rule.platform})`,
+              )
+              .join("，")
+          : "未配置（使用内置默认：codex:openai → Codex，codex:go 与 opencode:opencode-go → OpenCode Go）"
+      }`,
+    );
+    const codex = codexReaderConfig(config);
+    const opencode = opencodeReaderConfig(config);
+    console.log(
+      `读取来源: ${
+        codex ? `Codex（${codex.home}）` : "Codex 已停用"
+      }，${opencode ? `OpenCode（${opencode.database}）` : "OpenCode 已停用"}`,
+    );
     const profiles = config.claudeProfiles ?? [];
     console.log(
       `额外 Claude 账户: ${
@@ -1042,11 +1170,13 @@ function runStatus(paths: CollectorPaths) {
   try {
     const cursors = state.cursors();
     const pending = state.pendingCounts();
+    const codexPending = state.codexFilePaths().length;
     console.log(
-      `已跟踪文件: ${cursors.length}，已读取 ${format(cursors.reduce((sum, row) => sum + row.offset, 0))} 字节`,
+      `已跟踪文件: ${cursors.length}（另有 Codex ${codexPending}），已读取 ${format(cursors.reduce((sum, row) => sum + row.offset, 0))} 字节`,
     );
+    const bySource = state.sourcePendingCounts();
     console.log(
-      `待发送: 用量 ${pending.usage}，账户 ${pending.account}，额度 ${pending.quota}，OTEL ${pending.otel}`,
+      `待发送: 用量 ${pending.usage}（Claude ${pending.usage - bySource.codex - bySource.opencode}，Codex ${bySource.codex}，OpenCode ${bySource.opencode}），账户 ${pending.account}，额度 ${pending.quota}，OTEL ${pending.otel}`,
     );
     console.log(`最近成功: ${state.getMeta("last_success_at") ?? "无"}`);
     const failureAt = state.getMeta("last_failure_at");
@@ -1055,6 +1185,8 @@ function runStatus(paths: CollectorPaths) {
         `最近失败: ${failureAt} ${state.getMeta("last_failure") ?? ""}`,
       );
     }
+    const lastSources = state.getMeta("last_sources");
+    if (lastSources) console.log(`上轮来源: ${lastSources}`);
     for (const segment of state.segments()) {
       console.log(
         `账户区间: ${shortId(segment.accountUuid)} ${segment.firstSeen} → ${segment.lastSeen}`,
@@ -1128,7 +1260,7 @@ export async function main(argv: string[]): Promise<number> {
     case "bind-history":
       return runBindHistory(paths);
     case "scan":
-      runScan(paths, values.json === true);
+      await runScan(paths, values.json === true);
       return 0;
     case "sync":
       return runSync(paths);
