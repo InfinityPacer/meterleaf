@@ -247,7 +247,7 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
 先升级 Meterleaf 服务端，再升级采集器。新版采集器可能推送旧服务端不认识的额度类型（例如 Fable 周额度），旧服务端会拒收整批数据；数据留在采集器的待发送队列里，服务端升级后自动补推，不会丢失。
 
-重新构建后，用新的 `dist/Meterleaf.app` 替换「应用程序」中的旧版本，再执行一次 `meterleaf-collector install-launchd`。这条命令会按新应用包重新登记同步和 OTEL 中继两个后台任务。读取进度、账户归属和写入密钥都在数据目录中，替换应用不会丢失。
+重新构建后，用新的 `dist/Meterleaf.app` 替换「应用程序」中的旧版本，再执行一次 `meterleaf-collector install-launchd`。这条命令会按新应用包重新登记同步和 OTEL 中继两个后台任务。执行它的终端不要带 `CLAUDE_CONFIG_DIR` 或 `METERLEAF_COLLECTOR_HOME`，例如额外 Claude 账户的会话里就带着前者。这两个变量会让命令按自定义路径改装旧式 LaunchAgent，与应用自带的后台同步重复运行，每分钟同步两次并互相抢锁。不确定时用 `env -u CLAUDE_CONFIG_DIR meterleaf-collector install-launchd`，执行后 `status` 应显示同步和 OTEL 中继都由 Meterleaf.app 启用。读取进度、账户归属和写入密钥都在数据目录中，替换应用不会丢失。
 
 如果 `status` 显示后台任务已启用，但「最近成功」的时间几分钟都不更新，把问题和 `launchctl print gui/$(id -u)/io.meterleaf.collector.background` 的输出反馈给维护者。
 
