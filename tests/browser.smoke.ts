@@ -307,6 +307,19 @@ try {
       JSON.stringify("sidebar"),
     );
   });
+  // 账户归档偏好来自服务端；本套件只用演示账本，不依赖本机是否运行着后端。
+  await page.route("**/api/accounts/archive", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        archived: [],
+        hidden: [],
+        aliases: {},
+        writable: false,
+      }),
+    }),
+  );
   await page.route("**/api/view**", async (route) => {
     const url = new URL(route.request().url());
     ledgerRequests.push(url.toString());

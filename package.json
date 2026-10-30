@@ -1,6 +1,6 @@
 {
   "name": "meterleaf",
-  "version": "0.12.8",
+  "version": "0.13.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -19,8 +19,7 @@
     "test": "bun test tests",
     "test:browser": "bun tests/browser.smoke.ts",
     "collector": "bun src/collector/main.ts",
-    "build:collector": "bun scripts/build-collector.ts",
-    "build:codex-collector": "bun build --compile src/collector/codex-main.ts --outfile dist/meterleaf-codex-collector"
+    "build:collector": "bun scripts/build-collector.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

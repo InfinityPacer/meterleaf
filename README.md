@@ -12,6 +12,7 @@ Meterleaf 可以只读采集一个 Sub2API PostgreSQL 实例，也可以接收�
 - **请求明细**：查看模型、来源、推理强度、Token 拆分与计价依据。
 - **Claude Code 本地用量**：不经过网关的 Claude Code 由 Mac 上的本机采集器推送用量、套餐和 5 小时、7 天及 Fable 周额度，与网关用量在同一账本中统计。
 - **独立估值**：同时保留订阅 Credits 与 USD，美元可切换订阅等价和标准 API 口径。
+- **独立估值**：同时保留订阅 Credits 与 USD，美元可切换订阅等价和标准 API 口径。
 
 支持自定义日期、页面筛选、明暗主题和移动端；同步在后台进行，已有报表继续可读。
 
@@ -55,7 +56,7 @@ Meterleaf 支持以下数据来源，至少配置一种。
 - **Sub2API 网关**：在 `.env` 填写 `SUB2API_DATABASE_URL`。数据库账号只需读取 `public.accounts` 和 `public.usage_logs`，不需要写权限。
 - **本地直连的 Claude Code**：在 `.env` 填写本机采集器生成的 `METERLEAF_INGEST_KEYS`，见下文[接入 Claude Code](#接入-claude-code)。只用 Claude Code 时把 `SUB2API_DATABASE_URL` 留空，并先生成写入密钥再启动服务。
 - **CLIProxyAPI（CPA）**：使用可选同步容器只读接入 usage-report 插件的历史和新增请求，见[接入 CPA](docs/cpa.md)。它统计经过 CPA 的请求，不读取本机 Codex 会话。
-- **Codex 本地用量**：独立采集器只读扫描 Codex 会话记录，分批补采历史，同步记录中的套餐与额度快照，支持与 CC 同时运行。安装方式和统计边界见[接入 Codex](docs/codex-collector.md)。
+- **Codex 与 OpenCode 本地用量**：同一个采集器逐轮读取 Codex 会话记录与 OpenCode 本地数据库的用量，按真实付费通道排队到正确账户，不再依赖按模型写死的月度上限。配置与统计边界见[本机采集器](docs/collector.md)。
 
 在仓库目录中准备配置：
 
@@ -100,7 +101,6 @@ bun run build:collector
 - [计价说明](docs/pricing.md)：USD 分支、费率版本与自定义 JSON。
 - [本机采集器](docs/collector.md)：接入本地直连的 Claude Code 用量、账户与额度。
 - [接入 CPA](docs/cpa.md)：只读同步 CPA 插件账本、按来源查看，以及重复统计和费用估算的边界。
-- [Codex 本地采集器](docs/codex-collector.md)：接入 Codex 会话用量，与网关按来源分别查看。
 - [贡献指南](AGENTS.md)：目录结构、代码规范、测试与提交要求。
 - [版本与发布](docs/releasing.md)：版本递增、双架构镜像及 Release 流程。
 

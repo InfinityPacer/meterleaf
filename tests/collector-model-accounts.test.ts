@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { effectiveChannelAccounts } from "../src/collector/channel-accounts";
 import { collect } from "../src/collector/collect";
 import { loadConfig } from "../src/collector/config";
 import {
@@ -221,5 +222,195 @@ describe("模型账户映射", () => {
       }),
     );
     expect(() => loadConfig(path)).toThrow();
+  });
+
+  test("渠道规则缺省字段取默认值，内置默认路由只有未配置时生效", () => {
+    const w = workspace();
+    const path = join(w.root, "config.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        server: "https://meterleaf.example.com",
+        sourceId: "claude-code-mac",
+        key: "mlk_test",
+        createdAt: "2026-10-30T00:00:00Z",
+        channelAccounts: [
+          {
+            source: "codex",
+            channel: "openai",
+            id: "work-codex",
+            name: "Codex 工作",
+            platform: "openai",
+          },
+        ],
+      }),
+    );
+    expect(loadConfig(path)?.channelAccounts).toEqual([
+      {
+        source: "codex",
+        channel: "openai",
+        id: "work-codex",
+        name: "Codex 工作",
+        platform: "openai",
+        kind: "unknown",
+        plan: null,
+      },
+    ]);
+  });
+
+  test("同一账户 id 在两个列表中的资料不一致时报配置错误", () => {
+    const w = workspace();
+    const path = join(w.root, "config.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        server: "https://meterleaf.example.com",
+        sourceId: "claude-code-mac",
+        key: "mlk_test",
+        createdAt: "2026-10-30T00:00:00Z",
+        modelAccounts: [
+          {
+            match: "glm-*",
+            id: "opencode-go",
+            name: "OpenCode Go",
+            platform: "opencode-go",
+          },
+        ],
+        channelAccounts: [
+          {
+            source: "opencode",
+            channel: "opencode-go",
+            id: "opencode-go",
+            name: "OpenCode Go",
+            platform: "opencode-go",
+            kind: "api",
+          },
+        ],
+      }),
+    );
+    expect(() => loadConfig(path)).toThrow(/不一致/);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        server: "https://meterleaf.example.com",
+        sourceId: "claude-code-mac",
+        key: "mlk_test",
+        createdAt: "2026-10-30T00:00:00Z",
+        modelAccounts: [
+          {
+            match: "glm-*",
+            id: "opencode-go",
+            name: "OpenCode Go",
+            platform: "opencode-go",
+          },
+        ],
+        channelAccounts: [
+          {
+            source: "opencode",
+            channel: "opencode-go",
+            id: "opencode-go",
+            name: "Go",
+            platform: "opencode-go",
+          },
+        ],
+      }),
+    );
+    expect(() => loadConfig(path)).toThrow(/不一致/);
+    // 同一列表内两条规则共享同一个账户 id 的情况同样必须一致。
+    writeFileSync(
+      path,
+      JSON.stringify({
+        server: "https://meterleaf.example.com",
+        sourceId: "claude-code-mac",
+        key: "mlk_test",
+        createdAt: "2026-10-30T00:00:00Z",
+        channelAccounts: [
+          {
+            source: "opencode",
+            channel: "opencode-go",
+            id: "shared",
+            name: "Shared",
+            platform: "opencode-go",
+          },
+          {
+            source: "codex",
+            channel: "go",
+            id: "shared",
+            name: "Shared",
+            platform: "openai",
+          },
+        ],
+      }),
+    );
+    expect(() => loadConfig(path)).toThrow(/不一致/);
+    // 同一 id 的批次内一致时没有冲突。
+    writeFileSync(
+      path,
+      JSON.stringify({
+        server: "https://meterleaf.example.com",
+        sourceId: "claude-code-mac",
+        key: "mlk_test",
+        createdAt: "2026-10-30T00:00:00Z",
+        modelAccounts: [
+          {
+            match: "glm-*",
+            id: "opencode-go",
+            name: "OpenCode Go",
+            platform: "opencode-go",
+          },
+        ],
+        channelAccounts: [
+          {
+            source: "opencode",
+            channel: "opencode-go",
+            id: "opencode-go",
+            name: "OpenCode Go",
+            platform: "opencode-go",
+          },
+        ],
+      }),
+    );
+    expect(loadConfig(path)).not.toBeNull();
+  });
+});
+
+describe("effectiveChannelAccounts", () => {
+  test("未配置渠道规则时，内置默认沿用模型映射里同一账户的资料", () => {
+    const rules = effectiveChannelAccounts({
+      modelAccounts: [
+        {
+          match: "glm-*",
+          id: "opencode-go",
+          name: "Go 订阅",
+          platform: "opencode-go",
+          kind: "subscription",
+          plan: "go-plus",
+        },
+      ],
+    });
+    const go = rules.filter((rule) => rule.id === "opencode-go");
+    expect(go).toHaveLength(2);
+    for (const rule of go) {
+      expect(rule.name).toBe("Go 订阅");
+      expect(rule.plan).toBe("go-plus");
+    }
+    expect(rules.find((rule) => rule.id === "codex")?.name).toBe("Codex");
+  });
+
+  test("配置了渠道规则时原样使用，不混入默认", () => {
+    const custom = [
+      {
+        source: "codex" as const,
+        channel: "openai",
+        id: "work",
+        name: "Work",
+        platform: "openai",
+        kind: "unknown" as const,
+        plan: null,
+      },
+    ];
+    expect(effectiveChannelAccounts({ channelAccounts: custom })).toEqual(
+      custom,
+    );
   });
 });
