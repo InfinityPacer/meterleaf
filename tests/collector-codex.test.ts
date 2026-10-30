@@ -584,3 +584,40 @@ test("a compressed file that does not fit the remaining budget waits for the nex
   const second = await read(item, root, body.length + 1);
   expect(second.filesRead).toBe(1);
 });
+
+test("a deferred archive goes first next round even when a newer file never finishes", async () => {
+  const root = codexRoot();
+  const busy = join(root, "sessions", "busy.jsonl");
+  writeFileSync(busy, '{"type":"partial'); // 没有换行，每轮都读不完
+  utimesSync(
+    busy,
+    new Date("2026-10-04T00:00:00Z"),
+    new Date("2026-10-04T00:00:00Z"),
+  );
+  const body = Buffer.from(lines(meta, model, usage(1)));
+  const archive = join(root, "sessions", "archive.jsonl.zst");
+  writeFileSync(archive, Bun.zstdCompressSync(body));
+  utimesSync(
+    archive,
+    new Date("2026-10-03T00:00:00Z"),
+    new Date("2026-10-03T00:00:00Z"),
+  );
+  const item = openState();
+  const first = await read(item, root, body.length);
+  expect(first.deferred).toBe(true);
+  expect(pendingUsage(item).size).toBe(0);
+  await read(item, root, body.length);
+  expect(pendingUsage(item).size).toBe(1);
+});
+
+test("a plan saved by an earlier version as a bare name is kept", async () => {
+  const root = codexRoot();
+  writeFileSync(
+    join(root, "sessions", "legacy.jsonl"),
+    lines(meta, model, usage(1)),
+  );
+  const item = openState();
+  item.setMeta("codex_plans", JSON.stringify({ codex: "pro" }));
+  await read(item, root);
+  expect(item.account("codex")?.plan).toBe("pro");
+});

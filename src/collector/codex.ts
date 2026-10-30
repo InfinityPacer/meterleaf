@@ -262,7 +262,7 @@ interface WindowSample {
   sampledAt: string;
 }
 
-/** 套餐观察带采样时间保存；旧版本只存套餐名的记录视为没有观察。 */
+/** 套餐观察带采样时间保存。 */
 function readPlanMap(state: CollectorState): Record<string, PlanSample> {
   const plans: Record<string, PlanSample> = {};
   try {
@@ -271,6 +271,11 @@ function readPlanMap(state: CollectorState): Record<string, PlanSample> {
       unknown
     >;
     for (const [account, value] of Object.entries(raw)) {
+      // 早期版本只存套餐名；保留它，采样时间未知，任何新观察都会覆盖。
+      if (typeof value === "string") {
+        plans[account] = { plan: value, sampledAt: "" };
+        continue;
+      }
       const sample = object(value);
       if (
         typeof sample?.plan === "string" &&
@@ -659,14 +664,27 @@ export async function readCodex(
     }
   };
 
-  for (const { path, modified } of paths) {
+  // 上一轮顺延的文件本轮排在最前，作为首个文件不受剩余预算限制，避免持续活跃
+  // 或无法推进的较新文件每轮占满预算、让它永远轮不到。
+  const deferredPath = state.getMeta("codex_deferred");
+  const ordered = deferredPath
+    ? [
+        ...paths.filter((row) => row.path === deferredPath),
+        ...paths.filter((row) => row.path !== deferredPath),
+      ]
+    : paths;
+  let nextDeferred: string | null = null;
+  for (const { path, modified } of ordered) {
     // 起点之前的文件直接跳过，不解压；预算耗尽或放不下的文件顺延到下一轮。
     if (modified < startMs) continue;
     if (report.bytes >= maxBytes || !processFile(path)) {
       report.deferred = true;
+      nextDeferred = path;
       break;
     }
   }
+  if (nextDeferred !== deferredPath)
+    state.setMeta("codex_deferred", nextDeferred ?? "");
 
   return report;
 }

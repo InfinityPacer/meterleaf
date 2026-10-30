@@ -282,9 +282,12 @@ export function valueUsage(
     // 1 小时写入是 cacheWrite 的子集；有独立费率时拆出，缺费率时不能按 5 分钟价凑数。
     // 记录没有 TTL 拆分时整笔按 1 小时计：Claude Code 默认写 1 小时缓存，且这是较高的一档，
     // 不会低估费用。
+    // 已知的 5 分钟部分保留原价，只有未拆分的余量按 1 小时计。
     const cacheWrite1h =
       fact.tokens.cacheWrite1h ??
-      (prices.cacheWrite1h !== undefined ? counts.cacheWrite : null);
+      (prices.cacheWrite1h !== undefined
+        ? counts.cacheWrite - (fact.tokens.cacheWrite5m ?? 0)
+        : null);
     const ttlCharges: { count: number; rate: string | null }[] = [];
     if (prices.cacheWrite1h !== undefined && counts.cacheWrite > 0) {
       if (

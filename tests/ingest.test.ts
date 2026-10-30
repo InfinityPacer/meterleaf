@@ -243,8 +243,16 @@ test("Claude valuation prices 1-hour cache writes separately and prices a missin
     defaultPriceBook,
     "api",
   );
-  // 没有拆分时整笔 3M 写入按 1 小时价 8 计。
-  expect(unknownSplit.apiUsd.amount).toBe(String(4 + 0.2 + 3 * 8 + 20));
+  // 只知道 1M 是 5 分钟写入时，其余 2M 按 1 小时价 8 计。
+  expect(unknownSplit.apiUsd.amount).toBe(String(4 + 0.2 + 5 + 2 * 8 + 20));
+  // 两档都未知时整笔 3M 按 1 小时价计。
+  expect(
+    valueUsage(
+      fact({ cacheWrite5m: null, cacheWrite1h: null }),
+      defaultPriceBook,
+      "api",
+    ).apiUsd.amount,
+  ).toBe(String(4 + 0.2 + 3 * 8 + 20));
   expect(
     valueUsage(fact({ cacheWrite1h: 4_000_000 }), defaultPriceBook, "api")
       .apiUsd.reason,
