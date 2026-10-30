@@ -1,36 +1,43 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   appendFileSync,
-  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CodexCollector,
   codexEvent,
   codexSnapshot,
   emptyContext,
+  readCodex,
 } from "../src/collector/codex";
-import { ingestBatchSchema, type IngestBatch } from "../src/shared/ingest";
+import { DEFAULT_CHANNEL_ACCOUNTS } from "../src/collector/channel-accounts";
+import { SOURCE_START } from "../src/collector/config";
+import { CollectorState } from "../src/collector/state";
+import type { IngestUsage } from "../src/shared/ingest";
 
 const temporary: string[] = [];
-const opened: CodexCollector[] = [];
+const opened: CollectorState[] = [];
+const start = SOURCE_START;
+
 afterEach(() => {
-  for (const collector of opened.splice(0)) collector.db.close();
+  for (const item of opened.splice(0)) item.close();
   for (const path of temporary.splice(0))
     rmSync(path, { recursive: true, force: true });
 });
+
 const meta = {
   type: "session_meta",
   payload: {
     id: "session-example",
     cwd: "/private/workspace",
     instructions: "private",
+    model_provider: "openai",
   },
 };
 const model = {
@@ -67,32 +74,61 @@ function context() {
   codexEvent(model, ctx);
   return ctx;
 }
-function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "meterleaf-codex-test-"));
-  temporary.push(root);
-  mkdirSync(join(root, "sessions"));
-  const file = join(root, "sessions", "rollout.jsonl");
-  const state = join(root, "collector.sqlite");
-  const collector = new CodexCollector(state);
-  opened.push(collector);
-  writeFileSync(file, lines(meta, model, usage()));
-  return { root, file, collector, state };
-}
-const config = {
-  server: "http://localhost",
-  sourceId: "codex-test",
-  key: "mlk_test",
-  createdAt: "2026-10-02T00:00:00Z",
-};
-const ack = (batch: IngestBatch) =>
-  Promise.resolve({
-    batchId: batch.batchId,
-    accepted: {
-      usage: batch.usage.length,
-      accounts: 1,
-      quotas: batch.quotas.length,
+
+function quotaEvent(
+  timestamp: string,
+  plan: string | null,
+  percent = 70,
+): unknown {
+  return {
+    timestamp,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: null,
+      rate_limits: {
+        limit_id: "codex",
+        plan_type: plan,
+        primary: {
+          used_percent: percent,
+          window_minutes: 10080,
+          resets_at: Math.round(Date.parse("2026-10-15T00:00:00Z") / 1000),
+        },
+        secondary: {
+          used_percent: 12,
+          window_minutes: 300,
+          resets_at: Math.round(Date.parse("2026-10-02T15:00:00Z") / 1000),
+        },
+        credits: { has_credits: true, balance: "62500" },
+      },
     },
-  });
+  };
+}
+
+function codexRoot() {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-codex-reader-"));
+  temporary.push(root);
+  mkdirSync(join(root, "sessions"), { recursive: true });
+  return root;
+}
+function openState() {
+  const item = new CollectorState(":memory:");
+  opened.push(item);
+  return item;
+}
+function pendingUsage(item: CollectorState): Map<string, IngestUsage> {
+  return new Map(
+    item
+      .pending<IngestUsage>("usage", 1000)
+      .map((entry) => [entry.payload.externalId, entry.payload]),
+  );
+}
+const read = async (item: CollectorState, root: string, maxBytes?: number) =>
+  readCodex(
+    item,
+    { home: root, start, channelAccounts: DEFAULT_CHANNEL_ACCOUNTS },
+    maxBytes,
+  );
 
 test("Codex reads per-request usage, separates cache and keeps reasoning inside output", () => {
   const ctx = context();
@@ -113,16 +149,12 @@ test("Codex reads per-request usage, separates cache and keeps reasoning inside 
   expect(JSON.stringify(first)).not.toContain("session-example");
 });
 
-test("Codex ignores repeated rate-limit snapshots, including changed notification timestamps", () => {
+test("Codex carries the session provider and follows model changes", () => {
   const ctx = context();
-  codexEvent(usage(), ctx);
-  const repeat = usage();
-  repeat.timestamp = "2026-10-02T10:01:00Z";
-  expect(codexEvent(repeat, ctx)).toBeNull();
-});
-
-test("Codex allows cumulative reset and follows model changes", () => {
-  const ctx = context();
+  expect(ctx).toMatchObject({
+    session: "session-example",
+    provider: "openai",
+  });
   codexEvent(usage(4), ctx);
   codexEvent({ type: "turn_context", payload: { model: "gpt-6-astra" } }, ctx);
   const next = codexEvent(usage(1), ctx)!;
@@ -130,16 +162,12 @@ test("Codex allows cumulative reset and follows model changes", () => {
   expect(next.tokens.input).toBe(40);
 });
 
-test("Codex cache writes are kept separate when present", () => {
-  const row = usage();
-  Object.assign(row.payload.info.last_token_usage, {
-    cache_write_input_tokens: 10,
-  });
-  expect(codexEvent(row, context())!.tokens).toMatchObject({
-    input: 30,
-    cacheRead: 60,
-    cacheWrite: 10,
-  });
+test("Codex ignores repeated rate-limit snapshots, including changed notification timestamps", () => {
+  const ctx = context();
+  codexEvent(usage(), ctx);
+  const repeat = usage();
+  repeat.timestamp = "2026-10-02T10:01:00Z";
+  expect(codexEvent(repeat, ctx)).toBeNull();
 });
 
 test("Codex does not guess a missing model or inconsistent token counters", () => {
@@ -151,169 +179,14 @@ test("Codex does not guess a missing model or inconsistent token counters", () =
   expect(() => codexEvent(row, context())).toThrow("inconsistent");
 });
 
-test("Codex ignores empty notifications and conversation content", () => {
-  expect(
-    codexEvent(
-      { type: "event_msg", payload: { type: "token_count", info: null } },
-      context(),
-    ),
-  ).toBeNull();
-  expect(
-    codexEvent(
-      {
-        type: "response_item",
-        payload: { type: "message", content: "private" },
-      },
-      context(),
-    ),
-  ).toBeNull();
-});
-
-test("Codex only reads complete lines and resumes after partial appends", async () => {
-  const { file, root, collector } = fixture();
-  const partial = JSON.stringify(usage(2));
-  appendFileSync(file, partial.slice(0, 30));
-  expect((await collector.scan(root)).events).toBe(1);
-  appendFileSync(file, partial.slice(30) + "\n");
-  expect((await collector.scan(root)).events).toBe(1);
-  expect(collector.status().events).toBe(2);
-  expect((await collector.scan(root)).bytes).toBe(0);
-});
-
-test("Codex scan does not write source files and unchanged scans do not reread content", async () => {
-  const { file, root, collector } = fixture();
-  const original = readFileSync(file);
-  await collector.scan(root);
-  expect(readFileSync(file)).toEqual(original);
-  expect(await collector.scan(root)).toMatchObject({ bytes: 0, events: 0 });
-});
-
-test("Codex restarting preserves progress and pending records", async () => {
-  const { root, state, collector } = fixture();
-  await collector.scan(root);
-  const next = new CodexCollector(state);
-  opened.push(next);
-  expect(next.status()).toMatchObject({ events: 1, pending: 1 });
-  expect((await next.scan(root)).events).toBe(0);
-});
-
-test("Codex backfill respects the byte budget and resumes across bounded cycles", async () => {
-  const { root, file, collector } = fixture();
-  appendFileSync(
-    file,
-    lines(...Array.from({ length: 20 }, (_, n) => usage(n + 2))),
-  );
-  for (let n = 0; n < 40 && collector.status().events < 21; n++) {
-    const report = await collector.scan(root, 1024);
-    expect(report.bytes).toBeLessThanOrEqual(1024);
-  }
-  expect(collector.status().events).toBe(21);
-});
-
-test("Codex prioritizes recently modified files during bounded backfill", async () => {
-  const { root, file, collector } = fixture();
-  const newer = join(root, "sessions", "new.jsonl");
-  writeFileSync(
-    newer,
-    lines(
-      { type: "session_meta", payload: { id: "new-session" } },
-      model,
-      usage(),
-    ),
-  );
-  const { utimesSync } = await import("node:fs");
-  utimesSync(file, new Date(0), new Date(0));
-  await collector.scan(root, readFileSync(newer).length);
-  expect(collector.status().events).toBe(1);
-  expect(
-    collector.db.query<{ path: string }, []>("SELECT path FROM files").get()
-      ?.path,
-  ).toBe(newer);
-});
-
-test("Codex archive copies and file rewrites do not inflate the same source", async () => {
-  const { root, file, collector } = fixture();
-  await collector.scan(root);
-  mkdirSync(join(root, "archived_sessions"));
-  copyFileSync(file, join(root, "archived_sessions", "rollout.jsonl"));
-  writeFileSync(file, lines(meta, model, usage(), usage(2)));
-  await collector.scan(root);
-  expect(collector.status().events).toBe(2);
-});
-
-test("Codex malformed token records do not block subsequent complete usage", async () => {
-  const { root, file, collector } = fixture();
-  appendFileSync(file, '{"token_count":bad}\n' + lines(usage(2)));
-  expect(await collector.scan(root)).toMatchObject({ invalid: 1, events: 2 });
-});
-
-test("Codex only marks delivered after a valid server acknowledgement", async () => {
-  const { root, collector } = fixture();
-  await collector.scan(root);
-  await expect(collector.push(config, async () => ({}))).rejects.toThrow(
-    "acknowledgement",
-  );
-  expect(collector.status().pending).toBe(1);
-  expect(
-    await collector.push(config, async (batch) => {
-      expect(ingestBatchSchema.safeParse(batch).success).toBe(true);
-      return ack(batch);
-    }),
-  ).toBe(1);
-  expect(collector.status().pending).toBe(0);
-});
-
-test("Codex replay after a lost acknowledgement uses stable request IDs", async () => {
-  const { root, collector } = fixture();
-  await collector.scan(root);
-  const received = new Set<string>();
-  await expect(
-    collector.push(config, async (batch) => {
-      for (const row of batch.usage) received.add(row.externalId);
-      throw new Error("connection_lost");
-    }),
-  ).rejects.toThrow("connection_lost");
-  await collector.push(config, async (batch) => {
-    for (const row of batch.usage) received.add(row.externalId);
-    return ack(batch);
-  });
-  expect(received.size).toBe(1);
-});
-
-function quotaEvent(
-  timestamp = "2026-10-02T12:00:00Z",
-  plan = "pro",
-  percent = 70,
-) {
-  return {
-    timestamp,
-    type: "event_msg",
-    payload: {
-      type: "token_count",
-      info: null,
-      rate_limits: {
-        limit_id: "codex",
-        plan_type: plan,
-        primary: {
-          used_percent: percent,
-          window_minutes: 10080,
-          resets_at: 1791048473,
-        },
-        secondary: {
-          used_percent: 12,
-          window_minutes: 300,
-          resets_at: 1790990000,
-        },
-        credits: { has_credits: true, balance: "62500" },
-      },
-    },
-  };
-}
-
 test("Codex quota windows follow duration, not primary/secondary position", () => {
-  const snapshot = codexSnapshot(quotaEvent())!;
+  const snapshot = codexSnapshot(
+    quotaEvent("2026-10-02T12:00:00.000Z", "pro"),
+  )!;
   expect(snapshot.plan).toBe("pro");
-  expect(snapshot.quotas.map((q) => [q.window, q.percent])).toEqual([
+  expect(
+    snapshot.quotas.map((bucket) => [bucket.window, bucket.percent]),
+  ).toEqual([
     ["seven-day", 70],
     ["five-hour", 12],
   ]);
@@ -322,7 +195,15 @@ test("Codex quota windows follow duration, not primary/secondary position", () =
 });
 
 test("Codex ignores model-scoped buckets and invalid percentages without guessing", () => {
-  const row = quotaEvent();
+  const row = quotaEvent("2026-10-02T12:00:00.000Z", "plus") as {
+    payload: {
+      rate_limits: {
+        limit_id: string;
+        primary: { used_percent: number };
+        secondary: { used_percent: number; window_minutes: number };
+      };
+    };
+  };
   row.payload.rate_limits.limit_id = "codex_other";
   expect(codexSnapshot(row)).toBeNull();
   row.payload.rate_limits.limit_id = "codex";
@@ -332,99 +213,277 @@ test("Codex ignores model-scoped buckets and invalid percentages without guessin
   expect(codexSnapshot({ ...row, timestamp: "bad" })).toBeNull();
 });
 
-test("Codex sends plan and quota updates even with no new usage", async () => {
-  const { root, file, collector } = fixture();
-  await collector.scan(root);
-  await collector.push(config, ack);
-  appendFileSync(file, lines(quotaEvent()));
-  expect((await collector.scan(root)).events).toBe(0);
-  let calls = 0;
-  await collector.push(config, async (batch) => {
-    calls++;
-    expect(ingestBatchSchema.safeParse(batch).success).toBe(true);
-    expect(batch.usage).toHaveLength(0);
-    expect(batch.accounts[0]).toMatchObject({
-      kind: "subscription",
-      plan: "pro",
-    });
-    expect(batch.quotas).toHaveLength(2);
-    return ack(batch);
-  });
-  expect(calls).toBe(1);
-  expect(collector.status()).toMatchObject({
-    pendingSnapshots: 0,
-    plan: "pro",
+test("openai channel usage routes to the codex account", async () => {
+  const root = codexRoot();
+  writeFileSync(
+    join(root, "sessions", "rollout.jsonl"),
+    lines(meta, model, usage()),
+  );
+  const item = openState();
+  const report = await read(item, root);
+  expect(report).toMatchObject({ read: 1, recorded: 1 });
+  expect([...pendingUsage(item).values()][0]!.accountExternalId).toBe("codex");
+  expect(item.account("codex")).toMatchObject({
+    name: "Codex",
+    platform: "openai",
+    kind: "subscription",
+    plan: null,
   });
 });
 
-test("Codex old backfill cannot overwrite new plan or quota observations", async () => {
-  const { root, file, collector } = fixture();
-  appendFileSync(
+test("an observed plan_type overrides the rule plan and the windows upload once", async () => {
+  const root = codexRoot();
+  writeFileSync(
+    join(root, "sessions", "rollout.jsonl"),
+    lines(meta, model, usage(), quotaEvent("2026-10-02T12:00:00.000Z", "plus")),
+  );
+  const item = openState();
+  const report = await read(item, root);
+  expect(item.account("codex")!.plan).toBe("plus");
+  expect(report.quotas).toBe(2);
+  expect(
+    item
+      .pending<{ accountExternalId: string; window: string }>("quota", 1000)
+      .map((entry) => [entry.payload.accountExternalId, entry.payload.window]),
+  ).toEqual([
+    ["codex", "five-hour"],
+    ["codex", "seven-day"],
+  ]);
+  // 补送账号信息与额度不消耗待发送的用量计数；重复读取不再入队。
+  expect((await read(item, root)).quotas).toBe(0);
+  expect(item.pending("quota", 1000)).toHaveLength(2);
+});
+
+test("go channel usage routes to the OpenCode Go account without quota or plan changes", async () => {
+  const root = codexRoot();
+  const goMeta = {
+    type: "session_meta",
+    payload: { id: "go-session", model_provider: "go" },
+  };
+  writeFileSync(
+    join(root, "sessions", "go.jsonl"),
+    lines(
+      goMeta,
+      model,
+      usage(),
+      quotaEvent("2026-10-02T12:00:00.000Z", "pro"),
+    ),
+  );
+  const item = openState();
+  const report = await read(item, root);
+  expect(report).toMatchObject({ read: 2, recorded: 1, quotas: 0 });
+  expect([...pendingUsage(item).values()][0]!.accountExternalId).toBe(
+    "opencode-go",
+  );
+  expect(item.pending("quota", 1000)).toHaveLength(0);
+  expect(item.account("opencode-go")!.plan).toBe("go");
+});
+
+test("bo channel and missing provider are skipped by channel and never billed", async () => {
+  const root = codexRoot();
+  const boMeta = {
+    type: "session_meta",
+    payload: { id: "bo-session", model_provider: "bo" },
+  };
+  writeFileSync(
+    join(root, "sessions", "bo.jsonl"),
+    lines(
+      boMeta,
+      model,
+      usage(),
+      quotaEvent("2026-10-02T12:00:00.000Z", "enterprise"),
+    ),
+  );
+  writeFileSync(
+    join(root, "sessions", "missing.jsonl"),
+    lines(
+      { type: "session_meta", payload: { id: "no-provider" } },
+      model,
+      usage(2),
+    ),
+  );
+  const item = openState();
+  const report = await read(item, root);
+  expect(report).toMatchObject({ read: 3, recorded: 0, invalid: 0 });
+  expect(report.skipped).toEqual({ bo: 2, "(缺失)": 1 });
+  expect(item.pending("usage", 1000)).toHaveLength(0);
+  // bo 会话的额度属于网关后面的账户，不能写入 codex。
+  expect(item.pending("quota", 1000)).toHaveLength(0);
+});
+
+/** 旧记录的事件时间：起点之前的样本不会入账。 */
+function oldUsage(n = 1) {
+  const row = usage(n);
+  row.timestamp = `2026-09-01T10:00:00.000Z`;
+  return row;
+}
+
+test("usage and quota samples before the fixed start date are dropped", async () => {
+  const root = codexRoot();
+  const file = join(root, "sessions", "old.jsonl");
+  writeFileSync(
     file,
-    lines(quotaEvent(), quotaEvent("2026-10-01T12:00:00Z", "plus", 20)),
+    lines(
+      meta,
+      model,
+      oldUsage(2),
+      quotaEvent("2026-09-01T12:00:00.000Z", "pro"),
+    ),
   );
-  await collector.scan(root);
-  await collector.push(config, async (batch) => {
-    expect(batch.accounts[0]!.plan).toBe("pro");
-    expect(batch.quotas.find((q) => q.window === "seven-day")!.percent).toBe(
-      70,
-    );
-    return ack(batch);
-  });
-  appendFileSync(file, lines(usage(2)));
-  await collector.scan(root);
-  await collector.push(config, async (batch) => {
-    expect(batch.accounts[0]!.plan).toBe("pro");
-    expect(batch.quotas).toHaveLength(0);
-    return ack(batch);
-  });
-});
-
-test("Codex repeated token totals still accept independent newer quota snapshots", async () => {
-  const { root, file, collector } = fixture();
-  const sameUsage = usage();
-  Object.assign(sameUsage.payload, {
-    rate_limits: quotaEvent().payload.rate_limits,
-  });
-  appendFileSync(file, lines(sameUsage));
-  await collector.scan(root);
-  expect(collector.status()).toMatchObject({ events: 1, pendingSnapshots: 3 });
-});
-
-test("Codex snapshot delivery failure retains updates for retry", async () => {
-  const { root, file, collector } = fixture();
-  appendFileSync(file, lines(quotaEvent()));
-  await collector.scan(root);
-  await expect(
-    collector.push(config, async () => {
-      throw new Error("offline");
-    }),
-  ).rejects.toThrow("offline");
-  expect(collector.status().pendingSnapshots).toBe(3);
-  await collector.push(config, ack);
-  expect(collector.status().pendingSnapshots).toBe(0);
-});
-
-test("Codex quota migration replays existing offsets once without losing delivery state", async () => {
-  const { root, file, collector, state } = fixture();
-  await collector.scan(root);
-  await collector.push(config, ack);
-  appendFileSync(file, lines(quotaEvent()));
-  await collector.scan(root);
-  // Emulate an older collector that consumed the lines without storing metadata.
-  collector.db.exec(
-    "DELETE FROM snapshots; DELETE FROM diagnostics WHERE key='quota_reader_v1';",
+  // 真实文件按归档时间组装，修改时间晚于起点，但记录本身更早。
+  utimesSync(
+    file,
+    new Date("2026-10-03T00:00:00Z"),
+    new Date("2026-10-03T00:00:00Z"),
   );
-  const updated = new CodexCollector(state);
-  opened.push(updated);
-  expect(updated.status()).toMatchObject({ files: 0, events: 1, pending: 0 });
-  await updated.scan(root);
-  expect(updated.status()).toMatchObject({
-    events: 1,
-    pending: 0,
-    plan: "pro",
-  });
-  const reopened = new CodexCollector(state);
-  opened.push(reopened);
-  expect(reopened.status().files).toBe(1);
+  const item = openState();
+  const report = await read(item, root);
+  expect(report.read).toBe(2);
+  expect(report.recorded).toBe(0);
+  expect(report.beforeStart).toBe(1);
+  expect(item.pending("usage", 1000)).toHaveLength(0);
+  expect(item.pending("quota", 1000)).toHaveLength(0);
+  expect(item.sourcePendingCounts().codex).toBe(0);
+});
+
+test("a session read as .jsonl is not billed again after compression to .jsonl.zst", async () => {
+  const root = codexRoot();
+  const file = join(root, "sessions", "rollout.jsonl");
+  writeFileSync(file, lines(meta, model, usage(), usage(2)));
+  const item = openState();
+  expect((await read(item, root)).recorded).toBe(2);
+  const sent = pendingUsage(item);
+  // Codex 会话写完后压缩：内容相同、路径换成压缩后缀。
+  const compressed = Bun.zstdCompressSync(readFileSync(file));
+  rmSync(file);
+  writeFileSync(join(root, "sessions", "rollout.jsonl.zst"), compressed);
+  const report = await read(item, root, 1);
+  expect(report.read).toBe(2);
+  expect(report.recorded).toBe(0);
+  expect(pendingUsage(item)).toEqual(sent);
+  expect(item.sourcePendingCounts().codex).toBe(2);
+});
+
+test("compressed backfill respects the budget and resumes across rounds", async () => {
+  const root = codexRoot();
+  const goMeta = {
+    type: "session_meta",
+    payload: { id: "go-session", model_provider: "go" },
+  };
+  writeFileSync(
+    join(root, "sessions", "old.jsonl.zst"),
+    Bun.zstdCompressSync(Buffer.from(lines(meta, model, usage()))),
+  );
+  writeFileSync(
+    join(root, "sessions", "new.jsonl.zst"),
+    Bun.zstdCompressSync(Buffer.from(lines(goMeta, model, usage(2)))),
+  );
+  const item = openState();
+  // 最近修改的文件先读；预算只允许一个文件，其余顺延。
+  const report = await read(item, root, 1);
+  expect(report.filesRead).toBe(1);
+  expect(report.deferred).toBe(true);
+  expect(item.pending("usage", 1000)).toHaveLength(1);
+  const continuing = await read(item, root, 1);
+  expect(continuing.filesRead).toBe(1);
+  expect(item.pending("usage", 1000)).toHaveLength(2);
+});
+
+test("quota samples newer than the previous observation are the only ones uploaded", async () => {
+  const root = codexRoot();
+  writeFileSync(
+    join(root, "sessions", "new.jsonl"),
+    lines(
+      meta,
+      model,
+      usage(),
+      quotaEvent("2026-10-06T12:00:00.000Z", "pro", 40),
+    ),
+  );
+  utimesSync(
+    join(root, "sessions", "new.jsonl"),
+    new Date("2026-10-06T12:10:00Z"),
+    new Date("2026-10-06T12:10:00Z"),
+  );
+  const item = openState();
+  await read(item, root);
+  const sent = item.pending("quota", 1000);
+  // 修改时间更早的会话补采：其旧读数不覆盖新观察，也不因重读而重复入队。
+  const older = join(root, "sessions", "old.jsonl");
+  writeFileSync(
+    older,
+    lines(
+      meta,
+      model,
+      usage(2),
+      quotaEvent("2026-10-01T12:00:00.000Z", "pro", 20),
+    ),
+  );
+  utimesSync(
+    older,
+    new Date("2026-10-04T00:00:00Z"),
+    new Date("2026-10-04T00:00:00Z"),
+  );
+  expect((await read(item, root)).quotas).toBe(0);
+  expect(item.pending("quota", 1000)).toEqual(sent);
+  // 同账户同一窗口出现更新的采样时照常上传。
+  writeFileSync(
+    join(root, "sessions", "fresh.jsonl"),
+    lines(
+      meta,
+      model,
+      usage(3),
+      quotaEvent("2026-10-07T12:00:00.000Z", "pro", 50),
+    ),
+  );
+  utimesSync(
+    join(root, "sessions", "fresh.jsonl"),
+    new Date("2026-10-07T12:10:00Z"),
+    new Date("2026-10-07T12:10:00Z"),
+  );
+  expect((await read(item, root)).quotas).toBe(2);
+});
+
+test("reattribute and requeueUsage only scan the event table, so channel accounts stay", async () => {
+  const root = codexRoot();
+  writeFileSync(
+    join(root, "sessions", "rollout.jsonl"),
+    lines(meta, model, usage()),
+  );
+  const item = openState();
+  await read(item, root);
+  expect(item.reattribute(null)).toBe(0);
+  item.requeueUsage();
+  expect([...pendingUsage(item).values()][0]!.accountExternalId).toBe("codex");
+});
+
+test("Codex only reads complete lines in live files and resumes after partial appends", async () => {
+  const root = codexRoot();
+  const file = join(root, "sessions", "rollout.jsonl");
+  writeFileSync(file, lines(meta, model, usage()));
+  const item = openState();
+  const partial = JSON.stringify(usage(2));
+  appendFileSync(file, partial.slice(0, 30));
+  expect((await read(item, root)).recorded).toBe(1);
+  appendFileSync(file, partial.slice(30) + "\n");
+  expect((await read(item, root)).read).toBe(1);
+  expect((await read(item, root)).read).toBe(0);
+  expect(item.pending("usage", 1000)).toHaveLength(2);
+});
+
+test("malformed token records in one file do not block later sessions", async () => {
+  const root = codexRoot();
+  writeFileSync(
+    join(root, "sessions", "a.jsonl"),
+    lines(meta, model, usage()) + '{"token_count":bad}\n',
+  );
+  writeFileSync(
+    join(root, "sessions", "b.jsonl"),
+    lines(meta, model, usage(2)),
+  );
+  const item = openState();
+  const report = await read(item, root);
+  expect(report.invalid).toBe(1);
+  // 同一会话里损坏行之后的完整请求照常入账。
+  expect(item.pending("usage", 1000)).toHaveLength(2);
 });

@@ -35,7 +35,7 @@ const knownPlans: Record<string, Record<string, PlanBadge>> = {
     prolite: { label: "Pro 5x", tier: 2 },
     pro: { label: "Pro 20x", tier: 3 },
   },
-  // OpenCode Go 按每个模型的美元上限计量，与按倍数分档的订阅不可比，只显示名称。
+  // OpenCode Go 的额度不按订阅倍数分档，页面只显示名称。
   "opencode-go": {
     go: { label: "Go", tier: null },
     "go-plus": { label: "Go Plus", tier: null },
