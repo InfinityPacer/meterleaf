@@ -262,6 +262,28 @@ interface WindowSample {
   sampledAt: string;
 }
 
+/** 套餐观察带采样时间保存；旧版本只存套餐名的记录视为没有观察。 */
+function readPlanMap(state: CollectorState): Record<string, PlanSample> {
+  const plans: Record<string, PlanSample> = {};
+  try {
+    const raw = JSON.parse(state.getMeta("codex_plans") ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    for (const [account, value] of Object.entries(raw)) {
+      const sample = object(value);
+      if (
+        typeof sample?.plan === "string" &&
+        typeof sample.sampledAt === "string"
+      )
+        plans[account] = { plan: sample.plan, sampledAt: sample.sampledAt };
+    }
+  } catch {
+    // 记录损坏时等同没有观察，下一次额度通知会重新写入。
+  }
+  return plans;
+}
+
 function readJsonMap(
   state: CollectorState,
   key: string,
@@ -310,7 +332,13 @@ function restoreContext(saved: string | null): CodexContext {
 interface FileSinks {
   /** 键形如 `${账户}:${窗口}`，一个文件内只保留采样最晚的一份。 */
   windows: Map<string, WindowSample>;
-  plans: Map<string, string>;
+  /** 一个文件内每个账户采样最晚的套餐。 */
+  plans: Map<string, PlanSample>;
+}
+
+interface PlanSample {
+  plan: string;
+  sampledAt: string;
 }
 
 /** 读取一轮 Codex 本地会话记录。
@@ -350,13 +378,10 @@ export async function readCodex(
   paths.sort((a, b) => b.modified - a.modified || a.path.localeCompare(b.path));
   state.forgetMissingCodexFiles(new Set(paths.map((row) => row.path)));
 
-  // 额度与套餐的上次观察持久保存；同一窗口只上传比此前更新的采样。
+  // 额度与套餐的最新观察持久保存，随每个文件的读取进度同一事务提交；
+  // 同一窗口或账户只采用采样时间比此前更新的读数，与文件处理顺序无关。
   const observed = readJsonMap(state, "codex_window_sampled");
-  const plans = readJsonMap(state, "codex_plans");
-  /** 跨账户、跨窗口的本轮读数；账户与窗口是键的两段。 */
-  const windows = new Map<string, Map<string, WindowSample>>();
-  const roundPlans = new Map<string, string>();
-  const routedAccounts = new Map<string, ChannelAccount>();
+  const plans = readPlanMap(state);
 
   const ensureAccount = (account: ChannelAccount) => {
     state.upsertAccount({
@@ -364,10 +389,44 @@ export async function readCodex(
       name: account.name,
       platform: account.platform,
       kind: account.kind,
-      plan: roundPlans.get(account.id) ?? account.plan,
+      plan: plans[account.id]?.plan ?? account.plan,
       subjectKey: null,
     });
-    routedAccounts.set(account.id, account);
+  };
+
+  /** 在文件事务内提交该文件的最新额度与套餐，并确保账户存在。 */
+  const commitObservations = (
+    sinks: FileSinks,
+    accounts: Map<string, ChannelAccount>,
+  ) => {
+    const quotas: IngestQuota[] = [];
+    // 按窗口名排序，让同一批额度的入队顺序稳定。
+    for (const [key, sample] of [...sinks.windows].sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      const last = observed[key];
+      if (
+        last !== undefined &&
+        Date.parse(last) >= Date.parse(sample.sampledAt)
+      )
+        continue;
+      quotas.push(sample.quota);
+      observed[key] = sample.sampledAt;
+    }
+    for (const [account, sample] of sinks.plans) {
+      const last = plans[account];
+      if (last && Date.parse(last.sampledAt) >= Date.parse(sample.sampledAt))
+        continue;
+      plans[account] = sample;
+    }
+    for (const account of accounts.values()) ensureAccount(account);
+    if (
+      quotas.length > 0 &&
+      state.recordQuota({ hash: hash(JSON.stringify(quotas)), quotas }, "codex")
+    )
+      report.quotas += quotas.length;
+    state.setMeta("codex_window_sampled", JSON.stringify(observed));
+    state.setMeta("codex_plans", JSON.stringify(plans));
   };
 
   /**
@@ -378,6 +437,7 @@ export async function readCodex(
     line: string,
     context: CodexContext,
     sinks: FileSinks,
+    accounts: Map<string, ChannelAccount>,
   ) => {
     if (!/"(?:session_meta|turn_context|token_count)"/.test(line)) return;
     let raw: unknown;
@@ -408,8 +468,14 @@ export async function readCodex(
       // 额度只取路由到 openai 平台账户的会话；套餐用观察到的 plan_type 覆盖规则值。
       const snapshot = codexSnapshot(raw);
       if (snapshot) {
-        if (snapshot.plan && !sinks.plans.has(routed.id))
-          sinks.plans.set(routed.id, snapshot.plan);
+        // 只有额度通知、没有用量的文件也要建立账户，否则服务端不展示这份额度。
+        accounts.set(routed.id, routed);
+        const plan = sinks.plans.get(routed.id);
+        if (snapshot.plan && (!plan || plan.sampledAt <= snapshot.sampledAt))
+          sinks.plans.set(routed.id, {
+            plan: snapshot.plan,
+            sampledAt: snapshot.sampledAt,
+          });
         for (const bucket of snapshot.quotas) {
           if (bucket.sampledAt < startIso) continue;
           const key = `${routed.id}:${bucket.window}`;
@@ -443,7 +509,7 @@ export async function readCodex(
       report.beforeStart++;
       return;
     }
-    ensureAccount(routed);
+    accounts.set(routed.id, routed);
     if (
       state.recordSourceUsage("codex", {
         ...usage,
@@ -453,33 +519,16 @@ export async function readCodex(
       report.recorded++;
   };
 
-  /** 文件按修改时间新到旧处理：账户与窗口的首个（最新）观察优先。 */
-  const adoptFile = (sinks: FileSinks) => {
-    for (const [key, sample] of sinks.windows) {
-      const separator = key.indexOf(":");
-      const account = key.slice(0, separator);
-      const window = key.slice(separator + 1);
-      let byWindow = windows.get(account);
-      if (!byWindow) {
-        byWindow = new Map();
-        windows.set(account, byWindow);
-      }
-      if (!byWindow.has(window)) byWindow.set(window, sample);
-    }
-    for (const [account, plan] of sinks.plans) {
-      if (!roundPlans.has(account)) roundPlans.set(account, plan);
-    }
-  };
-
-  const processFile = (path: string) => {
+  /** 返回 false 表示文件超出本轮剩余预算，留待下一轮。 */
+  const processFile = (path: string): boolean => {
     let stats;
     try {
       stats = statSync(path);
     } catch {
       report.unreadable++;
-      return;
+      return true;
     }
-    if (!stats.isFile()) return;
+    if (!stats.isFile()) return true;
     const saved = state.codexFile(path);
     const inode = String(stats.ino);
     if (
@@ -490,10 +539,10 @@ export async function readCodex(
       saved.offset === stats.size
     ) {
       // 未变化的文件不重读正文。
-      return;
+      return true;
     }
-    report.filesRead += 1;
     const sinks: FileSinks = { windows: new Map(), plans: new Map() };
+    const accounts = new Map<string, ChannelAccount>();
     const save = (offset: number, context: string, tail: string) =>
       state.saveCodexFile({
         path,
@@ -511,8 +560,12 @@ export async function readCodex(
         text = Bun.zstdDecompressSync(readFileSync(path));
       } catch {
         report.unreadable++;
-        return;
+        return true;
       }
+      // 本轮已读过其他文件时，放不下的压缩文件整体顺延，避免单轮无限拉长。
+      if (report.bytes > 0 && report.bytes + text.length > maxBytes)
+        return false;
+      report.filesRead += 1;
       report.bytes += text.length;
       const context = emptyContext();
       state.db.transaction(() => {
@@ -521,13 +574,14 @@ export async function readCodex(
         while (from < lines.length) {
           const to = lines.indexOf("\n", from);
           if (to < 0) break;
-          if (to > from) handleLine(lines.slice(from, to), context, sinks);
+          if (to > from)
+            handleLine(lines.slice(from, to), context, sinks, accounts);
           from = to + 1;
         }
+        commitObservations(sinks, accounts);
         save(stats.size, "", "");
       })();
-      adoptFile(sinks);
-      return;
+      return true;
     }
     // 未压缩文件仍会被追加：从上次完整行边界继续，未写完的行留到下一轮。
     let fd: number;
@@ -535,8 +589,9 @@ export async function readCodex(
       fd = openSync(path, "r");
     } catch {
       report.unreadable++;
-      return;
+      return true;
     }
+    report.filesRead += 1;
     try {
       const identity = String(stats.ino);
       const length = stats.size;
@@ -576,7 +631,7 @@ export async function readCodex(
                 fragment,
                 block.subarray(start, newline),
               ]).toString("utf8");
-              handleLine(line, context, sinks);
+              handleLine(line, context, sinks, accounts);
             }
             fragment = Buffer.alloc(0);
             discarding = false;
@@ -595,54 +650,23 @@ export async function readCodex(
           }
         }
         context.discarding = discarding;
+        commitObservations(sinks, accounts);
         save(consumed, JSON.stringify(context), tailFingerprint(fd, consumed));
       })();
-      adoptFile(sinks);
+      return true;
     } finally {
       closeSync(fd);
     }
   };
 
   for (const { path, modified } of paths) {
-    // 起点之前的文件直接跳过，不解压；预算耗尽后剩余文件顺延到下一轮。
+    // 起点之前的文件直接跳过，不解压；预算耗尽或放不下的文件顺延到下一轮。
     if (modified < startMs) continue;
-    if (report.bytes >= maxBytes) {
+    if (report.bytes >= maxBytes || !processFile(path)) {
       report.deferred = true;
       break;
     }
-    processFile(path);
   }
 
-  state.db.transaction(() => {
-    for (const [account, byWindow] of windows) {
-      const quotas: IngestQuota[] = [];
-      for (const window of [...byWindow.keys()].sort()) {
-        const sample = byWindow.get(window)!;
-        const last = observed[`${account}:${window}`];
-        if (
-          last !== undefined &&
-          Date.parse(last) >= Date.parse(sample.sampledAt)
-        )
-          continue;
-        quotas.push(sample.quota);
-        observed[`${account}:${window}`] = sample.sampledAt;
-      }
-      if (quotas.length === 0) continue;
-      if (
-        state.recordQuota(
-          { hash: hash(JSON.stringify(quotas)), quotas },
-          "codex",
-        )
-      )
-        report.quotas += quotas.length;
-    }
-    if (roundPlans.size > 0) {
-      for (const [account, plan] of roundPlans) plans[account] = plan;
-      state.setMeta("codex_plans", JSON.stringify(plans));
-    }
-    state.setMeta("codex_window_sampled", JSON.stringify(observed));
-  })();
-
-  for (const account of routedAccounts.values()) ensureAccount(account);
   return report;
 }

@@ -65,7 +65,8 @@ function count(value: unknown): number | null {
  * 读取一轮 OpenCode 本地消息。一行 `type='assistant'` 且已完成的记录是一次请求；
  * `model.providerID` 是通道，账户在读取时确定。tokens.input 已是未缓存输入，
  * 直接作为 input；output 含可见输出与推理，缺失字段保持未知，不补零。
- * cost 字段不参与估值。会上传会话 ID、内容与路径之外的信息，不读出这些字段。
+ * cost 字段不参与估值。消息内容随 data 一起解析，但只提取计量字段，内容、会话 ID 与路径
+ * 不保存、不上传。
  */
 export function readOpenCode(
   state: CollectorState,

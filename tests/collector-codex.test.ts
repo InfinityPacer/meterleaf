@@ -487,3 +487,100 @@ test("malformed token records in one file do not block later sessions", async ()
   // 同一会话里损坏行之后的完整请求照常入账。
   expect(item.pending("usage", 1000)).toHaveLength(2);
 });
+
+test("a quota-only session still creates the account, and the plan survives later rounds", async () => {
+  const root = codexRoot();
+  const file = join(root, "sessions", "quota-only.jsonl");
+  writeFileSync(
+    file,
+    lines(meta, model, quotaEvent("2026-10-02T10:00:00Z", "plus")),
+  );
+  const item = openState();
+  await read(item, root);
+  expect(item.account("codex")?.plan).toBe("plus");
+  expect(item.pending("quota", 100)).toHaveLength(2);
+  // 下一轮只有新用量、没有套餐通知时沿用已观察到的套餐，不退回规则值。
+  appendFileSync(file, lines(usage(1)));
+  await read(item, root);
+  expect(item.account("codex")?.plan).toBe("plus");
+  expect([...pendingUsage(item).values()]).toHaveLength(1);
+});
+
+test("the newest sample wins across files regardless of file modification order", async () => {
+  const root = codexRoot();
+  const older = join(root, "sessions", "older-sample.jsonl");
+  const newer = join(root, "sessions", "newer-sample.jsonl");
+  writeFileSync(
+    older,
+    lines(meta, model, quotaEvent("2026-10-01T10:00:00Z", "plus", 10)),
+  );
+  writeFileSync(
+    newer,
+    lines(meta, model, quotaEvent("2026-10-06T10:00:00Z", "pro", 60)),
+  );
+  // 旧会话刚被改写，修改时间反而更晚。
+  utimesSync(
+    newer,
+    new Date("2026-10-06T11:00:00Z"),
+    new Date("2026-10-06T11:00:00Z"),
+  );
+  utimesSync(
+    older,
+    new Date("2026-10-07T11:00:00Z"),
+    new Date("2026-10-07T11:00:00Z"),
+  );
+  const item = openState();
+  await read(item, root);
+  expect(item.account("codex")?.plan).toBe("pro");
+  const weekly = item
+    .pending<{ window: string; percent: number; sampledAt: string }>(
+      "quota",
+      100,
+    )
+    .map((entry) => entry.payload)
+    .filter((quota) => quota.window === "seven-day");
+  expect(weekly.at(-1)?.percent).toBe(60);
+  expect(
+    weekly.some(
+      (quota) => quota.percent === 10 && quota.sampledAt > "2026-10-06",
+    ),
+  ).toBe(false);
+});
+
+test("a failure while recording quota rolls back the file so the retry restores it", async () => {
+  const root = codexRoot();
+  writeFileSync(
+    join(root, "sessions", "retry.jsonl"),
+    lines(meta, model, usage(1), quotaEvent("2026-10-02T10:01:00Z", "plus")),
+  );
+  const item = openState();
+  const original = item.recordQuota.bind(item);
+  item.recordQuota = () => {
+    throw new Error("disk full");
+  };
+  await expect(read(item, root)).rejects.toThrow("disk full");
+  expect(item.pending("usage", 100)).toHaveLength(0);
+  item.recordQuota = original;
+  await read(item, root);
+  expect(item.pending("usage", 100)).toHaveLength(1);
+  expect(item.pending("quota", 100)).toHaveLength(2);
+});
+
+test("a compressed file that does not fit the remaining budget waits for the next round", async () => {
+  const root = codexRoot();
+  const body = Buffer.from(lines(meta, model, usage(1)));
+  for (const [name, at] of [
+    ["first.jsonl.zst", "2026-10-03T00:00:00Z"],
+    ["second.jsonl.zst", "2026-10-02T00:00:00Z"],
+  ] as const) {
+    const path = join(root, "sessions", name);
+    writeFileSync(path, Bun.zstdCompressSync(body));
+    utimesSync(path, new Date(at), new Date(at));
+  }
+  const item = openState();
+  const first = await read(item, root, body.length + 1);
+  expect(first.filesRead).toBe(1);
+  expect(first.deferred).toBe(true);
+  const second = await read(item, root, body.length + 1);
+  expect(second.filesRead).toBe(1);
+});
