@@ -35,9 +35,17 @@ const opencodeSourceSchema = z
   })
   .strict();
 
+const agySourceSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    conversationsDir: z.string().startsWith("/").optional(),
+    statuslineDir: z.string().startsWith("/").optional(),
+  })
+  .strict();
+
 /**
- * 新来源只上传不早于这一时刻的记录，是两个来源的固定起点配置项。
- * Codex 与 OpenCode 的本地记录历史比账本接入早，不支持更早的费率与账户推断。
+ * 新来源只上传不早于这一时刻的记录，是三个来源的固定起点配置项。
+ * 本地记录历史可能比账本接入早，不支持更早的费率与账户推断。
  */
 export const SOURCE_START = "2026-09-20T00:00:00.000Z";
 
@@ -69,6 +77,8 @@ const configSchema = z
     codex: codexSourceSchema.optional(),
     /** 可选：OpenCode 本地数据库读取器；数据库不存在时该来源本轮为空。 */
     opencode: opencodeSourceSchema.optional(),
+    /** 可选：Antigravity CLI 本地会话库与状态栏额度缓存读取器；目录不存在时该来源本轮为空。 */
+    agy: agySourceSchema.optional(),
     /** 可选：本机 OTEL 中转的监听端口，省略时使用 4319。 */
     otelRelay: otelRelaySchema.optional(),
     /** 可选：sync 收尾时按间隔运行的额外任务，按登记顺序执行，名称不能重复。 */

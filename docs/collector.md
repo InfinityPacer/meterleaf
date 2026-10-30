@@ -2,9 +2,9 @@
 
 [返回首页](../README.md)
 
-本地直连的 Claude Code、Codex 和 OpenCode 不经过网关，它们的用量只保存在使用它们的电脑上。本机采集器在这台电脑上读取这些工具的本地记录，把用量、账户和额度快照推送到 Meterleaf。Meterleaf 可以部署在 NAS 或另一台主机上，与这台电脑分开。没有 Sub2API 网关时，Meterleaf 也可以只接收采集器的数据。
+本地直连的 Claude Code、Codex、OpenCode 和 Antigravity CLI（`agy`）不经过网关，它们的用量只保存在使用它们的电脑上。本机采集器在这台电脑上读取这些工具的本地记录，把用量、账户和额度快照推送到 Meterleaf。Meterleaf 可以部署在 NAS 或另一台主机上，与这台电脑分开。没有 Sub2API 网关时，Meterleaf 也可以只接收采集器的数据。
 
-一台电脑只运行一个采集器：一份配置、一个写入密钥、一个后台任务、一条上传路径。每轮同步依次读取 Claude Code、Codex 和 OpenCode，最后统一上传；以后接入新的来源时按同样的读取器结构加一项。
+一台电脑只运行一个采集器，共用一份配置、一个写入密钥、一个后台任务和一条上传路径。每轮同步依次读取 Claude Code、Codex、OpenCode 和 Antigravity，最后统一上传。
 
 ## 它读什么、不碰什么
 
@@ -15,7 +15,7 @@
 - 当前登录账户的套餐字段。新版 Claude Code 只把订阅类型和速率档位保存在登录凭据里，macOS 上是钥匙串中的「Claude Code-credentials」，其他系统是 Claude 配置目录下的 `.credentials.json`。采集器用系统自带的 `security` 命令或直接读文件取出整条凭据，只保留这两个字段，访问令牌和刷新令牌不解析、不保存、不记录、不上传。
 - 如果登记了额外 Claude 账户，还会读取每个目录下的 `.claude.json` 和该目录对应的登录凭据，读取方式与默认账户相同，见[多个 Claude 账户](#多个-claude-账户)。
 
-它不会在 Claude Code 的目录里写入、改名、加锁或改权限，不改设置、hooks 或状态栏，不运行 Claude Code 命令，也不调用任何 Anthropic 接口，读取凭据不会产生网络请求。对 Codex 与 OpenCode 的读取边界见[下一节](#codex-与-opencode-来源)。上传内容只有计量数字、模型、时间、账户标识和套餐，不包含对话、工具输出、文件路径、工作目录、邮箱、显示名或令牌。
+它不会在 Claude Code 的目录里写入、改名、加锁或改权限，不改设置、hooks 或状态栏，不运行 Claude Code 命令，也不调用任何 Anthropic 接口，读取凭据不会产生网络请求。对 Codex、OpenCode 与 Antigravity 的读取边界见[Codex 与 OpenCode 来源](#codex-与-opencode-来源)和[Antigravity 来源](#antigravity-来源)。上传内容只有计量数字、模型、时间、账户标识和套餐，不包含对话、工具输出、文件路径、工作目录、邮箱、显示名或令牌。
 
 这些保证只针对采集器本身。你自己登记的[额外任务](#额外任务可选)由采集器按时运行，它们读写什么由任务决定。
 
@@ -108,6 +108,15 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 - OpenCode 的 `tokens.input` 已是未缓存输入，直接计入；`output` 计为可见输出加推理，`reasoning` 是输出的子集；缓存读写取 `tokens.cache` 的值。任一字段缺失时该字段为未知，不补零。OpenCode 自带的 `cost` 不采用，费用由 Meterleaf 按[计价说明](pricing.md)估值。
 - OpenCode 生成会话标题、压缩上下文等内部请求不写进助手消息，本机数据里这类请求只差几千输入 token；这部分不补，也不按当前模型推算计入 Go 账户。
 - OpenCode Go 的额度不需要采集器读：服务端按[部署指南](deployment.md#opencode-go-额度可选)轮询 Go 的用量接口。`go` 通道的 Codex 记录也不上传额度，Go 额度由两处用量共同撑起账户的窗口估算。
+
+## Antigravity 来源
+
+采集器默认读取本机 Antigravity CLI（`agy`）的额度缓存与本地会话数据库，目录不存在时本轮为空，不报错。需要停用或修改目录时，在采集器 `config.json` 中配置 `agy` 的 `enabled`、`conversationsDir` 和 `statuslineDir`。
+
+- 额度缓存来自 `~/.cache/agy-statusline/quota-<label>.tsv`，由状态栏脚本与 Stop hook 写出，采样时间取文件修改时间。每行用制表符分隔窗口名、已用百分比整数和重置时间的 Unix 秒，窗口名为 `gemini_5h`、`gemini_weekly`、`3p_5h` 或 `3p_weekly`，另可带一行 `plan\t<套餐名>\t-`。`<label>` 是 Google 账号邮箱本地部分转小写并把非 `[a-z0-9_-]` 字符替换为 `-` 后的标签，采集器不读取也不还原完整邮箱。同目录下的 `current-account` 保存当前活跃账号标签。
+- 每个 Google 账号在 Antigravity 中有两套独立额度池，采集器为每个 `<label>` 建立两个订阅账户，分别是 `Antigravity (<label>) · Gemini`（标识 `agy-<label>-gemini`，接收 `gemini_5h` 与 `gemini_weekly`）和 `Antigravity (<label>) · Claude/GPT`（标识 `agy-<label>-3p`，接收 `3p_5h` 与 `3p_weekly`）。当某个窗口的重置时间不晚于采样时间或当前时间时，该窗口按已过期处理，旧百分比不会带入新周期。百分比或重置时间为 `-` 时保留未知，不补零。
+- Token 用量来自 `~/.gemini/antigravity-cli/conversations/*.db`。`agy` 运行中会锁住会话库，采集器对无 WAL 的库以只读不可变模式打开，对存在 `.db-wal` 的库先把 `.db` 与 `.db-wal` 复制到系统临时目录再只读打开，不在 `~/.gemini` 下写入、加锁或创建附属文件。
+- 采集器解码 `gen_metadata` 表中的 `CortexStepGeneratorMetadata` protobuf，提取每次生成的未缓存输入、缓存读取、缓存写入、输出和属于输出子集的思考 Tokens，并关联 `steps` 表中的完成时间。任一基础桶缺失时保留未知，不补零。模型名与思考档位从上游响应模型、显示名和模型枚举归一化得到，Gemini 系列模型归入该账号的 Gemini 池账户，Claude 与 GPT-OSS 模型归入 Claude/GPT 池账户。早于 `2026-09-20` 的记录在读取时丢弃，已读取记录按会话、步骤与执行标识幂等去重。
 
 ## 多个 Claude 账户
 
