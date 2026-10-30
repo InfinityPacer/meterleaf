@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { readAgy, type AgyReaderSources } from "./agy";
 import { readClaudeJson } from "./claude-code/account";
 import {
   readCredentialText,
@@ -59,7 +60,7 @@ import {
 } from "./tasks";
 
 const help = `Meterleaf Collector ${COLLECTOR_VERSION}
-读取本机 Claude Code、Codex 与 OpenCode 的本地用量记录，推送到 Meterleaf 账本。
+读取本机 Claude Code、Codex、OpenCode 与 Antigravity 的本地用量记录，推送到 Meterleaf 账本。
 
 用法: meterleaf-collector <命令> [选项]
 
@@ -104,13 +105,13 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
   - 只上传计量数字、模型、时间、套餐和账户 UUID 派生信息；不上传对话内容、工具输出、
     文件路径、工作目录、Git 分支、邮箱、显示名或组织名。
 
-对 Codex 与 OpenCode 的保证:
-  - 只以只读方式打开 ~/.codex（或 CODEX_HOME）下的会话记录，以及 OpenCode 本地
-    数据库 ~/.local/share/opencode/opencode.db。不修改两处内容，不调用任何接口。
+对 Codex、OpenCode 与 Antigravity 的保证:
+  - 只以只读方式打开 ~/.codex（或 CODEX_HOME）下的会话记录、OpenCode 本地数据库
+    ~/.local/share/opencode/opencode.db、Antigravity 会话库 ~/.gemini/antigravity-cli/conversations/*.db
+    以及状态栏额度缓存 ~/.cache/agy-statusline。不修改原文件，不调用任何接口。
   - 只上传计量数字、模型、推理档位、时间与套餐；会话标识、消息内容、路径与
     凭据不读取、不上传。
-  - 新来源按「来源加通道」归属账户，只上传发生时间不早于 ${SOURCE_START.slice(0, 10)}
-    的记录，更早的历史在读取时丢弃。
+  - 新来源只上传发生时间不早于 ${SOURCE_START.slice(0, 10)} 的记录，更早的历史在读取时丢弃。
   - 以上保证只针对采集器本身。用 tasks add 登记的额外任务由登记者负责，
     采集器只按时运行它们，不检查它们读写什么。
 
@@ -564,6 +565,24 @@ export function opencodeReaderConfig(
   };
 }
 
+export function agyReaderConfig(
+  config: CollectorConfig | null,
+): AgyReaderSources | null {
+  if (config?.agy?.enabled === false) return null;
+  const home = process.env.HOME || homedir();
+  const cacheHome = process.env.XDG_CACHE_HOME || join(home, ".cache");
+  return {
+    conversationsDir: resolve(
+      config?.agy?.conversationsDir ??
+        join(home, ".gemini", "antigravity-cli", "conversations"),
+    ),
+    statuslineDir: resolve(
+      config?.agy?.statuslineDir ?? join(cacheHome, "agy-statusline"),
+    ),
+    start: SOURCE_START,
+  };
+}
+
 /** 一轮同步里的新来源读取；来源停用或入口缺失时为空。 */
 export async function readNewSources(
   state: CollectorState,
@@ -574,6 +593,8 @@ export async function readNewSources(
   if (codex) reports.push(await readCodex(state, codex));
   const opencode = opencodeReaderConfig(config);
   if (opencode) reports.push(readOpenCode(state, opencode));
+  const agy = agyReaderConfig(config);
+  if (agy) reports.push(readAgy(state, agy));
   return reports;
 }
 
@@ -610,14 +631,16 @@ async function runScan(paths: CollectorPaths, json: boolean) {
       new Date(),
       () => new Date(),
     );
-    // scan 只跑一轮：先解析 Claude Code，再按来源读取 Codex 与 OpenCode。
+    // scan 只跑一轮：先解析 Claude Code，再按来源读取 Codex、OpenCode 与 Antigravity。
     const sources = await readNewSources(state, config);
     const totals = state.usageTotals();
     const quotas = state
-      .pending<{ window: string; percent: number | null; sampledAt: string }>(
-        "quota",
-        10,
-      )
+      .pending<{
+        account?: string;
+        window: string;
+        percent: number | null;
+        sampledAt: string;
+      }>("quota", 50)
       .map((item) => item.payload);
     if (json) {
       console.log(
@@ -672,11 +695,12 @@ async function runScan(paths: CollectorPaths, json: boolean) {
     }
     const pendingBySource = state.sourcePendingCounts();
     console.log(
-      `新来源待发送: codex ${format(pendingBySource.codex)}，opencode ${format(pendingBySource.opencode)}`,
+      `新来源待发送: codex ${format(pendingBySource.codex)}，opencode ${format(pendingBySource.opencode)}，agy ${format(pendingBySource.agy)}`,
     );
     for (const quota of quotas) {
+      const accountPrefix = quota.account ? `${quota.account} ` : "";
       console.log(
-        `额度 ${quota.window}: ${quota.percent ?? "未知"}%（采样于 ${quota.sampledAt}）`,
+        `额度 ${accountPrefix}${quota.window}: ${quota.percent ?? "未知"}%（采样于 ${quota.sampledAt}）`,
       );
     }
     const quotaIssue = quotaIssueText(report);
@@ -1128,10 +1152,15 @@ function runStatus(paths: CollectorPaths) {
     );
     const codex = codexReaderConfig(config);
     const opencode = opencodeReaderConfig(config);
+    const agy = agyReaderConfig(config);
     console.log(
       `读取来源: ${
         codex ? `Codex（${codex.home}）` : "Codex 已停用"
-      }，${opencode ? `OpenCode（${opencode.database}）` : "OpenCode 已停用"}`,
+      }，${opencode ? `OpenCode（${opencode.database}）` : "OpenCode 已停用"}，${
+        agy
+          ? `Antigravity（${agy.conversationsDir}，额度 ${agy.statuslineDir}）`
+          : "Antigravity 已停用"
+      }`,
     );
     const profiles = config.claudeProfiles ?? [];
     console.log(
@@ -1171,12 +1200,13 @@ function runStatus(paths: CollectorPaths) {
     const cursors = state.cursors();
     const pending = state.pendingCounts();
     const codexPending = state.codexFilePaths().length;
+    const agyPending = state.agyFilePaths().length;
     console.log(
-      `已跟踪文件: ${cursors.length}（另有 Codex ${codexPending}），已读取 ${format(cursors.reduce((sum, row) => sum + row.offset, 0))} 字节`,
+      `已跟踪文件: ${cursors.length}（另有 Codex ${codexPending}，Antigravity ${agyPending}），已读取 ${format(cursors.reduce((sum, row) => sum + row.offset, 0))} 字节`,
     );
     const bySource = state.sourcePendingCounts();
     console.log(
-      `待发送: 用量 ${pending.usage}（Claude ${pending.usage - bySource.codex - bySource.opencode}，Codex ${bySource.codex}，OpenCode ${bySource.opencode}），账户 ${pending.account}，额度 ${pending.quota}，OTEL ${pending.otel}`,
+      `待发送: 用量 ${pending.usage}（Claude ${pending.usage - bySource.codex - bySource.opencode - bySource.agy}，Codex ${bySource.codex}，OpenCode ${bySource.opencode}，Antigravity ${bySource.agy}），账户 ${pending.account}，额度 ${pending.quota}，OTEL ${pending.otel}`,
     );
     console.log(`最近成功: ${state.getMeta("last_success_at") ?? "无"}`);
     const failureAt = state.getMeta("last_failure_at");
