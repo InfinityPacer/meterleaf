@@ -67,7 +67,7 @@ GPT-6.1 Sol 与 Terra 按各自模型页公布的输入、缓存读取、缓存�
 
 `codex-auto-review` 没有自己的公布价。OpenAI 把 Codex 的自动评审请求路由到 `gpt-6-luna` 执行，所以这个模型按 luna 的公布费率估值，价格说明里写明了这一路由事实。它是估值的依据说明，不是独立费率条目。
 
-Antigravity 使用的模型同样按官方公开的每百万 token 费率估值，不是 Google AI Ultra 订阅账单。`gemini-4-argon` 与 `gemini-3.8-flash` 采用 Google Gemini API 与 Vertex AI 公布的标准档与 Flex 档价格，按有效日期分段记录促销期与促销结束后的标准费率，API 美元分支保留超过 20 万总输入后的长上下文加价，订阅等价美元使用基础档费率，未公布按 token 写入单价的缓存写入保留未计价。`claude-opus-5-5` 与 `claude-sonnet-5-5` 使用 Anthropic 官方模型价格，采集器把带思考档位后缀的响应模型名归一到这两个基础模型 ID。`gpt-oss-120b` 采用 Google Cloud Vertex AI Model Garden 公布的 `openai/gpt-oss-120b-maas` 托管价格，该模型未公布缓存读写折扣，含非零缓存读写的记录保留未计价。历史会话中出现的 `claude-opus-4-6-thinking` 在官方价格页中没有独立费率条目，保留未计价。
+Antigravity 使用的模型同样按官方公开的每百万 token 费率估值，不是 Google AI Ultra 订阅账单。`gemini-4-argon` 与 `gemini-3.8-flash` 采用 Google Gemini API 与 Vertex AI 公布的标准档与 Flex 档价格，按有效日期分段记录促销期与促销结束后的标准费率，官方没有按输入长度分档，未公布按 token 写入单价的缓存写入保留未计价。`claude-opus-5-5` 与 `claude-sonnet-5-5` 使用 Anthropic 官方模型价格，采集器把带思考档位后缀的响应模型名归一到这两个基础模型 ID。`gpt-oss-120b` 采用 Google Cloud Vertex AI Model Garden 公布的 `openai/gpt-oss-120b-maas` 托管价格，该模型未公布缓存读写折扣，含非零缓存读写的记录保留未计价。历史会话中出现的 `claude-opus-4-6-thinking` 是开启思考的 Opus 4.6，思考 token 按输出计价，归一到 `claude-opus-4-6` 并使用其官方费率。
 
 未配置的模型不会自动别名到其他模型。网关参考价不是已核实的官方报价，也不能用于推导订阅 Credits。图像与实时模型需要相应媒体 Token 分桶，不能用文本四桶冒充完整费用。
 

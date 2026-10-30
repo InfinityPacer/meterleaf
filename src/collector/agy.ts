@@ -613,7 +613,7 @@ const enumModels: Record<number, { model: string; effort?: string }> = {
   1007: { model: "gemini-4-argon", effort: "low" },
   1008: { model: "gemini-4-argon", effort: "high" },
   1018: { model: "gemini-3.8-flash" },
-  1026: { model: "claude-opus-4-6-thinking" },
+  1026: { model: "claude-opus-4-6" },
   1035: { model: "claude-sonnet-5-5" },
   1036: { model: "gemini-3.8-flash", effort: "low" },
   1037: { model: "gemini-3.8-flash", effort: "high" },
@@ -631,7 +631,7 @@ const displayModels: Record<string, string> = {
   "claude opus 5.5": "claude-opus-5-5",
   "claude sonnet 5.5": "claude-sonnet-5-5",
   "gpt-oss 120b": "gpt-oss-120b",
-  "claude opus 4.6": "claude-opus-4-6-thinking",
+  "claude opus 4.6": "claude-opus-4-6",
 };
 
 /**
@@ -654,7 +654,9 @@ export function normalizeAgyModel(input: {
     let cleaned = rawResponse
       .toLowerCase()
       .replace(/^(?:models|publishers\/[^/]+\/models|openai)\//, "")
-      .replace(/-maas$/, "");
+      .replace(/-maas$/, "")
+      // claude-opus-4-6-thinking 只是开启思考的路由名，思考 token 按输出计价，没有单独费率。
+      .replace(/^(claude-[a-z]+-[0-9]+(?:-[0-9]+)*)-thinking$/, "$1");
     if (cleaned === "gemini-3.8-flash-n") {
       return {
         model: "gemini-3.8-flash",

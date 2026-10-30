@@ -464,6 +464,17 @@ test("normalizeAgyModel maps all Antigravity models and prices them through defa
   });
   expect(
     normalizeAgyModel({
+      responseModel: "claude-opus-4-6-thinking",
+      modelDisplayName: "Claude Opus 4.6 (Thinking)",
+      modelEnum: 1026,
+    }),
+  ).toEqual({
+    model: "claude-opus-4-6",
+    upstreamModel: "claude-opus-4-6-thinking",
+    reasoningEffort: null,
+  });
+  expect(
+    normalizeAgyModel({
       responseModel: null,
       modelDisplayName: null,
       modelEnum: 1008,
@@ -485,6 +496,7 @@ test("normalizeAgyModel maps all Antigravity models and prices them through defa
     "gemini-3.8-flash",
     "claude-opus-5-5",
     "claude-sonnet-5-5",
+    "claude-opus-4-6",
     "gpt-oss-120b",
   ]) {
     const fact: UsageFact = {
