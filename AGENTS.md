@@ -22,7 +22,8 @@ Meterleaf 是独立 AI 用量账本，只读采集上游用量并在本地计价
 - `bun run dev:server` 与 `bun run dev`：分别启动真实后端与前端。
 - `bun run typecheck`：检查 TypeScript 类型；`bun test tests`：运行测试。
 - `bun run build`：类型检查并构建前端；`bun run start`：启动应用。
-- `bun run build:collector`：构建采集器命令行与 macOS 上的 `dist/Meterleaf.app`。
+- `bun run build:collector`：构建采集器命令行与 macOS 上用于验证的 `dist/Meterleaf Dev.app`，它的应用标识与正式应用不同，不会接管本机已安装 Meterleaf 的后台任务。
+- `bun run build:app`：构建用于安装的 `dist/Meterleaf.app`，只在要替换「应用程序」中的 Meterleaf 时使用，装好后删掉 `dist` 里的这份，避免系统把后台任务解析到它。
 
 ## 代码风格与注释
 
