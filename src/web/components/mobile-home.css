@@ -285,15 +285,61 @@
   visibility: hidden;
 }
 
-.mobile-home-account-list > li > .account-menu-trigger {
+.mobile-home-account-list > li > .account-menu-trigger,
+.mobile-home-account-list > li > .account-drag-handle {
   top: 14px;
-  right: 2px;
   width: 44px;
   height: 44px;
 }
 
-.mobile-home-account-list > li > .account-order-actions {
-  padding: 8px 0 0;
+.mobile-home-account-list > li > .account-menu-trigger {
+  right: 2px;
+}
+
+.mobile-home-account-list > li > .account-drag-handle {
+  right: 44px;
+}
+
+.mobile-home-account-list > li[data-sorting="true"] .mobile-home-account-head {
+  padding-right: 40px;
+}
+
+.mobile-home-account-list
+  > li[data-sorting="true"]
+  > .mobile-home-account-card {
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  border-color: var(--control-line);
+}
+
+.mobile-home-account-list > li[data-dragging="true"] {
+  z-index: 20;
+}
+
+.mobile-home-account-list
+  > li[data-dragging="true"]
+  > .mobile-home-account-card {
+  cursor: grabbing;
+  background: var(--elevated);
+  border-color: var(--accent);
+  box-shadow:
+    0 12px 28px -6px rgb(24 24 27 / 18%),
+    0 0 0 1px var(--accent-line);
+}
+
+.dark
+  .mobile-home-account-list
+  > li[data-dragging="true"]
+  > .mobile-home-account-card {
+  box-shadow:
+    0 14px 32px -6px rgb(0 0 0 / 55%),
+    0 0 0 1px var(--accent-line);
+}
+
+.mobile-home-account-list > li[data-over="true"] > .mobile-home-account-card {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .mobile-home-accounts .account-heading-actions {
