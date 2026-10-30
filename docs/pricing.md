@@ -3,7 +3,7 @@
 [返回首页](../README.md)
 
 Meterleaf 将费率保存在独立 JSON 文件中，内置文件为
-`prices/meterleaf-2026-10-30.json`，同时包含 OpenAI、Anthropic Claude，以及通过 OpenCode Go 接入的 DeepSeek 与 GLM 模型。使用自定义价格表时，设置
+`prices/meterleaf-2026-10-30.json`，同时包含 OpenAI、Anthropic Claude、Google Gemini 与 Vertex AI 模型，以及通过 OpenCode Go 接入的 DeepSeek 与 GLM 模型。使用自定义价格表时，设置
 `METERLEAF_PRICE_BOOK=/path/to/prices.json` 并重启服务。自定义文件完整替换内置表，不进行隐式合并。
 
 ## 版本元数据
@@ -66,6 +66,8 @@ GLM-5.3-Flash 同样按 Go 公布的每百万 token 价格估值，这一价格�
 GPT-6.1 Sol 与 Terra 按各自模型页公布的输入、缓存读取、缓存写入与输出价格估值；API 美元分支包含超过 272K 输入后的长上下文档位，订阅等价美元不含。Codex 的 Credits 按官方 Token 费率卡配置；GPT-6.1 Terra 的缓存写入公布的是 30 分钟保留价，Codex 记录没有写入 TTL 拆分，12 小时的另一档价不单独配置。快速模式的 Credits 按官方公布的 2 倍记为 `priority` 档。
 
 `codex-auto-review` 没有自己的公布价。OpenAI 把 Codex 的自动评审请求路由到 `gpt-6-luna` 执行，所以这个模型按 luna 的公布费率估值，价格说明里写明了这一路由事实。它是估值的依据说明，不是独立费率条目。
+
+Antigravity 使用的模型同样按官方公开的每百万 token 费率估值，不是 Google AI Ultra 订阅账单。`gemini-4-argon` 与 `gemini-3.8-flash` 采用 Google Gemini API 与 Vertex AI 公布的标准档与 Flex 档价格，按有效日期分段记录促销期与促销结束后的标准费率，官方没有按输入长度分档，未公布按 token 写入单价的缓存写入保留未计价。`claude-opus-5-5` 与 `claude-sonnet-5-5` 使用 Anthropic 官方模型价格，采集器把带思考档位后缀的响应模型名归一到这两个基础模型 ID。`gpt-oss-120b` 采用 Google Cloud Vertex AI Model Garden 公布的 `openai/gpt-oss-120b-maas` 托管价格，该模型未公布缓存读写折扣，含非零缓存读写的记录保留未计价。历史会话中出现的 `claude-opus-4-6-thinking` 是开启思考的 Opus 4.6，思考 token 按输出计价，归一到 `claude-opus-4-6` 并使用其官方费率。
 
 未配置的模型不会自动别名到其他模型。网关参考价不是已核实的官方报价，也不能用于推导订阅 Credits。图像与实时模型需要相应媒体 Token 分桶，不能用文本四桶冒充完整费用。
 

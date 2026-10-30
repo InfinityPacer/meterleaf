@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import type { CollectorConfig } from "../src/collector/config";
-import { codexReaderConfig, opencodeReaderConfig } from "../src/collector/main";
+import {
+  agyReaderConfig,
+  codexReaderConfig,
+  opencodeReaderConfig,
+} from "../src/collector/main";
 
 const config = (extra: Partial<CollectorConfig>): CollectorConfig =>
   ({
@@ -19,6 +23,12 @@ test("sources default to enabled with home and database locations", () => {
   const opencode = opencodeReaderConfig(null)!;
   expect(opencode.database.endsWith("opencode.db")).toBe(true);
   expect(opencode.start).toBe(codex.start);
+  const agy = agyReaderConfig(null)!;
+  expect(agy.conversationsDir.endsWith("antigravity-cli/conversations")).toBe(
+    true,
+  );
+  expect(agy.statuslineDir.endsWith("agy-statusline")).toBe(true);
+  expect(agy.start).toBe(codex.start);
 });
 
 test("either source can be disabled or pointed elsewhere in config.json", () => {
@@ -34,4 +44,27 @@ test("either source can be disabled or pointed elsewhere in config.json", () => 
   )!;
   expect(opencode.database).toBe("/tmp/opencode.db");
   expect(opencode.start).toBe("2026-09-20T00:00:00.000Z");
+  expect(
+    agyReaderConfig(
+      config({
+        agy: {
+          enabled: false,
+          conversationsDir: "/tmp/agy-convos",
+          statuslineDir: "/tmp/agy-statusline",
+        },
+      }),
+    ),
+  ).toBeNull();
+  const agy = agyReaderConfig(
+    config({
+      agy: {
+        enabled: true,
+        conversationsDir: "/tmp/agy-convos",
+        statuslineDir: "/tmp/agy-statusline",
+      },
+    }),
+  )!;
+  expect(agy.conversationsDir).toBe("/tmp/agy-convos");
+  expect(agy.statuslineDir).toBe("/tmp/agy-statusline");
+  expect(agy.start).toBe("2026-09-20T00:00:00.000Z");
 });

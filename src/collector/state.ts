@@ -14,6 +14,7 @@ import {
 import type { QuotaSnapshot } from "./claude-code/quota";
 import type { UsageFact } from "./claude-code/usage";
 import { routeModel, type ModelAccountRule } from "./model-accounts";
+import type { SourceName } from "./sources";
 
 /**
  * 文件读取进度。offset 只推进到最后一个完整行之后；fingerprint 是 offset 之前一小段字节的摘要，
@@ -108,6 +109,15 @@ CREATE TABLE IF NOT EXISTS codex_files (
   modified REAL
 );
 CREATE TABLE IF NOT EXISTS opencode_cursor (id TEXT PRIMARY KEY, time_updated INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS agy_files (
+  path TEXT PRIMARY KEY,
+  inode TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  modified REAL NOT NULL,
+  wal_size INTEGER NOT NULL,
+  wal_modified REAL NOT NULL,
+  account TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS source_usage (external_id TEXT PRIMARY KEY, source TEXT NOT NULL);
 `;
 
@@ -227,11 +237,11 @@ export class CollectorState {
   }
 
   /**
-   * 新来源（Codex、OpenCode）的用量入账。已按 external_id 记录过的返回 false，
+   * 新来源（Codex、OpenCode、Antigravity）的用量入账。已按 external_id 记录过的返回 false，
    * 既不重复入队也不更新读取进度；出现过的用量无论被丢弃还是待发送都在记录中。
    * 应在读取器自己的事务中调用，与其读取进度同一批提交，调用方负责回滚。
    */
-  recordSourceUsage(source: "codex" | "opencode", usage: IngestUsage): boolean {
+  recordSourceUsage(source: SourceName, usage: IngestUsage): boolean {
     const inserted = this.db
       .query(
         "INSERT OR IGNORE INTO source_usage (external_id, source) VALUES (?, ?)",
@@ -243,8 +253,12 @@ export class CollectorState {
   }
 
   /** 新来源的待上传条数；按 external_id 与 outbox 的用量条目对应。 */
-  sourcePendingCounts(): Record<"codex" | "opencode", number> {
-    const counts = { codex: 0, opencode: 0 };
+  sourcePendingCounts(): Record<SourceName, number> {
+    const counts: Record<SourceName, number> = {
+      codex: 0,
+      opencode: 0,
+      agy: 0,
+    };
     for (const row of this.db
       .query<{ source: string; count: number }, []>(
         `SELECT source_usage.source AS source, COUNT(*) AS count
@@ -252,7 +266,11 @@ export class CollectorState {
          WHERE outbox.kind = 'usage' GROUP BY source`,
       )
       .all()) {
-      if (row.source === "codex" || row.source === "opencode")
+      if (
+        row.source === "codex" ||
+        row.source === "opencode" ||
+        row.source === "agy"
+      )
         counts[row.source] = row.count;
     }
     return counts;
@@ -351,6 +369,89 @@ export class CollectorState {
          ON CONFLICT (id) DO UPDATE SET time_updated = excluded.time_updated`,
       )
       .run(timeUpdated);
+  }
+
+  /** Antigravity 会话库文件读取进度：主文件与 WAL 都未变化且已关联同一账户时跳过打开。 */
+  agyFile(path: string): {
+    inode: string;
+    size: number;
+    modified: number;
+    walSize: number;
+    walModified: number;
+    account: string;
+  } | null {
+    const row = this.db
+      .query<
+        {
+          inode: string;
+          size: number;
+          modified: number;
+          wal_size: number;
+          wal_modified: number;
+          account: string;
+        },
+        [string]
+      >(
+        "SELECT inode, size, modified, wal_size, wal_modified, account FROM agy_files WHERE path = ?",
+      )
+      .get(path);
+    return row
+      ? {
+          inode: row.inode,
+          size: row.size,
+          modified: row.modified,
+          walSize: row.wal_size,
+          walModified: row.wal_modified,
+          account: row.account,
+        }
+      : null;
+  }
+
+  agyFilePaths(): string[] {
+    return this.db
+      .query<{ path: string }, []>("SELECT path FROM agy_files")
+      .all()
+      .map((row) => row.path);
+  }
+
+  saveAgyFile(row: {
+    path: string;
+    inode: string;
+    size: number;
+    modified: number;
+    walSize: number;
+    walModified: number;
+    account: string;
+  }) {
+    this.db
+      .query(
+        `INSERT INTO agy_files (path, inode, size, modified, wal_size, wal_modified, account)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (path) DO UPDATE SET inode = excluded.inode, size = excluded.size,
+           modified = excluded.modified, wal_size = excluded.wal_size,
+           wal_modified = excluded.wal_modified, account = excluded.account`,
+      )
+      .run(
+        row.path,
+        row.inode,
+        row.size,
+        row.modified,
+        row.walSize,
+        row.walModified,
+        row.account,
+      );
+  }
+
+  forgetMissingAgyFiles(present: ReadonlySet<string>): number {
+    let removed = 0;
+    const remove = this.db.query("DELETE FROM agy_files WHERE path = ?");
+    for (const path of this.agyFilePaths()) {
+      if (!present.has(path)) {
+        remove.run(path);
+        removed += 1;
+      }
+    }
+    return removed;
   }
 
   /** 事件合并与读取进度在同一事务提交，崩溃后不会出现进度前移而事件缺失。 */

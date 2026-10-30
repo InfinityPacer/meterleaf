@@ -43,7 +43,7 @@ test("bundled JSON contains separate USD branches with unchanged credits", () =>
   expect(api.usd.amount).toBe("6.075");
   expect(subscription.credits).toEqual(api.credits);
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-10-30.1");
+  expect(subscription.version).toBe("meterleaf@2026-10-30.2");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
@@ -459,4 +459,112 @@ test("same identity and revision cannot change rates; independent book identitie
   } finally {
     store.close();
   }
+});
+
+test("Antigravity models use their published Google, Anthropic and Model Garden rates", () => {
+  const baseFact: UsageFact = {
+    ...usage,
+    occurredAt: "2026-10-30T12:00:00Z",
+    tier: "standard",
+    tokens: {
+      input: 1_000_000,
+      cacheRead: 1_000_000,
+      cacheWrite: 0,
+      output: 1_000_000,
+      cacheWrite5m: null,
+      cacheWrite1h: null,
+      reasoning: 100_000,
+    },
+  };
+
+  // Gemini 4 Argon: 促销期至 2026-11-30（$2 / $0.10 / $10），2026-12-01 起（$4 / $0.20 / $20）。
+  const argonPromo = valueUsage(
+    { ...baseFact, model: "gemini-4-argon" },
+    defaultPriceBook,
+  );
+  expect(argonPromo.subscriptionUsd.amount).toBe("12.1");
+  expect(argonPromo.apiUsd.amount).toBe("12.1");
+  expect(
+    valueUsage(
+      { ...baseFact, model: "gemini-4-argon", tier: "flex" },
+      defaultPriceBook,
+    ).subscriptionUsd.amount,
+  ).toBe("6.05");
+  const argonPostPromo = valueUsage(
+    {
+      ...baseFact,
+      model: "gemini-4-argon",
+      occurredAt: "2026-12-01T00:00:00Z",
+    },
+    defaultPriceBook,
+  );
+  expect(argonPostPromo.subscriptionUsd.amount).toBe("24.2");
+  expect(argonPostPromo.apiUsd.amount).toBe("24.2");
+  expect(
+    valueUsage(
+      {
+        ...baseFact,
+        model: "gemini-4-argon",
+        tokens: { ...baseFact.tokens, cacheWrite: 1 },
+      },
+      defaultPriceBook,
+    ).usd.reason,
+  ).toBe("unsupported-rate-bucket");
+
+  // Gemini 3.8 Flash: 促销期至 2026-12-31（$0.75 / $0.075 / $3.75），2027-01-01 起（$1.50 / $0.15 / $7.50）。
+  const flashPromo = valueUsage(
+    { ...baseFact, model: "gemini-3.8-flash" },
+    defaultPriceBook,
+  );
+  expect(flashPromo.subscriptionUsd.amount).toBe("4.575");
+  expect(flashPromo.apiUsd.amount).toBe("4.575");
+  expect(
+    valueUsage(
+      { ...baseFact, model: "gemini-3.8-flash", tier: "flex" },
+      defaultPriceBook,
+    ).subscriptionUsd.amount,
+  ).toBe("2.2875");
+  const flashPostPromo = valueUsage(
+    {
+      ...baseFact,
+      model: "gemini-3.8-flash",
+      occurredAt: "2027-01-01T00:00:00Z",
+    },
+    defaultPriceBook,
+  );
+  expect(flashPostPromo.subscriptionUsd.amount).toBe("9.15");
+  expect(flashPostPromo.apiUsd.amount).toBe("9.15");
+
+  // Claude Sonnet 5.5: $2 输入、$0.10 缓存读取、$2.50 (5m) / $4 (1h) 缓存写入、$10 输出。
+  const sonnet = valueUsage(
+    {
+      ...baseFact,
+      model: "claude-sonnet-5-5",
+      tokens: {
+        ...baseFact.tokens,
+        cacheWrite: 1_000_000,
+        cacheWrite5m: 400_000,
+        cacheWrite1h: 600_000,
+      },
+    },
+    defaultPriceBook,
+  );
+  expect(sonnet.subscriptionUsd.amount).toBe("15.5");
+  expect(sonnet.apiUsd.amount).toBe("15.5");
+
+  // GPT-OSS 120B: $0.09 输入、$0.36 输出；未公布缓存读取价，有缓存读取时保留未计价。
+  const gptOss = valueUsage(
+    {
+      ...baseFact,
+      model: "gpt-oss-120b",
+      tokens: { ...baseFact.tokens, cacheRead: 0 },
+    },
+    defaultPriceBook,
+  );
+  expect(gptOss.subscriptionUsd.amount).toBe("0.45");
+  expect(gptOss.apiUsd.amount).toBe("0.45");
+  expect(
+    valueUsage({ ...baseFact, model: "gpt-oss-120b" }, defaultPriceBook).usd
+      .reason,
+  ).toBe("unsupported-rate-bucket");
 });
