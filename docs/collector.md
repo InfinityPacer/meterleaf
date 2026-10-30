@@ -184,10 +184,10 @@ meterleaf-collector claude-profiles \
 
 ```sh
 bun install --frozen-lockfile
-bun run build:collector
+bun run build:app
 ```
 
-构建产物是 `dist/Meterleaf.app`，把它移到「应用程序」文件夹。以下命令中的 `meterleaf-collector` 指应用内的可执行文件。
+构建产物是 `dist/Meterleaf.app`，把它移到「应用程序」文件夹，不要在 `dist` 里留一份。系统按应用标识找后台任务要运行的程序，同一标识有两份应用时，后台任务可能改跑 `dist` 里那份。开发验证用的 `bun run build:collector` 生成标识不同的 `Meterleaf Dev.app`，不受这个影响。以下命令中的 `meterleaf-collector` 指应用内的可执行文件。
 
 ```sh
 alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-collector"

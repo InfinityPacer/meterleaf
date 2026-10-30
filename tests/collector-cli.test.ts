@@ -422,6 +422,14 @@ describe("采集器命令行", () => {
     expect(readdirSync(agentDir).sort()).toEqual(
       SERVICE_AGENTS.map((agent) => agent.plistName).sort(),
     );
+    // 开发构建的应用包关联自己的标识，不会被系统当成已安装的 Meterleaf 来启动后台任务。
+    const devDir = join(root, "dev-bundle-agents");
+    writeServicePlists(devDir, "io.meterleaf.collector.dev");
+    for (const agent of SERVICE_AGENTS) {
+      const plist = readFileSync(join(devDir, agent.plistName), "utf8");
+      expect(plist).toContain("<string>io.meterleaf.collector.dev</string>");
+      expect(plist).not.toContain("<string>io.meterleaf.collector</string>");
+    }
 
     if (process.platform === "darwin") {
       for (const [name, plist] of [

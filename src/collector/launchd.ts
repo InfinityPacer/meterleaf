@@ -118,6 +118,7 @@ function renderServiceAgent(
   label: string,
   command: string,
   schedule: string,
+  bundleIdentifier: string,
 ): string {
   return `${plistHeader}
 <dict>
@@ -125,7 +126,7 @@ function renderServiceAgent(
   <string>${label}</string>
   <key>AssociatedBundleIdentifiers</key>
   <array>
-    <string>${BUNDLE_IDENTIFIER}</string>
+    <string>${bundleIdentifier}</string>
   </array>
   <key>BundleProgram</key>
   <string>Contents/MacOS/${SERVICE_HELPER}</string>
@@ -147,13 +148,27 @@ ${schedule}
  * 应用包解析，因此应用移动后仍然有效；内容固定，不能携带环境变量。启动的是注册助手，
  * 由它 exec 采集器，原因见 macos/meterleaf-service.swift。
  */
-export function renderServicePlist(): string {
-  return renderServiceAgent(SERVICE_LABEL, "sync", syncSchedule);
+export function renderServicePlist(
+  bundleIdentifier: string = BUNDLE_IDENTIFIER,
+): string {
+  return renderServiceAgent(
+    SERVICE_LABEL,
+    "sync",
+    syncSchedule,
+    bundleIdentifier,
+  );
 }
 
 /** 常驻接收 Claude Code OTEL 日志的包内任务，与同步任务各自独立注册。 */
-export function renderOtelRelayServicePlist(): string {
-  return renderServiceAgent(OTEL_RELAY_LABEL, "otel-relay", relaySchedule);
+export function renderOtelRelayServicePlist(
+  bundleIdentifier: string = BUNDLE_IDENTIFIER,
+): string {
+  return renderServiceAgent(
+    OTEL_RELAY_LABEL,
+    "otel-relay",
+    relaySchedule,
+    bundleIdentifier,
+  );
 }
 
 /** 旧式 LaunchAgent：可携带自定义环境变量，但登录项中显示为可执行文件名。 */
@@ -211,7 +226,7 @@ export interface ServiceAgent {
   label: string;
   plistName: string;
   summary: string;
-  render(): string;
+  render(bundleIdentifier?: string): string;
 }
 
 /** 包内后台任务的完整清单；构建脚本按此写入 plist，安装与状态也按此遍历。 */
@@ -232,11 +247,16 @@ export const SERVICE_AGENTS: readonly ServiceAgent[] = [
   },
 ];
 
-/** 构建应用包时写入包内 LaunchAgents 目录。 */
-export function writeServicePlists(dir: string): string[] {
+/** 构建应用包时写入包内 LaunchAgents 目录，关联到该应用包自己的标识。 */
+export function writeServicePlists(
+  dir: string,
+  bundleIdentifier: string = BUNDLE_IDENTIFIER,
+): string[] {
   mkdirSync(dir, { recursive: true });
   return SERVICE_AGENTS.map((agent) => {
-    writeFileSync(join(dir, agent.plistName), agent.render(), { mode: 0o644 });
+    writeFileSync(join(dir, agent.plistName), agent.render(bundleIdentifier), {
+      mode: 0o644,
+    });
     return agent.plistName;
   });
 }
