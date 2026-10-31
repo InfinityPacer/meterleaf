@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { Dialog } from "@base-ui/react/dialog";
-import { manualAccountPlans } from "../../shared/account-plan";
+import {
+  manualAccountPlansByPlatform,
+  type ManualPlanPlatform,
+} from "../../shared/account-plan";
 import { planBadge } from "../lib/plan";
 import { FilterSelect } from "./FilterSelect";
 import { Button } from "./ui/button";
@@ -10,6 +13,7 @@ export interface PlanTarget {
   name: string;
   /** 用户已指定的套餐；未指定时为 null，使用自动识别结果。 */
   plan: string | null;
+  platform: ManualPlanPlatform;
 }
 
 const automatic = "";
@@ -60,19 +64,24 @@ export function AccountPlanDialog({
               withinDialog
               options={[
                 { value: automatic, label: "自动识别" },
-                ...manualAccountPlans.map((plan) => ({
+                ...(target
+                  ? manualAccountPlansByPlatform[target.platform]
+                  : []
+                ).map((plan) => ({
                   value: plan,
                   label: planBadge({
                     plan,
                     kind: "subscription",
-                    platform: "anthropic",
+                    platform: target!.platform,
                   })!.label,
                 })),
               ]}
             />
             <Dialog.Description className="account-rename-hint">
-              自动识别使用采集器从 Claude Code
-              读到的套餐。账户不再登录这台电脑、读不到套餐时，可以在这里指定。设置后本周期的额度预估照常使用已有数据。
+              {target?.platform === "google"
+                ? "Antigravity 只报出 Google AI Ultra，不区分 5x 和 20x，在这里指定订阅的倍数。"
+                : "自动识别使用采集器从 Claude Code 读到的套餐。账户不再登录这台电脑、读不到套餐时，可以在这里指定。"}
+              设置后本周期的额度预估照常使用已有数据。
             </Dialog.Description>
             {error && <p role="alert">{error}</p>}
             <div className="account-rename-actions">

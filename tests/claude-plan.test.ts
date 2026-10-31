@@ -41,6 +41,9 @@ describe("Claude 套餐识别", () => {
       [credential("pro", "default_claude_ai"), "pro"],
       [credential("max", "default_claude_max_5x"), "max-5x"],
       [credential("max", "default_claude_max_20x"), "max-20x"],
+      // 改名为 Ultra 后可能出现的取值，仍归到 max-20x，已有账户的套餐不变。
+      [credential("ultra", "default_claude_ultra"), "max-20x"],
+      [credential("ultra", null), "max-20x"],
       [credential("max", null), "max"],
       [credential("team", "default_claude_max_5x"), "team-premium"],
       [credential("team", null), "team"],
@@ -588,6 +591,24 @@ describe("补上套餐后额度预估不丢已有数据", () => {
       expect(ledger.accounts()[0]?.plan).toBe("team-premium");
       ledger.setAccountPlan(ref("source", "team"), null);
       expect(ledger.accounts()[0]?.plan).toBeNull();
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("Antigravity 账户指定 Ultra 5x 后，报表显示指定倍数，预估不变", () => {
+    const ledger = new LedgerStore(":memory:", defaultPriceBook);
+    try {
+      ledger.saveAccounts(
+        [{ ...account, platform: "google", plan: "Google AI Ultra" }],
+        at(0),
+      );
+      ledger.saveQuotas(quotas, at(200));
+      const before = estimate(ledger);
+      expect(before.usd).not.toBeNull();
+      ledger.setAccountPlan(ref("source", "team"), "ultra-5x");
+      expect(ledger.accounts()[0]?.plan).toBe("ultra-5x");
+      expect(estimate(ledger)).toEqual(before);
     } finally {
       ledger.close();
     }

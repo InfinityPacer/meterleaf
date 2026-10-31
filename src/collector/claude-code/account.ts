@@ -118,8 +118,9 @@ export function planFor(
     return "team-premium";
   if (credentialType !== "team") {
     if (credentialTier === "default_claude_max_5x") return "max-5x";
-    if (credentialTier === "default_claude_max_20x") return "max-20x";
+    if (isUltraTier(credentialTier)) return "max-20x";
   }
+  if (credentialType === "ultra") return "max-20x";
   if (credentialType === "pro" || credentialType === "enterprise")
     return credentialType;
   const tier = account.rateLimitTier;
@@ -128,7 +129,8 @@ export function planFor(
       ? "team-premium"
       : teamPlan(account.seatTier);
   if (tier === "default_claude_max_5x") return "max-5x";
-  if (tier === "default_claude_max_20x") return "max-20x";
+  if (isUltraTier(tier) || account.organizationType === "claude_ultra")
+    return "max-20x";
   if (account.organizationType === "claude_pro") return "pro";
   if (account.seatTier?.startsWith("team_")) return teamPlan(account.seatTier);
   if (credentialType === "team" || credentialType === "max")
@@ -136,7 +138,21 @@ export function planFor(
   return account.organizationType;
 }
 
-const subscriptionTypes = new Set(["pro", "max", "team", "enterprise"]);
+/**
+ * Ultra（原 Max 20x）仍以 max-20x 上报，已有账户的套餐与额度预估不随改名变化。上游目前仍写
+ * default_claude_max_20x，default_claude_ultra 是改名后可能出现的新取值。
+ */
+function isUltraTier(tier: string | null): boolean {
+  return tier === "default_claude_max_20x" || tier === "default_claude_ultra";
+}
+
+const subscriptionTypes = new Set([
+  "pro",
+  "max",
+  "ultra",
+  "team",
+  "enterprise",
+]);
 
 /**
  * 订阅需有订阅计费方式，且组织类型属于 Claude 订阅。新版 Claude Code 不再写组织类型，
