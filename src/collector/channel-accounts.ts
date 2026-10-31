@@ -5,13 +5,13 @@ import {
 } from "./model-accounts";
 
 /**
- * 按「来源加通道」决定账户。Codex 与 OpenCode 的本地记录自带供应商字段，账户在读取时
+ * 按「来源加通道」决定账户。Codex、OpenCode 与 omp 的本地记录自带供应商字段，账户在读取时
  * 就能确定；每个来源由此返回一个读取器共用的规则。账户字段与模型映射相同，复用其定义。
  */
 export const channelAccountRuleSchema = z
   .object({
-    source: z.enum(["codex", "opencode"]),
-    /** 通道值：Codex 会话的 model_provider，或 OpenCode 消息的 model.providerID。 */
+    source: z.enum(["codex", "opencode", "omp"]),
+    /** 通道值：Codex 会话的 model_provider，OpenCode 消息的 model.providerID，或 omp 助手消息的 provider。 */
     channel: z.string().min(1).max(128),
     ...modelAccountRuleSchema.omit({ match: true }).shape,
   })
@@ -53,6 +53,15 @@ export const DEFAULT_CHANNEL_ACCOUNTS: readonly ChannelAccountRule[] = [
   },
   {
     source: "opencode",
+    channel: "opencode-go",
+    id: "opencode-go",
+    name: "OpenCode Go",
+    platform: "opencode-go",
+    kind: "subscription",
+    plan: "go",
+  },
+  {
+    source: "omp",
     channel: "opencode-go",
     id: "opencode-go",
     name: "OpenCode Go",

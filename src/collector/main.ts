@@ -3,7 +3,12 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { readAgy, type AgyReaderSources } from "./agy";
+import {
+  maybeRefreshAgyQuota,
+  readAgy,
+  type AgyReaderReport,
+  type AgyReaderSources,
+} from "./agy";
 import { readClaudeJson } from "./claude-code/account";
 import {
   readCredentialText,
@@ -40,6 +45,7 @@ import {
 import { acquireLock } from "./lock";
 import type { OpenCodeReaderSources } from "./opencode";
 import { readOpenCode } from "./opencode";
+import { readOmp, type OmpReaderReport, type OmpReaderSources } from "./omp";
 import { startOtelRelay, type OtelRelay } from "./otel-relay";
 import { resolvePaths, type CollectorPaths } from "./paths";
 import { COLLECTOR_VERSION, pushOutbox } from "./push";
@@ -60,7 +66,7 @@ import {
 } from "./tasks";
 
 const help = `Meterleaf Collector ${COLLECTOR_VERSION}
-读取本机 Claude Code、Codex、OpenCode 与 Antigravity 的本地用量记录，推送到 Meterleaf 账本。
+读取本机 Claude Code、Codex、OpenCode、Antigravity 与 omp 的本地用量记录，推送到 Meterleaf 账本。
 
 用法: meterleaf-collector <命令> [选项]
 
@@ -105,10 +111,13 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
   - 只上传计量数字、模型、时间、套餐和账户 UUID 派生信息；不上传对话内容、工具输出、
     文件路径、工作目录、Git 分支、邮箱、显示名或组织名。
 
-对 Codex、OpenCode 与 Antigravity 的保证:
+对 Codex、OpenCode、Antigravity 与 omp 的保证:
   - 只以只读方式打开 ~/.codex（或 CODEX_HOME）下的会话记录、OpenCode 本地数据库
     ~/.local/share/opencode/opencode.db、Antigravity 会话库 ~/.gemini/antigravity-cli/conversations/*.db
-    以及状态栏额度缓存 ~/.cache/agy-statusline。不修改原文件，不调用任何接口。
+    以及 omp 会话记录 ~/.omp/agent/sessions。不修改这些原文件。
+  - 唯一的例外在 sync：发现新的 Antigravity 用量时，最多每 5 分钟运行一次本机
+    agy -p /usage 刷新状态栏额度缓存 ~/.cache/agy-statusline（agy 自己联网读取额度）。
+    采集器本身不调用任何接口，scan 绝不触发。
   - 只上传计量数字、模型、推理档位、时间与套餐；会话标识、消息内容、路径与
     凭据不读取、不上传。
   - 新来源只上传发生时间不早于 ${SOURCE_START.slice(0, 10)} 的记录，更早的历史在读取时丢弃。
@@ -565,37 +574,107 @@ export function opencodeReaderConfig(
   };
 }
 
+/** 状态栏额度缓存目录；Antigravity 来源与 omp 的 Antigravity 请求共用它确定活跃账号。 */
+function agyStatuslineDir(config: CollectorConfig | null): string {
+  const home = process.env.HOME || homedir();
+  const cacheHome = process.env.XDG_CACHE_HOME || join(home, ".cache");
+  return resolve(
+    config?.agy?.statuslineDir ?? join(cacheHome, "agy-statusline"),
+  );
+}
+
+export function ompReaderConfig(
+  config: CollectorConfig | null,
+): OmpReaderSources | null {
+  if (config?.omp?.enabled === false) return null;
+  return {
+    sessionsDir: resolve(
+      config?.omp?.sessionsDir ??
+        join(process.env.HOME || homedir(), ".omp", "agent", "sessions"),
+    ),
+    statuslineDir: agyStatuslineDir(config),
+    start: SOURCE_START,
+    channelAccounts: effectiveChannelAccounts(config),
+  };
+}
+
 export function agyReaderConfig(
   config: CollectorConfig | null,
 ): AgyReaderSources | null {
   if (config?.agy?.enabled === false) return null;
   const home = process.env.HOME || homedir();
-  const cacheHome = process.env.XDG_CACHE_HOME || join(home, ".cache");
   return {
     conversationsDir: resolve(
       config?.agy?.conversationsDir ??
         join(home, ".gemini", "antigravity-cli", "conversations"),
     ),
-    statuslineDir: resolve(
-      config?.agy?.statuslineDir ?? join(cacheHome, "agy-statusline"),
-    ),
+    statuslineDir: agyStatuslineDir(config),
     start: SOURCE_START,
   };
 }
 
-/** 一轮同步里的新来源读取；来源停用或入口缺失时为空。 */
+/**
+ * 一轮同步里的新来源读取；来源停用或入口缺失时为空。
+ *
+ * sync 发现新的 Antigravity 用量（来自 agy 会话库或 omp）时，在同一轮按需刷新额度缓存，
+ * 刷新成功后重读一次，让新额度和因缺少账号而暂缓的 omp 请求随这一批一起上传。
+ * scan 承诺只读且不联网，不触发刷新。
+ */
 export async function readNewSources(
   state: CollectorState,
   config: CollectorConfig | null,
+  options: { allowQuotaRefresh?: boolean } = {},
 ): Promise<SourceReaderReport[]> {
-  const reports: SourceReaderReport[] = [];
   const codex = codexReaderConfig(config);
-  if (codex) reports.push(await readCodex(state, codex));
+  const codexReport = codex ? await readCodex(state, codex) : null;
   const opencode = opencodeReaderConfig(config);
-  if (opencode) reports.push(readOpenCode(state, opencode));
+  const opencodeReport = opencode ? readOpenCode(state, opencode) : null;
   const agy = agyReaderConfig(config);
-  if (agy) reports.push(readAgy(state, agy));
-  return reports;
+  const omp = ompReaderConfig(config);
+  let agyReport = agy ? readAgy(state, agy) : null;
+  let ompReport = omp ? await readOmp(state, omp) : null;
+  if (
+    options.allowQuotaRefresh &&
+    agy &&
+    ((agyReport?.recorded ?? 0) > 0 ||
+      (ompReport?.agyRecorded ?? 0) > 0 ||
+      (ompReport?.agyMissingAccount ?? 0) > 0)
+  ) {
+    const refresh = await maybeRefreshAgyQuota(state, agy);
+    if (refresh.refreshed) {
+      const again = readAgy(state, agy);
+      const ompAgain = omp ? await readOmp(state, omp) : null;
+      agyReport = settleAgy(agyReport!, again);
+      if (ompReport && ompAgain) ompReport = settleOmp(ompReport, ompAgain);
+    }
+    if (agyReport) {
+      agyReport.quotaRefreshed = refresh.refreshed;
+      agyReport.quotaRefreshError = refresh.error;
+    }
+  }
+  return [codexReport, opencodeReport, agyReport, ompReport].filter(
+    (report) => report !== null,
+  );
+}
+
+/** 刷新额度后的重读只补充新入队的额度和之前暂缓的记录，候选数沿用第一遍。 */
+function settleAgy(first: AgyReaderReport, again: AgyReaderReport) {
+  return {
+    ...first,
+    recorded: first.recorded + again.recorded,
+    quotas: first.quotas + again.quotas,
+    activeAccount: again.activeAccount,
+  };
+}
+
+function settleOmp(first: OmpReaderReport, again: OmpReaderReport) {
+  return {
+    ...first,
+    recorded: first.recorded + again.recorded,
+    agyRecorded: first.agyRecorded + again.agyRecorded,
+    skipped: again.skipped,
+    agyMissingAccount: again.agyMissingAccount,
+  };
 }
 
 /** 同步报告里的来源摘要行；没有活动时省略。 */
@@ -631,8 +710,10 @@ async function runScan(paths: CollectorPaths, json: boolean) {
       new Date(),
       () => new Date(),
     );
-    // scan 只跑一轮：先解析 Claude Code，再按来源读取 Codex、OpenCode 与 Antigravity。
-    const sources = await readNewSources(state, config);
+    // scan 只跑一轮：先解析 Claude Code，再按来源读取 Codex、OpenCode、Antigravity 与 omp。
+    const sources = await readNewSources(state, config, {
+      allowQuotaRefresh: false,
+    });
     const totals = state.usageTotals();
     const quotas = state
       .pending<{
@@ -695,7 +776,7 @@ async function runScan(paths: CollectorPaths, json: boolean) {
     }
     const pendingBySource = state.sourcePendingCounts();
     console.log(
-      `新来源待发送: codex ${format(pendingBySource.codex)}，opencode ${format(pendingBySource.opencode)}，agy ${format(pendingBySource.agy)}`,
+      `新来源待发送: codex ${format(pendingBySource.codex)}，opencode ${format(pendingBySource.opencode)}，agy ${format(pendingBySource.agy)}，omp ${format(pendingBySource.omp)}`,
     );
     for (const quota of quotas) {
       const accountPrefix = quota.account ? `${quota.account} ` : "";
@@ -734,8 +815,10 @@ async function runSync(paths: CollectorPaths): Promise<number> {
       new Date(),
       () => new Date(),
     );
-    // 新来源读取：Claude Code 之后处理 Codex 与 OpenCode，最后统一上传。
-    const sources = await readNewSources(state, config);
+    // 新来源读取：Claude Code 之后处理 Codex、OpenCode、Antigravity 与 omp，最后统一上传。
+    const sources = await readNewSources(state, config, {
+      allowQuotaRefresh: true,
+    });
     const now = new Date().toISOString();
     // 额度来源的问题与推送无关，每轮都会重复，只在情况变化时记一行，恢复时也记一行。
     const quotaIssue = quotaIssueText(report);
@@ -1147,12 +1230,13 @@ function runStatus(paths: CollectorPaths) {
                   `${rule.source}:${rule.channel} → ${rule.name} (${rule.platform})`,
               )
               .join("，")
-          : "未配置（使用内置默认：codex:openai → Codex，codex:go 与 opencode:opencode-go → OpenCode Go）"
+          : "未配置（使用内置默认：codex:openai → Codex，codex:go、opencode:opencode-go 与 omp:opencode-go → OpenCode Go）"
       }`,
     );
     const codex = codexReaderConfig(config);
     const opencode = opencodeReaderConfig(config);
     const agy = agyReaderConfig(config);
+    const omp = ompReaderConfig(config);
     console.log(
       `读取来源: ${
         codex ? `Codex（${codex.home}）` : "Codex 已停用"
@@ -1160,7 +1244,7 @@ function runStatus(paths: CollectorPaths) {
         agy
           ? `Antigravity（${agy.conversationsDir}，额度 ${agy.statuslineDir}）`
           : "Antigravity 已停用"
-      }`,
+      }，${omp ? `omp（${omp.sessionsDir}）` : "omp 已停用"}`,
     );
     const profiles = config.claudeProfiles ?? [];
     console.log(
@@ -1201,12 +1285,13 @@ function runStatus(paths: CollectorPaths) {
     const pending = state.pendingCounts();
     const codexPending = state.codexFilePaths().length;
     const agyPending = state.agyFilePaths().length;
+    const ompPending = state.ompFilePaths().length;
     console.log(
-      `已跟踪文件: ${cursors.length}（另有 Codex ${codexPending}，Antigravity ${agyPending}），已读取 ${format(cursors.reduce((sum, row) => sum + row.offset, 0))} 字节`,
+      `已跟踪文件: ${cursors.length}（另有 Codex ${codexPending}，Antigravity ${agyPending}，omp ${ompPending}），已读取 ${format(cursors.reduce((sum, row) => sum + row.offset, 0))} 字节`,
     );
     const bySource = state.sourcePendingCounts();
     console.log(
-      `待发送: 用量 ${pending.usage}（Claude ${pending.usage - bySource.codex - bySource.opencode - bySource.agy}，Codex ${bySource.codex}，OpenCode ${bySource.opencode}，Antigravity ${bySource.agy}），账户 ${pending.account}，额度 ${pending.quota}，OTEL ${pending.otel}`,
+      `待发送: 用量 ${pending.usage}（Claude ${pending.usage - bySource.codex - bySource.opencode - bySource.agy - bySource.omp}，Codex ${bySource.codex}，OpenCode ${bySource.opencode}，Antigravity ${bySource.agy}，omp ${bySource.omp}），账户 ${pending.account}，额度 ${pending.quota}，OTEL ${pending.otel}`,
     );
     console.log(`最近成功: ${state.getMeta("last_success_at") ?? "无"}`);
     const failureAt = state.getMeta("last_failure_at");
@@ -1217,6 +1302,17 @@ function runStatus(paths: CollectorPaths) {
     }
     const lastSources = state.getMeta("last_sources");
     if (lastSources) console.log(`上轮来源: ${lastSources}`);
+    const refreshAt = state.getMeta("agy_quota_refresh_at");
+    if (refreshAt) {
+      const refreshStatus = state.getMeta("agy_quota_refresh_status") ?? "";
+      console.log(
+        `Antigravity 额度刷新: 最近尝试 ${refreshAt}（${
+          refreshStatus.startsWith("error:")
+            ? `失败，${refreshStatus.slice(6)}`
+            : "成功"
+        }）`,
+      );
+    }
     for (const segment of state.segments()) {
       console.log(
         `账户区间: ${shortId(segment.accountUuid)} ${segment.firstSeen} → ${segment.lastSeen}`,

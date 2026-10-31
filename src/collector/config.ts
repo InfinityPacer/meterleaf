@@ -43,8 +43,15 @@ const agySourceSchema = z
   })
   .strict();
 
+const ompSourceSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    sessionsDir: z.string().startsWith("/").optional(),
+  })
+  .strict();
+
 /**
- * 新来源只上传不早于这一时刻的记录，是三个来源的固定起点配置项。
+ * 新来源只上传不早于这一时刻的记录，是各个来源共用的固定起点。
  * 本地记录历史可能比账本接入早，不支持更早的费率与账户推断。
  */
 export const SOURCE_START = "2026-09-20T00:00:00.000Z";
@@ -69,7 +76,7 @@ const configSchema = z
     statuslineCache: z.string().startsWith("/").optional(),
     /** 可选：按模型名把用量归入独立账户，按顺序取第一条命中的规则。 */
     modelAccounts: z.array(modelAccountRuleSchema).max(50).optional(),
-    /** 可选：按「来源加通道」把 Codex 与 OpenCode 的用量归入独立账户。 */
+    /** 可选：按「来源加通道」把 Codex、OpenCode 与 omp 的用量归入独立账户。 */
     channelAccounts: z.array(channelAccountRuleSchema).max(50).optional(),
     /** 可选：同一台电脑上通过 CLAUDE_CONFIG_DIR 登录的其他 Claude 账户。 */
     claudeProfiles: z.array(claudeProfileSchema).max(20).optional(),
@@ -79,6 +86,8 @@ const configSchema = z
     opencode: opencodeSourceSchema.optional(),
     /** 可选：Antigravity CLI 本地会话库与状态栏额度缓存读取器；目录不存在时该来源本轮为空。 */
     agy: agySourceSchema.optional(),
+    /** 可选：omp 会话记录读取器；目录不存在时该来源本轮为空。 */
+    omp: ompSourceSchema.optional(),
     /** 可选：本机 OTEL 中转的监听端口，省略时使用 4319。 */
     otelRelay: otelRelaySchema.optional(),
     /** 可选：sync 收尾时按间隔运行的额外任务，按登记顺序执行，名称不能重复。 */
