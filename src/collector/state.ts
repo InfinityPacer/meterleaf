@@ -108,6 +108,15 @@ CREATE TABLE IF NOT EXISTS codex_files (
   size INTEGER,
   modified REAL
 );
+CREATE TABLE IF NOT EXISTS omp_files (
+  path TEXT PRIMARY KEY,
+  offset INTEGER NOT NULL,
+  inode TEXT NOT NULL,
+  tail TEXT NOT NULL,
+  context TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  modified REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS opencode_cursor (id TEXT PRIMARY KEY, time_updated INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS agy_files (
   path TEXT PRIMARY KEY,
@@ -237,7 +246,7 @@ export class CollectorState {
   }
 
   /**
-   * 新来源（Codex、OpenCode、Antigravity）的用量入账。已按 external_id 记录过的返回 false，
+   * 新来源（Codex、OpenCode、Antigravity、omp）的用量入账。已按 external_id 记录过的返回 false，
    * 既不重复入队也不更新读取进度；出现过的用量无论被丢弃还是待发送都在记录中。
    * 应在读取器自己的事务中调用，与其读取进度同一批提交，调用方负责回滚。
    */
@@ -258,6 +267,7 @@ export class CollectorState {
       codex: 0,
       opencode: 0,
       agy: 0,
+      omp: 0,
     };
     for (const row of this.db
       .query<{ source: string; count: number }, []>(
@@ -269,7 +279,8 @@ export class CollectorState {
       if (
         row.source === "codex" ||
         row.source === "opencode" ||
-        row.source === "agy"
+        row.source === "agy" ||
+        row.source === "omp"
       )
         counts[row.source] = row.count;
     }
@@ -344,6 +355,82 @@ export class CollectorState {
     let removed = 0;
     const remove = this.db.query("DELETE FROM codex_files WHERE path = ?");
     for (const path of this.codexFilePaths()) {
+      if (!present.has(path)) {
+        remove.run(path);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  /** omp 会话文件读取进度，结构与 Codex 相同；只由读取器维护。 */
+  ompFile(path: string): {
+    offset: number;
+    inode: string;
+    tail: string;
+    context: string;
+    size: number;
+    modified: number;
+  } | null {
+    return (
+      this.db
+        .query<
+          {
+            offset: number;
+            inode: string;
+            tail: string;
+            context: string;
+            size: number;
+            modified: number;
+          },
+          [string]
+        >(
+          "SELECT offset, inode, tail, context, size, modified FROM omp_files WHERE path = ?",
+        )
+        .get(path) ?? null
+    );
+  }
+
+  ompFilePaths(): string[] {
+    return this.db
+      .query<{ path: string }, []>("SELECT path FROM omp_files")
+      .all()
+      .map((row) => row.path);
+  }
+
+  saveOmpFile(row: {
+    path: string;
+    offset: number;
+    inode: string;
+    tail: string;
+    context: string;
+    size: number;
+    modified: number;
+  }) {
+    this.db
+      .query(
+        `INSERT INTO omp_files (path, offset, inode, tail, context, size, modified)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (path) DO UPDATE SET offset = excluded.offset, inode = excluded.inode,
+           tail = excluded.tail, context = excluded.context, size = excluded.size,
+           modified = excluded.modified`,
+      )
+      .run(
+        row.path,
+        row.offset,
+        row.inode,
+        row.tail,
+        row.context,
+        row.size,
+        row.modified,
+      );
+  }
+
+  /** omp 文件消失或被移到别的目录只清理读取进度；已入账的用量靠 source_usage 保持幂等。 */
+  forgetMissingOmpFiles(present: ReadonlySet<string>): number {
+    let removed = 0;
+    const remove = this.db.query("DELETE FROM omp_files WHERE path = ?");
+    for (const path of this.ompFilePaths()) {
       if (!present.has(path)) {
         remove.run(path);
         removed += 1;

@@ -389,7 +389,7 @@ describe("effectiveChannelAccounts", () => {
       ],
     });
     const go = rules.filter((rule) => rule.id === "opencode-go");
-    expect(go).toHaveLength(2);
+    expect(go).toHaveLength(3);
     for (const rule of go) {
       expect(rule.name).toBe("Go 订阅");
       expect(rule.plan).toBe("go-plus");

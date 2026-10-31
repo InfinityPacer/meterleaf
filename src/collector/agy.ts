@@ -1,17 +1,22 @@
 import { createHash } from "node:crypto";
 import {
+  accessSync,
   closeSync,
+  constants,
   copyFileSync,
   existsSync,
   fstatSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Database } from "bun:sqlite";
@@ -834,6 +839,10 @@ export interface AgyReaderReport extends SourceReaderReport {
   quotas: number;
   quotaIgnoredLines: number;
   activeAccount: string | null;
+  /** 本轮是否按需运行了 agy -p /usage 并写出新的额度缓存。 */
+  quotaRefreshed: boolean;
+  /** 本轮按需刷新失败的原因；未尝试或成功时为 null。 */
+  quotaRefreshError: string | null;
 }
 
 export function emptyAgyReport(): AgyReaderReport {
@@ -845,6 +854,8 @@ export function emptyAgyReport(): AgyReaderReport {
     quotas: 0,
     quotaIgnoredLines: 0,
     activeAccount: null,
+    quotaRefreshed: false,
+    quotaRefreshError: null,
   };
 }
 
@@ -1002,6 +1013,41 @@ function resolveOccurredAt(
   return steps.fallbackLatest;
 }
 
+const agyQuotaFileName = (label: string) => `quota-${label}.tsv`;
+
+/** statuslineDir 下已有额度缓存的账号标签，按字母序。 */
+function listAgyQuotaLabels(statuslineDir: string): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(statuslineDir).sort();
+  } catch {
+    return [];
+  }
+  const labels: string[] = [];
+  for (const name of entries) {
+    const match = /^quota-([a-z0-9][a-z0-9_-]{0,63})\.tsv$/.exec(name);
+    if (match) labels.push(match[1]!);
+  }
+  return labels;
+}
+
+/** 当前活跃标签：优先 current-account，缺失时目录下只有一个额度缓存才采用它。 */
+function activeAgyLabel(statuslineDir: string): string | null {
+  const current = readAgyCurrentAccount(statuslineDir);
+  if (current) return current;
+  const labels = listAgyQuotaLabels(statuslineDir);
+  return labels.length === 1 ? labels[0]! : null;
+}
+
+/** Antigravity 用量归属的账号：readAgy 与 omp 读取器共用，保证两条路径归到同一个账户。 */
+export function resolveAgyActiveAccount(
+  statuslineDir: string,
+  state: CollectorState,
+): { label: string | null; plan: string | null } {
+  const label = activeAgyLabel(statuslineDir);
+  return { label, plan: label ? (readPlanMap(state)[label] ?? null) : null };
+}
+
 /**
  * 读取一轮 Antigravity 状态栏额度缓存与本地会话数据库。
  * 1. 扫描 statuslineDir 下所有 quota-<label>.tsv，为每个 Google 账号建立 Gemini 与 Claude/GPT
@@ -1017,47 +1063,32 @@ export function readAgy(
 ): AgyReaderReport {
   const report = emptyAgyReport();
   const plans = readPlanMap(state);
-  const discoveredLabels: string[] = [];
 
-  if (existsSync(sources.statuslineDir)) {
-    let entries: string[] = [];
-    try {
-      entries = readdirSync(sources.statuslineDir).sort();
-    } catch {
-      entries = [];
-    }
-    for (const name of entries) {
-      const match = /^quota-([a-z0-9][a-z0-9_-]{0,63})\.tsv$/.exec(name);
-      if (!match) continue;
-      const label = match[1]!;
-      discoveredLabels.push(label);
-      const cache = readAgyQuotaFile(
-        join(sources.statuslineDir, name),
-        label,
-        now,
-      );
-      if (!cache) continue;
-      report.quotaIgnoredLines += cache.ignoredLines;
-      if (cache.plan) plans[label] = cache.plan;
-      const effectivePlan = plans[label] ?? null;
-      const accounts = agyAccountsForLabel(label, effectivePlan);
-      state.db.transaction(() => {
-        state.upsertAccount(accounts.account);
-        for (const legacy of accounts.legacy) state.upsertAccount(legacy);
-        if (cache.entries.length > 0) {
-          const snapshot = agyQuotaSnapshot(cache);
-          if (state.recordQuota(snapshot, `agy:${label}`)) {
-            report.quotas += snapshot.quotas.length;
-          }
+  for (const label of listAgyQuotaLabels(sources.statuslineDir)) {
+    const cache = readAgyQuotaFile(
+      join(sources.statuslineDir, agyQuotaFileName(label)),
+      label,
+      now,
+    );
+    if (!cache) continue;
+    report.quotaIgnoredLines += cache.ignoredLines;
+    if (cache.plan) plans[label] = cache.plan;
+    const effectivePlan = plans[label] ?? null;
+    const accounts = agyAccountsForLabel(label, effectivePlan);
+    state.db.transaction(() => {
+      state.upsertAccount(accounts.account);
+      for (const legacy of accounts.legacy) state.upsertAccount(legacy);
+      if (cache.entries.length > 0) {
+        const snapshot = agyQuotaSnapshot(cache);
+        if (state.recordQuota(snapshot, `agy:${label}`)) {
+          report.quotas += snapshot.quotas.length;
         }
-        state.setMeta("agy_plans", JSON.stringify(plans));
-      })();
-    }
+      }
+      state.setMeta("agy_plans", JSON.stringify(plans));
+    })();
   }
 
-  const activeAccount =
-    readAgyCurrentAccount(sources.statuslineDir) ??
-    (discoveredLabels.length === 1 ? discoveredLabels[0]! : null);
+  const activeAccount = activeAgyLabel(sources.statuslineDir);
   report.activeAccount = activeAccount;
 
   if (activeAccount) {
@@ -1266,4 +1297,320 @@ export function readAgy(
   }
 
   return report;
+}
+
+// ---- 额度按需刷新 ----
+
+const refreshIntervalMs = 5 * 60_000;
+const probeTimeoutMs = 35_000;
+const quotaBuckets: Record<string, AgyWindowKey> = {
+  "gemini-5h": "gemini_5h",
+  "gemini-weekly": "gemini_weekly",
+  "3p-5h": "3p_5h",
+  "3p-weekly": "3p_weekly",
+};
+const tsvOrder = [...Object.values(quotaBuckets), "plan"];
+
+export interface AgyQuotaRefreshResult {
+  /** 是否启动了 agy；节流或状态栏刚刷新过而跳过时为 false。 */
+  attempted: boolean;
+  /** 是否写出了新的额度缓存。 */
+  refreshed: boolean;
+  label: string | null;
+  error: string | null;
+}
+
+export interface AgyRefreshOptions {
+  /** 覆盖 agy 可执行文件位置，默认读 AGY_BIN 再按固定目录查找。 */
+  agyBin?: string;
+  timeoutMs?: number;
+}
+
+/**
+ * macOS 后台任务的 PATH 不含 ~/.local/bin，而 agy 默认装在那里，所以先按固定目录查找。
+ */
+function findAgy(override: string | undefined): string | null {
+  const explicit = override ?? process.env.AGY_BIN;
+  const home = process.env.HOME || homedir();
+  const candidates = explicit
+    ? [explicit]
+    : [
+        ...[join(home, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin"],
+        ...(process.env.PATH ?? "").split(":").filter(Boolean),
+      ].map((dir) => join(dir, "agy"));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // 继续查找下一个位置。
+    }
+  }
+  return null;
+}
+
+/** 日志只带邮箱本地部分的标签，完整邮箱不进入任何返回值或日志。 */
+function labelFromAgyLog(log: string): string | null {
+  const emails = [...log.matchAll(/authenticated successfully as ([^\s]+)/g)];
+  const email = emails.at(-1)?.[1];
+  if (!email) return null;
+  const label = email
+    .split("@")[0]!
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "-");
+  return isValidAgyLabel(label) ? label : null;
+}
+
+/** agy -p /usage 返回的四个额度桶，换算成状态栏缓存的行：窗口名、已用百分比整数、重置 Unix 秒。 */
+function parseUsageBuckets(output: string): Map<string, string> | string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return "agy 返回的不是有效 JSON";
+  }
+  const root = parsed as {
+    status?: unknown;
+    command?: { data?: { groups?: { buckets?: unknown }[] } };
+  } | null;
+  if (root?.status !== "SUCCESS") return "agy /usage 没有返回 SUCCESS";
+  const rows = new Map<string, string>();
+  for (const group of root.command?.data?.groups ?? []) {
+    if (!Array.isArray(group?.buckets)) continue;
+    for (const bucket of group.buckets as Record<string, unknown>[]) {
+      const key =
+        typeof bucket?.id === "string" ? quotaBuckets[bucket.id] : null;
+      const remaining = bucket?.remaining_fraction;
+      const resetMs =
+        typeof bucket?.reset_time === "string"
+          ? Date.parse(bucket.reset_time)
+          : NaN;
+      if (
+        !key ||
+        typeof remaining !== "number" ||
+        !Number.isFinite(remaining) ||
+        remaining < 0 ||
+        remaining > 1 ||
+        !Number.isFinite(resetMs)
+      )
+        continue;
+      const used = Math.round((1 - remaining) * 100);
+      rows.set(key, `${key}\t${used}\t${Math.floor(resetMs / 1000)}`);
+    }
+  }
+  return rows.size > 0 ? rows : "agy /usage 没有可用的额度桶";
+}
+
+/** 同目录写满临时文件再改名，状态栏脚本同时写同一文件时也不会留下半截内容。 */
+function replaceFile(path: string, content: string) {
+  const temporary = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, content, { mode: 0o600 });
+    renameSync(temporary, path);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+/**
+ * 把刷出的窗口合并进 quota-<label>.tsv。agy -p /usage 不返回套餐，原文件里的 plan 行
+ * 和这次没刷到的窗口行原样保留，同名窗口用新值覆盖。
+ */
+function mergeQuotaFile(path: string, fresh: Map<string, string>) {
+  const rows = new Map<string, string>();
+  let existing = "";
+  try {
+    existing = readFileSync(path, "utf8");
+  } catch {
+    // 首次写入。
+  }
+  for (const line of existing.split("\n")) {
+    const [name, second, third, extra] = line.replace(/\r$/, "").split("\t");
+    if (
+      name &&
+      second &&
+      third &&
+      extra === undefined &&
+      tsvOrder.includes(name)
+    )
+      rows.set(name, `${name}\t${second}\t${third}`);
+  }
+  for (const [name, row] of fresh) rows.set(name, row);
+  const lines = tsvOrder.flatMap((name) => rows.get(name) ?? []);
+  replaceFile(path, lines.map((line) => `${line}\n`).join(""));
+}
+
+/**
+ * 运行一次 agy -p /usage 并把结果写回状态栏额度缓存。失败只体现在返回值里，
+ * 已有的 quota-<label>.tsv 与 current-account 保持原样。
+ *
+ * 子进程输出写进文件而不是管道，agy 派生的后台进程占着管道也不会让 sync 一直等；
+ * 独立进程组让超时或结束后能连同它的子进程一起终止。
+ */
+export async function refreshAgyQuota(
+  sources: Pick<AgyReaderSources, "statuslineDir">,
+  options: AgyRefreshOptions = {},
+): Promise<AgyQuotaRefreshResult> {
+  const result: AgyQuotaRefreshResult = {
+    attempted: false,
+    refreshed: false,
+    label: null,
+    error: null,
+  };
+  const agyBin = findAgy(options.agyBin);
+  if (!agyBin) return { ...result, error: "找不到 agy 可执行文件" };
+  result.attempted = true;
+  const home = process.env.HOME || homedir();
+  const tempDir = mkdtempSync(join(tmpdir(), "meterleaf-agy-usage-"));
+  const logFile = join(tempDir, "agy.log");
+  const outFile = join(tempDir, "usage.json");
+  try {
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined) env[key] = value;
+    }
+    env.PATH = [
+      join(home, ".local", "bin"),
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      env.PATH ?? "",
+    ]
+      .filter(Boolean)
+      .join(":");
+    env.METERLEAF_AGY_PROBE = "1";
+    env.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
+    env.BROWSER = "/usr/bin/false";
+
+    const outputFd = openSync(outFile, "w", 0o600);
+    let child: ReturnType<typeof Bun.spawn>;
+    try {
+      child = Bun.spawn(
+        [
+          agyBin,
+          "-p",
+          "/usage",
+          "--output-format",
+          "json",
+          "--print-timeout",
+          "30s",
+          "--log-file",
+          logFile,
+        ],
+        {
+          cwd: tempDir,
+          env,
+          stdin: "ignore",
+          stdout: outputFd,
+          stderr: "ignore",
+          detached: true,
+        },
+      );
+    } finally {
+      closeSync(outputFd);
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(
+        () => resolve("timeout"),
+        options.timeoutMs ?? probeTimeoutMs,
+      );
+    });
+    const outcome = await Promise.race([child.exited, deadline]);
+    clearTimeout(timer);
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // 进程组已全部退出。
+    }
+    if (outcome === "timeout") {
+      await Promise.race([child.exited, Bun.sleep(2000)]);
+      return { ...result, error: "agy 超时，已终止" };
+    }
+    if (outcome !== 0) return { ...result, error: `agy 退出码 ${outcome}` };
+
+    const buckets = parseUsageBuckets(readFileSync(outFile, "utf8"));
+    if (typeof buckets === "string") return { ...result, error: buckets };
+
+    let logged: string | null = null;
+    try {
+      logged = labelFromAgyLog(readFileSync(logFile, "utf8"));
+    } catch {
+      // 没有日志时回退到状态栏记录的账号。
+    }
+    const label = logged ?? activeAgyLabel(sources.statuslineDir);
+    if (!label) return { ...result, error: "无法确定 agy 登录的账号标签" };
+
+    mkdirSync(sources.statuslineDir, { recursive: true, mode: 0o700 });
+    mergeQuotaFile(
+      join(sources.statuslineDir, agyQuotaFileName(label)),
+      buckets,
+    );
+    if (logged && readAgyCurrentAccount(sources.statuslineDir) !== logged)
+      replaceFile(
+        join(sources.statuslineDir, "current-account"),
+        `${logged}\n`,
+      );
+    return { ...result, refreshed: true, label };
+  } catch (error) {
+    return {
+      ...result,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 发现新的 Antigravity 用量后调用。距上次尝试不足 5 分钟，或状态栏刚写过额度缓存时
+ * 直接跳过。尝试时间在启动 agy 之前写入，失败也按 5 分钟退避，不会每分钟重试。
+ * 错误只在与上轮不同时记一行日志。
+ */
+export async function maybeRefreshAgyQuota(
+  state: CollectorState,
+  sources: AgyReaderSources,
+  now: Date = new Date(),
+  options: AgyRefreshOptions = {},
+): Promise<AgyQuotaRefreshResult> {
+  const skipped: AgyQuotaRefreshResult = {
+    attempted: false,
+    refreshed: false,
+    label: null,
+    error: null,
+  };
+  const lastAttemptAt = state.getMeta("agy_quota_refresh_at");
+  if (lastAttemptAt) {
+    const elapsed = now.getTime() - Date.parse(lastAttemptAt);
+    if (elapsed >= 0 && elapsed < refreshIntervalMs) return skipped;
+  }
+  const label = resolveAgyActiveAccount(sources.statuslineDir, state).label;
+  if (label) {
+    try {
+      const cacheAge =
+        now.getTime() -
+        statSync(join(sources.statuslineDir, agyQuotaFileName(label))).mtimeMs;
+      if (cacheAge < refreshIntervalMs) return skipped;
+    } catch {
+      // 还没有额度缓存，需要刷新。
+    }
+  }
+  state.setMeta("agy_quota_refresh_at", now.toISOString());
+  const result = await refreshAgyQuota(sources, options);
+  const status = result.error
+    ? `error:${result.error}`
+    : result.refreshed
+      ? `ok:${result.label}`
+      : "";
+  const previous = state.getMeta("agy_quota_refresh_status") ?? "";
+  if (status !== previous) {
+    state.setMeta("agy_quota_refresh_status", status);
+    if (result.error)
+      console.error(
+        `${now.toISOString()} Antigravity 额度刷新失败: ${result.error}`,
+      );
+    else if (previous.startsWith("error:"))
+      console.log(`${now.toISOString()} Antigravity 额度刷新已恢复`);
+  }
+  return result;
 }

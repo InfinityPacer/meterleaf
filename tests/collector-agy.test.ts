@@ -1,8 +1,11 @@
 import { Database } from "bun:sqlite";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
+  appendFileSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readFileSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -15,11 +18,16 @@ import {
   decodeAgyGenMetadata,
   decodeAgyStepMetadata,
   extractAgyTokens,
+  maybeRefreshAgyQuota,
   normalizeAgyModel,
   readAgy,
   readAgyCurrentAccount,
   readAgyQuotaFile,
+  refreshAgyQuota,
+  type AgyReaderReport,
 } from "../src/collector/agy";
+import type { CollectorConfig } from "../src/collector/config";
+import { readNewSources } from "../src/collector/main";
 import { CollectorState } from "../src/collector/state";
 import type { UsageFact } from "../src/domain/connector";
 import { defaultPriceBook } from "../src/domain/default-prices";
@@ -665,6 +673,8 @@ test("readAgy ingests quota and SQLite conversations idempotently and attributes
         quotas: 4,
         quotaIgnoredLines: 0,
         activeAccount: "alice",
+        quotaRefreshed: false,
+        quotaRefreshError: null,
       });
 
       const pendingCounts = state.pendingCounts();
@@ -772,5 +782,438 @@ test("readAgy ingests quota and SQLite conversations idempotently and attributes
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- 额度按需刷新 ----
+
+const usageJson = (fractions: Record<string, number>) =>
+  JSON.stringify({
+    status: "SUCCESS",
+    command: {
+      data: {
+        groups: [
+          {
+            buckets: Object.entries(fractions).map(([id, remaining]) => ({
+              id,
+              remaining_fraction: remaining,
+              reset_time: "2026-11-06T10:58:15Z",
+            })),
+          },
+        ],
+      },
+    },
+  });
+
+/** 替身 agy：记录被调用次数，把给定内容当作 /usage 输出，并按需往 --log-file 写登录日志。 */
+function fakeAgy(
+  dir: string,
+  behaviour: {
+    output?: string;
+    exitCode?: number;
+    loggedInAs?: string;
+    hang?: boolean;
+  },
+) {
+  const marker = join(dir, "calls");
+  const script = join(dir, "agy");
+  const outputFile = join(dir, "fake-output.json");
+  writeFileSync(outputFile, behaviour.output ?? "");
+  writeFileSync(
+    script,
+    `#!/bin/sh
+echo run >> '${marker}'
+while [ $# -gt 0 ]; do
+  [ "$1" = "--log-file" ] && log="$2"
+  shift
+done
+${behaviour.loggedInAs ? `echo "I OAuth: authenticated successfully as ${behaviour.loggedInAs}" > "$log"` : ""}
+${behaviour.hang ? "sleep 30" : `cat '${outputFile}'`}
+exit ${behaviour.exitCode ?? 0}
+`,
+    { mode: 0o755 },
+  );
+  return {
+    script,
+    calls: () => {
+      try {
+        return readFileSync(marker, "utf8").trim().split("\n").length;
+      } catch {
+        return 0;
+      }
+    },
+  };
+}
+
+function refreshWorkspace() {
+  const dir = mkdtempSync(join(tmpdir(), "meterleaf-agy-refresh-"));
+  const statuslineDir = join(dir, "statusline");
+  const scratch = join(dir, "tmp");
+  mkdirSync(statuslineDir);
+  mkdirSync(scratch);
+  const quota = join(statuslineDir, "quota-alice.tsv");
+  return {
+    dir,
+    statuslineDir,
+    scratch,
+    quota,
+    sources: {
+      conversationsDir: join(dir, "none"),
+      statuslineDir,
+      start: "2026-09-20T00:00:00.000Z",
+    },
+  };
+}
+const longAgo = new Date("2026-10-30T00:00:00.000Z");
+const staleQuota = [
+  "gemini_5h\t90\t1793409600",
+  "gemini_weekly\t80\t1793841600",
+  "3p_5h\t10\t1793409600",
+  "3p_weekly\t5\t1793841600",
+  "plan\tGoogle AI Ultra\t-",
+].join("\n");
+
+test("maybeRefreshAgyQuota runs agy, keeps the plan row, and replaces only refreshed windows atomically", async () => {
+  const w = refreshWorkspace();
+  const state = new CollectorState(":memory:");
+  try {
+    writeFileSync(w.quota, staleQuota + "\n");
+    utimesSync(w.quota, longAgo, longAgo);
+    writeFileSync(join(w.statuslineDir, "current-account"), "alice\n");
+    const agy = fakeAgy(w.dir, {
+      output: usageJson({
+        "gemini-5h": 0.885,
+        "gemini-weekly": 0.7355,
+        "3p-weekly": 0.9884,
+      }),
+      loggedInAs: "Alice@example.com",
+    });
+    const now = new Date("2026-10-31T12:00:00.000Z");
+    process.env.TMPDIR = w.scratch;
+    const result = await maybeRefreshAgyQuota(state, w.sources, now, {
+      agyBin: agy.script,
+    });
+    expect(result).toMatchObject({
+      attempted: true,
+      refreshed: true,
+      label: "alice",
+      error: null,
+    });
+    expect(agy.calls()).toBe(1);
+    // 没刷到的 3p_5h 与 plan 行原样保留，刷到的窗口换成新值（已用百分比取整）。
+    expect(readFileSync(w.quota, "utf8")).toBe(
+      [
+        "gemini_5h\t12\t1793962695",
+        "gemini_weekly\t26\t1793962695",
+        "3p_5h\t10\t1793409600",
+        "3p_weekly\t1\t1793962695",
+        "plan\tGoogle AI Ultra\t-",
+      ].join("\n") + "\n",
+    );
+    expect(readdirSync(w.statuslineDir).sort()).toEqual([
+      "current-account",
+      "quota-alice.tsv",
+    ]);
+    expect(readdirSync(w.scratch)).toEqual([]);
+    expect(state.getMeta("agy_quota_refresh_at")).toBe(now.toISOString());
+
+    // 5 分钟内即使仍有新用量也不再启动 agy。
+    const soon = new Date(now.getTime() + 4 * 60_000);
+    utimesSync(w.quota, longAgo, longAgo);
+    expect(
+      await maybeRefreshAgyQuota(state, w.sources, soon, {
+        agyBin: agy.script,
+      }),
+    ).toMatchObject({ attempted: false, refreshed: false });
+    expect(agy.calls()).toBe(1);
+    const later = new Date(now.getTime() + 5 * 60_000);
+    expect(
+      (
+        await maybeRefreshAgyQuota(state, w.sources, later, {
+          agyBin: agy.script,
+        })
+      ).refreshed,
+    ).toBe(true);
+    expect(agy.calls()).toBe(2);
+  } finally {
+    delete process.env.TMPDIR;
+    state.close();
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("maybeRefreshAgyQuota skips when the status line just wrote the cache", async () => {
+  const w = refreshWorkspace();
+  const state = new CollectorState(":memory:");
+  try {
+    const now = new Date("2026-10-31T12:00:00.000Z");
+    writeFileSync(w.quota, staleQuota + "\n");
+    writeFileSync(join(w.statuslineDir, "current-account"), "alice\n");
+    const fresh = new Date(now.getTime() - 2 * 60_000);
+    utimesSync(w.quota, fresh, fresh);
+    const agy = fakeAgy(w.dir, { output: usageJson({ "gemini-5h": 0.5 }) });
+    expect(
+      await maybeRefreshAgyQuota(state, w.sources, now, {
+        agyBin: agy.script,
+      }),
+    ).toMatchObject({ attempted: false });
+    expect(agy.calls()).toBe(0);
+    // 跳过不算一次尝试，之后缓存变旧就能刷新。
+    expect(state.getMeta("agy_quota_refresh_at")).toBeNull();
+    const stale = new Date(now.getTime() + 4 * 60_000);
+    expect(
+      (
+        await maybeRefreshAgyQuota(state, w.sources, stale, {
+          agyBin: agy.script,
+        })
+      ).refreshed,
+    ).toBe(true);
+  } finally {
+    state.close();
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed probe leaves the cache untouched, leaves no temp files, and backs off for 5 minutes", async () => {
+  const failures: { name: string; behaviour: Parameters<typeof fakeAgy>[1] }[] =
+    [
+      { name: "exit", behaviour: { exitCode: 1, output: "" } },
+      { name: "not json", behaviour: { output: "oops" } },
+      {
+        name: "not success",
+        behaviour: { output: JSON.stringify({ status: "ERROR" }) },
+      },
+      {
+        name: "no usable bucket",
+        behaviour: { output: usageJson({ "gemini-5h": 1.5, other: 0.5 }) },
+      },
+      {
+        name: "unknown account",
+        behaviour: { output: usageJson({ "gemini-5h": 0.5 }) },
+      },
+    ];
+  const logged = spyOn(console, "error").mockImplementation(() => {});
+  for (const [index, { name, behaviour }] of failures.entries()) {
+    const w = refreshWorkspace();
+    const state = new CollectorState(":memory:");
+    try {
+      if (name !== "unknown account") {
+        writeFileSync(w.quota, staleQuota + "\n");
+        writeFileSync(join(w.statuslineDir, "current-account"), "alice\n");
+        utimesSync(w.quota, longAgo, longAgo);
+      }
+      const agy = fakeAgy(w.dir, behaviour);
+      process.env.TMPDIR = w.scratch;
+      const now = new Date("2026-10-31T12:00:00.000Z");
+      const result = await maybeRefreshAgyQuota(state, w.sources, now, {
+        agyBin: agy.script,
+      });
+      expect(result.refreshed, name).toBe(false);
+      expect(result.error, name).not.toBeNull();
+      if (name !== "unknown account")
+        expect(readFileSync(w.quota, "utf8"), name).toBe(staleQuota + "\n");
+      expect(readdirSync(w.scratch), name).toEqual([]);
+      expect(state.getMeta("agy_quota_refresh_at"), name).toBe(
+        now.toISOString(),
+      );
+      await maybeRefreshAgyQuota(
+        state,
+        w.sources,
+        new Date(now.getTime() + 60_000),
+        { agyBin: agy.script },
+      );
+      expect(agy.calls(), name).toBe(1);
+      // 同一个错误只记一行日志。
+      expect(logged, name).toHaveBeenCalledTimes(index + 1);
+    } finally {
+      delete process.env.TMPDIR;
+      state.close();
+      rmSync(w.dir, { recursive: true, force: true });
+    }
+  }
+  logged.mockRestore();
+});
+
+test("a probe that hangs is killed at the deadline and a missing agy is reported", async () => {
+  const w = refreshWorkspace();
+  const state = new CollectorState(":memory:");
+  try {
+    writeFileSync(w.quota, staleQuota + "\n");
+    writeFileSync(join(w.statuslineDir, "current-account"), "alice\n");
+    utimesSync(w.quota, longAgo, longAgo);
+    const agy = fakeAgy(w.dir, { hang: true });
+    const started = Date.now();
+    const hung = await refreshAgyQuota(w.sources, {
+      agyBin: agy.script,
+      timeoutMs: 300,
+    });
+    expect(hung.error).toContain("超时");
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(readFileSync(w.quota, "utf8")).toBe(staleQuota + "\n");
+
+    const missing = await refreshAgyQuota(w.sources, {
+      agyBin: join(w.dir, "absent"),
+    });
+    expect(missing).toMatchObject({ attempted: false, refreshed: false });
+    expect(missing.error).toContain("agy");
+  } finally {
+    state.close();
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+/** 一个 omp 会话文件，里面有一条新的 Antigravity 请求。 */
+function ompSession(dir: string, id: string) {
+  const sessionsDir = join(dir, "omp");
+  mkdirSync(join(sessionsDir, "-work"), { recursive: true });
+  const path = join(sessionsDir, "-work", "s.jsonl");
+  const event = {
+    type: "message",
+    id,
+    timestamp: "2026-10-30T10:00:00.000Z",
+    message: {
+      role: "assistant",
+      provider: "google-antigravity",
+      model: "gemini-4-argon",
+      usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
+    },
+  };
+  appendFileSync(path, JSON.stringify(event) + "\n");
+  return sessionsDir;
+}
+
+function syncConfig(w: ReturnType<typeof refreshWorkspace>, omp: string) {
+  return {
+    server: "https://meterleaf.example.com",
+    sourceId: "claude-code-mac",
+    key: "mlk_test",
+    createdAt: "2026-10-30T00:00:00Z",
+    codex: { enabled: false },
+    opencode: { enabled: false },
+    agy: {
+      enabled: true,
+      conversationsDir: w.sources.conversationsDir,
+      statuslineDir: w.statuslineDir,
+    },
+    omp: { enabled: true, sessionsDir: omp },
+  } as CollectorConfig;
+}
+
+test("sync refreshes quota when omp brings new Antigravity usage, uploads both together, and scan never does", async () => {
+  const w = refreshWorkspace();
+  const state = new CollectorState(":memory:");
+  try {
+    writeFileSync(w.quota, staleQuota + "\n");
+    writeFileSync(join(w.statuslineDir, "current-account"), "alice\n");
+    utimesSync(w.quota, longAgo, longAgo);
+    const agy = fakeAgy(w.dir, {
+      output: usageJson({ "gemini-5h": 0.5 }),
+      loggedInAs: "alice@example.com",
+    });
+    process.env.AGY_BIN = agy.script;
+    const config = syncConfig(w, ompSession(w.dir, "m1"));
+
+    // scan 只读：有新用量也不运行 agy。
+    const scanState = new CollectorState(":memory:");
+    try {
+      await readNewSources(scanState, config, { allowQuotaRefresh: false });
+      expect(agy.calls()).toBe(0);
+    } finally {
+      scanState.close();
+    }
+
+    const reports = await readNewSources(state, config, {
+      allowQuotaRefresh: true,
+    });
+    expect(agy.calls()).toBe(1);
+    const agyReport = reports.find((item) => item.source === "agy") as
+      AgyReaderReport | undefined;
+    expect(agyReport).toMatchObject({
+      quotaRefreshed: true,
+      quotaRefreshError: null,
+    });
+    // 刷出的新额度和这批 omp 用量在同一轮进入待发送队列。
+    expect(state.sourcePendingCounts().omp).toBe(1);
+    const quotas = state
+      .pending<IngestQuota>("quota", 100)
+      .map((item) => item.payload);
+    expect(quotas.filter((q) => q.window === "five-hour").at(-1)?.percent).toBe(
+      50,
+    );
+    expect(readFileSync(w.quota, "utf8")).toContain("plan\tGoogle AI Ultra\t-");
+
+    // 之后又有新用量，但距上次尝试不足 5 分钟，不再运行 agy。
+    ompSession(w.dir, "m2");
+    await readNewSources(state, config, { allowQuotaRefresh: true });
+    expect(agy.calls()).toBe(1);
+    expect(state.sourcePendingCounts().omp).toBe(2);
+  } finally {
+    delete process.env.AGY_BIN;
+    state.close();
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("sync does not run agy when nothing new from Antigravity arrived", async () => {
+  const w = refreshWorkspace();
+  const state = new CollectorState(":memory:");
+  try {
+    writeFileSync(w.quota, staleQuota + "\n");
+    writeFileSync(join(w.statuslineDir, "current-account"), "alice\n");
+    utimesSync(w.quota, longAgo, longAgo);
+    const agy = fakeAgy(w.dir, { output: usageJson({ "gemini-5h": 0.5 }) });
+    process.env.AGY_BIN = agy.script;
+    const config = syncConfig(w, ompSession(w.dir, "m1"));
+    // 第一轮把用量读完并刷新，第二轮没有新请求，即使节流时间已过也不运行。
+    await readNewSources(state, config, { allowQuotaRefresh: true });
+    expect(agy.calls()).toBe(1);
+    state.setMeta(
+      "agy_quota_refresh_at",
+      new Date(Date.now() - 10 * 60_000).toISOString(),
+    );
+    utimesSync(w.quota, longAgo, longAgo);
+    await readNewSources(state, config, { allowQuotaRefresh: true });
+    expect(agy.calls()).toBe(1);
+  } finally {
+    delete process.env.AGY_BIN;
+    state.close();
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("a first-time omp Antigravity request is held until the refresh reveals the account, then recorded in the same round", async () => {
+  const w = refreshWorkspace();
+  const state = new CollectorState(":memory:");
+  try {
+    const agy = fakeAgy(w.dir, {
+      output: usageJson({ "gemini-5h": 0.5, "3p-5h": 0.9 }),
+      loggedInAs: "Bob@example.com",
+    });
+    process.env.AGY_BIN = agy.script;
+    const config = syncConfig(w, ompSession(w.dir, "m1"));
+    const reports = await readNewSources(state, config, {
+      allowQuotaRefresh: true,
+    });
+    expect(agy.calls()).toBe(1);
+    expect(readFileSync(join(w.statuslineDir, "current-account"), "utf8")).toBe(
+      "bob\n",
+    );
+    expect(readFileSync(join(w.statuslineDir, "quota-bob.tsv"), "utf8")).toBe(
+      "gemini_5h\t50\t1793962695\n3p_5h\t10\t1793962695\n",
+    );
+    const omp = reports.find((item) => item.source === "omp")!;
+    expect(omp).toMatchObject({ read: 1, recorded: 1, skipped: {} });
+    expect(
+      state.pending<IngestUsage>("usage", 10)[0]?.payload.accountExternalId,
+    ).toBe("agy-bob");
+    expect(
+      state
+        .pending<IngestQuota>("quota", 10)
+        .map((item) => item.payload.window),
+    ).toEqual(["five-hour", "five-hour-3p"]);
+  } finally {
+    delete process.env.AGY_BIN;
+    state.close();
+    rmSync(w.dir, { recursive: true, force: true });
   }
 });
