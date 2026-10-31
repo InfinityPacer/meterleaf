@@ -13,6 +13,7 @@ import {
   withFableQuotaWindow,
   withExtraQuotaWindows,
   quotaResetMinute,
+  accountQuotaWindows,
 } from "../src/web/lib/quota-display";
 
 type QuotaEstimate = NonNullable<AccountWindow["estimate"]>;
@@ -141,6 +142,39 @@ test("weekly exhaustion hides five-hour quota across all account entry points", 
       now,
     ).map((item) => item.key),
   ).toEqual(["fiveHour", "sevenDay"]);
+});
+
+test("an account with two quota pools lists each pool and is exhausted only when both are", () => {
+  const exhaustedGemini = {
+    fiveHour: { ...window, percent: 40 },
+    sevenDay: window,
+    fiveHourThirdParty: { ...window, percent: 30 },
+    sevenDayThirdParty: { ...window, percent: 60 },
+  };
+  // Gemini 周额度用尽只收起 Gemini 的 5h，Claude 池照常显示。
+  expect(
+    accountQuotaWindows(exhaustedGemini, now).map(({ key, label }) => [
+      key,
+      label,
+    ]),
+  ).toEqual([
+    ["sevenDay", "Gemini 7d"],
+    ["fiveHourThirdParty", "Claude 5h"],
+    ["sevenDayThirdParty", "Claude 7d"],
+  ]);
+  expect(accountQuotaExhausted(exhaustedGemini, now)).toBe(false);
+  expect(
+    accountQuotaExhausted(
+      { ...exhaustedGemini, sevenDayThirdParty: window },
+      now,
+    ),
+  ).toBe(true);
+  // 只有一个池的账户不加池名。
+  expect(
+    accountQuotaWindows({ fiveHour: null, sevenDay: window }, now).map(
+      ({ label }) => label,
+    ),
+  ).toEqual(["7d"]);
 });
 
 test("a reported five-hour window keeps its place while waiting for a new sample", () => {

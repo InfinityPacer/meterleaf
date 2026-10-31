@@ -39,15 +39,34 @@ export type QuotaChargeReader = (
 /**
  * 按模型单独计量的额度窗口只累计对应模型的请求；返回 null 表示窗口覆盖账户全部请求。
  * Fable 周额度与账户整体周额度分开消耗，混入其他模型会高估本期费用和推算额度。
+ * Antigravity 账户有两个额度池：带 -3p 的窗口只计 Claude、GPT 等第三方模型；账户上报了
+ * 第三方池（pooled）时，它的 5 小时与周窗口属于 Gemini 池，只计 Gemini 模型。
  */
 export function quotaModelScope(
   window: QuotaFact["window"],
+  pooled = false,
 ): ((model: string) => boolean) | null {
-  return window === "seven-day-fable" ? fableModelScope : null;
+  if (window === "seven-day-fable") return fableModelScope;
+  if (window === "five-hour-3p" || window === "seven-day-3p")
+    return thirdPartyModelScope;
+  if (pooled && (window === "five-hour" || window === "seven-day"))
+    return geminiModelScope;
+  return null;
+}
+
+/** 账户的额度历史里出现第三方池窗口，说明它的 5 小时与周窗口只属于 Gemini 池。 */
+export function hasThirdPartyPool(history: readonly CollectedQuota[]) {
+  return history.some(
+    (row) =>
+      row.fact.window === "five-hour-3p" || row.fact.window === "seven-day-3p",
+  );
 }
 
 // 固定函数身份，报表索引按身份复用同一窗口的汇总。
 const fableModelScope = (model: string) => model.startsWith("claude-fable-");
+// 与采集器按模型名分池的规则一致：gemini- 开头的归 Gemini 池，其余归第三方池。
+const geminiModelScope = (model: string) => model.startsWith("gemini-");
+const thirdPartyModelScope = (model: string) => !model.startsWith("gemini-");
 
 /** 到期等待新快照时仅展示已重置状态，旧百分比不能带入下一周期。 */
 export interface QuotaView {
@@ -188,6 +207,7 @@ export function quotaView(
   history: CollectedQuota[],
   rowsOrSumReader: readonly PricedUsage[] | QuotaChargeReader,
   now: string,
+  pooled = false,
 ): QuotaView | null {
   if (!history.length) return null;
   // 每条读数只解析一次时间，历史较长时排序和逐周期筛选不再重复解析。
@@ -214,7 +234,7 @@ export function quotaView(
     ? new Date(reset - fact.windowMinutes! * 60_000).toISOString()
     : null;
   const start = startsAt ? Date.parse(startsAt) : NaN;
-  const modelScope = quotaModelScope(fact.window);
+  const modelScope = quotaModelScope(fact.window, pooled);
   const readSource =
     typeof rowsOrSumReader === "function"
       ? rowsOrSumReader

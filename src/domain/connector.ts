@@ -61,9 +61,17 @@ export interface QuotaFact extends SourceRef {
   accountExternalId: string;
   /**
    * seven-day-fable 是只计 Fable 请求的独立周额度，与账户整体周额度分开消耗。
+   * five-hour-3p 与 seven-day-3p 是 Antigravity 的 Claude/GPT 额度池，与同一 Google 账户的
+   * Gemini 池（five-hour、seven-day）分开消耗。
    * monthly 是按订阅日起算的月额度，目前只有服务端读取的 OpenCode Go 提供。
    */
-  window: "five-hour" | "seven-day" | "seven-day-fable" | "monthly";
+  window:
+    | "five-hour"
+    | "seven-day"
+    | "seven-day-fable"
+    | "five-hour-3p"
+    | "seven-day-3p"
+    | "monthly";
   percent: number | null;
   sampledAt: string | null;
   resetsAt: string | null;

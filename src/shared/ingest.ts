@@ -64,13 +64,21 @@ export const ingestAccountSchema = z
     kind: z.enum(["subscription", "api", "unknown"]),
     plan: z.string().min(1).max(64).nullable(),
     subjectKey: z.string().min(1).max(128).nullable(),
+    /** 账户并入另一个账户时指向它，历史用量与额度随之归到那个账户；旧采集器不发送。 */
+    parentExternalId: externalIdSchema.nullable().optional(),
   })
   .strict();
 
 export const ingestQuotaSchema = z
   .object({
     accountExternalId: externalIdSchema,
-    window: z.enum(["five-hour", "seven-day", "seven-day-fable"]),
+    window: z.enum([
+      "five-hour",
+      "seven-day",
+      "seven-day-fable",
+      "five-hour-3p",
+      "seven-day-3p",
+    ]),
     percent: z.number().finite().min(0).max(1000).nullable(),
     /** 上游采样时间，不是采集器读取或上传时间。 */
     sampledAt: timestampSchema.nullable(),

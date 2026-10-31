@@ -41,7 +41,7 @@ export function ingestToDomain(sourceId: string, batch: IngestBatch) {
     accounts: batch.accounts.map((account): SourceAccount => ({
       sourceId,
       ...account,
-      parentExternalId: null,
+      parentExternalId: account.parentExternalId ?? null,
     })),
     usage: batch.usage.map((usage): UsageFact => ({
       sourceId,

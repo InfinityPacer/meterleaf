@@ -17,7 +17,9 @@ export const modelNames = [
 ];
 
 /** 可复现的虚构数据，仅用于交互原型；不得用作实时数据回退或计费费率源。 */
-export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSnapshot {
+export function createDemoLedger(
+  usdBasis: UsdBasis = "subscription",
+): LedgerSnapshot {
   const asOf = "2026-09-08T16:00:00+08:00";
   const end = new Date(asOf).getTime();
   const records: LedgerRecord[] = [];
@@ -30,9 +32,7 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
       const m = (h * 7 + j * 3) % 11;
       const modelIndex = m < 5 ? 0 : m < 8 ? 1 : m < 10 ? 2 : 3;
       const longContext = h === 0 && j === 0;
-      const input = longContext
-        ? 80_000
-        : 200 + ((h * 193 + j * 827) % 8400);
+      const input = longContext ? 80_000 : 200 + ((h * 193 + j * 827) % 8400);
       const cacheRead = longContext
         ? 300_000
         : 1700 + ((h * 1037 + j * 5197) % 65000);
@@ -161,6 +161,66 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
       });
     }
   }
+  // Antigravity 演示账户：同一个 Google 账户有 Gemini 与 Claude 两个额度池，各自计费。
+  const googleModels = ["gemini-4-argon", "claude-sonnet-5-5"] as const;
+  const googleRates = {
+    "gemini-4-argon": 2.5,
+    "claude-sonnet-5-5": 3,
+  } as const;
+  for (let h = 0; h < 24 * 7; h++) {
+    const hour = (16 - (h % 24) + 24) % 24;
+    if (hour < 10 || hour > 22) continue;
+    for (let j = 0; j < 2; j++) {
+      const model = googleModels[(h + j) % 3 === 0 ? 1 : 0];
+      const input = 200 + ((h * 173 + j * 541) % 4000);
+      const cacheRead = 8_000 + ((h * 2711 + j * 6151) % 90_000);
+      const output = 200 + ((h * 61 + j * 271) % 2600);
+      const weighted = new Decimal(input)
+        .add(new Decimal(cacheRead).mul(0.1))
+        .add(new Decimal(output).mul(5));
+      const usd = weighted.mul(googleRates[model]).div(1e6).toFixed(6);
+      const charge = (value: string | null): Charge => ({
+        amount: value,
+        basis: value === null ? "unpriced" : "estimated",
+        reason: value === null ? "demo-no-credits" : "demo-rate",
+        assumedStandard: true,
+      });
+      records.push({
+        id: `demo-google-${String(h * 2 + j + 1).padStart(5, "0")}`,
+        occurredAt: new Date(end - h * 3600000 - j * 1307000).toISOString(),
+        accountId: "google",
+        model,
+        input,
+        cacheRead,
+        cacheWrite: 0,
+        output,
+        usd,
+        credits: null,
+        tier: "standard",
+        quality: "estimated",
+        priceVersion: "demo-2026-09",
+        valuation: {
+          version: "demo-2026-09",
+          usdBasis,
+          usd: charge(usd),
+          apiUsd: charge(usd),
+          subscriptionUsd: charge(usd),
+          credits: charge(null),
+        },
+        details: {
+          requestedModel: model,
+          sentModel: model,
+          responseModel: model,
+          responseModelMismatch: false,
+          requestedReasoningEffort: efforts[(h + j) % efforts.length]!,
+          reasoningEffort: efforts[(h + j) % efforts.length]!,
+          durationMs: 2600 + ((h * 191 + j * 83) % 30000),
+          firstTokenMs: 420 + ((h * 37 + j * 23) % 1600),
+        },
+      });
+    }
+  }
+  const isGemini = (model: string) => model.startsWith("gemini-");
   const lifetime = (accountId?: string): AccountLifetime =>
     usage(records.filter((row) => !accountId || row.accountId === accountId));
   // 演示额度沿用服务端口径，周期用量从窗口起点累计到采样时刻，7d 预估按用量占百分比外推。
@@ -169,14 +229,14 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
     percent: number,
     resetsAt: string,
     hours: number,
-    modelPrefix?: string,
+    modelScope?: (model: string) => boolean,
   ): AccountWindow => {
     const start = Date.parse(resetsAt) - hours * 3600000;
     const rows = records.filter(
       (row) =>
         row.accountId === accountId &&
         Date.parse(row.occurredAt) >= start &&
-        (!modelPrefix || row.model.startsWith(modelPrefix)),
+        (!modelScope || modelScope(row.model)),
     );
     const period = usage(rows);
     const hasCredits = rows.some((row) => row.credits !== null);
@@ -260,9 +320,40 @@ export function createDemoLedger(usdBasis: UsdBasis = "subscription"): LedgerSna
           18,
           "2026-09-12T16:00:00+08:00",
           168,
-          "claude-fable-",
+          (model) => model.startsWith("claude-fable-"),
         ),
         lifetime: lifetime("claude"),
+      },
+      {
+        id: "google",
+        name: "Antigravity",
+        plan: "ultra-5x",
+        platform: "google",
+        kind: "subscription",
+        sampledAt: asOf,
+        fiveHour: window("google", 9, "2026-09-08T19:30:00+08:00", 5, isGemini),
+        sevenDay: window(
+          "google",
+          31,
+          "2026-09-13T08:00:00+08:00",
+          168,
+          isGemini,
+        ),
+        fiveHourThirdParty: window(
+          "google",
+          6,
+          "2026-09-08T19:30:00+08:00",
+          5,
+          (model) => !isGemini(model),
+        ),
+        sevenDayThirdParty: window(
+          "google",
+          72,
+          "2026-09-13T08:00:00+08:00",
+          168,
+          (model) => !isGemini(model),
+        ),
+        lifetime: lifetime("google"),
       },
       {
         id: "api",
