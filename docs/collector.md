@@ -114,9 +114,9 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 采集器默认读取本机 Antigravity CLI（`agy`）的额度缓存与本地会话数据库，目录不存在时本轮为空，不报错。需要停用或修改目录时，在采集器 `config.json` 中配置 `agy` 的 `enabled`、`conversationsDir` 和 `statuslineDir`。
 
 - 额度缓存来自 `~/.cache/agy-statusline/quota-<label>.tsv`，由状态栏脚本与 Stop hook 写出，采样时间取文件修改时间。每行用制表符分隔窗口名、已用百分比整数和重置时间的 Unix 秒，窗口名为 `gemini_5h`、`gemini_weekly`、`3p_5h` 或 `3p_weekly`，另可带一行 `plan\t<套餐名>\t-`。`<label>` 是 Google 账号邮箱本地部分转小写并把非 `[a-z0-9_-]` 字符替换为 `-` 后的标签，采集器不读取也不还原完整邮箱。同目录下的 `current-account` 保存当前活跃账号标签。
-- 每个 Google 账号在 Antigravity 中有两套独立额度池，采集器为每个 `<label>` 建立两个订阅账户，分别是 `Antigravity (<label>) · Gemini`（标识 `agy-<label>-gemini`，接收 `gemini_5h` 与 `gemini_weekly`）和 `Antigravity (<label>) · Claude/GPT`（标识 `agy-<label>-3p`，接收 `3p_5h` 与 `3p_weekly`）。当某个窗口的重置时间不晚于采样时间或当前时间时，该窗口按已过期处理，旧百分比不会带入新周期。百分比或重置时间为 `-` 时保留未知，不补零。
+- 每个 Google 账号在 Antigravity 中有两套独立额度池，采集器为每个 `<label>` 建立一个订阅账户 `Antigravity (<label>)`（标识 `agy-<label>`）。`gemini_5h` 与 `gemini_weekly` 上报为 `five-hour` 与 `seven-day` 窗口，`3p_5h` 与 `3p_weekly` 上报为 `five-hour-3p` 与 `seven-day-3p` 窗口，服务端按窗口计算各池的本期花费，Gemini 窗口只计 `gemini-` 开头的模型，另两个窗口只计其他模型。旧版采集器按池分别建立的 `agy-<label>-gemini` 与 `agy-<label>-3p` 两个账户仍随每轮同步上报，并指向新账户，它们名下的历史用量与额度在报表里归入新账户。原来在旧账户上手动设置的套餐不会自动带过来，需要在新账户上再选一次。当某个窗口的重置时间不晚于采样时间或当前时间时，该窗口按已过期处理，旧百分比不会带入新周期。百分比或重置时间为 `-` 时保留未知，不补零。
 - Token 用量来自 `~/.gemini/antigravity-cli/conversations/*.db`。`agy` 运行中会锁住会话库，采集器对无 WAL 的库以只读不可变模式打开，对存在 `.db-wal` 的库先把 `.db` 与 `.db-wal` 复制到系统临时目录再只读打开，不在 `~/.gemini` 下写入、加锁或创建附属文件。
-- 采集器解码 `gen_metadata` 表中的 `CortexStepGeneratorMetadata` protobuf，提取每次生成的未缓存输入、缓存读取、缓存写入、输出和属于输出子集的思考 Tokens，并关联 `steps` 表中的完成时间。任一基础桶缺失时保留未知，不补零。模型名与思考档位从上游响应模型、显示名和模型枚举归一化得到，Gemini 系列模型归入该账号的 Gemini 池账户，Claude 与 GPT-OSS 模型归入 Claude/GPT 池账户。早于 `2026-09-20` 的记录在读取时丢弃，已读取记录按会话、步骤与执行标识幂等去重。
+- 采集器解码 `gen_metadata` 表中的 `CortexStepGeneratorMetadata` protobuf，提取每次生成的未缓存输入、缓存读取、缓存写入、输出和属于输出子集的思考 Tokens，并关联 `steps` 表中的完成时间。任一基础桶缺失时保留未知，不补零。模型名与思考档位从上游响应模型、显示名和模型枚举归一化得到，同一账号的 Gemini、Claude 与 GPT-OSS 模型都记在这个账号的账户下。早于 `2026-09-20` 的记录在读取时丢弃，已读取记录按会话、步骤与执行标识幂等去重。
 
 ## 多个 Claude 账户
 

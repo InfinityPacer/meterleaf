@@ -714,7 +714,7 @@ try {
     page.getByRole("button", { name: "第 2 页", exact: true }),
   ).toHaveAttribute("aria-current", "page");
   await expect(
-    page.getByRole("button", { name: "第 102 页", exact: true }),
+    page.getByRole("button", { name: "第 117 页", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "费用", exact: true }).click();
   await expect(
@@ -837,10 +837,10 @@ try {
     .getByRole("group", { name: "汇总维度", exact: true })
     .getByRole("button", { name: "模型", exact: true })
     .click();
-  await expect(page.locator(".report-section tbody tr")).toHaveCount(6);
+  await expect(page.locator(".report-section tbody tr")).toHaveCount(8);
   await expect(page.getByRole("button", { name: "导出 CSV" })).toHaveCount(0);
   await page.getByRole("button", { name: "账户", exact: true }).click();
-  await expect(page.locator(".report-section tbody tr")).toHaveCount(4);
+  await expect(page.locator(".report-section tbody tr")).toHaveCount(5);
   await page.getByRole("button", { name: "小时", exact: true }).click();
   await expect(page.locator(".report-section tbody tr")).toHaveCount(12);
   await page.getByRole("button", { name: "下一页" }).click();
@@ -872,7 +872,22 @@ try {
   const quotaWindows = quotaPreview.locator(
     '.account-row[data-has-quota="true"]',
   );
-  await expect(quotaWindows).toHaveCount(3);
+  await expect(quotaWindows).toHaveCount(4);
+  // Antigravity 的 Gemini 与 Claude 两个额度池在同一张账户卡片里，各自显示 5h 与 7d。
+  const pooledWindows = quotaPreview
+    .getByRole("button", { name: /^Antigravity/ })
+    .locator(".quota-window");
+  await expect(pooledWindows).toHaveCount(4);
+  expect(
+    await pooledWindows.evaluateAll((items) =>
+      items.map((item) => item.getAttribute("data-window")),
+    ),
+  ).toEqual([
+    "fiveHour",
+    "sevenDay",
+    "fiveHourThirdParty",
+    "sevenDayThirdParty",
+  ]);
   const quotasBeforeDate = await quotaWindows.allTextContents();
   const periodAccount = overviewDevelopment;
   const periodBeforeDate = await periodAccount.textContent();
@@ -957,7 +972,7 @@ try {
   ).toBeVisible();
   await expect(
     overviewAccounts.getByRole("button", { name: /账户操作$/ }),
-  ).toHaveCount(4);
+  ).toHaveCount(5);
   await capture({
     path: "test-results/accounts-mobile.png",
     fullPage: false,
@@ -1066,7 +1081,7 @@ try {
     customRows.length.toLocaleString("en-US"),
   );
   await page.getByRole("radio", { name: "近 7 天", exact: true }).click();
-  await expect(summaryCell(page, 2)).toHaveText("1,215");
+  await expect(summaryCell(page, 2)).toHaveText("1,397");
   await expect(
     page.getByRole("region", { name: "近 7 天用量摘要", exact: true }),
   ).toBeVisible();
@@ -1084,7 +1099,7 @@ try {
   ).toBe('{"days":30,"all":true,"model":"all","account":"all"}');
   await page.getByRole("button", { name: "日期范围", exact: true }).click();
   await page.getByRole("radio", { name: "近 7 天", exact: true }).click();
-  await expect(summaryCell(page, 2)).toHaveText("1,215");
+  await expect(summaryCell(page, 2)).toHaveText("1,397");
   await page.setViewportSize({ width: 1440, height: 1000 });
 
   await page.unroute("**/api/view**");

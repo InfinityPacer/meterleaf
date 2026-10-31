@@ -32,8 +32,8 @@ const agyWindows: Record<
 > = {
   gemini_5h: { pool: "gemini", window: "five-hour", minutes: 300 },
   gemini_weekly: { pool: "gemini", window: "seven-day", minutes: 10080 },
-  "3p_5h": { pool: "3p", window: "five-hour", minutes: 300 },
-  "3p_weekly": { pool: "3p", window: "seven-day", minutes: 10080 },
+  "3p_5h": { pool: "3p", window: "five-hour-3p", minutes: 300 },
+  "3p_weekly": { pool: "3p", window: "seven-day-3p", minutes: 10080 },
 };
 
 /**
@@ -44,36 +44,51 @@ export function isValidAgyLabel(value: string): boolean {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value);
 }
 
-export function agyAccountId(label: string, pool: AgyPool): string {
+export function agyAccountId(label: string): string {
+  return `agy-${label}`;
+}
+
+/** 早期版本按额度池拆成两个账户时用的标识，只为把那段历史归到合并后的账户。 */
+function agyPoolAccountId(label: string, pool: AgyPool): string {
   return `agy-${label}-${pool}`;
 }
 
 /**
- * 每个 Google 账号在 Antigravity 中有两套独立配额池：Gemini 池（gemini_5h / gemini_weekly）
- * 与 Claude/GPT 第三方模型池（3p_5h / 3p_weekly）。拆成两个账本账户后，各自的 5 小时与
- * 周额度窗口、本期花费和周额度推算都能只统计消耗对应池子的模型请求。
+ * 每个 Google 账号在 Antigravity 中有两套独立额度池：Gemini 池与 Claude/GPT 第三方模型池。
+ * 两个池记在同一个账户下，Gemini 池上报为 five-hour 与 seven-day，第三方池上报为
+ * five-hour-3p 与 seven-day-3p，服务端按模型分别统计各池的本期花费与推算。
+ * legacy 是早期按池拆开的两个账户，指向合并后的账户，使它们名下的历史用量与额度一并归过去。
  */
 export function agyAccountsForLabel(
   label: string,
   plan: string | null,
-): { gemini: IngestAccount; thirdParty: IngestAccount } {
+): { account: IngestAccount; legacy: IngestAccount[] } {
+  const base = {
+    platform: "google",
+    kind: "subscription" as const,
+    plan,
+    subjectKey: null,
+  };
   return {
-    gemini: {
-      externalId: agyAccountId(label, "gemini"),
-      name: `Antigravity (${label}) · Gemini`,
-      platform: "google",
-      kind: "subscription",
-      plan,
-      subjectKey: null,
+    account: {
+      externalId: agyAccountId(label),
+      name: `Antigravity (${label})`,
+      ...base,
     },
-    thirdParty: {
-      externalId: agyAccountId(label, "3p"),
-      name: `Antigravity (${label}) · Claude/GPT`,
-      platform: "google",
-      kind: "subscription",
-      plan,
-      subjectKey: null,
-    },
+    legacy: [
+      {
+        externalId: agyPoolAccountId(label, "gemini"),
+        name: `Antigravity (${label}) · Gemini`,
+        ...base,
+        parentExternalId: agyAccountId(label),
+      },
+      {
+        externalId: agyPoolAccountId(label, "3p"),
+        name: `Antigravity (${label}) · Claude/GPT`,
+        ...base,
+        parentExternalId: agyAccountId(label),
+      },
+    ],
   };
 }
 
@@ -217,7 +232,7 @@ export function readAgyQuotaFile(
     entries.set(key, {
       key,
       pool: spec.pool,
-      accountExternalId: agyAccountId(label, spec.pool),
+      accountExternalId: agyAccountId(label),
       window: spec.window,
       windowMinutes: spec.minutes,
       percent: expired ? null : rawPercent,
@@ -713,22 +728,6 @@ export function normalizeAgyModel(input: {
   return null;
 }
 
-/** Gemini 系列模型归入 Gemini 池，Claude 与 GPT-OSS 等第三方模型归入 Claude/GPT 池。 */
-export function agyPoolOfModel(
-  model: string,
-  customMetadata?: Record<string, string>,
-): AgyPool {
-  if (model.startsWith("gemini-")) return "gemini";
-  if (
-    model.startsWith("claude-") ||
-    model.startsWith("gpt-") ||
-    customMetadata?.used_non_gemini_model === "true"
-  ) {
-    return "3p";
-  }
-  return customMetadata?.used_non_gemini_model === "false" ? "gemini" : "3p";
-}
-
 export type ExtractedAgyTokens =
   | {
       kind: "usage";
@@ -1043,8 +1042,8 @@ export function readAgy(
       const effectivePlan = plans[label] ?? null;
       const accounts = agyAccountsForLabel(label, effectivePlan);
       state.db.transaction(() => {
-        state.upsertAccount(accounts.gemini);
-        state.upsertAccount(accounts.thirdParty);
+        state.upsertAccount(accounts.account);
+        for (const legacy of accounts.legacy) state.upsertAccount(legacy);
         if (cache.entries.length > 0) {
           const snapshot = agyQuotaSnapshot(cache);
           if (state.recordQuota(snapshot, `agy:${label}`)) {
@@ -1066,8 +1065,8 @@ export function readAgy(
       activeAccount,
       plans[activeAccount] ?? null,
     );
-    state.upsertAccount(accounts.gemini);
-    state.upsertAccount(accounts.thirdParty);
+    state.upsertAccount(accounts.account);
+    for (const legacy of accounts.legacy) state.upsertAccount(legacy);
   }
 
   if (!existsSync(sources.conversationsDir)) return report;
@@ -1218,11 +1217,7 @@ export function readAgy(
             continue;
           }
 
-          const pool = agyPoolOfModel(
-            normalized.model,
-            decoded.chatModel?.customMetadata,
-          );
-          const accountExternalId = agyAccountId(activeAccount, pool);
+          const accountExternalId = agyAccountId(activeAccount);
           const uniqueKey = JSON.stringify([
             conversationId,
             row.idx,

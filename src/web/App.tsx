@@ -74,8 +74,8 @@ import {
   quotaState,
   quotaResetMinute,
   showQuotaEstimate,
-  visibleQuotaWindows,
-  withExtraQuotaWindows,
+  accountQuotaWindows,
+  hasThirdPartyPool,
 } from "./lib/quota-display";
 import { useQuotaClock } from "./lib/use-quota-clock";
 import { useReportFilters } from "./lib/report-preferences";
@@ -386,13 +386,10 @@ function AccountRow({
       account.fiveHour ||
       account.sevenDay ||
       account.sevenDayFable ||
-      account.monthly,
+      account.monthly ||
+      hasThirdPartyPool(account),
     );
-  const windows = withExtraQuotaWindows(
-    visibleQuotaWindows(account, asOf, compactUsage),
-    account,
-    asOf,
-  );
+  const windows = accountQuotaWindows(account, asOf, compactUsage);
   const exhausted = accountQuotaExhausted(account, asOf);
   const status = archived ? "已归档" : exhausted ? null : "使用中";
   const plan = account.kind === "api" ? null : planBadge(account);
@@ -468,7 +465,10 @@ function AccountRow({
           </span>
           {!compactUsage && windows.length > 0 && (
             <span className="account-capacity">
-              <small>7d 预估</small>
+              {/* 两个额度池的账户这里只放 Gemini 池的预估，Claude 池的预估在详情里。 */}
+              <small>
+                {hasThirdPartyPool(account) ? "Gemini 7d 预估" : "7d 预估"}
+              </small>
               <AccountTrend
                 accountId={account.id}
                 load={readAccountTrend}
@@ -617,7 +617,10 @@ function OverviewQuotas({
                 compactUsage={compactUsage}
                 usage={accountUsage?.[account.id]}
                 onOpen={() =>
-                  !showArchived && (account.fiveHour || account.sevenDay)
+                  !showArchived &&
+                  (account.fiveHour ||
+                    account.sevenDay ||
+                    hasThirdPartyPool(account))
                     ? onOpen(account)
                     : onRequests(account)
                 }
@@ -867,6 +870,12 @@ export function App() {
     (selectedView ?? lastSnapshot)?.accounts.find((item) => item.id === id)
       ?.name;
   const quotaAsOf = useQuotaClock(quotaSnapshot);
+  const detailWindows = selectedAccount
+    ? accountQuotaWindows(selectedAccount, quotaAsOf, smallScreen)
+    : [];
+  /** 两个额度池的账户在详情里给 Gemini 池的行加池名，和 Claude 池的行区分。 */
+  const detailPool =
+    selectedAccount && hasThirdPartyPool(selectedAccount) ? "Gemini " : "";
   const lifetimeStart = quotaSnapshot?.lifetimeTotals?.from ?? null;
   useEffect(() => {
     if (lifetimeStart && lifetimeStart !== ledgerStart)
@@ -2204,18 +2213,12 @@ export function App() {
           </SheetHeader>
           {selectedAccount && snapshot && (
             <div className="detail-body">
-              {selectedAccount.fiveHour || selectedAccount.sevenDay ? (
+              {selectedAccount.fiveHour ||
+              selectedAccount.sevenDay ||
+              hasThirdPartyPool(selectedAccount) ? (
                 <>
                   <div className="account-detail-windows">
-                    {withExtraQuotaWindows(
-                      visibleQuotaWindows(
-                        selectedAccount,
-                        quotaAsOf,
-                        smallScreen,
-                      ),
-                      selectedAccount,
-                      quotaAsOf,
-                    ).map(({ key, label, window, waiting }) => (
+                    {detailWindows.map(({ key, label, window, waiting }) => (
                       <QuotaBar
                         key={key}
                         window={window}
@@ -2228,11 +2231,9 @@ export function App() {
                         waiting={waiting}
                       />
                     ))}
-                    {!visibleQuotaWindows(
-                      selectedAccount,
-                      quotaAsOf,
-                      smallScreen,
-                    ).length && <span className="muted">额度 N/A</span>}
+                    {!detailWindows.length && (
+                      <span className="muted">额度 N/A</span>
+                    )}
                   </div>
                   <dl className="details-list">
                     <dt>额度更新于</dt>
@@ -2243,7 +2244,7 @@ export function App() {
                         hour12: false,
                       })}
                     </dd>
-                    <dt>7d 重置</dt>
+                    <dt>{detailPool}7d 重置</dt>
                     <dd>
                       {!selectedAccount.sevenDay
                         ? "N/A"
@@ -2263,15 +2264,11 @@ export function App() {
                               )
                             : "N/A"}
                     </dd>
-                    {visibleQuotaWindows(
-                      selectedAccount,
-                      quotaAsOf,
-                      smallScreen,
-                    ).some(
+                    {detailWindows.some(
                       ({ key, waiting }) => key === "fiveHour" && !waiting,
                     ) && (
                       <>
-                        <dt>5h 周期费用</dt>
+                        <dt>{detailPool}5h 周期费用</dt>
                         <dd>
                           {windowAmount(
                             selectedAccount.fiveHour,
@@ -2279,7 +2276,7 @@ export function App() {
                             quotaAsOf,
                           )}
                         </dd>
-                        <dt>5h 周期 Credits</dt>
+                        <dt>{detailPool}5h 周期 Credits</dt>
                         <dd>
                           {windowAmount(
                             selectedAccount.fiveHour,
@@ -2289,11 +2286,11 @@ export function App() {
                         </dd>
                       </>
                     )}
-                    <dt>7d 周期费用</dt>
+                    <dt>{detailPool}7d 周期费用</dt>
                     <dd>
                       {windowAmount(selectedAccount.sevenDay, "usd", quotaAsOf)}
                     </dd>
-                    <dt>7d 周期 Credits</dt>
+                    <dt>{detailPool}7d 周期 Credits</dt>
                     <dd>
                       {windowAmount(
                         selectedAccount.sevenDay,
@@ -2307,7 +2304,7 @@ export function App() {
                         quotaAsOf,
                       )) && (
                       <>
-                        <dt>7d 预估费用</dt>
+                        <dt>{detailPool}7d 预估费用</dt>
                         <dd>
                           {estimateAmount(
                             selectedAccount.sevenDay,
@@ -2315,9 +2312,9 @@ export function App() {
                             quotaAsOf,
                           )}
                         </dd>
-                        <dt>7d 费用预估依据</dt>
+                        <dt>{detailPool}7d 费用预估依据</dt>
                         <dd>{estimateDescription(selectedAccount.sevenDay)}</dd>
-                        <dt>7d 预估 Credits</dt>
+                        <dt>{detailPool}7d 预估 Credits</dt>
                         <dd>
                           {estimateAmount(
                             selectedAccount.sevenDay,
@@ -2327,15 +2324,74 @@ export function App() {
                         </dd>
                       </>
                     )}
-                    {withExtraQuotaWindows(
-                      visibleQuotaWindows(
-                        selectedAccount,
-                        quotaAsOf,
-                        smallScreen,
-                      ),
-                      selectedAccount,
-                      quotaAsOf,
-                    ).some(
+                    {/* Claude 池与 Gemini 池的行同序：重置、5h 费用、7d 费用与预估。 */}
+                    {selectedAccount.sevenDayThirdParty &&
+                      detailWindows.some(
+                        ({ key, waiting }) =>
+                          key === "sevenDayThirdParty" && !waiting,
+                      ) && (
+                        <>
+                          <dt>Claude 7d 重置</dt>
+                          <dd>
+                            {selectedAccount.sevenDayThirdParty.resetsAt
+                              ? localTime(
+                                  quotaResetMinute(
+                                    selectedAccount.sevenDayThirdParty.resetsAt,
+                                  ),
+                                  {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                    hour12: false,
+                                  },
+                                )
+                              : "N/A"}
+                          </dd>
+                        </>
+                      )}
+                    {detailWindows.some(
+                      ({ key, waiting }) =>
+                        key === "fiveHourThirdParty" && !waiting,
+                    ) && (
+                      <>
+                        <dt>Claude 5h 周期费用</dt>
+                        <dd>
+                          {windowAmount(
+                            selectedAccount.fiveHourThirdParty ?? null,
+                            "usd",
+                            quotaAsOf,
+                          )}
+                        </dd>
+                      </>
+                    )}
+                    {selectedAccount.sevenDayThirdParty &&
+                      detailWindows.some(
+                        ({ key, waiting }) =>
+                          key === "sevenDayThirdParty" && !waiting,
+                      ) && (
+                        <>
+                          <dt>Claude 7d 周期费用</dt>
+                          <dd>
+                            {windowAmount(
+                              selectedAccount.sevenDayThirdParty,
+                              "usd",
+                              quotaAsOf,
+                            )}
+                          </dd>
+                          <dt>Claude 7d 预估费用</dt>
+                          <dd
+                            title={estimateDescription(
+                              selectedAccount.sevenDayThirdParty,
+                            )}
+                          >
+                            {estimateAmount(
+                              selectedAccount.sevenDayThirdParty,
+                              "usd",
+                              quotaAsOf,
+                            )}
+                          </dd>
+                        </>
+                      )}
+                    {detailWindows.some(
                       // 等待新快照时上一周期的重置时间和费用已不适用。
                       ({ key, waiting }) => key === "sevenDayFable" && !waiting,
                     ) &&
@@ -2378,15 +2434,7 @@ export function App() {
                           </dd>
                         </>
                       )}
-                    {withExtraQuotaWindows(
-                      visibleQuotaWindows(
-                        selectedAccount,
-                        quotaAsOf,
-                        smallScreen,
-                      ),
-                      selectedAccount,
-                      quotaAsOf,
-                    ).some(({ key }) => key === "monthly") &&
+                    {detailWindows.some(({ key }) => key === "monthly") &&
                       selectedAccount.monthly && (
                         <>
                           <dt>1m 重置</dt>
