@@ -12,6 +12,8 @@ export function useQuotaClock(snapshot: LedgerSnapshot | undefined) {
         account.fiveHour,
         account.sevenDay,
         account.sevenDayFable ?? null,
+        account.fiveHourThirdParty ?? null,
+        account.sevenDayThirdParty ?? null,
         account.monthly ?? null,
       ]),
       clock,

@@ -1,5 +1,9 @@
 import type { SourceAccount, UsageFact } from "../domain/connector";
-import { quotaView, type QuotaChargeReader } from "../domain/quota";
+import {
+  hasThirdPartyPool,
+  quotaView,
+  type QuotaChargeReader,
+} from "../domain/quota";
 import { priceBookKey } from "../domain/pricing";
 import { reportBounds, type DateRange } from "../shared/date-range";
 import type {
@@ -212,18 +216,31 @@ export function liveSnapshot(
     const quotaHistory = history.filter(
       (row) => root(row.fact.sourceId, row.fact.accountExternalId) === id,
     );
+    const pooled = hasThirdPartyPool(quotaHistory);
     const fiveHour = quotaView(
       quotaHistory.filter((row) => row.fact.window === "five-hour"),
       periodAccountUsage,
       now,
+      pooled,
     );
     const sevenDay = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day"),
       periodAccountUsage,
       now,
+      pooled,
     );
     const sevenDayFable = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day-fable"),
+      periodAccountUsage,
+      now,
+    );
+    const fiveHourThirdParty = quotaView(
+      quotaHistory.filter((row) => row.fact.window === "five-hour-3p"),
+      periodAccountUsage,
+      now,
+    );
+    const sevenDayThirdParty = quotaView(
+      quotaHistory.filter((row) => row.fact.window === "seven-day-3p"),
       periodAccountUsage,
       now,
     );
@@ -242,6 +259,9 @@ export function liveSnapshot(
       fiveHour,
       sevenDay,
       sevenDayFable,
+      ...(fiveHourThirdParty || sevenDayThirdParty
+        ? { fiveHourThirdParty, sevenDayThirdParty }
+        : {}),
       ...(monthly ? { monthly } : {}),
     };
   });
@@ -354,20 +374,33 @@ export function indexedSnapshot(
   }
   const accounts = [...canonical].map(([id, account]) => {
     const quotaHistory = quotaByAccount.get(id) ?? [];
+    const pooled = hasThirdPartyPool(quotaHistory);
     const reader: QuotaChargeReader = (startInclusive, endInclusive, scope) =>
       sumWindow(id, startInclusive, endInclusive, usdBasis, scope);
     const fiveHour = quotaView(
       quotaHistory.filter((row) => row.fact.window === "five-hour"),
       reader,
       now,
+      pooled,
     );
     const sevenDay = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day"),
       reader,
       now,
+      pooled,
     );
     const sevenDayFable = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day-fable"),
+      reader,
+      now,
+    );
+    const fiveHourThirdParty = quotaView(
+      quotaHistory.filter((row) => row.fact.window === "five-hour-3p"),
+      reader,
+      now,
+    );
+    const sevenDayThirdParty = quotaView(
+      quotaHistory.filter((row) => row.fact.window === "seven-day-3p"),
       reader,
       now,
     );
@@ -386,6 +419,9 @@ export function indexedSnapshot(
       fiveHour,
       sevenDay,
       sevenDayFable,
+      ...(fiveHourThirdParty || sevenDayThirdParty
+        ? { fiveHourThirdParty, sevenDayThirdParty }
+        : {}),
       ...(monthly ? { monthly } : {}),
     };
   });

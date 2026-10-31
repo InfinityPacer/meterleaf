@@ -106,8 +106,8 @@ describe("prototype report contract", () => {
         groups.length + 1,
       );
     }
-    expect(aggregateReport(records, "model")).toHaveLength(6);
-    expect(aggregateReport(records, "account")).toHaveLength(4);
+    expect(aggregateReport(records, "model")).toHaveLength(8);
+    expect(aggregateReport(records, "account")).toHaveLength(5);
     expect(aggregateReport([], "week")).toEqual([]);
   });
   test("group CSV preserves exact decimals and escapes external group names", () => {

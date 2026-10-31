@@ -4,10 +4,7 @@ import { accountInitial } from "../lib/account-aliases";
 import { planBadge } from "../lib/plan";
 import type { LedgerView } from "../../shared/ledger-view";
 import type { AccountLifetime, LedgerAccount } from "../../shared/report";
-import {
-  visibleQuotaWindows,
-  withExtraQuotaWindows,
-} from "../lib/quota-display";
+import { accountQuotaWindows, hasThirdPartyPool } from "../lib/quota-display";
 import {
   amount,
   compact,
@@ -254,15 +251,14 @@ export function MobileHome({
             {accounts.map((account) => {
               const quotas = showArchived
                 ? []
-                : withExtraQuotaWindows(
-                    visibleQuotaWindows(account, asOf),
-                    account,
-                    asOf,
-                  );
+                : accountQuotaWindows(account, asOf);
               const hasQuota =
                 !showArchived &&
                 Boolean(
-                  account.fiveHour || account.sevenDay || account.monthly,
+                  account.fiveHour ||
+                  account.sevenDay ||
+                  account.monthly ||
+                  hasThirdPartyPool(account),
                 );
               const plan = planBadge(account);
               const open = () =>

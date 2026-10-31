@@ -25,8 +25,15 @@ export function showQuotaEstimate(window: AccountWindow | null, asOf: string) {
 }
 
 export interface VisibleQuotaWindow {
-  key: "fiveHour" | "sevenDay" | "sevenDayFable" | "monthly";
-  label: "5h" | "7d" | "Fable" | "1m";
+  key:
+    | "fiveHour"
+    | "sevenDay"
+    | "sevenDayFable"
+    | "monthly"
+    | "fiveHourThirdParty"
+    | "sevenDayThirdParty";
+  /** 窗口名称；有两个额度池的账户在前面加池名，例如“Gemini 7d”。 */
+  label: string;
   window: AccountWindow;
   /** 上游报过这个窗口，但当前快照已过期或缺值；只占位，不展示旧用量。 */
   waiting?: boolean;
@@ -168,14 +175,80 @@ export function quotaWaitingReset(window: AccountWindow, asOf: string) {
   }).format(reset)} 已重置`;
 }
 
-/** 各入口使用同一有效周期规则，过期的耗尽状态不能延续到下一周期。 */
-export function accountQuotaExhausted(
-  account: Pick<LedgerAccount, "fiveHour" | "sevenDay">,
-  asOf: string,
+/** Antigravity 的 Google 账户另有 Claude/GPT 额度池，fiveHour、sevenDay 是它的 Gemini 池。 */
+export function hasThirdPartyPool(
+  account: Pick<LedgerAccount, "fiveHourThirdParty" | "sevenDayThirdParty">,
 ) {
-  return visibleQuotaWindows(account, asOf).some(
-    ({ window, waiting }) => !waiting && quotaPercent(window, asOf) === 100,
-  );
+  return Boolean(account.fiveHourThirdParty || account.sevenDayThirdParty);
+}
+
+type PoolAccount = Pick<
+  LedgerAccount,
+  | "fiveHour"
+  | "sevenDay"
+  | "sevenDayFable"
+  | "monthly"
+  | "fiveHourThirdParty"
+  | "sevenDayThirdParty"
+>;
+
+function thirdPartyPool(account: PoolAccount) {
+  return {
+    fiveHour: account.fiveHourThirdParty ?? null,
+    sevenDay: account.sevenDayThirdParty ?? null,
+  };
+}
+
+/**
+ * 账户在卡片、列表和详情里展示的全部额度窗口。两个额度池的账户按池分组，Gemini 在前，
+ * 每个池各自套用 5h 与 7d 的展示规则：一个池的周额度用尽只收起这个池的 5h，不影响另一个池。
+ */
+export function accountQuotaWindows(
+  account: PoolAccount,
+  asOf: string,
+  prioritizeExhaustedWeek = true,
+): VisibleQuotaWindow[] {
+  if (!hasThirdPartyPool(account))
+    return withExtraQuotaWindows(
+      visibleQuotaWindows(account, asOf, prioritizeExhaustedWeek),
+      account,
+      asOf,
+    );
+  const gemini = visibleQuotaWindows(
+    account,
+    asOf,
+    prioritizeExhaustedWeek,
+  ).map((selection) => ({
+    ...selection,
+    label: `Gemini ${selection.label}`,
+  }));
+  const thirdParty = visibleQuotaWindows(
+    thirdPartyPool(account),
+    asOf,
+    prioritizeExhaustedWeek,
+  ).map((selection) => ({
+    ...selection,
+    key:
+      selection.key === "fiveHour"
+        ? ("fiveHourThirdParty" as const)
+        : ("sevenDayThirdParty" as const),
+    label: `Claude ${selection.label}`,
+  }));
+  return [...gemini, ...thirdParty];
+}
+
+/**
+ * 各入口使用同一有效周期规则，过期的耗尽状态不能延续到下一周期。两个额度池的账户
+ * 只有两个池都用尽才算不可用。
+ */
+export function accountQuotaExhausted(account: PoolAccount, asOf: string) {
+  const exhausted = (pool: Pick<LedgerAccount, "fiveHour" | "sevenDay">) =>
+    visibleQuotaWindows(pool, asOf).some(
+      ({ window, waiting }) => !waiting && quotaPercent(window, asOf) === 100,
+    );
+  return hasThirdPartyPool(account)
+    ? exhausted(account) && exhausted(thirdPartyPool(account))
+    : exhausted(account);
 }
 
 /** 未处理的到期点即使已越过也要立即执行，不能在渲染和 effect 之间漏掉。 */

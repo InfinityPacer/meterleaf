@@ -11,7 +11,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   agyAccountsForLabel,
-  agyPoolOfModel,
   agyQuotaSnapshot,
   decodeAgyGenMetadata,
   decodeAgyStepMetadata,
@@ -25,7 +24,7 @@ import { CollectorState } from "../src/collector/state";
 import type { UsageFact } from "../src/domain/connector";
 import { defaultPriceBook } from "../src/domain/default-prices";
 import { valueUsage } from "../src/domain/pricing";
-import { quotaView } from "../src/domain/quota";
+import { quotaModelScope, quotaView } from "../src/domain/quota";
 import { ingestToDomain } from "../src/server/ingest";
 import type {
   IngestAccount,
@@ -215,7 +214,7 @@ test("readAgyQuotaFile parses Gemini and Claude/GPT pools, expired windows, unkn
     expect(byKey.get("gemini_5h")).toEqual({
       key: "gemini_5h",
       pool: "gemini",
-      accountExternalId: "agy-alice-gemini",
+      accountExternalId: "agy-alice",
       window: "five-hour",
       windowMinutes: 300,
       percent: 22,
@@ -225,7 +224,7 @@ test("readAgyQuotaFile parses Gemini and Claude/GPT pools, expired windows, unkn
     expect(byKey.get("gemini_weekly")).toEqual({
       key: "gemini_weekly",
       pool: "gemini",
-      accountExternalId: "agy-alice-gemini",
+      accountExternalId: "agy-alice",
       window: "seven-day",
       windowMinutes: 10080,
       percent: 15,
@@ -236,8 +235,8 @@ test("readAgyQuotaFile parses Gemini and Claude/GPT pools, expired windows, unkn
     expect(byKey.get("3p_5h")).toEqual({
       key: "3p_5h",
       pool: "3p",
-      accountExternalId: "agy-alice-3p",
-      window: "five-hour",
+      accountExternalId: "agy-alice",
+      window: "five-hour-3p",
       windowMinutes: 300,
       percent: null,
       resetsAt: "2026-10-30T00:26:40.000Z",
@@ -247,8 +246,8 @@ test("readAgyQuotaFile parses Gemini and Claude/GPT pools, expired windows, unkn
     expect(byKey.get("3p_weekly")).toEqual({
       key: "3p_weekly",
       pool: "3p",
-      accountExternalId: "agy-alice-3p",
-      window: "seven-day",
+      accountExternalId: "agy-alice",
+      window: "seven-day-3p",
       windowMinutes: 10080,
       percent: null,
       resetsAt: "2026-11-05T01:20:00.000Z",
@@ -256,27 +255,26 @@ test("readAgyQuotaFile parses Gemini and Claude/GPT pools, expired windows, unkn
     });
 
     const accounts = agyAccountsForLabel("alice", parsed.plan);
-    expect(accounts.gemini).toEqual({
-      externalId: "agy-alice-gemini",
-      name: "Antigravity (alice) · Gemini",
+    expect(accounts.account).toEqual({
+      externalId: "agy-alice",
+      name: "Antigravity (alice)",
       platform: "google",
       kind: "subscription",
       plan: "Google AI Ultra",
       subjectKey: null,
     });
-    expect(accounts.thirdParty).toEqual({
-      externalId: "agy-alice-3p",
-      name: "Antigravity (alice) · Claude/GPT",
-      platform: "google",
-      kind: "subscription",
-      plan: "Google AI Ultra",
-      subjectKey: null,
-    });
+    // 早期按池拆开的两个账户指向合并后的账户，名下历史随之归过去。
+    expect(
+      accounts.legacy.map((a) => [a.externalId, a.parentExternalId]),
+    ).toEqual([
+      ["agy-alice-gemini", "agy-alice"],
+      ["agy-alice-3p", "agy-alice"],
+    ]);
 
     const snapshot = agyQuotaSnapshot(parsed);
     expect(snapshot.quotas).toHaveLength(4);
     const expiredQuota = snapshot.quotas.find(
-      (q) => q.accountExternalId === "agy-alice-3p" && q.window === "five-hour",
+      (q) => q.window === "five-hour-3p",
     )!;
     expect(expiredQuota.percent).toBeNull();
     const expiredView = quotaView(
@@ -284,7 +282,7 @@ test("readAgyQuotaFile parses Gemini and Claude/GPT pools, expired windows, unkn
         {
           fact: {
             sourceId: "mac-test",
-            externalId: "agy-alice-3p:five-hour",
+            externalId: "agy-alice:five-hour-3p",
             ...expiredQuota,
           },
           collectedAt: "2026-10-30T14:05:00.000Z",
@@ -298,7 +296,7 @@ test("readAgyQuotaFile parses Gemini and Claude/GPT pools, expired windows, unkn
     expect(expiredView.estimate.reason).toBe("expired");
 
     const unknownPercentQuota = snapshot.quotas.find(
-      (q) => q.accountExternalId === "agy-alice-3p" && q.window === "seven-day",
+      (q) => q.window === "seven-day-3p",
     )!;
     expect(unknownPercentQuota.percent).toBeNull();
     const unknownPercentView = quotaView(
@@ -306,7 +304,7 @@ test("readAgyQuotaFile parses Gemini and Claude/GPT pools, expired windows, unkn
         {
           fact: {
             sourceId: "mac-test",
-            externalId: "agy-alice-3p:seven-day",
+            externalId: "agy-alice:seven-day-3p",
             ...unknownPercentQuota,
           },
           collectedAt: "2026-10-30T14:05:00.000Z",
@@ -485,11 +483,21 @@ test("normalizeAgyModel maps all Antigravity models and prices them through defa
     reasoningEffort: "high",
   });
 
-  expect(agyPoolOfModel("gemini-4-argon")).toBe("gemini");
-  expect(agyPoolOfModel("gemini-3.8-flash")).toBe("gemini");
-  expect(agyPoolOfModel("claude-opus-5-5")).toBe("3p");
-  expect(agyPoolOfModel("claude-sonnet-5-5")).toBe("3p");
-  expect(agyPoolOfModel("gpt-oss-120b")).toBe("3p");
+  // 合并后的账户里，Gemini 池窗口只计 Gemini 模型，第三方池窗口只计其余模型。
+  const gemini = quotaModelScope("seven-day", true)!;
+  const thirdParty = quotaModelScope("seven-day-3p")!;
+  for (const model of ["gemini-4-argon", "gemini-3.8-flash"]) {
+    expect([gemini(model), thirdParty(model)]).toEqual([true, false]);
+  }
+  for (const model of [
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "gpt-oss-120b",
+  ]) {
+    expect([gemini(model), thirdParty(model)]).toEqual([false, true]);
+  }
+  // 没有第三方池的账户，5 小时与周窗口仍覆盖全部请求。
+  expect(quotaModelScope("seven-day")).toBeNull();
 
   for (const model of [
     "gemini-4-argon",
@@ -502,7 +510,7 @@ test("normalizeAgyModel maps all Antigravity models and prices them through defa
     const fact: UsageFact = {
       sourceId: "mac-test",
       externalId: `test-${model}`,
-      accountExternalId: `agy-alice-${agyPoolOfModel(model)}`,
+      accountExternalId: "agy-alice",
       occurredAt: "2026-10-30T14:00:00.000Z",
       model,
       upstreamModel: null,
@@ -660,7 +668,7 @@ test("readAgy ingests quota and SQLite conversations idempotently and attributes
       });
 
       const pendingCounts = state.pendingCounts();
-      expect(pendingCounts.account).toBe(2);
+      expect(pendingCounts.account).toBe(3);
       expect(pendingCounts.quota).toBe(4);
       expect(pendingCounts.usage).toBe(2);
       expect(state.sourcePendingCounts().agy).toBe(2);
@@ -699,11 +707,12 @@ test("readAgy ingests quota and SQLite conversations idempotently and attributes
           .map((item) => item.payload);
 
         expect(accounts.map((a) => a.externalId).sort()).toEqual([
+          "agy-alice",
           "agy-alice-3p",
           "agy-alice-gemini",
         ]);
         const geminiEvent = usage.find((u) => u.model === "gemini-4-argon")!;
-        expect(geminiEvent.accountExternalId).toBe("agy-alice-gemini");
+        expect(geminiEvent.accountExternalId).toBe("agy-alice");
         expect(geminiEvent.tokens).toEqual({
           input: 10_000,
           cacheRead: 50_000,
@@ -714,7 +723,7 @@ test("readAgy ingests quota and SQLite conversations idempotently and attributes
           reasoning: 700,
         });
         const claudeEvent = usage.find((u) => u.model === "claude-opus-5-5")!;
-        expect(claudeEvent.accountExternalId).toBe("agy-alice-3p");
+        expect(claudeEvent.accountExternalId).toBe("agy-alice");
         expect(claudeEvent.tokens).toEqual({
           input: 4_000,
           cacheRead: 20_000,
