@@ -121,6 +121,7 @@ import {
   trendInsights,
   unitNames,
 } from "./lib/usage-summary";
+import { isManualPlanPlatform } from "../shared/account-plan";
 import { allTimeRange } from "../shared/date-range";
 import { ReportTable } from "./components/ReportTable";
 import { ModelDistribution } from "./components/ModelDistribution";
@@ -186,7 +187,6 @@ const initialFilter: ReportFilter = {
   search: "",
 };
 
-/** 套餐名首字母大写；Claude 的 max-5x 这类档位显示为 Max 5x，未知套餐保留原文。 */
 function readStoredUsdBasis(): UsdBasis | null {
   try {
     const value = localStorage.getItem("meterleaf-usd-basis");
@@ -975,7 +975,7 @@ export function App() {
                   <PencilLine size={16} />
                   重命名
                 </ActionMenu.Item>
-                {account.platform === "anthropic" &&
+                {isManualPlanPlatform(account.platform) &&
                   accountArchive.data?.plans && (
                     <ActionMenu.Item
                       className="account-menu-item"
@@ -984,12 +984,15 @@ export function App() {
                         accountArchive.mutation.isPending
                       }
                       onClick={() => {
+                        const platform = account.platform;
+                        if (!isManualPlanPlatform(platform)) return;
                         accountArchive.mutation.reset();
                         setAccountToPlan({
                           id: account.id,
                           name: account.name,
                           plan:
                             accountArchive.data?.plans?.[account.id] ?? null,
+                          platform,
                         });
                       }}
                     >

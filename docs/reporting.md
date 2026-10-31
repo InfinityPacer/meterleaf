@@ -44,8 +44,8 @@
 - 归档账户不再出现在请求明细的账户筛选里。从归档列表打开某个账户的请求时，筛选仍保留这个账户并注明「已归档」，切回「全部账户」即可退出。
 - 删除账户只移除账户展示，不会删除历史请求、累计统计，也不影响 Sub2API 或本机采集器。
 - 重命名的名称只在 Meterleaf 中显示，最长 40 个字，不会改动上游。清空名称或选择恢复原名后，重新显示上游提供的名称。
-- 套餐徽标按使用倍数分三档显示，同一档外观相同。Claude Pro、Claude Team Standard 与 ChatGPT Plus 为一档，Claude Max 5x、Claude Team Premium 与 ChatGPT Pro 5x 为二档，Claude Max 20x 与 ChatGPT Pro 20x 为三档。只知道订阅类型、不知道倍数时，例如只显示 Max 或 Team，不分档。无法识别的套餐只显示名称。
-- 采集器读不到套餐时，例如账户已不在这台电脑上登录，可以在「设置套餐」里选择 Pro、Max 5x、Max 20x、Team Standard 或 Team Premium，选「自动识别」恢复采集器上报的套餐。设置只保存在 Meterleaf 中，不会被同步覆盖，也不会让本周期的额度预估重新起算。
+- 套餐徽标按使用倍数分三档显示，同一档外观相同。Claude Pro、Claude Team Standard、ChatGPT Plus 与 Google AI Pro 为一档，Claude Max、Claude Team Premium、ChatGPT Pro 5x 与 Google AI Ultra 5x 为二档，Claude Ultra、ChatGPT Pro 20x 与 Google AI Ultra 20x 为三档。Claude 的 Max 与 Ultra 即原来的 Max 5x 与 Max 20x。只知道订阅类型、不知道倍数时，例如只显示 Max 或 Team，不分档。无法识别的套餐只显示名称。
+- 采集器读不到套餐时，例如账户已不在这台电脑上登录，可以在「设置套餐」里选择 Pro、Max、Ultra、Team Standard 或 Team Premium，选「自动识别」恢复采集器上报的套餐。Antigravity 只报出 Google AI Ultra、不区分倍数，它的账户在「设置套餐」里选 Ultra 5x 或 Ultra 20x，徽标和档位随之显示。设置只保存在 Meterleaf 中，不会被同步覆盖，也不会让本周期的额度预估重新起算。
 - 本地归档、删除状态和账户名称不会被同步覆盖。上游删除账户后，本地历史请求仍保留。
 
 ![账户合并示例](images/account-merge.png)

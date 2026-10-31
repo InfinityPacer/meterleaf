@@ -35,6 +35,7 @@ import {
   type QuotaPlanObservation,
 } from "../domain/quota-plan";
 import { quotaHistoryStart } from "../domain/quota";
+import { isManualPlanPlatform } from "../shared/account-plan";
 
 /** toISOString 的固定宽度格式，同格式的时间按文本比较即按时间先后。 */
 const isoTimestampGlob =
@@ -1375,16 +1376,15 @@ export class LedgerStore {
   }
 
   /**
-   * 报表使用的账户资料。用户为 Claude 账户指定的套餐覆盖上游套餐，指定套餐即说明是订阅账户；
-   * 手动套餐只有 Claude 的取值，其他平台的账户不受影响。
+   * 报表使用的账户资料。用户为 Claude 或 Google 账户指定的套餐覆盖上游套餐，指定套餐即说明是
+   * 订阅账户；手动套餐只有这两个平台的取值，其他平台的账户不受影响。
    */
   accounts(): SourceAccount[] {
     const plans = this.accountPlans();
     return this.sourceAccounts().map((account) => {
-      const plan =
-        account.platform === "anthropic"
-          ? plans[ref(account.sourceId, account.externalId)]
-          : undefined;
+      const plan = isManualPlanPlatform(account.platform)
+        ? plans[ref(account.sourceId, account.externalId)]
+        : undefined;
       return plan
         ? {
             ...account,
