@@ -78,7 +78,7 @@ try {
     .locator(".overview-quotas .account-row")
     .filter({ hasText: apiAccount.name });
   await expect(apiRow).toContainText("时段 Tokens");
-  await expect(apiRow).toContainText("8.4K");
+  await expect(apiRow).toContainText("8.40K");
   const subscriptionRow = page
     .locator(".overview-quotas .account-row")
     .filter({ hasText: subscriptionAccount.name });
@@ -89,12 +89,12 @@ try {
   ).toBeVisible();
   await expect(
     subscriptionRow.locator(".quota-window-volume").first(),
-  ).toHaveText("129.6K Tokens · 12 次");
+  ).toHaveText("129.60K Tokens · 12 次");
 
   withLifetime = true;
   await page.reload();
   await expect(apiRow).toContainText("累计 Tokens");
-  await expect(apiRow).toContainText("50M");
+  await expect(apiRow).toContainText("50.00M");
 
   for (const width of [1440, 1200, 1050, 390]) {
     await page.setViewportSize({ width, height: 1000 });
