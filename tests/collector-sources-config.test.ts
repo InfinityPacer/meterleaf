@@ -3,6 +3,7 @@ import type { CollectorConfig } from "../src/collector/config";
 import {
   agyReaderConfig,
   codexReaderConfig,
+  ompReaderConfig,
   opencodeReaderConfig,
 } from "../src/collector/main";
 
@@ -67,4 +68,26 @@ test("either source can be disabled or pointed elsewhere in config.json", () => 
   expect(agy.conversationsDir).toBe("/tmp/agy-convos");
   expect(agy.statuslineDir).toBe("/tmp/agy-statusline");
   expect(agy.start).toBe("2026-09-20T00:00:00.000Z");
+});
+
+test("omp reads its session directory by default, follows config.json, and shares the Antigravity cache directory", () => {
+  const omp = ompReaderConfig(null)!;
+  expect(omp.sessionsDir.endsWith(".omp/agent/sessions")).toBe(true);
+  expect(omp.start).toBe("2026-09-20T00:00:00.000Z");
+  expect(omp.statuslineDir).toBe(agyReaderConfig(null)!.statuslineDir);
+  expect(
+    omp.channelAccounts.some(
+      (rule) => rule.source === "omp" && rule.channel === "opencode-go",
+    ),
+  ).toBe(true);
+
+  expect(ompReaderConfig(config({ omp: { enabled: false } }))).toBeNull();
+  const moved = ompReaderConfig(
+    config({
+      omp: { enabled: true, sessionsDir: "/tmp/omp-sessions" },
+      agy: { enabled: true, statuslineDir: "/tmp/agy-statusline" },
+    }),
+  )!;
+  expect(moved.sessionsDir).toBe("/tmp/omp-sessions");
+  expect(moved.statuslineDir).toBe("/tmp/agy-statusline");
 });

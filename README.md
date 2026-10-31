@@ -56,7 +56,7 @@ Meterleaf 支持以下数据来源，至少配置一种。
 - **Sub2API 网关**：在 `.env` 填写 `SUB2API_DATABASE_URL`。数据库账号只需读取 `public.accounts` 和 `public.usage_logs`，不需要写权限。
 - **本地直连的 Claude Code**：在 `.env` 填写本机采集器生成的 `METERLEAF_INGEST_KEYS`，见下文[接入 Claude Code](#接入-claude-code)。只用 Claude Code 时把 `SUB2API_DATABASE_URL` 留空，并先生成写入密钥再启动服务。
 - **CLIProxyAPI（CPA）**：使用可选同步容器只读接入 usage-report 插件的历史和新增请求，见[接入 CPA](docs/cpa.md)。它统计经过 CPA 的请求，不读取本机 Codex 会话。
-- **Codex 与 OpenCode 本地用量**：同一个采集器逐轮读取 Codex 会话记录与 OpenCode 本地数据库的用量，按真实付费通道排队到正确账户，不再依赖按模型写死的月度上限。配置与统计边界见[本机采集器](docs/collector.md)。
+- **Codex、OpenCode、Antigravity 与 omp 本地用量**：同一个采集器逐轮读取 Codex 会话记录、OpenCode 本地数据库、Antigravity CLI 会话库和 omp 会话记录的用量，按真实付费通道排队到正确账户，不再依赖按模型写死的月度上限。无界面运行时，Antigravity 的额度由采集器在发现新用量后按需刷新。配置与统计边界见[本机采集器](docs/collector.md)。
 
 在仓库目录中准备配置：
 

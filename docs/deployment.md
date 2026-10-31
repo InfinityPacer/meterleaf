@@ -78,7 +78,7 @@ Compose 将容器内数据目录、监听地址和端口固定为 `/app/app_data
 
 ## 接入本机采集器
 
-Codex 与 OpenCode 的本地用量由同一个本机采集器读取，安装与配置见[本机采集器](collector.md#codex-与-opencode-来源)。同样通过下面的写入密钥接入，不需要 Sub2API；与 CC 或网关记录不做跨来源去重。同一台电脑只运行一个采集器，用量、账户与额度走同一个写入密钥和待发送队列。
+Codex、OpenCode、Antigravity 与 omp 的本地用量由同一个本机采集器读取，安装与配置见[本机采集器](collector.md#codex-与-opencode-来源)。同样通过下面的写入密钥接入，不需要 Sub2API；与 CC 或网关记录不做跨来源去重。同一台电脑只运行一个采集器，用量、账户与额度走同一个写入密钥和待发送队列。
 
 Claude Code 等本地直连的客户端不经过网关，需要在使用它的电脑上运行本机采集器，由采集器把用量、账户和额度快照推送到 Meterleaf。安装和日常使用见[本机采集器](collector.md)。
 

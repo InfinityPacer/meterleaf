@@ -1,5 +1,5 @@
 /** 读取器上报条目的共同形状；sync 报告与 status 按来源列出这些计数。 */
-export type SourceName = "codex" | "opencode" | "agy";
+export type SourceName = "codex" | "opencode" | "agy" | "omp";
 
 export interface SourceReaderReport {
   source: SourceName;
