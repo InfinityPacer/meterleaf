@@ -627,11 +627,16 @@ async function assertMobileAccountManagement() {
     key: "ArrowUp" | "ArrowDown",
   ) => {
     const handle = cards.nth(index).getByRole("button", { name: /^拖动排序 / });
+    // 拖放库播报拿起之后才开始监听方向键，紧跟着按下的方向键会被忽略。被忽略的按键不移动账户，
+    // 所以没等到移动播报就重按，直到读屏播报确认移动后再放下。
+    const announcement = page.locator('[id^="DndLiveRegion-"]');
     await handle.focus();
     await page.keyboard.press("Space");
-    await page.waitForTimeout(30);
-    await page.keyboard.press(key);
-    await page.waitForTimeout(30);
+    await expect(announcement).toContainText("已拿起");
+    await expect(async () => {
+      await page.keyboard.press(key);
+      await expect(announcement).toContainText("移到", { timeout: 1000 });
+    }).toPass({ timeout: 10_000 });
     await page.keyboard.press("Space");
   };
   await section

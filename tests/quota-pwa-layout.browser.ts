@@ -117,6 +117,10 @@ await page.route("**/api/**", async (route) => {
       priceVersion: "fixture",
     };
     await route.fulfill({ json: result });
+  } else if (url.pathname === "/api/accounts/merge") {
+    await route.fulfill({
+      json: { writable: false, accounts: [], links: [] },
+    });
   } else if (url.pathname.includes("archive")) {
     await route.fulfill({
       json: { archived: [], hidden: [], writable: false },

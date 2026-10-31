@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type { IngestBatch } from "../src/shared/ingest";
 import type { LedgerView } from "../src/shared/ledger-view";
+import { fullWeekEstimate } from "./quota-projection";
 
 const endpoint = process.env.METERLEAF_CDP_URL;
 if (!endpoint)
@@ -185,8 +186,9 @@ async function apiStage(
     .toBe(true);
   const history = accountWindow(view!, "history");
   const rough = accountWindow(view!, "rough");
-  expect(Number(history.estimate!.usd)).toBeCloseTo(usd, 8);
-  expect(Number(rough.estimate!.usd)).toBeCloseTo(roughUsd, 8);
+  // 预估是已花加剩余比例乘整周外推值，这里核对外推值本身。
+  expect(Number(fullWeekEstimate(history))).toBeCloseTo(usd, 8);
+  expect(Number(fullWeekEstimate(rough))).toBeCloseTo(roughUsd, 8);
   expect(history.estimate!.reason).toBe("eligible");
   expect(rough.estimate!.reason).toBe("eligible");
   expect(Number(history.periodUsd)).toBe(expectedPeriodUsd);
@@ -204,6 +206,11 @@ async function apiStage(
   );
   console.log(JSON.stringify({ method, usd, roughMethod, roughUsd }));
 }
+/** 页面显示的预估：已花加剩余比例乘整周外推值。 */
+const shown = (spent: number, percent: number, fullWeek: number) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
+    spent + (fullWeek * (100 - percent)) / 100,
+  );
 async function detail(
   account: keyof typeof names,
   amount: string,
@@ -290,18 +297,31 @@ try {
     localStorage.setItem("meterleaf-pref-mobileLayout", JSON.stringify("app")),
   );
   await page.reload();
-  await detail("history", "$100.00", /上一周期/, "desktop-previous-period.png");
-  await detail("rough", "$800.00", /粗估/);
+  await detail(
+    "history",
+    shown(8, 1, 100),
+    /上一周期/,
+    "desktop-previous-period.png",
+  );
+  await detail("rough", shown(8, 1, 800), /粗估/);
   for (const account of ["history", "rough"] as const) {
     await ingest(observation(account, 2, 16, 8));
     await ingest(observation(account, 3, 24, 16));
   }
-  // 当前粗估即使为 800 USD，有历史参考时也继续采用 100 USD。
-  await apiStage("previous-period", 100, "rough", 800, 24);
+  // 上游百分比四舍五入，2% 与 3% 按首次到达记为 1.5% 与 2.5%，过原点加权粗估为
+  // 100 × (1×8 + 1.5×16 + 2.5×24) / (1² + 1.5² + 2.5²) = 18400/19 USD。
+  const earlyRough = 18400 / 19;
+  // 当前粗估即使远高于历史，有历史参考时也继续采用 100 USD。
+  await apiStage("previous-period", 100, "rough", earlyRough, 24);
   await loadPage();
   await tokensCard("2.16M", "9.00K");
-  await detail("history", "$100.00", /上一周期/, "desktop-early-history.png");
-  await detail("rough", "$800.00", /粗估/);
+  await detail(
+    "history",
+    shown(24, 3, 100),
+    /上一周期/,
+    "desktop-early-history.png",
+  );
+  await detail("rough", shown(24, 3, earlyRough), /粗估/);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await loadPage();
@@ -311,20 +331,26 @@ try {
     ),
   ).toBe(true);
   await tokensCard("2.16M", "9.00K");
-  await detail("history", "$100.00", /上一周期/, "mobile-early-history.png");
-  await detail("rough", "$800.00", /粗估/, "mobile-rough.png");
+  await detail(
+    "history",
+    shown(24, 3, 100),
+    /上一周期/,
+    "mobile-early-history.png",
+  );
+  await detail("rough", shown(24, 3, earlyRough), /粗估/, "mobile-rough.png");
   for (const account of ["history", "rough"] as const) {
     await ingest(observation(account, 10, 30, 24));
     await ingest(observation(account, 15, 35, 30));
   }
-  // 七个有效点对的中位数为 1900/13，跨度 14% 的历史混合权重为 0.49。
-  const blended = 100 * 0.51 + (1900 / 13) * 0.49;
-  await apiStage("blended", blended, "segments", 1900 / 13, 35);
+  // 2% 记为 1.5% 后，七个有效点对的中位数是 1.5% 到 15% 这一对，即 100 × 19 / 13.5 = 3800/27，
+  // 跨度 14% 的本周期权重为 0.49。
+  const blended = 100 * 0.51 + (3800 / 27) * 0.49;
+  await apiStage("blended", blended, "segments", 3800 / 27, 35);
   await loadPage();
   await tokensCard("1.92M", "13.00K");
   await detail(
     "history",
-    "$122.62",
+    shown(35, 15, blended),
     /综合上一周期与本周期/,
     "mobile-blended.png",
   );
@@ -333,7 +359,7 @@ try {
   await tokensCard("1.92M", "13.00K");
   await detail(
     "history",
-    "$122.62",
+    shown(35, 15, blended),
     /综合上一周期与本周期/,
     "desktop-blended.png",
   );
@@ -347,11 +373,21 @@ try {
   await apiStage("segments", 100, "segments", 100, 80);
   await page.setViewportSize({ width: 390, height: 844 });
   await loadPage();
-  await detail("history", "$100.00", /多段.*中位数/, "mobile-segments.png");
-  await detail("rough", "$100.00", /多段.*中位数/);
+  await detail(
+    "history",
+    shown(80, 60, 100),
+    /多段.*中位数/,
+    "mobile-segments.png",
+  );
+  await detail("rough", shown(80, 60, 100), /多段.*中位数/);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await loadPage();
-  await detail("history", "$100.00", /多段.*中位数/, "desktop-segments.png");
+  await detail(
+    "history",
+    shown(80, 60, 100),
+    /多段.*中位数/,
+    "desktop-segments.png",
+  );
   // 套餐变化时百分比仍递增，验证真正隔离套餐，而非仅靠百分比回退。
   const changed = (percent: number, addedUsd: number) => {
     const batch = observation("history", percent, addedUsd, 0);
@@ -371,7 +407,11 @@ try {
           result = (await response.json()) as LedgerView;
           const window = accountWindow(result, "history");
           return (
-            window.percent === percent && window.estimate?.usd === expected
+            window.percent === percent &&
+            (fullWeekEstimate(window) === null
+              ? null
+              : Number(fullWeekEstimate(window))) ===
+              (expected === null ? null : Number(expected))
           );
         },
         { timeout: 15000 },
@@ -393,10 +433,20 @@ try {
     "rough",
   );
   await loadPage();
-  await detail("history", "$200.00", /粗估/, "desktop-plan-changed.png");
+  await detail(
+    "history",
+    shown(86, 64, 200),
+    /粗估/,
+    "desktop-plan-changed.png",
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   await loadPage();
-  await detail("history", "$200.00", /粗估/, "mobile-plan-changed.png");
+  await detail(
+    "history",
+    shown(86, 64, 200),
+    /粗估/,
+    "mobile-plan-changed.png",
+  );
   expect(errors).toEqual([]);
   const result = {
     status: "passed",
