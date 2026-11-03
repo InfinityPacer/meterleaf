@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { Database } from "bun:sqlite";
 import type { IngestAccount, IngestUsage } from "../shared/ingest";
 import {
@@ -203,9 +202,8 @@ export function readOmpAgyLabels(path: string): Map<number, string> {
   if (!existsSync(path)) return labels;
   let db: Database | null = null;
   try {
-    db = new Database(`${pathToFileURL(path).href}?mode=ro`, {
-      readonly: true,
-    });
+    // 用普通路径只读打开：Linux 上的 SQLite 默认不解析 file: URI 参数。
+    db = new Database(path, { readonly: true });
     const rows = db
       .query<{ id: number; identity_key: string }, [string]>(
         "SELECT id, identity_key FROM auth_credentials WHERE provider = ? AND identity_key LIKE 'email:%'",
