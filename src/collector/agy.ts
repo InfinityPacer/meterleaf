@@ -49,6 +49,15 @@ export function isValidAgyLabel(value: string): boolean {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value);
 }
 
+/** Google 邮箱本地部分按状态栏同样的规则归一化成账号标签，不合格式时为 null。 */
+export function agyLabelFromEmail(email: string): string | null {
+  const label = email
+    .split("@")[0]!
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "-");
+  return isValidAgyLabel(label) ? label : null;
+}
+
 export function agyAccountId(label: string): string {
   return `agy-${label}`;
 }
@@ -859,7 +868,7 @@ export function emptyAgyReport(): AgyReaderReport {
   };
 }
 
-function readPlanMap(state: CollectorState): Record<string, string> {
+export function readPlanMap(state: CollectorState): Record<string, string> {
   try {
     const raw = JSON.parse(state.getMeta("agy_plans") ?? "{}") as Record<
       string,
@@ -1326,18 +1335,27 @@ export interface AgyRefreshOptions {
   timeoutMs?: number;
 }
 
+export interface OmpQuotaRefreshOptions {
+  /** 覆盖 omp 可执行文件位置，默认读 OMP_BIN 再按固定目录查找。 */
+  ompBin?: string;
+  timeoutMs?: number;
+}
+
 /**
- * macOS 后台任务的 PATH 不含 ~/.local/bin，而 agy 默认装在那里，所以先按固定目录查找。
+ * macOS 后台任务的 PATH 不含 ~/.local/bin 与 Homebrew 目录，agy 和 omp 默认装在这些位置，
+ * 所以先按固定目录查找。
  */
-function findAgy(override: string | undefined): string | null {
-  const explicit = override ?? process.env.AGY_BIN;
+function findExecutable(
+  name: string,
+  explicit: string | undefined,
+): string | null {
   const home = process.env.HOME || homedir();
   const candidates = explicit
     ? [explicit]
     : [
         ...[join(home, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin"],
         ...(process.env.PATH ?? "").split(":").filter(Boolean),
-      ].map((dir) => join(dir, "agy"));
+      ].map((dir) => join(dir, name));
   for (const candidate of candidates) {
     try {
       accessSync(candidate, constants.X_OK);
@@ -1353,12 +1371,7 @@ function findAgy(override: string | undefined): string | null {
 function labelFromAgyLog(log: string): string | null {
   const emails = [...log.matchAll(/authenticated successfully as ([^\s]+)/g)];
   const email = emails.at(-1)?.[1];
-  if (!email) return null;
-  const label = email
-    .split("@")[0]!
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, "-");
-  return isValidAgyLabel(label) ? label : null;
+  return email ? agyLabelFromEmail(email) : null;
 }
 
 /** agy -p /usage 返回的四个额度桶，换算成状态栏缓存的行：窗口名、已用百分比整数、重置 Unix 秒。 */
@@ -1441,12 +1454,73 @@ function mergeQuotaFile(path: string, fresh: Map<string, string>) {
   replaceFile(path, lines.map((line) => `${line}\n`).join(""));
 }
 
+/** 探测子进程继承当前环境，PATH 补上后台任务缺少的安装目录。 */
+function probeEnv(): Record<string, string> {
+  const home = process.env.HOME || homedir();
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  env.PATH = [
+    join(home, ".local", "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    env.PATH ?? "",
+  ]
+    .filter(Boolean)
+    .join(":");
+  return env;
+}
+
+/**
+ * 子进程输出写进文件而不是管道，它派生的后台进程占着管道也不会让 sync 一直等；
+ * 独立进程组让超时或结束后能连同它的子进程一起终止。
+ */
+async function runProbe(
+  argv: string[],
+  options: {
+    cwd: string;
+    env: Record<string, string>;
+    outFile: string;
+    timeoutMs?: number;
+  },
+): Promise<number | "timeout"> {
+  const outputFd = openSync(options.outFile, "w", 0o600);
+  let child: ReturnType<typeof Bun.spawn>;
+  try {
+    child = Bun.spawn(argv, {
+      cwd: options.cwd,
+      env: options.env,
+      stdin: "ignore",
+      stdout: outputFd,
+      stderr: "ignore",
+      detached: true,
+    });
+  } finally {
+    closeSync(outputFd);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(
+      () => resolve("timeout"),
+      options.timeoutMs ?? probeTimeoutMs,
+    );
+  });
+  const outcome = await Promise.race([child.exited, deadline]);
+  clearTimeout(timer);
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    // 进程组已全部退出。
+  }
+  if (outcome === "timeout")
+    await Promise.race([child.exited, Bun.sleep(2000)]);
+  return outcome;
+}
+
 /**
  * 运行一次 agy -p /usage 并把结果写回状态栏额度缓存。失败只体现在返回值里，
  * 已有的 quota-<label>.tsv 与 current-account 保持原样。
- *
- * 子进程输出写进文件而不是管道，agy 派生的后台进程占着管道也不会让 sync 一直等；
- * 独立进程组让超时或结束后能连同它的子进程一起终止。
  */
 export async function refreshAgyQuota(
   sources: Pick<AgyReaderSources, "statuslineDir">,
@@ -1458,75 +1532,33 @@ export async function refreshAgyQuota(
     label: null,
     error: null,
   };
-  const agyBin = findAgy(options.agyBin);
+  const agyBin = findExecutable("agy", options.agyBin ?? process.env.AGY_BIN);
   if (!agyBin) return { ...result, error: "找不到 agy 可执行文件" };
   result.attempted = true;
-  const home = process.env.HOME || homedir();
   const tempDir = mkdtempSync(join(tmpdir(), "meterleaf-agy-usage-"));
   const logFile = join(tempDir, "agy.log");
   const outFile = join(tempDir, "usage.json");
   try {
-    const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value !== undefined) env[key] = value;
-    }
-    env.PATH = [
-      join(home, ".local", "bin"),
-      "/opt/homebrew/bin",
-      "/usr/local/bin",
-      env.PATH ?? "",
-    ]
-      .filter(Boolean)
-      .join(":");
+    const env = probeEnv();
     env.METERLEAF_AGY_PROBE = "1";
     env.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
     env.BROWSER = "/usr/bin/false";
 
-    const outputFd = openSync(outFile, "w", 0o600);
-    let child: ReturnType<typeof Bun.spawn>;
-    try {
-      child = Bun.spawn(
-        [
-          agyBin,
-          "-p",
-          "/usage",
-          "--output-format",
-          "json",
-          "--print-timeout",
-          "30s",
-          "--log-file",
-          logFile,
-        ],
-        {
-          cwd: tempDir,
-          env,
-          stdin: "ignore",
-          stdout: outputFd,
-          stderr: "ignore",
-          detached: true,
-        },
-      );
-    } finally {
-      closeSync(outputFd);
-    }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<"timeout">((resolve) => {
-      timer = setTimeout(
-        () => resolve("timeout"),
-        options.timeoutMs ?? probeTimeoutMs,
-      );
-    });
-    const outcome = await Promise.race([child.exited, deadline]);
-    clearTimeout(timer);
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // 进程组已全部退出。
-    }
-    if (outcome === "timeout") {
-      await Promise.race([child.exited, Bun.sleep(2000)]);
-      return { ...result, error: "agy 超时，已终止" };
-    }
+    const outcome = await runProbe(
+      [
+        agyBin,
+        "-p",
+        "/usage",
+        "--output-format",
+        "json",
+        "--print-timeout",
+        "30s",
+        "--log-file",
+        logFile,
+      ],
+      { cwd: tempDir, env, outFile, timeoutMs: options.timeoutMs },
+    );
+    if (outcome === "timeout") return { ...result, error: "agy 超时，已终止" };
     if (outcome !== 0) return { ...result, error: `agy 退出码 ${outcome}` };
 
     const buckets = parseUsageBuckets(readFileSync(outFile, "utf8"));
@@ -1597,20 +1629,188 @@ export async function maybeRefreshAgyQuota(
   }
   state.setMeta("agy_quota_refresh_at", now.toISOString());
   const result = await refreshAgyQuota(sources, options);
-  const status = result.error
-    ? `error:${result.error}`
-    : result.refreshed
-      ? `ok:${result.label}`
+  noteRefreshStatus(
+    state,
+    "agy_quota_refresh_status",
+    "Antigravity",
+    result.error,
+    result.refreshed ? (result.label ?? "") : null,
+    now,
+  );
+  return result;
+}
+
+/** 刷新结果只在与上轮不同时记一行日志，失败持续时不每轮刷屏。 */
+function noteRefreshStatus(
+  state: CollectorState,
+  metaKey: string,
+  name: string,
+  error: string | null,
+  refreshed: string | null,
+  now: Date,
+) {
+  const status = error
+    ? `error:${error}`
+    : refreshed !== null
+      ? `ok:${refreshed}`
       : "";
-  const previous = state.getMeta("agy_quota_refresh_status") ?? "";
-  if (status !== previous) {
-    state.setMeta("agy_quota_refresh_status", status);
-    if (result.error)
-      console.error(
-        `${now.toISOString()} Antigravity 额度刷新失败: ${result.error}`,
-      );
-    else if (previous.startsWith("error:"))
-      console.log(`${now.toISOString()} Antigravity 额度刷新已恢复`);
+  const previous = state.getMeta(metaKey) ?? "";
+  if (status === previous) return;
+  state.setMeta(metaKey, status);
+  if (error)
+    console.error(`${now.toISOString()} ${name} 额度刷新失败: ${error}`);
+  else if (previous.startsWith("error:"))
+    console.log(`${now.toISOString()} ${name} 额度刷新已恢复`);
+}
+
+// ---- 经 omp 刷新所有已登录 Google 账号的额度 ----
+
+/** 额度已用完时 omp 会收到 429，此后不再产生用量，所以单独用较短的间隔去读一次实时额度。 */
+const exhaustedRefreshIntervalMs = 60_000;
+
+/**
+ * omp usage --json 每个已登录账号一份报告，额度标识末段与 agy /usage 的桶名相同，
+ * 例如 google-antigravity:google:default:gemini-5h。返回 标签 → 缓存行，完整邮箱不出现在返回值里。
+ */
+function parseOmpUsageReports(
+  output: string,
+): Map<string, Map<string, string>> | string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return "omp usage 返回的不是有效 JSON";
   }
+  const reports = (parsed as { reports?: unknown } | null)?.reports;
+  if (!Array.isArray(reports)) return "omp usage 没有返回额度报告";
+  const result = new Map<string, Map<string, string>>();
+  for (const report of reports as Record<string, unknown>[]) {
+    if (report?.provider !== "google-antigravity") continue;
+    const email = (report.metadata as { email?: unknown } | undefined)?.email;
+    const label = typeof email === "string" ? agyLabelFromEmail(email) : null;
+    if (!label || !Array.isArray(report.limits)) continue;
+    const rows = new Map<string, string>();
+    for (const limit of report.limits as Record<string, unknown>[]) {
+      const key =
+        typeof limit?.id === "string"
+          ? quotaBuckets[limit.id.split(":").at(-1)!]
+          : undefined;
+      const remaining = (limit?.amount as { remainingFraction?: unknown })
+        ?.remainingFraction;
+      const resetMs = (limit?.window as { resetsAt?: unknown })?.resetsAt;
+      if (
+        !key ||
+        typeof remaining !== "number" ||
+        !Number.isFinite(remaining) ||
+        remaining < 0 ||
+        remaining > 1 ||
+        typeof resetMs !== "number" ||
+        !Number.isFinite(resetMs)
+      )
+        continue;
+      const used = Math.round((1 - remaining) * 100);
+      rows.set(key, `${key}\t${used}\t${Math.floor(resetMs / 1000)}`);
+    }
+    if (rows.size > 0) result.set(label, rows);
+  }
+  return result.size > 0 ? result : "omp usage 没有可用的 Antigravity 额度";
+}
+
+export interface OmpQuotaRefreshResult {
+  attempted: boolean;
+  refreshed: boolean;
+  /** 写入了额度缓存的账号标签，按字母序。 */
+  labels: string[];
+  error: string | null;
+}
+
+/**
+ * 运行 omp usage 并把每个已登录 Google 账号的额度合并进各自的 quota-<label>.tsv。
+ * omp 自己会缓存额度几分钟，live 时先让它丢弃缓存再读，用于额度刚用完的场合。
+ * 不改 current-account：它只代表 agy 当前登录的账号。
+ */
+export async function refreshOmpAgyQuota(
+  sources: Pick<AgyReaderSources, "statuslineDir">,
+  options: OmpQuotaRefreshOptions & { live?: boolean } = {},
+): Promise<OmpQuotaRefreshResult> {
+  const result: OmpQuotaRefreshResult = {
+    attempted: false,
+    refreshed: false,
+    labels: [],
+    error: null,
+  };
+  const ompBin = findExecutable("omp", options.ompBin ?? process.env.OMP_BIN);
+  if (!ompBin) return { ...result, error: "找不到 omp 可执行文件" };
+  result.attempted = true;
+  const tempDir = mkdtempSync(join(tmpdir(), "meterleaf-omp-usage-"));
+  const outFile = join(tempDir, "usage.json");
+  const provider = "--provider=google-antigravity";
+  try {
+    const run = { cwd: tempDir, env: probeEnv(), timeoutMs: options.timeoutMs };
+    if (options.live)
+      // 丢弃缓存失败时仍读一次，最多拿到 omp 缓存里的值。
+      await runProbe([ompBin, "usage", "invalidate", provider], {
+        ...run,
+        outFile: join(tempDir, "invalidate.out"),
+      });
+    const outcome = await runProbe([ompBin, "usage", "--json", provider], {
+      ...run,
+      outFile,
+    });
+    if (outcome === "timeout") return { ...result, error: "omp 超时，已终止" };
+    if (outcome !== 0) return { ...result, error: `omp 退出码 ${outcome}` };
+    const accounts = parseOmpUsageReports(readFileSync(outFile, "utf8"));
+    if (typeof accounts === "string") return { ...result, error: accounts };
+    mkdirSync(sources.statuslineDir, { recursive: true, mode: 0o700 });
+    for (const [label, rows] of accounts)
+      mergeQuotaFile(
+        join(sources.statuslineDir, agyQuotaFileName(label)),
+        rows,
+      );
+    return { ...result, refreshed: true, labels: [...accounts.keys()].sort() };
+  } catch (error) {
+    return {
+      ...result,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * omp 里有新的 Antigravity 用量时最多每 5 分钟刷新一次；收到额度用完的 429 时
+ * 最多每分钟读一次实时额度，让用满的读数尽快到位，又不在持续报错时反复调用。
+ * 尝试时间在启动 omp 之前写入，失败同样退避。
+ */
+export async function maybeRefreshOmpAgyQuota(
+  state: CollectorState,
+  sources: Pick<AgyReaderSources, "statuslineDir">,
+  trigger: { exhausted: boolean },
+  now: Date = new Date(),
+  options: OmpQuotaRefreshOptions = {},
+): Promise<OmpQuotaRefreshResult> {
+  const lastAttemptAt = state.getMeta("omp_agy_quota_refresh_at");
+  if (lastAttemptAt) {
+    const elapsed = now.getTime() - Date.parse(lastAttemptAt);
+    const interval = trigger.exhausted
+      ? exhaustedRefreshIntervalMs
+      : refreshIntervalMs;
+    if (elapsed >= 0 && elapsed < interval)
+      return { attempted: false, refreshed: false, labels: [], error: null };
+  }
+  state.setMeta("omp_agy_quota_refresh_at", now.toISOString());
+  const result = await refreshOmpAgyQuota(sources, {
+    ...options,
+    live: trigger.exhausted,
+  });
+  noteRefreshStatus(
+    state,
+    "omp_agy_quota_refresh_status",
+    "omp Antigravity",
+    result.error,
+    result.refreshed ? result.labels.join(",") : null,
+    now,
+  );
   return result;
 }

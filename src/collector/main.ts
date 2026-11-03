@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   maybeRefreshAgyQuota,
+  maybeRefreshOmpAgyQuota,
   readAgy,
   type AgyReaderReport,
   type AgyReaderSources,
@@ -587,11 +588,13 @@ export function ompReaderConfig(
   config: CollectorConfig | null,
 ): OmpReaderSources | null {
   if (config?.omp?.enabled === false) return null;
+  const sessionsDir = resolve(
+    config?.omp?.sessionsDir ??
+      join(process.env.HOME || homedir(), ".omp", "agent", "sessions"),
+  );
   return {
-    sessionsDir: resolve(
-      config?.omp?.sessionsDir ??
-        join(process.env.HOME || homedir(), ".omp", "agent", "sessions"),
-    ),
+    sessionsDir,
+    credentialsDb: join(dirname(sessionsDir), "agent.db"),
     statuslineDir: agyStatuslineDir(config),
     start: SOURCE_START,
     channelAccounts: effectiveChannelAccounts(config),
@@ -633,23 +636,31 @@ export async function readNewSources(
   const omp = ompReaderConfig(config);
   let agyReport = agy ? readAgy(state, agy) : null;
   let ompReport = omp ? await readOmp(state, omp) : null;
-  if (
-    options.allowQuotaRefresh &&
-    agy &&
-    ((agyReport?.recorded ?? 0) > 0 ||
-      (ompReport?.agyRecorded ?? 0) > 0 ||
-      (ompReport?.agyMissingAccount ?? 0) > 0)
-  ) {
-    const refresh = await maybeRefreshAgyQuota(state, agy);
-    if (refresh.refreshed) {
+  if (options.allowQuotaRefresh && agy) {
+    const ompMissing = (ompReport?.agyMissingAccount ?? 0) > 0;
+    const exhausted = (ompReport?.agyExhausted ?? 0) > 0;
+    // omp 一次读回它登录的所有 Google 账号，omp 的用量只靠它刷新。agy 只能刷新自己登录的
+    // 账号，用于 agy 自己的用量，以及 omp 请求找不到账号时补上 current-account。
+    const agyRefresh =
+      (agyReport?.recorded ?? 0) > 0 || ompMissing
+        ? await maybeRefreshAgyQuota(state, agy)
+        : null;
+    const ompRefresh =
+      omp && ((ompReport?.agyRecorded ?? 0) > 0 || ompMissing || exhausted)
+        ? await maybeRefreshOmpAgyQuota(state, omp, { exhausted })
+        : null;
+    if (agyRefresh?.refreshed || ompRefresh?.refreshed) {
       const again = readAgy(state, agy);
       const ompAgain = omp ? await readOmp(state, omp) : null;
       agyReport = settleAgy(agyReport!, again);
       if (ompReport && ompAgain) ompReport = settleOmp(ompReport, ompAgain);
     }
-    if (agyReport) {
-      agyReport.quotaRefreshed = refresh.refreshed;
-      agyReport.quotaRefreshError = refresh.error;
+    if (agyReport && (agyRefresh || ompRefresh)) {
+      agyReport.quotaRefreshed = Boolean(
+        agyRefresh?.refreshed || ompRefresh?.refreshed,
+      );
+      agyReport.quotaRefreshError =
+        agyRefresh?.error ?? ompRefresh?.error ?? null;
     }
   }
   return [codexReport, opencodeReport, agyReport, ompReport].filter(
@@ -674,6 +685,7 @@ function settleOmp(first: OmpReaderReport, again: OmpReaderReport) {
     agyRecorded: first.agyRecorded + again.agyRecorded,
     skipped: again.skipped,
     agyMissingAccount: again.agyMissingAccount,
+    agyExhausted: first.agyExhausted + again.agyExhausted,
   };
 }
 

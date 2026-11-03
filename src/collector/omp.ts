@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { Database } from "bun:sqlite";
 import type { IngestAccount, IngestUsage } from "../shared/ingest";
 import {
   agyAccountsForLabel,
+  agyLabelFromEmail,
   normalizeAgyModel,
+  readPlanMap,
   resolveAgyActiveAccount,
 } from "./agy";
 import {
@@ -147,6 +151,8 @@ function ingestAccount(account: ChannelAccount): IngestAccount {
 
 export interface OmpReaderSources {
   sessionsDir: string;
+  /** omp 的账号库 agent.db，用来把请求里的账号编号对应到 Google 账号。 */
+  credentialsDb: string;
   statuslineDir: string;
   start: string;
   channelAccounts: readonly ChannelAccountRule[];
@@ -164,6 +170,8 @@ export interface OmpReaderReport extends SourceReaderReport {
   agyRecorded: number;
   /** 找不到活跃 Antigravity 账号而暂缓的请求数；账号出现后下一轮补录。 */
   agyMissingAccount: number;
+  /** 本轮新读到的额度用完（429）响应数，用来立即读一次实时额度。 */
+  agyExhausted: number;
 }
 
 export function emptyOmpReport(): OmpReaderReport {
@@ -176,6 +184,7 @@ export function emptyOmpReport(): OmpReaderReport {
     deferred: false,
     agyRecorded: 0,
     agyMissingAccount: 0,
+    agyExhausted: 0,
   };
 }
 
@@ -184,6 +193,35 @@ const tailBytes = 256;
 const lineBudgetBytes = 16 * 1024 * 1024;
 const budgetBytes = 64 * 1024 * 1024;
 const agyProvider = "google-antigravity";
+
+/**
+ * omp 账号库里 Antigravity 登录的编号与账号标签。只查编号和 identity_key（形如 email:<邮箱>），
+ * 不读存放令牌的列。账号库缺失、结构变化或正被锁住时返回空表，请求退回活跃账号归属。
+ */
+export function readOmpAgyLabels(path: string): Map<number, string> {
+  const labels = new Map<number, string>();
+  if (!existsSync(path)) return labels;
+  let db: Database | null = null;
+  try {
+    db = new Database(`${pathToFileURL(path).href}?mode=ro`, {
+      readonly: true,
+    });
+    const rows = db
+      .query<{ id: number; identity_key: string }, [string]>(
+        "SELECT id, identity_key FROM auth_credentials WHERE provider = ? AND identity_key LIKE 'email:%'",
+      )
+      .all(agyProvider);
+    for (const row of rows) {
+      const label = agyLabelFromEmail(row.identity_key.slice("email:".length));
+      if (label) labels.set(row.id, label);
+    }
+  } catch {
+    // 见函数说明。
+  } finally {
+    db?.close();
+  }
+  return labels;
+}
 
 /** 恢复读取进度需要确认上次读到的位置没有变化：按偏移前的短片段指纹判断。 */
 function tailFingerprint(fd: number, offset: number): string {
@@ -214,7 +252,7 @@ function restoreContext(saved: string | null): OmpContext {
  *
  * 只取已完成的助手消息作为一次请求，以及设置思考档位与服务档位的行；消息正文、标题和
  * 工作目录不读取也不保存。omp 的 opencode-go 请求按通道规则归账，google-antigravity
- * 请求归入当前活跃的 Antigravity 账号，其余通道没有规则时跳过计数。每个文件的用量、
+ * 请求归入它所用的 Google 账号，其余通道没有规则时跳过计数。每个文件的用量、
  * 账户资料与读取进度在同一事务提交，读取中断整体回滚后从原进度重读。
  */
 export async function readOmp(
@@ -242,8 +280,14 @@ export async function readOmp(
   paths.sort((a, b) => b.modified - a.modified || a.path.localeCompare(b.path));
   state.forgetMissingOmpFiles(new Set(paths.map((row) => row.path)));
 
-  // Antigravity 请求没有自己的账号信息，归入与 readAgy 相同的活跃账号。
-  const agy = resolveAgyActiveAccount(sources.statuslineDir, state);
+  // Antigravity 请求按 credentialId 归到登录的 Google 账号；没有编号或账号库里查不到时，
+  // 归入与 readAgy 相同的活跃账号。
+  const credentialLabels = readOmpAgyLabels(sources.credentialsDb);
+  const activeLabel = resolveAgyActiveAccount(
+    sources.statuslineDir,
+    state,
+  ).label;
+  const plans = readPlanMap(state);
 
   interface FileSinks {
     accounts: Map<string, IngestAccount>;
@@ -281,11 +325,10 @@ export async function readOmp(
       context.tier = serviceTiers.includes(tier) ? tier : null;
       return;
     }
-    if (
-      entry?.type !== "message" ||
-      object(entry.message)?.role !== "assistant"
-    )
-      return;
+    const message = object(entry?.message);
+    if (entry?.type !== "message" || message?.role !== "assistant") return;
+    if (message.provider === agyProvider && message.errorStatus === 429)
+      report.agyExhausted++;
     let parsed: ReturnType<typeof ompMessage>;
     try {
       parsed = ompMessage(entry, context);
@@ -308,14 +351,19 @@ export async function readOmp(
     let effort = context.effort;
     const metadata: IngestUsage["metadata"] = { origin: "omp_local" };
     if (toAgy) {
-      if (!agy.label) {
+      const credential = message.credentialId;
+      const label =
+        (typeof credential === "number"
+          ? credentialLabels.get(credential)
+          : undefined) ?? activeLabel;
+      if (!label) {
         const key = `${agyProvider} (缺失账户)`;
         report.skipped[key] = (report.skipped[key] ?? 0) + 1;
         report.agyMissingAccount++;
         sinks.missingAccount = true;
         return;
       }
-      const profile = agyAccountsForLabel(agy.label, agy.plan);
+      const profile = agyAccountsForLabel(label, plans[label] ?? null);
       account = profile.account;
       for (const legacy of profile.legacy)
         sinks.accounts.set(legacy.externalId, legacy);
