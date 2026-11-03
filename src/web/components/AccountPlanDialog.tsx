@@ -79,7 +79,7 @@ export function AccountPlanDialog({
             />
             <Dialog.Description className="account-rename-hint">
               {target?.platform === "google"
-                ? "Antigravity 只报出 Google AI Ultra，不区分 5x 和 20x，在这里指定订阅的倍数。"
+                ? "Antigravity 只报出 Google AI Ultra，不区分 5x 和 20x，在这里指定订阅的倍数。账号只在 omp 里登录、读不到套餐时，也可以在这里选 Plus 或 Pro。"
                 : "自动识别使用采集器从 Claude Code 读到的套餐。账户不再登录这台电脑、读不到套餐时，可以在这里指定。"}
               设置后本周期的额度预估照常使用已有数据。
             </Dialog.Description>

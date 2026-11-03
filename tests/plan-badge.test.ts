@@ -28,6 +28,17 @@ test("plan tiers align by usage multiple across upstreams", () => {
     label: "Ultra 20x",
     tier: 3,
   });
+  // 手动指定与采集器上报的 Google 套餐显示一致；Plus 低于各家 1 档，不给档位。
+  expect(subscription("google", "pro")).toEqual({ label: "Pro", tier: 1 });
+  expect(subscription("google", "Google AI Pro")).toEqual({
+    label: "Pro",
+    tier: 1,
+  });
+  expect(subscription("google", "plus")).toEqual({ label: "Plus", tier: null });
+  expect(subscription("google", "Google AI Plus")).toEqual({
+    label: "Plus",
+    tier: null,
+  });
   // ChatGPT 的 pro 是 20x 档，与 Claude 的 Pro 同名但不同档。
   expect(subscription("openai", "pro")).toEqual({ label: "Pro 20x", tier: 3 });
 });
