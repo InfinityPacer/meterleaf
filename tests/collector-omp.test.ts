@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { readAgy } from "../src/collector/agy";
 import { DEFAULT_CHANNEL_ACCOUNTS } from "../src/collector/channel-accounts";
 import { SOURCE_START } from "../src/collector/config";
@@ -36,7 +37,8 @@ function workspace() {
   mkdirSync(join(sessionsDir, "-work"), { recursive: true });
   mkdirSync(join(sessionsDir, "-other"), { recursive: true });
   mkdirSync(statuslineDir);
-  return { root, sessionsDir, statuslineDir };
+  const credentialsDb = join(root, "agent.db");
+  return { root, sessionsDir, credentialsDb, statuslineDir };
 }
 function openState() {
   const item = new CollectorState(":memory:");
@@ -45,7 +47,7 @@ function openState() {
 }
 const read = (
   state: CollectorState,
-  dirs: { sessionsDir: string; statuslineDir: string },
+  dirs: { sessionsDir: string; credentialsDb: string; statuslineDir: string },
 ) =>
   readOmp(state, {
     ...dirs,
@@ -87,6 +89,8 @@ interface AssistantOptions {
   usage?: Record<string, unknown>;
   completedAt?: number;
   timestamp?: string;
+  credentialId?: number;
+  errorStatus?: number;
 }
 function assistant(options: AssistantOptions) {
   const completedAt = options.completedAt ?? Date.parse("2026-10-30T10:00:00Z");
@@ -100,6 +104,12 @@ function assistant(options: AssistantOptions) {
       model: options.model,
       content: [{ type: "text", text: "private answer" }],
       completedAt,
+      ...(options.credentialId === undefined
+        ? {}
+        : { credentialId: options.credentialId }),
+      ...(options.errorStatus === undefined
+        ? {}
+        : { stopReason: "error", errorStatus: options.errorStatus }),
       usage: options.usage ?? {
         input: 1000,
         output: 80,
@@ -126,6 +136,23 @@ const glm = (id: string, extra: Partial<AssistantOptions> = {}) =>
     model: "glm-5.3-flash",
     ...extra,
   });
+
+/** 仿 omp 的 agent.db：data 列放令牌，采集器不得读取。 */
+function writeCredentials(path: string, emails: Record<number, string>) {
+  const db = new Database(path);
+  db.run(
+    "CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT NOT NULL, credential_type TEXT NOT NULL, data TEXT NOT NULL, disabled_cause TEXT, identity_key TEXT)",
+  );
+  for (const [id, email] of Object.entries(emails))
+    db.run(
+      "INSERT INTO auth_credentials VALUES (?, 'google-antigravity', 'oauth', 'secret-token', NULL, ?)",
+      [Number(id), `email:${email}`],
+    );
+  db.run(
+    "INSERT INTO auth_credentials VALUES (99, 'anthropic', 'oauth', 'secret-token', NULL, 'email:Carol@example.com')",
+  );
+  db.close();
+}
 
 function writeSession(
   dirs: { sessionsDir: string },
@@ -409,4 +436,64 @@ test("a configured omp channel rule takes precedence over the Antigravity defaul
   });
   expect(report).toMatchObject({ recorded: 1, agyRecorded: 0 });
   expect(usages(state)[0]?.accountExternalId).toBe("custom-agy");
+});
+
+test("Antigravity requests go to the Google account omp used, falling back to the active account", async () => {
+  const dirs = workspace();
+  writeFileSync(join(dirs.statuslineDir, "current-account"), "alice\n");
+  writeCredentials(dirs.credentialsDb, {
+    1: "Alice@example.com",
+    2: "Bob.Two@example.com",
+  });
+  writeSession(
+    dirs,
+    "-work/one.jsonl",
+    lines(
+      title(),
+      argon("a1", { credentialId: 1 }),
+      argon("a2", {
+        credentialId: 2,
+        completedAt: Date.parse("2026-10-30T10:01:00Z"),
+      }),
+      // 早期记录没有编号，账号库里也查不到的编号同样退回活跃账号。
+      argon("a3", { completedAt: Date.parse("2026-10-30T10:02:00Z") }),
+      argon("a4", {
+        credentialId: 7,
+        completedAt: Date.parse("2026-10-30T10:03:00Z"),
+      }),
+    ),
+  );
+  const state = openState();
+  const report = await read(state, dirs);
+  expect(report).toMatchObject({ recorded: 4, agyRecorded: 4 });
+  expect(
+    usages(state)
+      .map((usage) => usage.accountExternalId)
+      .sort(),
+  ).toEqual(["agy-alice", "agy-alice", "agy-alice", "agy-bob-two"]);
+  expect(accounts(state).get("agy-bob-two")).toMatchObject({
+    name: "Antigravity (bob-two)",
+    platform: "google",
+  });
+});
+
+test("an Antigravity quota-exhausted response is counted for a refresh but not billed", async () => {
+  const dirs = workspace();
+  writeFileSync(join(dirs.statuslineDir, "current-account"), "alice\n");
+  const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  writeSession(
+    dirs,
+    "-work/one.jsonl",
+    lines(
+      title(),
+      argon("a1", { errorStatus: 429, usage: zero }),
+      glm("g1", { errorStatus: 429, usage: zero }),
+    ),
+  );
+  const state = openState();
+  const report = await read(state, dirs);
+  expect(report).toMatchObject({ recorded: 0, agyExhausted: 1 });
+  expect(usages(state)).toHaveLength(0);
+  // 已读过的响应下一轮不再触发。
+  expect((await read(state, dirs)).agyExhausted).toBe(0);
 });

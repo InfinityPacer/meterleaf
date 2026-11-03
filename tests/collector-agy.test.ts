@@ -19,6 +19,7 @@ import {
   decodeAgyStepMetadata,
   extractAgyTokens,
   maybeRefreshAgyQuota,
+  maybeRefreshOmpAgyQuota,
   normalizeAgyModel,
   readAgy,
   readAgyCurrentAccount,
@@ -1099,25 +1100,30 @@ function syncConfig(w: ReturnType<typeof refreshWorkspace>, omp: string) {
   } as CollectorConfig;
 }
 
-test("sync refreshes quota when omp brings new Antigravity usage, uploads both together, and scan never does", async () => {
+test("sync refreshes quota through omp when omp brings new Antigravity usage, uploads both together, and scan never does", async () => {
   const w = refreshWorkspace();
   const state = new CollectorState(":memory:");
   try {
     writeFileSync(w.quota, staleQuota + "\n");
     writeFileSync(join(w.statuslineDir, "current-account"), "alice\n");
     utimesSync(w.quota, longAgo, longAgo);
-    const agy = fakeAgy(w.dir, {
-      output: usageJson({ "gemini-5h": 0.5 }),
-      loggedInAs: "alice@example.com",
-    });
+    const agy = fakeAgy(w.dir, { output: usageJson({ "gemini-5h": 0.9 }) });
+    const omp = fakeOmp(
+      w.dir,
+      JSON.stringify({
+        reports: [ompReport("alice@example.com", { "gemini-5h": 0.5 })],
+      }),
+    );
     process.env.AGY_BIN = agy.script;
+    process.env.OMP_BIN = omp.script;
     const config = syncConfig(w, ompSession(w.dir, "m1"));
 
-    // scan 只读：有新用量也不运行 agy。
+    // scan 只读：有新用量也不运行 agy 或 omp。
     const scanState = new CollectorState(":memory:");
     try {
       await readNewSources(scanState, config, { allowQuotaRefresh: false });
       expect(agy.calls()).toBe(0);
+      expect(omp.calls()).toEqual([]);
     } finally {
       scanState.close();
     }
@@ -1125,7 +1131,9 @@ test("sync refreshes quota when omp brings new Antigravity usage, uploads both t
     const reports = await readNewSources(state, config, {
       allowQuotaRefresh: true,
     });
-    expect(agy.calls()).toBe(1);
+    // omp 的用量只经 omp 刷新，agy 留给它自己的会话。
+    expect(omp.calls()).toEqual(["--json"]);
+    expect(agy.calls()).toBe(0);
     const agyReport = reports.find((item) => item.source === "agy") as
       AgyReaderReport | undefined;
     expect(agyReport).toMatchObject({
@@ -1142,19 +1150,20 @@ test("sync refreshes quota when omp brings new Antigravity usage, uploads both t
     );
     expect(readFileSync(w.quota, "utf8")).toContain("plan\tGoogle AI Ultra\t-");
 
-    // 之后又有新用量，但距上次尝试不足 5 分钟，不再运行 agy。
+    // 之后又有新用量，但距上次尝试不足 5 分钟，不再运行 omp。
     ompSession(w.dir, "m2");
     await readNewSources(state, config, { allowQuotaRefresh: true });
-    expect(agy.calls()).toBe(1);
+    expect(omp.calls()).toEqual(["--json"]);
     expect(state.sourcePendingCounts().omp).toBe(2);
   } finally {
     delete process.env.AGY_BIN;
+    delete process.env.OMP_BIN;
     state.close();
     rmSync(w.dir, { recursive: true, force: true });
   }
 });
 
-test("sync does not run agy when nothing new from Antigravity arrived", async () => {
+test("sync does not run omp or agy when nothing new from Antigravity arrived", async () => {
   const w = refreshWorkspace();
   const state = new CollectorState(":memory:");
   try {
@@ -1162,20 +1171,28 @@ test("sync does not run agy when nothing new from Antigravity arrived", async ()
     writeFileSync(join(w.statuslineDir, "current-account"), "alice\n");
     utimesSync(w.quota, longAgo, longAgo);
     const agy = fakeAgy(w.dir, { output: usageJson({ "gemini-5h": 0.5 }) });
+    const omp = fakeOmp(
+      w.dir,
+      JSON.stringify({
+        reports: [ompReport("alice@example.com", { "gemini-5h": 0.5 })],
+      }),
+    );
     process.env.AGY_BIN = agy.script;
+    process.env.OMP_BIN = omp.script;
     const config = syncConfig(w, ompSession(w.dir, "m1"));
     // 第一轮把用量读完并刷新，第二轮没有新请求，即使节流时间已过也不运行。
     await readNewSources(state, config, { allowQuotaRefresh: true });
-    expect(agy.calls()).toBe(1);
+    expect(omp.calls()).toEqual(["--json"]);
     state.setMeta(
-      "agy_quota_refresh_at",
+      "omp_agy_quota_refresh_at",
       new Date(Date.now() - 10 * 60_000).toISOString(),
     );
-    utimesSync(w.quota, longAgo, longAgo);
     await readNewSources(state, config, { allowQuotaRefresh: true });
-    expect(agy.calls()).toBe(1);
+    expect(omp.calls()).toEqual(["--json"]);
+    expect(agy.calls()).toBe(0);
   } finally {
     delete process.env.AGY_BIN;
+    delete process.env.OMP_BIN;
     state.close();
     rmSync(w.dir, { recursive: true, force: true });
   }
@@ -1189,7 +1206,10 @@ test("a first-time omp Antigravity request is held until the refresh reveals the
       output: usageJson({ "gemini-5h": 0.5, "3p-5h": 0.9 }),
       loggedInAs: "Bob@example.com",
     });
+    // omp 账号库不可用时只能靠 agy 补上 current-account。
+    const fakeOmpBin = fakeOmp(w.dir, JSON.stringify({ reports: [] }));
     process.env.AGY_BIN = agy.script;
+    process.env.OMP_BIN = fakeOmpBin.script;
     const config = syncConfig(w, ompSession(w.dir, "m1"));
     const reports = await readNewSources(state, config, {
       allowQuotaRefresh: true,
@@ -1213,6 +1233,184 @@ test("a first-time omp Antigravity request is held until the refresh reveals the
     ).toEqual(["five-hour", "five-hour-3p"]);
   } finally {
     delete process.env.AGY_BIN;
+    delete process.env.OMP_BIN;
+    state.close();
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+/** 仿 omp：记录每次调用的子命令，usage --json 时输出给定的报告。 */
+function fakeOmp(dir: string, output: string) {
+  const marker = join(dir, "omp-calls");
+  const script = join(dir, "fake-omp");
+  const outputFile = join(dir, "omp-output.json");
+  writeFileSync(outputFile, output);
+  writeFileSync(
+    script,
+    `#!/bin/sh
+echo "$2" >> '${marker}'
+[ "$2" = "--json" ] && cat '${outputFile}'
+exit 0
+`,
+    { mode: 0o755 },
+  );
+  return {
+    script,
+    calls: () => {
+      try {
+        return readFileSync(marker, "utf8").trim().split("\n");
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
+function ompReport(email: string, used: Record<string, number>) {
+  return {
+    provider: "google-antigravity",
+    fetchedAt: 1793702034369,
+    metadata: { email, projectId: "p" },
+    limits: Object.entries(used).flatMap(([bucket, fraction]) =>
+      // 第三方池在 omp 里按 anthropic 与 openai 各列一次，数值相同。
+      (bucket.startsWith("3p") ? ["anthropic", "openai"] : ["google"]).map(
+        (family) => ({
+          id: `google-antigravity:${family}:default:${bucket}`,
+          window: { resetsAt: 1793962695000 },
+          amount: { remainingFraction: 1 - fraction },
+        }),
+      ),
+    ),
+  };
+}
+
+test("maybeRefreshOmpAgyQuota writes every Google account omp holds and reads live after a 429", async () => {
+  const w = refreshWorkspace();
+  const state = new CollectorState(":memory:");
+  try {
+    writeFileSync(w.quota, staleQuota + "\n");
+    const omp = fakeOmp(
+      w.dir,
+      JSON.stringify({
+        generatedAt: 1793702335550,
+        reports: [
+          ompReport("Alice@example.com", {
+            "gemini-5h": 0.115,
+            "gemini-weekly": 1,
+            "3p-weekly": 0.0116,
+          }),
+          ompReport("bob@example.com", { "gemini-5h": 0.02 }),
+          { provider: "anthropic", metadata: { email: "c@example.com" } },
+        ],
+      }),
+    );
+    process.env.TMPDIR = w.scratch;
+    const now = new Date("2026-10-31T12:00:00.000Z");
+    const result = await maybeRefreshOmpAgyQuota(
+      state,
+      w.sources,
+      { exhausted: false },
+      now,
+      { ompBin: omp.script },
+    );
+    expect(result).toMatchObject({
+      attempted: true,
+      refreshed: true,
+      labels: ["alice", "bob"],
+      error: null,
+    });
+    // 平时读 omp 自己的缓存，不让它重新请求。
+    expect(omp.calls()).toEqual(["--json"]);
+    expect(readFileSync(w.quota, "utf8")).toBe(
+      [
+        "gemini_5h\t12\t1793962695",
+        "gemini_weekly\t100\t1793962695",
+        "3p_5h\t10\t1793409600",
+        "3p_weekly\t1\t1793962695",
+        "plan\tGoogle AI Ultra\t-",
+      ].join("\n") + "\n",
+    );
+    expect(readFileSync(join(w.statuslineDir, "quota-bob.tsv"), "utf8")).toBe(
+      "gemini_5h\t2\t1793962695\n",
+    );
+    // omp 刷新不改 agy 的 current-account。
+    expect(readdirSync(w.statuslineDir).sort()).toEqual([
+      "quota-alice.tsv",
+      "quota-bob.tsv",
+    ]);
+    expect(readdirSync(w.scratch)).toEqual([]);
+
+    // 普通用量 5 分钟内不再调用；额度用完的 429 一分钟后就丢弃缓存读实时值。
+    const soon = new Date(now.getTime() + 60_000);
+    expect(
+      (
+        await maybeRefreshOmpAgyQuota(
+          state,
+          w.sources,
+          { exhausted: false },
+          soon,
+          {
+            ompBin: omp.script,
+          },
+        )
+      ).attempted,
+    ).toBe(false);
+    const halfMinute = new Date(now.getTime() + 30_000);
+    expect(
+      (
+        await maybeRefreshOmpAgyQuota(
+          state,
+          w.sources,
+          { exhausted: true },
+          halfMinute,
+          { ompBin: omp.script },
+        )
+      ).attempted,
+    ).toBe(false);
+    expect(
+      (
+        await maybeRefreshOmpAgyQuota(
+          state,
+          w.sources,
+          { exhausted: true },
+          soon,
+          {
+            ompBin: omp.script,
+          },
+        )
+      ).refreshed,
+    ).toBe(true);
+    expect(omp.calls()).toEqual(["--json", "invalidate", "--json"]);
+  } finally {
+    delete process.env.TMPDIR;
+    state.close();
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("maybeRefreshOmpAgyQuota reports an unusable omp answer and leaves the caches alone", async () => {
+  const w = refreshWorkspace();
+  const state = new CollectorState(":memory:");
+  try {
+    writeFileSync(w.quota, staleQuota + "\n");
+    const omp = fakeOmp(w.dir, JSON.stringify({ reports: [] }));
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await maybeRefreshOmpAgyQuota(
+        state,
+        w.sources,
+        { exhausted: true },
+        new Date("2026-10-31T12:00:00.000Z"),
+        { ompBin: omp.script },
+      );
+      expect(result).toMatchObject({ refreshed: false });
+      expect(result.error).toContain("没有可用的 Antigravity 额度");
+      expect(errors).toHaveBeenCalledTimes(1);
+    } finally {
+      errors.mockRestore();
+    }
+    expect(readFileSync(w.quota, "utf8")).toBe(staleQuota + "\n");
+  } finally {
     state.close();
     rmSync(w.dir, { recursive: true, force: true });
   }
