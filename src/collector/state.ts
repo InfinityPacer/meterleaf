@@ -154,6 +154,16 @@ export class CollectorState {
     this.db.close();
   }
 
+  /**
+   * 同步与 OTEL 中继是两个进程，各自写这个库。所有写事务都在开始时拿写锁：
+   * 默认的延迟事务先读后写，读取后若另一个进程已经提交，升级写锁时 SQLite
+   * 直接返回“database is locked”，不经过 busy_timeout 等待，整轮同步因此失败。
+   * 嵌套调用按保存点执行，只有最外层决定加锁方式。
+   */
+  write<T>(work: () => T): T {
+    return this.db.transaction(work).immediate();
+  }
+
   /** 设置模型账户映射；改变映射后由调用方重新归属全部事件。 */
   setModelAccounts(rules: readonly ModelAccountRule[]) {
     this.modelAccounts = rules;
@@ -548,7 +558,7 @@ export class CollectorState {
     observations: readonly FileObservation[],
   ): number {
     let changed = 0;
-    this.db.transaction(() => {
+    this.write(() => {
       for (const observation of observations) {
         if (this.mergeObservation(observation)) changed += 1;
       }
@@ -565,7 +575,7 @@ export class CollectorState {
           cursor.fingerprint,
           cursor.mtimeMs,
         );
-    })();
+    });
     return changed;
   }
 
@@ -657,7 +667,7 @@ export class CollectorState {
   }
 
   private enqueue(kind: OutboxKind, itemId: string, payload: unknown) {
-    this.db.transaction(() => this.enqueueRow(kind, itemId, payload))();
+    this.write(() => this.enqueueRow(kind, itemId, payload));
   }
 
   /**
@@ -669,7 +679,7 @@ export class CollectorState {
     dropped: number;
   } {
     if (records.length === 0) return { queued: 0, dropped: 0 };
-    return this.db.transaction(() => {
+    return this.write(() => {
       for (const record of records)
         this.enqueueRow("otel", record.requestId, record);
       // 服务端长期收不到时队列不能无限增长：只保留最新的一批，更早的请求
@@ -682,7 +692,7 @@ export class CollectorState {
         )
         .run(OTEL_QUEUE_LIMIT).changes;
       return { queued: records.length, dropped };
-    })();
+    });
   }
 
   /** 账户资料变化才进入待发送；返回是否有变化。 */
@@ -803,7 +813,7 @@ export class CollectorState {
             )
             .all(since);
     let changed = 0;
-    this.db.transaction(() => {
+    this.write(() => {
       for (const row of rows) {
         const fact = JSON.parse(row.observation) as UsageFact;
         const { account, attribution } = this.accountFor(
@@ -819,7 +829,7 @@ export class CollectorState {
           changed += 1;
         }
       }
-    })();
+    });
     return changed;
   }
 
@@ -829,7 +839,7 @@ export class CollectorState {
    */
   requeueUsage(): number {
     let queued = 0;
-    this.db.transaction(() => {
+    this.write(() => {
       for (const row of this.db
         .query<EventRow, []>(
           "SELECT key, occurred_at, total, account, observation FROM events WHERE total > 0",
@@ -844,7 +854,7 @@ export class CollectorState {
         );
         queued += 1;
       }
-    })();
+    });
     return queued;
   }
 
@@ -856,7 +866,7 @@ export class CollectorState {
         ? "last_quota_hash"
         : `last_quota_hash:${source}`;
     if (this.getMeta(metaKey) === snapshot.hash) return false;
-    this.db.transaction(() => {
+    this.write(() => {
       for (const quota of snapshot.quotas) {
         this.enqueue(
           "quota",
@@ -865,7 +875,7 @@ export class CollectorState {
         );
       }
       this.setMeta(metaKey, snapshot.hash);
-    })();
+    });
     return true;
   }
 
@@ -898,9 +908,9 @@ export class CollectorState {
   /** 只确认实际发送的版本；同一条目若已有更新版本，其 seq 不同，不会被删除。 */
   acknowledge(seqs: readonly number[]) {
     const remove = this.db.query("DELETE FROM outbox WHERE seq = ?");
-    this.db.transaction(() => {
+    this.write(() => {
       for (const seq of seqs) remove.run(seq);
-    })();
+    });
   }
 
   /** 非零事件按模型汇总，供 scan 与 status 对账。 */

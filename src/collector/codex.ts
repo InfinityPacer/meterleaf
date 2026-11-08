@@ -573,7 +573,7 @@ export async function readCodex(
       report.filesRead += 1;
       report.bytes += text.length;
       const context = emptyContext();
-      state.db.transaction(() => {
+      state.write(() => {
         const lines = text.toString("utf8");
         let from = 0;
         while (from < lines.length) {
@@ -585,7 +585,7 @@ export async function readCodex(
         }
         commitObservations(sinks, accounts);
         save(stats.size, "", "");
-      })();
+      });
       return true;
     }
     // 未压缩文件仍会被追加：从上次完整行边界继续，未写完的行留到下一轮。
@@ -614,7 +614,7 @@ export async function readCodex(
       const block = Buffer.alloc(chunkBytes);
       // 进度只推进到最后一个完整行之后；末尾未写完的行下一轮重读。
       let consumed = offset;
-      state.db.transaction(() => {
+      state.write(() => {
         while (offset < length) {
           const chunkStart = offset;
           const read = readSync(
@@ -657,7 +657,7 @@ export async function readCodex(
         context.discarding = discarding;
         commitObservations(sinks, accounts);
         save(consumed, JSON.stringify(context), tailFingerprint(fd, consumed));
-      })();
+      });
       return true;
     } finally {
       closeSync(fd);

@@ -519,3 +519,36 @@ describe("切换账户时的登录线索", () => {
     expect(loginMoment('{"type":"user"')).toBeNull();
   });
 });
+
+describe("与 OTEL 中继并发写入", () => {
+  test("同步的写事务读取之后，中继的提交不会让同步失败", () => {
+    const { root } = workspace();
+    const path = join(root, "state.sqlite");
+    const sync = new CollectorState(path);
+    const relay = new CollectorState(path);
+    // 中继不等待，锁冲突立即暴露，测试不必耗满 5 秒。
+    relay.db.exec("PRAGMA busy_timeout = 0;");
+    const record = {
+      requestId: "req_1",
+      accountUuid: FIXTURE_ACCOUNT_UUID,
+      organizationUuid: null,
+      sessionId: null,
+      model: null,
+      occurredAt: null,
+    };
+    try {
+      sync.write(() => {
+        expect(sync.getMeta("probe")).toBeNull();
+        // 延迟事务下中继能在这里提交，随后同步的写入会被 SQLite 直接拒绝。
+        expect(() => relay.enqueueOtel([record])).toThrow("database is locked");
+        sync.setMeta("probe", "written");
+      });
+      expect(relay.getMeta("probe")).toBe("written");
+      expect(relay.enqueueOtel([record]).queued).toBe(1);
+      expect(sync.pendingCounts().otel).toBe(1);
+    } finally {
+      relay.close();
+      sync.close();
+    }
+  });
+});

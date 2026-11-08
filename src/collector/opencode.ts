@@ -102,7 +102,7 @@ export function readOpenCode(
     }
     if (rows.length === 0) return report;
     let cursor = lastCursor ?? 0;
-    state.db.transaction(() => {
+    state.write(() => {
       for (const row of rows) {
         // 无论行内容结果如何，游标都推进到本轮读到的最新行。
         cursor = Math.max(cursor, row.time_updated);
@@ -181,7 +181,7 @@ export function readOpenCode(
       }
       // 游标与入账在同一事务提交；中途失败整体回滚，下一轮从原进度重读。
       state.saveOpencodeCursor(cursor);
-    })();
+    });
     return report;
   } finally {
     db.close();

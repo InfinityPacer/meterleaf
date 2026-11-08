@@ -1084,7 +1084,7 @@ export function readAgy(
     if (cache.plan) plans[label] = cache.plan;
     const effectivePlan = plans[label] ?? null;
     const accounts = agyAccountsForLabel(label, effectivePlan);
-    state.db.transaction(() => {
+    state.write(() => {
       state.upsertAccount(accounts.account);
       for (const legacy of accounts.legacy) state.upsertAccount(legacy);
       if (cache.entries.length > 0) {
@@ -1094,7 +1094,7 @@ export function readAgy(
         }
       }
       state.setMeta("agy_plans", JSON.stringify(plans));
-    })();
+    });
   }
 
   const activeAccount = activeAgyLabel(sources.statuslineDir);
@@ -1204,7 +1204,7 @@ export function readAgy(
       const steps = buildStepTimeIndex(opened.db);
       const conversationId = basename(path, ".db");
 
-      state.db.transaction(() => {
+      state.write(() => {
         for (const row of genRows) {
           if (
             (typeof row.data !== "string" &&
@@ -1299,7 +1299,7 @@ export function readAgy(
             account: activeAccount,
           });
         }
-      })();
+      });
     } finally {
       opened.close();
     }

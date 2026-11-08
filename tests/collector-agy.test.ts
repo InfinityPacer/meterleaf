@@ -798,7 +798,7 @@ const usageJson = (fractions: Record<string, number>) =>
             buckets: Object.entries(fractions).map(([id, remaining]) => ({
               id,
               remaining_fraction: remaining,
-              reset_time: "2026-11-06T10:58:15Z",
+              reset_time: "2100-01-01T00:00:00Z",
             })),
           },
         ],
@@ -904,10 +904,10 @@ test("maybeRefreshAgyQuota runs agy, keeps the plan row, and replaces only refre
     // 没刷到的 3p_5h 与 plan 行原样保留，刷到的窗口换成新值（已用百分比取整）。
     expect(readFileSync(w.quota, "utf8")).toBe(
       [
-        "gemini_5h\t12\t1793962695",
-        "gemini_weekly\t26\t1793962695",
+        "gemini_5h\t12\t4102444800",
+        "gemini_weekly\t26\t4102444800",
         "3p_5h\t10\t1793409600",
-        "3p_weekly\t1\t1793962695",
+        "3p_weekly\t1\t4102444800",
         "plan\tGoogle AI Ultra\t-",
       ].join("\n") + "\n",
     );
@@ -1219,7 +1219,7 @@ test("a first-time omp Antigravity request is held until the refresh reveals the
       "bob\n",
     );
     expect(readFileSync(join(w.statuslineDir, "quota-bob.tsv"), "utf8")).toBe(
-      "gemini_5h\t50\t1793962695\n3p_5h\t10\t1793962695\n",
+      "gemini_5h\t50\t4102444800\n3p_5h\t10\t4102444800\n",
     );
     const omp = reports.find((item) => item.source === "omp")!;
     expect(omp).toMatchObject({ read: 1, recorded: 1, skipped: {} });
@@ -1276,7 +1276,7 @@ function ompReport(email: string, used: Record<string, number>) {
       (bucket.startsWith("3p") ? ["anthropic", "openai"] : ["google"]).map(
         (family) => ({
           id: `google-antigravity:${family}:default:${bucket}`,
-          window: { resetsAt: 1793962695000 },
+          window: { resetsAt: 4102444800000 },
           amount: { remainingFraction: 1 - fraction },
         }),
       ),
@@ -1323,15 +1323,15 @@ test("maybeRefreshOmpAgyQuota writes every Google account omp holds and reads li
     expect(omp.calls()).toEqual(["--json"]);
     expect(readFileSync(w.quota, "utf8")).toBe(
       [
-        "gemini_5h\t12\t1793962695",
-        "gemini_weekly\t100\t1793962695",
+        "gemini_5h\t12\t4102444800",
+        "gemini_weekly\t100\t4102444800",
         "3p_5h\t10\t1793409600",
-        "3p_weekly\t1\t1793962695",
+        "3p_weekly\t1\t4102444800",
         "plan\tGoogle AI Ultra\t-",
       ].join("\n") + "\n",
     );
     expect(readFileSync(join(w.statuslineDir, "quota-bob.tsv"), "utf8")).toBe(
-      "gemini_5h\t2\t1793962695\n",
+      "gemini_5h\t2\t4102444800\n",
     );
     // omp 刷新不改 agy 的 current-account。
     expect(readdirSync(w.statuslineDir).sort()).toEqual([
