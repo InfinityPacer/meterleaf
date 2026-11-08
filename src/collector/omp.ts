@@ -441,7 +441,7 @@ export async function readOmp(
       const block = Buffer.alloc(chunkBytes);
       // 进度只推进到最后一个完整行之后；末尾未写完的行下一轮重读。
       let consumed = offset;
-      state.db.transaction(() => {
+      state.write(() => {
         while (offset < length) {
           const chunkStart = offset;
           const read = readSync(
@@ -494,7 +494,7 @@ export async function readOmp(
             size: stats.size,
             modified: stats.mtimeMs,
           });
-      })();
+      });
       return true;
     } finally {
       closeSync(fd);
