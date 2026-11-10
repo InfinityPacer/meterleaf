@@ -275,7 +275,7 @@ describe("quota-warmup task script", () => {
     expect(secondReport.skippedHandled).toContain("codex:default");
   });
 
-  test("supports optional 5h warmup when --include-5h / METERLEAF_WARMUP_5H=1 is enabled, and falls back to secondary 3p model on failure", async () => {
+  test("supports --codex-5h for Codex 5h without enabling Agy 5h, and --include-5h with 3p model fallback", async () => {
     const sb = createSandbox();
     const nowSec = 1_800_000_000;
 
@@ -290,13 +290,19 @@ describe("quota-warmup task script", () => {
       ].join("\n") + "\n",
     );
 
+    // codex: 仅 five-hour 到期，seven-day 未到期
+    writeCodexRollout(join(sb.codexSessions, "rollout-1.jsonl"), {
+      timestamp: new Date((nowSec - 10) * 1000).toISOString(),
+      fiveHourReset: nowSec - 20,
+      sevenDayReset: nowSec + 86400,
+    });
+
     const attemptedModels: string[] = [];
     const runner: CommandRunner = async (argv) => {
       const modelIdx = argv.indexOf("--model");
       if (modelIdx !== -1) {
         const model = argv[modelIdx + 1]!;
         attemptedModels.push(model);
-        // 模拟主模型 gpt-oss-120b-medium 报错退出，测试自动回退到 claude-sonnet-5-5-low
         if (model === "gpt-oss-120b-medium") {
           return { exitCode: 1, stdout: "", logText: "" };
         }
@@ -304,6 +310,17 @@ describe("quota-warmup task script", () => {
       return { exitCode: 0, stdout: "{}", logText: "" };
     };
 
+    // 仅开启 includeCodex5h 时，只预热 codex:five-hour，不触发 phronara 的 3p_5h
+    const codexOnly = await runWarmup(sb.env, {
+      includeCodex5h: true,
+      now: () => new Date(nowSec * 1000),
+      runner,
+    });
+    expect(codexOnly.actions.map((a) => [a.key, a.windows])).toEqual([
+      ["codex:default", ["five-hour"]],
+    ]);
+
+    // 开启 METERLEAF_WARMUP_5H=1 时，phronara 的 3p_5h 也触发并从 gpt-oss-120b-medium 回退到 claude-sonnet-5-5-low
     const report = await runWarmup(
       { ...sb.env, METERLEAF_WARMUP_5H: "1" },
       {
