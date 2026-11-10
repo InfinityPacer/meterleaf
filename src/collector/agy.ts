@@ -657,9 +657,16 @@ const enumModels: Record<number, { model: string; effort?: string }> = {
   1045: { model: "claude-sonnet-5-5", effort: "low" },
   1046: { model: "claude-sonnet-5-5", effort: "medium" },
   1047: { model: "claude-sonnet-5-5", effort: "high" },
+  1417: { model: "gemini-4-argon", effort: "high" },
+  1418: { model: "gemini-4-argon", effort: "medium" },
+  1419: { model: "gemini-4-argon", effort: "low" },
+  1427: { model: "gemini-4-carbon", effort: "high" },
+  1437: { model: "gemini-4-carbon", effort: "medium" },
+  1438: { model: "gemini-4-carbon", effort: "low" },
 };
 
 const displayModels: Record<string, string> = {
+  "gemini 4 carbon": "gemini-4-carbon",
   "gemini 4 argon": "gemini-4-argon",
   "gemini 3.8 flash": "gemini-3.8-flash",
   "claude opus 5.5": "claude-opus-5-5",

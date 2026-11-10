@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "meterleaf",
   "supersedes": ["meterleaf-openai"],
-  "version": "2026-10-30.2",
+  "version": "2026-10-30.3",
   "publishedAt": "2026-10-30T00:00:00Z",
   "unit": "per_million_tokens",
   "sources": [
@@ -48,7 +48,7 @@
     "GPT-6.1 Sol and Terra Credits use the Codex token rate card (Standard speed). Fast mode credits are 2x Standard; Ultrafast rates are not configured for text tiers.",
     "Codex records carry no cache TTL split, so GPT-6.1 Terra cache writes use the published 30-minute-retention price; the steeper 12-hour price is not configured separately.",
     "codex-auto-review is not published with its own prices. OpenAI routes Codex automatic reviews to gpt-6-luna, so codex-auto-review usage is estimated with luna published rates. This is an estimate of the routed model, not a distinct price list entry.",
-    "Gemini 4 Argon and Gemini 3.8 Flash use the text rates published on the Gemini API and Vertex AI pricing pages. Both models include the full 1M context window at a single rate with no long-context surcharge, and have no published per-token cache-write rate (context caching storage is billed per hour out of band). Promotional pricing applies through 2026-11-30 for Gemini 4 Argon ($2/$0.10/$10 Standard, $1/$0.05/$5 Flex) and through 2026-12-31 for Gemini 3.8 Flash ($0.75/$0.075/$3.75 Standard, $0.375/$0.0375/$1.875 Flex), with post-promotion rates taking effect on 2026-12-01 and 2027-01-01 respectively.",
+    "Gemini 4 Carbon, Gemini 4 Argon and Gemini 3.8 Flash use the text rates published on the Gemini API and Vertex AI pricing pages. All three models include the full 1M context window at a single rate with no long-context surcharge, and have no published per-token cache-write rate (context caching storage is billed per hour out of band). Promotional pricing applies through 2026-11-30 for Gemini 4 Carbon and Gemini 4 Argon ($2/$0.10/$10 Standard, $1/$0.05/$5 Flex) and through 2026-12-31 for Gemini 3.8 Flash ($0.75/$0.075/$3.75 Standard, $0.375/$0.0375/$1.875 Flex), with post-promotion rates taking effect on 2026-12-01 and 2027-01-01 respectively.",
     "Claude Sonnet 5.5 uses the published Claude API rates ($2 input, $0.10 cache read at 5% of base input, $2.50 5-minute cache write, $4 1-hour cache write, $10 output), with the full 1M context window at standard prices and no published fast tier.",
     "GPT-OSS 120B (openai/gpt-oss-120b-maas on Vertex AI Model Garden) uses the per-token rates published on Google Cloud Model Garden partner models pricing ($0.09 input, $0.36 output). Cache read and cache write rates are not published for this model and remain null."
   ],
@@ -2112,6 +2112,130 @@
         "cacheRead": "0.1",
         "cacheWrite": "2.5",
         "cacheWrite1h": "4",
+        "output": "10"
+      }
+    },
+    {
+      "model": "gemini-4-carbon",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "effectiveUntil": "2026-12-01T00:00:00Z",
+      "promotion": {
+        "description": "Promotional pricing published on Gemini API and Vertex AI pricing pages through November 30, 2026.",
+        "confirmedThrough": "2026-11-30"
+      },
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "2",
+        "cacheRead": "0.1",
+        "cacheWrite": null,
+        "output": "10"
+      }
+    },
+    {
+      "model": "gemini-4-carbon",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "effectiveUntil": "2026-12-01T00:00:00Z",
+      "promotion": {
+        "description": "Promotional pricing published on Gemini API and Vertex AI pricing pages through November 30, 2026.",
+        "confirmedThrough": "2026-11-30"
+      },
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "2",
+        "cacheRead": "0.1",
+        "cacheWrite": null,
+        "output": "10"
+      }
+    },
+    {
+      "model": "gemini-4-carbon",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "effectiveUntil": "2026-12-01T00:00:00Z",
+      "promotion": {
+        "description": "Promotional pricing published on Gemini API and Vertex AI pricing pages through November 30, 2026.",
+        "confirmedThrough": "2026-11-30"
+      },
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "flex",
+      "rates": {
+        "input": "1",
+        "cacheRead": "0.05",
+        "cacheWrite": null,
+        "output": "5"
+      }
+    },
+    {
+      "model": "gemini-4-carbon",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "effectiveUntil": "2026-12-01T00:00:00Z",
+      "promotion": {
+        "description": "Promotional pricing published on Gemini API and Vertex AI pricing pages through November 30, 2026.",
+        "confirmedThrough": "2026-11-30"
+      },
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "flex",
+      "rates": {
+        "input": "1",
+        "cacheRead": "0.05",
+        "cacheWrite": null,
+        "output": "5"
+      }
+    },
+    {
+      "model": "gemini-4-carbon",
+      "effectiveFrom": "2026-12-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "4",
+        "cacheRead": "0.2",
+        "cacheWrite": null,
+        "output": "20"
+      }
+    },
+    {
+      "model": "gemini-4-carbon",
+      "effectiveFrom": "2026-12-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "4",
+        "cacheRead": "0.2",
+        "cacheWrite": null,
+        "output": "20"
+      }
+    },
+    {
+      "model": "gemini-4-carbon",
+      "effectiveFrom": "2026-12-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "flex",
+      "rates": {
+        "input": "2",
+        "cacheRead": "0.1",
+        "cacheWrite": null,
+        "output": "10"
+      }
+    },
+    {
+      "model": "gemini-4-carbon",
+      "effectiveFrom": "2026-12-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "flex",
+      "rates": {
+        "input": "2",
+        "cacheRead": "0.1",
+        "cacheWrite": null,
         "output": "10"
       }
     },

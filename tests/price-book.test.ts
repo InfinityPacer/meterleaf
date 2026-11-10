@@ -43,7 +43,7 @@ test("bundled JSON contains separate USD branches with unchanged credits", () =>
   expect(api.usd.amount).toBe("6.075");
   expect(subscription.credits).toEqual(api.credits);
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-10-30.2");
+  expect(subscription.version).toBe("meterleaf@2026-10-30.3");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
@@ -476,6 +476,29 @@ test("Antigravity models use their published Google, Anthropic and Model Garden 
       reasoning: 100_000,
     },
   };
+
+  // Gemini 4 Carbon: 促销期至 2026-11-30（$2 / $0.10 / $10），2026-12-01 起（$4 / $0.20 / $20）。
+  for (const model of ["gemini-4-carbon", "gemini-4-argon"] as const) {
+    const promo = valueUsage({ ...baseFact, model }, defaultPriceBook);
+    expect(promo.subscriptionUsd.amount).toBe("12.1");
+    expect(promo.apiUsd.amount).toBe("12.1");
+    expect(
+      valueUsage({ ...baseFact, model, tier: "flex" }, defaultPriceBook)
+        .subscriptionUsd.amount,
+    ).toBe("6.05");
+    const postPromo = valueUsage(
+      { ...baseFact, model, occurredAt: "2026-12-01T00:00:00Z" },
+      defaultPriceBook,
+    );
+    expect(postPromo.subscriptionUsd.amount).toBe("24.2");
+    expect(postPromo.apiUsd.amount).toBe("24.2");
+    expect(
+      valueUsage(
+        { ...baseFact, model, tokens: { ...baseFact.tokens, cacheWrite: 1 } },
+        defaultPriceBook,
+      ).usd.reason,
+    ).toBe("unsupported-rate-bucket");
+  }
 
   // Gemini 4 Argon: 促销期至 2026-11-30（$2 / $0.10 / $10），2026-12-01 起（$4 / $0.20 / $20）。
   const argonPromo = valueUsage(

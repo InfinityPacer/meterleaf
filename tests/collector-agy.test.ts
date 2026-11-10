@@ -416,6 +416,39 @@ test("decodeAgyGenMetadata decodes wire fields, mutually exclusive buckets, and 
 test("normalizeAgyModel maps all Antigravity models and prices them through defaultPriceBook", () => {
   expect(
     normalizeAgyModel({
+      responseModel: "gemini-4-carbon-medium",
+      modelDisplayName: "Gemini 4 Carbon (Medium)",
+      modelEnum: 1437,
+    }),
+  ).toEqual({
+    model: "gemini-4-carbon",
+    upstreamModel: "gemini-4-carbon-medium",
+    reasoningEffort: "medium",
+  });
+  expect(
+    normalizeAgyModel({
+      responseModel: null,
+      modelDisplayName: "Gemini 4 Carbon (High)",
+      modelEnum: null,
+    }),
+  ).toEqual({
+    model: "gemini-4-carbon",
+    upstreamModel: null,
+    reasoningEffort: "high",
+  });
+  expect(
+    normalizeAgyModel({
+      responseModel: null,
+      modelDisplayName: null,
+      modelEnum: 1438,
+    }),
+  ).toEqual({
+    model: "gemini-4-carbon",
+    upstreamModel: null,
+    reasoningEffort: "low",
+  });
+  expect(
+    normalizeAgyModel({
       responseModel: "gemini-4-argon",
       modelDisplayName: "Gemini 4 Argon (High)",
       modelEnum: 1008,
@@ -495,7 +528,11 @@ test("normalizeAgyModel maps all Antigravity models and prices them through defa
   // 合并后的账户里，Gemini 池窗口只计 Gemini 模型，第三方池窗口只计其余模型。
   const gemini = quotaModelScope("seven-day", true)!;
   const thirdParty = quotaModelScope("seven-day-3p")!;
-  for (const model of ["gemini-4-argon", "gemini-3.8-flash"]) {
+  for (const model of [
+    "gemini-4-carbon",
+    "gemini-4-argon",
+    "gemini-3.8-flash",
+  ]) {
     expect([gemini(model), thirdParty(model)]).toEqual([true, false]);
   }
   for (const model of [
@@ -509,6 +546,7 @@ test("normalizeAgyModel maps all Antigravity models and prices them through defa
   expect(quotaModelScope("seven-day")).toBeNull();
 
   for (const model of [
+    "gemini-4-carbon",
     "gemini-4-argon",
     "gemini-3.8-flash",
     "claude-opus-5-5",
