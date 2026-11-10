@@ -1430,14 +1430,15 @@ test("readAgy and maybeRefreshAgyQuota discover extra antigravity-cli-<name> pro
   mkdirSync(emptyConvDir, { recursive: true });
   mkdirSync(statusDir, { recursive: true });
 
-  // 默认实例通过 current-account 识别为 alice；tide 实例通过 antigravity-oauth-token JWT 识别为 tidewren。
+  // 默认实例通过 current-account 识别为 alice；tide 实例通过 antigravity-oauth-token 的 id_token_email 识别为 tidewren。
   writeFileSync(join(statusDir, "current-account"), "alice\n");
-  const jwtPayload = Buffer.from(
-    JSON.stringify({ email: "Tidewren@gmail.com" }),
-  ).toString("base64url");
   writeFileSync(
     join(tideAppDir, "antigravity-oauth-token"),
-    JSON.stringify({ id_token: `eyJhbGciOiJub25lIn0.${jwtPayload}.sig` }),
+    JSON.stringify({
+      auth_method: "oauth",
+      id_token_email: "Tidewren@gmail.com",
+      token: "secret",
+    }),
   );
 
   function writeConvDb(

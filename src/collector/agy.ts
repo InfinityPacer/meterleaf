@@ -1117,7 +1117,7 @@ function discoverAgyInstances(conversationsDir: string): AgyInstance[] {
   return instances;
 }
 
-/** 从额外实例的 antigravity-oauth-token 文件（id_token JWT）提取账号标签，不保存完整邮箱或令牌。 */
+/** 从额外实例的 antigravity-oauth-token 文件（id_token_email 或 id_token JWT）提取账号标签，不保存完整邮箱或令牌。 */
 function labelFromOAuthTokenFile(appDataDir: string): string | null {
   let raw: string;
   try {
@@ -1126,7 +1126,17 @@ function labelFromOAuthTokenFile(appDataDir: string): string | null {
     return null;
   }
   try {
-    const parsed = JSON.parse(raw) as { id_token?: unknown } | null;
+    const parsed = JSON.parse(raw) as {
+      id_token_email?: unknown;
+      id_token?: unknown;
+    } | null;
+    if (
+      typeof parsed?.id_token_email === "string" &&
+      parsed.id_token_email.length > 0
+    ) {
+      const label = agyLabelFromEmail(parsed.id_token_email);
+      if (label) return label;
+    }
     if (typeof parsed?.id_token !== "string") return null;
     const parts = parsed.id_token.split(".");
     if (parts.length < 2 || !parts[1]) return null;
@@ -1141,9 +1151,9 @@ function labelFromOAuthTokenFile(appDataDir: string): string | null {
   }
 }
 
-/** 从实例目录的 cli.log 或最近几份 log/cli-*.log 中提取最近一次登录成功的账号标签。 */
+/** 从实例目录最近几份 log/cli-*.log 或 cli.log 中提取最近一次登录成功的账号标签。 */
 function labelFromAppDataLogs(appDataDir: string): string | null {
-  const candidates: string[] = [join(appDataDir, "cli.log")];
+  const candidates: string[] = [];
   try {
     const logDir = join(appDataDir, "log");
     const names = readdirSync(logDir)
@@ -1155,6 +1165,7 @@ function labelFromAppDataLogs(appDataDir: string): string | null {
   } catch {
     // 没有 log 子目录时只试 cli.log。
   }
+  candidates.push(join(appDataDir, "cli.log"));
   for (const path of candidates) {
     try {
       const label = labelFromAgyLog(readFileSync(path, "utf8"));
@@ -1168,24 +1179,28 @@ function labelFromAppDataLogs(appDataDir: string): string | null {
 
 /**
  * 解析单个 Antigravity CLI 实例对应的账号标签：
- * - 额外实例优先读自身的 antigravity-oauth-token、cli.log，再回退到 current-account-<profile>，
+ * - 额外实例优先读自身的 antigravity-oauth-token，再读 current-account-<profile>，最后回退到日志，
  *   绝不回退到默认实例的 current-account，避免未登录或刚创建的额外目录串号到默认账户；
- * - 默认实例优先读自身的 cli.log（或 antigravity-oauth-token），再回退到 activeAgyLabel(statuslineDir)。
+ * - 默认实例优先读 current-account，再回退到自身的令牌、日志或单一 quota-<label>.tsv。
  */
 function resolveInstanceLabel(
   instance: AgyInstance,
   statuslineDir: string,
 ): string | null {
-  const fromToken = labelFromOAuthTokenFile(instance.appDataDir);
-  if (fromToken) return fromToken;
-  const fromLog = labelFromAppDataLogs(instance.appDataDir);
-  if (fromLog) return fromLog;
   if (instance.profileName !== null) {
-    return readAgyCurrentAccount(statuslineDir, instance.profileName);
+    return (
+      labelFromOAuthTokenFile(instance.appDataDir) ??
+      readAgyCurrentAccount(statuslineDir, instance.profileName) ??
+      labelFromAppDataLogs(instance.appDataDir)
+    );
   }
-  return activeAgyLabel(statuslineDir);
+  return (
+    readAgyCurrentAccount(statuslineDir, null) ??
+    labelFromOAuthTokenFile(instance.appDataDir) ??
+    labelFromAppDataLogs(instance.appDataDir) ??
+    activeAgyLabel(statuslineDir)
+  );
 }
-
 /**
  * 读取一轮 Antigravity 状态栏额度缓存与本地会话数据库。
  * 1. 扫描 statuslineDir 下所有 quota-<label>.tsv，为每个 Google 账号建立 Gemini 与 Claude/GPT
@@ -1739,13 +1754,18 @@ export async function refreshAgyQuota(
     const fallbackLabel =
       profileName !== null
         ? ((options.appDataDir
+            ? labelFromOAuthTokenFile(options.appDataDir)
+            : null) ??
+          readAgyCurrentAccount(sources.statuslineDir, profileName) ??
+          (options.appDataDir
+            ? labelFromAppDataLogs(options.appDataDir)
+            : null))
+        : (readAgyCurrentAccount(sources.statuslineDir, null) ??
+          (options.appDataDir
             ? (labelFromOAuthTokenFile(options.appDataDir) ??
               labelFromAppDataLogs(options.appDataDir))
             : null) ??
-          readAgyCurrentAccount(sources.statuslineDir, profileName))
-        : ((options.appDataDir
-            ? labelFromAppDataLogs(options.appDataDir)
-            : null) ?? activeAgyLabel(sources.statuslineDir));
+          activeAgyLabel(sources.statuslineDir));
     const label = logged ?? fallbackLabel;
     if (!label) return { ...result, error: "无法确定 agy 登录的账号标签" };
 

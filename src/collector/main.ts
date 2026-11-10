@@ -642,6 +642,25 @@ export async function readNewSources(
     // omp 一次读回它登录的所有 Google 账号，omp 的用量只靠它刷新。agy 只能刷新自己登录的
     // 账号，用于 agy 自己的用量，以及 omp 请求找不到账号时补上 current-account。
     const agyMissing = (agyReport?.skipped["(缺失账户)"] ?? 0) > 0;
+    if (ompMissing) {
+      let dirty: (string | null)[] = [];
+      try {
+        const parsed = JSON.parse(
+          state.getMeta("agy_dirty_profiles") ?? "[]",
+        ) as unknown;
+        if (Array.isArray(parsed)) {
+          dirty = parsed.filter(
+            (item): item is string | null =>
+              item === null || typeof item === "string",
+          );
+        }
+      } catch {
+        // 忽略损坏的元信息。
+      }
+      if (!dirty.includes(null)) {
+        state.setMeta("agy_dirty_profiles", JSON.stringify([null, ...dirty]));
+      }
+    }
     const agyRefresh =
       (agyReport?.recorded ?? 0) > 0 || agyMissing || ompMissing
         ? await maybeRefreshAgyQuota(state, agy)
@@ -674,6 +693,7 @@ function settleAgy(first: AgyReaderReport, again: AgyReaderReport) {
   return {
     ...first,
     recorded: first.recorded + again.recorded,
+    skipped: again.skipped,
     quotas: first.quotas + again.quotas,
     activeAccount: again.activeAccount,
   };
