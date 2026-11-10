@@ -388,6 +388,25 @@ METERLEAF_TASK_STATE_DIR="$HOME/Library/Application Support/Meterleaf Collector/
 
 这依赖 Claude Code 当前的会话记录格式。以后 Claude Code 换了判断方式，最坏的结果是这些会话重新不在列表里，用会话 ID 仍然可以打开。
 
+### 周额度到期自动预热（开窗）
+
+Antigravity（各实例的 Gemini 与 Claude/GPT 池）和 Codex 的 7 天周窗口与 5 小时窗口，都是在上一周期到期后的第一笔请求时才起算新周期。如果到期时电脑睡眠或闲置，新周期的重置时间就会往后顺延。
+
+仓库里的 `scripts/quota-warmup.ts` 检查本机已有的 Antigravity 状态栏额度缓存（含默认实例与同级 `antigravity-cli-<name>` 额外实例）和 `~/.codex/sessions` 最新会话的额度通知。平时不发任何请求；一旦发现某个窗口的重置时间已过，就随机挑一条极简问候语（`ok`、`hi` 等），用该池最廉价的模型发一次单轮请求触发新周期开窗：
+
+- **Antigravity Gemini 池**（`gemini_weekly`）：调用 `gemini-3.8-flash-low`，随后执行一次 `agy -p /usage` 把新周期写回状态栏缓存。
+- **Antigravity 第三方池**（`3p_weekly`）：优先调用 `gpt-oss-120b-medium`（失败时回退 `claude-sonnet-5-5-low`），随后执行 `agy -p /usage` 刷新缓存。
+- **Codex**（`seven-day`）：在临时目录下调用 `codex exec`（指定 `openai` 通道、`gpt-6-luna`、`low` 推理档位且关闭 MCP），产生的会话记录由下一轮采集器同步自动读取新周期额度。
+
+默认只预热 7 天周窗口；需要连同 5 小时窗口一起预热时，在命令末尾加上 `--include-5h`（或设置环境变量 `METERLEAF_WARMUP_5H=1`）。每个已成功预热的旧周期在 `tasks/quota-warmup/state.json` 里记录，只触发一次；如果当轮失败，下一轮任务（5 分钟后）会自动重试。
+
+```sh
+install -m 755 scripts/quota-warmup.ts ~/.local/bin/meterleaf-quota-warmup
+~/.bun/bin/bun ~/.local/bin/meterleaf-quota-warmup --dry-run
+meterleaf-collector tasks add quota-warmup --every 5 --timeout 120 -- "$HOME/.bun/bin/bun" "$HOME/.local/bin/meterleaf-quota-warmup"
+meterleaf-collector tasks run quota-warmup
+```
+
 ## 日常查看与排障
 
 `meterleaf-collector status` 显示同步进度、待发送数量、最近一次成功或失败的原因，以及账户归属情况，不会显示密钥。
