@@ -1022,6 +1022,7 @@ async function warmupCodexTarget(
     const argv = [
       codexBin,
       "exec",
+      "--ignore-user-config",
       "--skip-git-repo-check",
       "-C",
       tempDir,
@@ -1032,7 +1033,7 @@ async function warmupCodexTarget(
       "-c",
       'model_reasoning_effort="low"',
       "-c",
-      "mcp_servers={}",
+      'base_instructions="Reply with one word only and do not call any tools."',
       prompt,
     ];
     const res = await runner(argv, {

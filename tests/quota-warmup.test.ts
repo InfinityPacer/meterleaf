@@ -254,8 +254,12 @@ describe("quota-warmup task script", () => {
     // 3. codex exec，必须指定 openai 通道、gpt-6-luna 与 low effort，且不带 --ephemeral 以便采集器读取新额度
     expect(calls[4]!.argv[0]).toBe(sb.codexBin);
     expect(calls[4]!.argv).toContain("exec");
+    expect(calls[4]!.argv).toContain("--ignore-user-config");
     expect(calls[4]!.argv).toContain('model_provider="openai"');
     expect(calls[4]!.argv).toContain(`model="${CODEX_WARMUP_MODEL}"`);
+    expect(calls[4]!.argv).toContain(
+      'base_instructions="Reply with one word only and do not call any tools."',
+    );
     expect(calls[4]!.argv).not.toContain("--ephemeral");
 
     // 检查状态栏 TSV 已被更新为新周期，且保留了 plan 行
