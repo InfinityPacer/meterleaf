@@ -9,9 +9,10 @@
  * 仅靠本地额度缓存与会话文件判断窗口是否已到期，平时不发起任何探测请求。
  *
  * 默认只预热周窗口（`gemini_weekly`、`3p_weekly`、`codex:seven-day`）；
- * 传入 `--include-5h`（或环境变量 `METERLEAF_WARMUP_5H=1`）时一并预热 5 小时窗口。
+ * 传入 `--codex-5h`（或环境变量 `METERLEAF_WARMUP_CODEX_5H=1`）时开启 Codex 5 小时窗口预热，
+ * 传入 `--include-5h`（或环境变量 `METERLEAF_WARMUP_5H=1`）时一并开启所有 5 小时窗口预热。
  *
- * 用法: bun scripts/quota-warmup.ts [--dry-run] [--include-5h]
+ * 用法: bun scripts/quota-warmup.ts [--dry-run] [--codex-5h] [--include-5h]
  */
 import {
   accessSync,
@@ -683,6 +684,7 @@ export function readLatestCodexLimits(
 export interface WarmupOptions {
   dryRun?: boolean;
   include5h?: boolean;
+  includeCodex5h?: boolean;
   now?: () => Date;
   pickPrompt?: (prompts: readonly string[]) => string;
   runner?: CommandRunner;
@@ -697,6 +699,11 @@ export async function runWarmup(
   const include5h =
     options.include5h ??
     (env.METERLEAF_WARMUP_5H === "1" || env.METERLEAF_WARMUP_5H === "true");
+  const includeCodex5h =
+    include5h ||
+    (options.includeCodex5h ??
+      (env.METERLEAF_WARMUP_CODEX_5H === "1" ||
+        env.METERLEAF_WARMUP_CODEX_5H === "true"));
   const pickPrompt =
     options.pickPrompt ??
     ((prompts) => prompts[Math.floor(Math.random() * prompts.length)]!);
@@ -773,7 +780,7 @@ export async function runWarmup(
     if (weekly && weekly.resetEpoch <= nowSec) {
       candidates.push({ window: "seven-day", resetEpoch: weekly.resetEpoch });
     }
-    if (include5h) {
+    if (includeCodex5h) {
       const fiveHour = codexLimits.windows.get("five-hour");
       if (fiveHour && fiveHour.resetEpoch <= nowSec) {
         candidates.push({
@@ -1073,17 +1080,23 @@ async function warmupCodexTarget(
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const unknown = args.filter(
-    (arg) => arg !== "--dry-run" && arg !== "--include-5h",
+    (arg) =>
+      arg !== "--dry-run" && arg !== "--include-5h" && arg !== "--codex-5h",
   );
   if (unknown.length > 0) {
     console.error(
-      "用法: bun scripts/quota-warmup.ts [--dry-run] [--include-5h]",
+      "用法: bun scripts/quota-warmup.ts [--dry-run] [--codex-5h] [--include-5h]",
     );
     process.exit(2);
   }
   const dryRun = args.includes("--dry-run");
   const include5h = args.includes("--include-5h") ? true : undefined;
-  const report = await runWarmup(process.env, { dryRun, include5h });
+  const includeCodex5h = args.includes("--codex-5h") ? true : undefined;
+  const report = await runWarmup(process.env, {
+    dryRun,
+    include5h,
+    includeCodex5h,
+  });
   let failed = false;
   for (const action of report.actions) {
     const scope = action.profileName
