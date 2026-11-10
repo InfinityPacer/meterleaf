@@ -58,7 +58,6 @@ export const AGY_POOL_MODELS: Record<"gemini" | "3p", readonly string[]> = {
 /** Codex OpenAI 通道最廉价的模型（$0.10/M 输入，2.5 credits/M 输入）。 */
 export const CODEX_WARMUP_MODEL = "gpt-6-luna";
 
-const RETRY_COOLDOWN_MS = 15 * 60_000;
 const COMMAND_TIMEOUT_MS = 45_000;
 
 const quotaBuckets: Record<string, AgyWindowKey> = {
@@ -110,17 +109,11 @@ export interface WarmupReport {
   eligible: WarmupTarget[];
   actions: WarmupAction[];
   skippedHandled: string[];
-  skippedCooldown: string[];
 }
 
 interface StateFile {
   /** 已成功预热的 `target.key -> resetEpoch`，同一旧周期只触发一次。 */
   handled: Record<string, number>;
-  /** 尝试时间 `target.key -> { resetEpoch, atMs, error }`，失败后冷却退避。 */
-  attempts: Record<
-    string,
-    { resetEpoch: number; atMs: number; error?: string | null }
-  >;
 }
 
 export interface CommandExecution {
@@ -193,13 +186,9 @@ function loadState(path: string): StateFile {
         parsed?.handled && typeof parsed.handled === "object"
           ? parsed.handled
           : {},
-      attempts:
-        parsed?.attempts && typeof parsed.attempts === "object"
-          ? parsed.attempts
-          : {},
     };
   } catch {
-    return { handled: {}, attempts: {} };
+    return { handled: {} };
   }
 }
 
@@ -705,7 +694,6 @@ export async function runWarmup(
 ): Promise<WarmupReport> {
   const now = options.now ?? (() => new Date());
   const nowSec = Math.floor(now().getTime() / 1000);
-  const nowMs = now().getTime();
   const include5h =
     options.include5h ??
     (env.METERLEAF_WARMUP_5H === "1" || env.METERLEAF_WARMUP_5H === "true");
@@ -729,7 +717,6 @@ export async function runWarmup(
     eligible: [],
     actions: [],
     skippedHandled: [],
-    skippedCooldown: [],
   };
 
   // 1. 收集 Antigravity 各实例已到期的池子（同一池子的 weekly 与 5h 共用一次请求）。
@@ -818,17 +805,6 @@ export async function runWarmup(
       report.skippedHandled.push(target.key);
       continue;
     }
-    const lastAttempt = state.attempts[target.key];
-    if (
-      lastAttempt &&
-      lastAttempt.resetEpoch >= target.resetEpoch &&
-      nowMs - lastAttempt.atMs >= 0 &&
-      nowMs - lastAttempt.atMs < RETRY_COOLDOWN_MS
-    ) {
-      report.skippedCooldown.push(target.key);
-      continue;
-    }
-
     const prompt = pickPrompt(WARMUP_PROMPTS);
     if (options.dryRun) {
       report.actions.push({
@@ -848,45 +824,14 @@ export async function runWarmup(
       continue;
     }
 
-    state.attempts[target.key] = {
-      resetEpoch: target.resetEpoch,
-      atMs: nowMs,
-      error: null,
-    };
-    stateModified = true;
-
-    if (target.provider === "agy") {
-      const action = await warmupAgyTarget(
-        target,
-        prompt,
-        statusDir,
-        env,
-        runner,
-      );
-      report.actions.push(action);
-      if (action.succeeded) {
-        state.handled[target.key] = target.resetEpoch;
-        delete state.attempts[target.key];
-      } else {
-        state.attempts[target.key] = {
-          resetEpoch: target.resetEpoch,
-          atMs: nowMs,
-          error: action.error,
-        };
-      }
-    } else {
-      const action = await warmupCodexTarget(target, prompt, env, runner);
-      report.actions.push(action);
-      if (action.succeeded) {
-        state.handled[target.key] = target.resetEpoch;
-        delete state.attempts[target.key];
-      } else {
-        state.attempts[target.key] = {
-          resetEpoch: target.resetEpoch,
-          atMs: nowMs,
-          error: action.error,
-        };
-      }
+    const action =
+      target.provider === "agy"
+        ? await warmupAgyTarget(target, prompt, statusDir, env, runner)
+        : await warmupCodexTarget(target, prompt, env, runner);
+    report.actions.push(action);
+    if (action.succeeded) {
+      state.handled[target.key] = target.resetEpoch;
+      stateModified = true;
     }
   }
 

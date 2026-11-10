@@ -322,10 +322,9 @@ describe("quota-warmup task script", () => {
     ]);
   });
 
-  test("backs off for 15 minutes when warmup command fails, and catches up after sleep wake", async () => {
+  test("retries on the next scheduled task run when a warmup attempt fails", async () => {
     const sb = createSandbox();
     const resetSec = 1_800_000_000;
-    // 模拟本机睡眠了 6 小时后唤醒（nowSec = resetSec + 21600）
     const wakeSec = resetSec + 21_600;
 
     writeFileSync(
@@ -340,7 +339,7 @@ describe("quota-warmup task script", () => {
       return { exitCode: shouldFail ? 1 : 0, stdout: "", logText: "" };
     };
 
-    // 唤醒后第 1 次运行：触发但失败
+    // 第 1 次运行失败：不写入 handled
     const first = await runWarmup(sb.env, {
       now: () => new Date(wakeSec * 1000),
       runner,
@@ -349,23 +348,14 @@ describe("quota-warmup task script", () => {
     expect(first.actions[0]!.succeeded).toBe(false);
     expect(runCount).toBe(1);
 
-    // 5 分钟后再跑：仍在 15 分钟冷却期内，直接跳过
+    // 下一轮任务运行网络恢复：立即重试成功并记录 handled
+    shouldFail = false;
     const second = await runWarmup(sb.env, {
       now: () => new Date((wakeSec + 300) * 1000),
       runner,
     });
-    expect(second.actions).toHaveLength(0);
-    expect(second.skippedCooldown).toEqual(["agy:phronara:gemini"]);
-    expect(runCount).toBe(1);
-
-    // 16 分钟后网络恢复再跑：成功补做 warmup
-    shouldFail = false;
-    const third = await runWarmup(sb.env, {
-      now: () => new Date((wakeSec + 960) * 1000),
-      runner,
-    });
-    expect(third.actions).toHaveLength(1);
-    expect(third.actions[0]!.succeeded).toBe(true);
+    expect(second.actions).toHaveLength(1);
+    expect(second.actions[0]!.succeeded).toBe(true);
     expect(runCount).toBe(2);
   });
 });

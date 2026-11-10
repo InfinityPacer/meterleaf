@@ -398,7 +398,7 @@ Antigravity（各实例的 Gemini 与 Claude/GPT 池）和 Codex 的 7 天周窗
 - **Antigravity 第三方池**（`3p_weekly`）：优先调用 `gpt-oss-120b-medium`（失败时回退 `claude-sonnet-5-5-low`），随后执行 `agy -p /usage` 刷新缓存。
 - **Codex**（`seven-day`）：在临时目录下调用 `codex exec`（指定 `openai` 通道、`gpt-6-luna`、`low` 推理档位且关闭 MCP），产生的会话记录由下一轮采集器同步自动读取新周期额度。
 
-默认只预热 7 天周窗口；需要连同 5 小时窗口一起预热时，在命令末尾加上 `--include-5h`（或设置环境变量 `METERLEAF_WARMUP_5H=1`）。每个到期的旧周期在 `tasks/quota-warmup/state.json` 里记录，只触发一次；如果预热时网络不通或失败，会冷却 15 分钟再重试。电脑睡眠期间到期的窗口，会在唤醒后的第一次同步收尾时自动补做预热。
+默认只预热 7 天周窗口；需要连同 5 小时窗口一起预热时，在命令末尾加上 `--include-5h`（或设置环境变量 `METERLEAF_WARMUP_5H=1`）。每个已成功预热的旧周期在 `tasks/quota-warmup/state.json` 里记录，只触发一次；如果当轮失败，下一轮任务（5 分钟后）会自动重试。
 
 ```sh
 install -m 755 scripts/quota-warmup.ts ~/.local/bin/meterleaf-quota-warmup
