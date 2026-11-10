@@ -114,15 +114,15 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 
 采集器默认读取本机 Antigravity CLI（`agy`）的额度缓存与本地会话数据库，目录不存在时本轮为空，不报错。需要停用或修改目录时，在采集器 `config.json` 中配置 `agy` 的 `enabled`、`conversationsDir` 和 `statuslineDir`。
 
-- 额度缓存来自 `~/.cache/agy-statusline/quota-<label>.tsv`，由交互式状态栏脚本写出，并在采集器发现新的 Antigravity 用量时按需刷新（见下），采样时间取文件修改时间。每行用制表符分隔窗口名、已用百分比整数和重置时间的 Unix 秒，窗口名为 `gemini_5h`、`gemini_weekly`、`3p_5h` 或 `3p_weekly`，另可带一行 `plan\t<套餐名>\t-`。`<label>` 是 Google 账号邮箱本地部分转小写并把非 `[a-z0-9_-]` 字符替换为 `-` 后的标签，采集器不读取也不还原完整邮箱。同目录下的 `current-account` 保存当前活跃账号标签。
+- 额度缓存来自 `~/.cache/agy-statusline/quota-<label>.tsv`，由交互式状态栏脚本写出，并在采集器发现新的 Antigravity 用量时按需刷新（见下），采样时间取文件修改时间。每行用制表符分隔窗口名、已用百分比整数和重置时间的 Unix 秒，窗口名为 `gemini_5h`、`gemini_weekly`、`3p_5h` 或 `3p_weekly`，另可带一行 `plan\t<套餐名>\t-`。`<label>` 是 Google 账号邮箱本地部分转小写并把非 `[a-z0-9_-]` 字符替换为 `-` 后的标签，采集器不读取也不还原完整邮箱。同目录下的 `current-account` 保存默认实例的活跃账号标签，额外实例 `<name>` 使用 `current-account-<name>`。
 - 每个 Google 账号在 Antigravity 中有两套独立额度池，采集器为每个 `<label>` 建立一个订阅账户 `Antigravity (<label>)`（标识 `agy-<label>`）。`gemini_5h` 与 `gemini_weekly` 上报为 `five-hour` 与 `seven-day` 窗口，`3p_5h` 与 `3p_weekly` 上报为 `five-hour-3p` 与 `seven-day-3p` 窗口，服务端按窗口计算各池的本期花费，Gemini 窗口只计 `gemini-` 开头的模型，另两个窗口只计其他模型。旧版采集器按池分别建立的 `agy-<label>-gemini` 与 `agy-<label>-3p` 两个账户仍随每轮同步上报，并指向新账户，它们名下的历史用量与额度在报表里归入新账户。原来在旧账户上手动设置的套餐不会自动带过来，需要在新账户上再选一次。当某个窗口的重置时间不晚于采样时间或当前时间时，该窗口按已过期处理，旧百分比不会带入新周期。百分比或重置时间为 `-` 时保留未知，不补零。
 - 无界面运行（例如经 Paseo 或 omp 调用）时，状态栏脚本不会执行，额度缓存会一直停在上次交互使用时，所以 `sync` 在同一轮按需刷新，新额度随这一批用量一起上传，不必等下一轮。刷新只合并这次读到的窗口，原有的 `plan` 行和没读到的窗口行原样保留。
-  - `agy` 会话库里有新用量时运行一次本机的 `agy -p /usage`，它只能读到 `agy` 当前登录的账号。账号标签取自 `agy` 登录日志里邮箱的本地部分，并写回 `current-account`。
+  - `agy` 会话库里有新用量时，按产生用量的实例运行本机的 `agy -p /usage`（额外实例携带 `--app_data_dir antigravity-cli-<name>` 与 `WSL_INTEROP=1`）。账号标签取自登录日志或实例令牌文件里邮箱的本地部分，并写回该实例对应的 `current-account`（或 `current-account-<name>`）。
   - omp 里有新入账的 Antigravity 请求时运行一次 `omp usage --json`，一次读回 omp 登录的所有 Google 账号，各自写进自己的 `quota-<label>.tsv`，不改 `current-account`。omp 会把额度缓存几分钟，平时直接用它的缓存。
   - 额度用完后上游拒绝请求，不再产生用量，只靠新用量触发会让读数停在用满前。所以 omp 记录里出现额度用完（429）的响应时，采集器先让 omp 丢弃缓存，再读一次实时额度。
   - omp 请求找不到账号时（账号库读不到，也还没有 `current-account`），两种刷新都会运行，由 `agy` 确定账号并补记之前暂缓的请求。
 - 按需刷新有几道限制：没有新的 Antigravity 用量或 429 时不运行；同一种刷新两次尝试至少相隔 5 分钟，因 429 触发的实时读取至少相隔 1 分钟（失败也计一次，上游故障或未登录时不会每轮重试）；`agy` 的额度缓存在 5 分钟内刚被状态栏写过时跳过。`agy` 与 `omp` 各限时 35 秒，超时会连同它们启动的进程一起终止。刷新失败不影响本轮已读到的用量和已有额度的上传，原因只在与上次不同时写入日志，`status` 显示最近一次尝试的结果。`scan` 只读本地文件，不会触发刷新。联网的是 `agy` 与 `omp` 本身，采集器不直接访问 Google 接口。
-- Token 用量来自 `~/.gemini/antigravity-cli/conversations/*.db`。`agy` 运行中会锁住会话库，采集器对无 WAL 的库以只读不可变模式打开，对存在 `.db-wal` 的库先把 `.db` 与 `.db-wal` 复制到系统临时目录再只读打开，不在 `~/.gemini` 下写入、加锁或创建附属文件。
+- Token 用量来自 `~/.gemini/antigravity-cli/conversations/*.db` 以及同级 `~/.gemini/antigravity-cli-<name>/conversations/*.db`（多账户额外实例自动发现，每个实例优先从自身的 `antigravity-oauth-token` 或 `cli.log` 识别所属账号）。`agy` 运行中会锁住会话库，采集器对无 WAL 的库以只读不可变模式打开，对存在 `.db-wal` 的库先把 `.db` 与 `.db-wal` 复制到系统临时目录再只读打开，不在 `~/.gemini` 下写入、加锁或创建附属文件。
 - 采集器解码 `gen_metadata` 表中的 `CortexStepGeneratorMetadata` protobuf，提取每次生成的未缓存输入、缓存读取、缓存写入、输出和属于输出子集的思考 Tokens，并关联 `steps` 表中的完成时间。任一基础桶缺失时保留未知，不补零。模型名与思考档位从上游响应模型、显示名和模型枚举归一化得到，同一账号的 Gemini、Claude 与 GPT-OSS 模型都记在这个账号的账户下。早于 `2026-09-20` 的记录在读取时丢弃，已读取记录按会话、步骤与执行标识幂等去重。
 
 ## omp 来源
