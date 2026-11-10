@@ -641,8 +641,9 @@ export async function readNewSources(
     const exhausted = (ompReport?.agyExhausted ?? 0) > 0;
     // omp 一次读回它登录的所有 Google 账号，omp 的用量只靠它刷新。agy 只能刷新自己登录的
     // 账号，用于 agy 自己的用量，以及 omp 请求找不到账号时补上 current-account。
+    const agyMissing = (agyReport?.skipped["(缺失账户)"] ?? 0) > 0;
     const agyRefresh =
-      (agyReport?.recorded ?? 0) > 0 || ompMissing
+      (agyReport?.recorded ?? 0) > 0 || agyMissing || ompMissing
         ? await maybeRefreshAgyQuota(state, agy)
         : null;
     const ompRefresh =

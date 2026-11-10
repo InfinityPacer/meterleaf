@@ -1415,3 +1415,162 @@ test("maybeRefreshOmpAgyQuota reports an unusable omp answer and leaves the cach
     rmSync(w.dir, { recursive: true, force: true });
   }
 });
+
+test("readAgy and maybeRefreshAgyQuota discover extra antigravity-cli-<name> profiles, isolate accounts, and preserve agy_files across instances", async () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-multi-"));
+  const geminiDir = join(root, ".gemini");
+  const defaultConvDir = join(geminiDir, "antigravity-cli", "conversations");
+  const tideAppDir = join(geminiDir, "antigravity-cli-tide");
+  const tideConvDir = join(tideAppDir, "conversations");
+  const emptyAppDir = join(geminiDir, "antigravity-cli-unauthenticated");
+  const emptyConvDir = join(emptyAppDir, "conversations");
+  const statusDir = join(root, "statusline");
+  mkdirSync(defaultConvDir, { recursive: true });
+  mkdirSync(tideConvDir, { recursive: true });
+  mkdirSync(emptyConvDir, { recursive: true });
+  mkdirSync(statusDir, { recursive: true });
+
+  // 默认实例通过 current-account 识别为 alice；tide 实例通过 antigravity-oauth-token JWT 识别为 tidewren。
+  writeFileSync(join(statusDir, "current-account"), "alice\n");
+  const jwtPayload = Buffer.from(
+    JSON.stringify({ email: "Tidewren@gmail.com" }),
+  ).toString("base64url");
+  writeFileSync(
+    join(tideAppDir, "antigravity-oauth-token"),
+    JSON.stringify({ id_token: `eyJhbGciOiJub25lIn0.${jwtPayload}.sig` }),
+  );
+
+  function writeConvDb(
+    dbPath: string,
+    executionId: string,
+    messageId: string,
+    inputTokens: number,
+  ) {
+    const db = new Database(dbPath);
+    db.exec(
+      "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+        "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+    );
+    const stepMeta = buildStepMetadataFixture({
+      createdAtSeconds: 1_793_368_800,
+      finishedAtSeconds: 1_793_368_805,
+      completedAtSeconds: 1_793_368_806,
+      executionId,
+    });
+    const genMeta = buildGenMetadataFixture({
+      modelEnum: 1008,
+      responseModel: "gemini-4-argon",
+      modelDisplayName: "Gemini 4 Argon (High)",
+      inputTokens,
+      outputTokens: 500,
+      cacheReadTokens: 1_000,
+      cacheWriteTokens: 0,
+      thinkingOutputTokens: 200,
+      responseOutputTokens: 300,
+      messageId,
+      executionId,
+      stepIndices: [1],
+    });
+    db.query(
+      "INSERT INTO steps (idx, type, status, metadata) VALUES (?1, ?2, ?3, ?4)",
+    ).run(1, "CORTEX_STEP_TYPE_PLANNER_RESPONSE", "DONE", stepMeta);
+    db.query(
+      "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (?1, ?2, ?3)",
+    ).run(1, executionId, genMeta);
+    db.close();
+  }
+
+  writeConvDb(join(defaultConvDir, "conv-alice.db"), "exec-a", "msg-a", 3_000);
+  writeConvDb(join(tideConvDir, "conv-tide.db"), "exec-t", "msg-t", 7_000);
+  writeConvDb(join(emptyConvDir, "conv-empty.db"), "exec-e", "msg-e", 1_000);
+
+  const state = new CollectorState(":memory:");
+  try {
+    const sources = {
+      conversationsDir: defaultConvDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+    };
+    const first = readAgy(state, sources, new Date("2026-10-30T15:00:00.000Z"));
+    // alice 与 tidewren 各入账 1 条；未登录的 empty 实例跳过且绝不串号到默认账户 alice。
+    expect(first).toMatchObject({
+      read: 3,
+      recorded: 2,
+      skipped: { "(缺失账户)": 1 },
+      filesRead: 3,
+      activeAccount: "alice",
+    });
+    const usages = state
+      .pending<IngestUsage>("usage", 10)
+      .map((item) => item.payload);
+    expect(
+      usages
+        .map((u) => [u.accountExternalId, u.tokens.input])
+        .sort(([a], [b]) => String(a).localeCompare(String(b))),
+    ).toEqual([
+      ["agy-alice", 3_000],
+      ["agy-tidewren", 7_000],
+    ]);
+
+    // 第二轮再读：已归账的 alice 与 tidewren 的 agy_files 均保留，不会互相清空重读。
+    const second = readAgy(
+      state,
+      sources,
+      new Date("2026-10-30T15:01:00.000Z"),
+    );
+    expect(second.filesRead).toBe(1); // 只有缺少账户的 conv-empty.db 重试读取
+    expect(second.recorded).toBe(0);
+
+    // 验证额外实例按需刷新：默认实例的 quota-alice.tsv 刚刷新过，只对 tide 实例触发带 --app_data_dir 与 WSL_INTEROP=1 的探测。
+    const now = new Date("2026-10-30T15:02:00.000Z");
+    const aliceQuota = join(statusDir, "quota-alice.tsv");
+    writeFileSync(aliceQuota, staleQuota + "\n");
+    utimesSync(aliceQuota, now, now);
+
+    const callArgsFile = join(root, "agy-args.txt");
+    const agyScript = join(root, "fake-agy-multi");
+    const outJson = join(root, "out.json");
+    writeFileSync(outJson, usageJson({ "gemini-5h": 0.6, "3p-weekly": 0.8 }));
+    writeFileSync(
+      agyScript,
+      `#!/bin/sh
+printf 'WSL=%s args=%s\\n' "\${WSL_INTEROP:-}" "$*" >> '${callArgsFile}'
+while [ $# -gt 0 ]; do
+  [ "$1" = "--log-file" ] && log="$2"
+  shift
+done
+echo "I OAuth: authenticated successfully as tidewren@gmail.com" > "$log"
+cat '${outJson}'
+exit 0
+`,
+      { mode: 0o755 },
+    );
+
+    const refreshRes = await maybeRefreshAgyQuota(state, sources, now, {
+      agyBin: agyScript,
+      profiles: [null, "tide"],
+    });
+    expect(refreshRes).toMatchObject({
+      attempted: true,
+      refreshed: true,
+      label: "tidewren",
+      error: null,
+    });
+    const invocations = readFileSync(callArgsFile, "utf8").trim().split("\n");
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toContain("WSL=1");
+    expect(invocations[0]).toContain("--app_data_dir antigravity-cli-tide");
+    expect(readFileSync(join(statusDir, "current-account"), "utf8")).toBe(
+      "alice\n",
+    );
+    expect(readFileSync(join(statusDir, "current-account-tide"), "utf8")).toBe(
+      "tidewren\n",
+    );
+    expect(readFileSync(join(statusDir, "quota-tidewren.tsv"), "utf8")).toBe(
+      "gemini_5h\t40\t4102444800\n3p_weekly\t20\t4102444800\n",
+    );
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
