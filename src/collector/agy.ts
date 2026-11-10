@@ -939,7 +939,13 @@ function openConversationDb(
     const db = new Database(uri, { readonly: true });
     return { db, close: () => db.close() };
   } catch {
-    return null;
+    // Linux 上的 SQLite 默认不解析 file: URI 参数，回退到普通路径只读打开。
+    try {
+      const db = new Database(path, { readonly: true });
+      return { db, close: () => db.close() };
+    } catch {
+      return null;
+    }
   }
 }
 
