@@ -398,12 +398,12 @@ Antigravity（各实例的 Gemini 与 Claude/GPT 池）和 Codex 的 7 天周窗
 - **Antigravity 第三方池**（`3p_weekly`）：优先调用 `gpt-oss-120b-medium`（失败时回退 `claude-sonnet-5-5-low`），随后执行 `agy -p /usage` 刷新缓存。
 - **Codex**（`seven-day`）：在临时目录下调用 `codex exec`（指定 `openai` 通道、`gpt-6-luna`、`low` 推理档位且关闭 MCP），产生的会话记录由下一轮采集器同步自动读取新周期额度。
 
-默认只预热 7 天周窗口；需要连同 5 小时窗口一起预热时，在命令末尾加上 `--include-5h`（或设置环境变量 `METERLEAF_WARMUP_5H=1`）。每个已成功预热的旧周期在 `tasks/quota-warmup/state.json` 里记录，只触发一次；如果当轮失败，下一轮任务（5 分钟后）会自动重试。
+默认只预热 7 天周窗口；传入 `--codex-5h`（或 `METERLEAF_WARMUP_CODEX_5H=1`）时一并预热 Codex 的 5 小时窗口，传入 `--include-5h`（或 `METERLEAF_WARMUP_5H=1`）时预热全部来源的 5 小时窗口。每个已成功预热的旧周期在 `tasks/quota-warmup/state.json` 里记录，只触发一次；如果当轮失败，下一轮任务（5 分钟后）会自动重试。
 
 ```sh
 install -m 755 scripts/quota-warmup.ts ~/.local/bin/meterleaf-quota-warmup
-~/.bun/bin/bun ~/.local/bin/meterleaf-quota-warmup --dry-run
-meterleaf-collector tasks add quota-warmup --every 5 --timeout 120 -- "$HOME/.bun/bin/bun" "$HOME/.local/bin/meterleaf-quota-warmup"
+~/.bun/bin/bun ~/.local/bin/meterleaf-quota-warmup --dry-run --codex-5h
+meterleaf-collector tasks add quota-warmup --every 5 --timeout 120 -- "$HOME/.bun/bin/bun" "$HOME/.local/bin/meterleaf-quota-warmup" --codex-5h
 meterleaf-collector tasks run quota-warmup
 ```
 
