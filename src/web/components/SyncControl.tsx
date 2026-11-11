@@ -12,7 +12,7 @@ import { Button } from "./ui/button";
 import type { SyncStatus } from "../../server/sync";
 import { useLiveUpdates } from "../lib/use-live-updates";
 import "./controls.css";
-import { isLoginRedirect } from "../lib/session";
+import { isLoginRedirect, reloadForSessionLogin } from "../lib/session";
 
 const stageLabels: Record<string, string> = {
   accounts: "账户",
@@ -492,7 +492,7 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
                     <Button
                       variant="outline"
                       className="sync-action"
-                      onClick={() => window.location.reload()}
+                      onClick={() => void reloadForSessionLogin()}
                       title="重新认证"
                     >
                       <LogIn size={15} aria-hidden="true" />

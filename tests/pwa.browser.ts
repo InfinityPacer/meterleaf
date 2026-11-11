@@ -165,6 +165,22 @@ try {
     expect(response.ok()).toBe(true);
     expect(response.headers()["content-type"]).toContain("image/png");
   }
+  const preloadState = await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready;
+    return registration.navigationPreload?.getState();
+  });
+  expect(preloadState?.enabled).toBe(false);
+  await expect
+    .poll(async () => {
+      const keys = await page.evaluate(() => caches.keys());
+      const shellKey = keys.find((key) => key.startsWith("meterleaf-shell-"));
+      if (!shellKey) return false;
+      return page.evaluate(async (name) => {
+        const cache = await caches.open(name);
+        return Boolean(await cache.match("/"));
+      }, shellKey);
+    })
+    .toBe(true);
   const cacheEntries = await page.evaluate(async () => {
     const keys = await caches.keys();
     return Promise.all(
@@ -177,16 +193,17 @@ try {
     );
   });
   const cachePaths = cacheEntries.flatMap((entry) => entry.paths);
+  expect(cachePaths).toContain("/");
   expect(cachePaths).toContain("/offline.html");
   expect(cachePaths).toContain("/manifest.webmanifest");
   expect(cachePaths).toContain("/icons/meterleaf-192.png");
   expect(cachePaths).toContain("/icons/meterleaf-512.png");
+  expect(cachePaths.some((path) => path.startsWith("/assets/"))).toBe(true);
   expect(
     cacheEntries.flatMap((entry) =>
       entry.paths.filter((path) => path.startsWith("/api")),
     ),
   ).toEqual([]);
-
   await page.route(onlineApiUrl, onlineApiRouteHandler);
   onlineApiRouteInstalled = true;
   const onlineApiResponse = await page.evaluate(async (url) => {
@@ -269,6 +286,34 @@ try {
       return paths.flat().filter((path) => path.startsWith("/api"));
     }),
   ).toEqual([]);
+  // 已缓存静态前端壳时，断网重载直接秒进应用主界面壳，不弹离线拦路页，也不暴露任何旧账本数据。
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Meterleaf 暂时连不上" }),
+  ).toHaveCount(0);
+  await expect(page.locator(".account-row, .metrics")).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "账本读取失败", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("网络连接异常，恢复联网后会自动读取账本。"),
+  ).toBeVisible();
+  await page.screenshot({ path: "test-results/pwa-app-shell-offline.png" });
+  // 网络恢复后主界面壳自动重读账本，不需要手动刷新。
+  await setOffline(false);
+  await expect(
+    page.getByRole("heading", { name: "账本读取失败", exact: true }),
+  ).toHaveCount(0, { timeout: 15_000 });
+  await expect(page).toHaveTitle(onlineTitle);
+
+  // 若本地静态前端壳尚未建好或已被清空，断网时仍由离线兜底页接住并自动重连。
+  await page.evaluate(async () => {
+    for (const key of await caches.keys()) {
+      if (key.startsWith("meterleaf-shell-")) await caches.delete(key);
+    }
+  });
+  await setOffline(true);
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(
     page.getByRole("heading", { name: "Meterleaf 暂时连不上" }),
@@ -290,7 +335,6 @@ try {
     page.getByRole("heading", { name: "Meterleaf 暂时连不上" }),
   ).toBeVisible();
   await page.screenshot({ path: "test-results/pwa-offline.png" });
-  // 网络恢复后离线页自己探测并重新打开账本，不需要手动刷新。
   await setOffline(false);
   await expect(page.locator(".app-shell")).toBeVisible({ timeout: 20_000 });
   await expect(page).toHaveTitle(onlineTitle);

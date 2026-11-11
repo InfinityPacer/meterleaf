@@ -146,6 +146,7 @@ import { ChartStyleControl } from "./components/ChartStyleControl";
 import { useMobileLayout } from "./lib/use-mobile-layout";
 import { useLiveUpdates } from "./lib/use-live-updates";
 import {
+  isLedgerNetworkError,
   isReportBuilding,
   ReportBuildingError,
   reportRefetchInterval,
@@ -165,6 +166,7 @@ import {
   SessionExpiredError,
   isLoginRedirect,
   isSessionExpired,
+  reloadForSessionLogin,
 } from "./lib/session";
 
 const UsageChart = lazy(() =>
@@ -826,6 +828,40 @@ export function App() {
     retry: reportRetry,
     refetchOnWindowFocus: false,
   });
+  const disconnectedOnLoad = useRef(false);
+  const refetchDisconnectedLedger = query.refetch;
+  const retryDisconnectedQueries = useCallback(() => {
+    void refetchDisconnectedLedger();
+    void queryClient.refetchQueries({
+      predicate: (item) =>
+        item.state.status === "error" && item.queryKey[0] !== "ledger",
+    });
+  }, [queryClient, refetchDisconnectedLedger]);
+  const waitingForNetwork =
+    !query.data && isLedgerNetworkError(query.error) && !liveUpdatesPaused;
+  useEffect(() => {
+    if (!query.data && isLedgerNetworkError(query.error)) {
+      disconnectedOnLoad.current = true;
+    } else if (query.data && disconnectedOnLoad.current) {
+      disconnectedOnLoad.current = false;
+      void queryClient.refetchQueries({
+        predicate: (item) =>
+          item.state.status === "error" && item.queryKey[0] !== "ledger",
+      });
+    }
+  }, [query.data, query.error, queryClient]);
+  useEffect(() => {
+    if (!waitingForNetwork) return;
+    const retryNow = () => {
+      if (document.visibilityState === "visible") retryDisconnectedQueries();
+    };
+    window.addEventListener("online", retryNow);
+    document.addEventListener("visibilitychange", retryNow);
+    return () => {
+      window.removeEventListener("online", retryNow);
+      document.removeEventListener("visibilitychange", retryNow);
+    };
+  }, [waitingForNetwork, retryDisconnectedQueries]);
   useEffect(() => {
     const onHash = () => setPage(readPage());
     window.addEventListener("hashchange", onHash);
@@ -1490,7 +1526,8 @@ export function App() {
             </MobileFilters>
           )}
           {page === "overview" &&
-            (accountArchive.isError || accountArchive.mutation.isError) && (
+            ((Boolean(snapshot) && accountArchive.isError) ||
+              accountArchive.mutation.isError) && (
               <p role="alert" className="sync-warning">
                 {accountArchive.mutation.error?.message ??
                   "账户归档状态读取失败，请刷新重试"}
@@ -1515,7 +1552,7 @@ export function App() {
                 {isSessionExpired(query.error) ? (
                   <Button
                     variant="ghost"
-                    onClick={() => window.location.reload()}
+                    onClick={() => void reloadForSessionLogin()}
                   >
                     <LogIn size={14} aria-hidden="true" />
                     重新登录
@@ -1608,13 +1645,23 @@ export function App() {
               <LogIn />
               <h2>登录已过期</h2>
               <p>刷新页面重新登录后即可继续查看账本。</p>
-              <Button onClick={() => window.location.reload()}>重新登录</Button>
+              <Button onClick={() => void reloadForSessionLogin()}>
+                重新登录
+              </Button>
             </div>
           ) : !snapshot ? (
             <div className="empty-state" role="alert">
               <Database />
               <h2>账本读取失败</h2>
-              <Button onClick={() => void query.refetch()}>重新读取</Button>
+              {isLedgerNetworkError(query.error) && (
+                <p>网络连接异常，恢复联网后会自动读取账本。</p>
+              )}
+              <Button
+                disabled={query.isFetching}
+                onClick={retryDisconnectedQueries}
+              >
+                {query.isFetching ? "正在重连…" : "重新读取"}
+              </Button>
             </div>
           ) : (
             <>
