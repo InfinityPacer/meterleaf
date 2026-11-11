@@ -15,6 +15,13 @@ export function isReportBuilding(error: unknown): error is ReportBuildingError {
   return error instanceof ReportBuildingError;
 }
 
+/** 纯网络断连或切网失败并未到达服务端报表线程，允许界面壳在后台自动探测恢复。 */
+export function isLedgerNetworkError(error: unknown) {
+  return (
+    error instanceof Error && error.message === "报表读取失败：网络连接异常"
+  );
+}
+
 /** 计算中不算失败，不走指数退避重试，交给轮询继续等待。 */
 export function reportRetry(failureCount: number, error: unknown) {
   return (
@@ -39,6 +46,7 @@ export function reportRefetchInterval(
 ): number | false {
   if (paused) return false;
   if (isReportBuilding(query.state.error)) return 2000;
+  if (!query.state.data && isLedgerNetworkError(query.state.error)) return 3000;
   if (query.state.status === "error" || query.state.fetchFailureCount)
     return false;
   return query.state.data?.reportStatus?.refreshing ? 1000 : false;

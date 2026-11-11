@@ -21,3 +21,40 @@ export class SessionExpiredError extends Error {
 export function isSessionExpired(error: unknown): error is SessionExpiredError {
   return error instanceof SessionExpiredError;
 }
+
+/**
+ * 重新登录前清理本地静态前端壳缓存并通知离线脚本预留完整导航超时，
+ * 避免慢网下 350 毫秒快速回退再次返回本地界面壳而进不了认证登录流。
+ */
+export async function reloadForSessionLogin() {
+  try {
+    if (typeof caches !== "undefined") {
+      const keys = await caches.keys();
+      await Promise.all(
+        keys
+          .filter((key) => key.startsWith("meterleaf-shell-"))
+          .map((key) => caches.delete(key)),
+      );
+    }
+    const controller =
+      typeof navigator !== "undefined"
+        ? navigator.serviceWorker?.controller
+        : null;
+    if (controller && typeof MessageChannel !== "undefined") {
+      await new Promise<void>((resolve) => {
+        const channel = new MessageChannel();
+        const timer = setTimeout(resolve, 150);
+        channel.port1.onmessage = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        controller.postMessage({ type: "meterleaf-prepare-navigate" }, [
+          channel.port2,
+        ]);
+      });
+    }
+  } catch {
+    // 清理失败不阻塞重新载入。
+  }
+  window.location.reload();
+}
