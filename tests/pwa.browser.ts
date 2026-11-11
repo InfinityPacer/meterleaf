@@ -284,8 +284,12 @@ try {
   await expect(page.locator(".app-shell, .account-row, .metrics")).toHaveCount(
     0,
   );
+  // 断网时点“重新连接”原地探活，不会把页面刷回空白。
+  await page.getByRole("button", { name: "重新连接" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Meterleaf 暂时连不上" }),
+  ).toBeVisible();
   await page.screenshot({ path: "test-results/pwa-offline.png" });
-
   // 网络恢复后离线页自己探测并重新打开账本，不需要手动刷新。
   await setOffline(false);
   await expect(page.locator(".app-shell")).toBeVisible({ timeout: 20_000 });
