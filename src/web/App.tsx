@@ -146,11 +146,14 @@ import { ChartStyleControl } from "./components/ChartStyleControl";
 import { useMobileLayout } from "./lib/use-mobile-layout";
 import { useLiveUpdates } from "./lib/use-live-updates";
 import {
+  createLedgerReadSignal,
+  INITIAL_LEDGER_READ_TIMEOUT_MS,
   isLedgerNetworkError,
   isReportBuilding,
   ReportBuildingError,
   reportRefetchInterval,
   reportRetry,
+  reportRetryDelay,
 } from "./lib/report-building";
 import type { ChartStyle } from "./components/UsageChart";
 import type { ReportDimension } from "./lib/report";
@@ -203,6 +206,7 @@ async function readLedger(
   usdBasis?: UsdBasis,
   signal?: AbortSignal,
   refresh = true,
+  timeoutMs?: number,
 ): Promise<LedgerView> {
   const { filter } = viewQuery;
   if (import.meta.env.VITE_METERLEAF_DEMO === "true") {
@@ -236,9 +240,10 @@ async function readLedger(
     "desc",
   ] as const)
     params.set(key, String(viewQuery[key]));
+  const readSignal = createLedgerReadSignal(signal, timeoutMs);
   try {
     const response = await fetch(`/api/view?${params.toString()}`, {
-      signal,
+      signal: readSignal.signal,
       redirect: "manual",
     });
     if (isLoginRedirect(response)) throw new SessionExpiredError();
@@ -261,11 +266,18 @@ async function readLedger(
       throw error;
     }
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") throw error;
+    if (
+      !readSignal.timedOut() &&
+      error instanceof Error &&
+      error.name === "AbortError"
+    )
+      throw error;
     if (isReportBuilding(error) || isSessionExpired(error)) throw error;
     if (error instanceof Error && error.message.startsWith("报表读取失败："))
       throw error;
     throw new Error("报表读取失败：网络连接异常", { cause: error });
+  } finally {
+    readSignal.cleanup();
   }
 }
 
@@ -821,11 +833,13 @@ export function App() {
         undefined,
         signal,
         failed || !cached?.reportStatus?.refreshing,
+        cached ? undefined : INITIAL_LEDGER_READ_TIMEOUT_MS,
       );
     },
     // 仅在报表后台计算期间读取结果；同步完成由公共同步控件使所有报表缓存失效。
     refetchInterval: (query) => reportRefetchInterval(query, liveUpdatesPaused),
     retry: reportRetry,
+    retryDelay: reportRetryDelay,
     refetchOnWindowFocus: false,
   });
   const disconnectedOnLoad = useRef(false);

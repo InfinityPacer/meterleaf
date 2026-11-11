@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
 import {
+  createLedgerReadSignal,
+  INITIAL_LEDGER_READ_TIMEOUT_MS,
   isLedgerNetworkError,
   reportRefetchInterval,
   reportRetry,
+  reportRetryDelay,
 } from "../src/web/lib/report-building";
 import {
   SessionExpiredError,
@@ -105,4 +108,28 @@ test("reloadForSessionLogin clears cached app shells and prepares an 8000ms auth
       navigator: prevNavigator,
     });
   }
+});
+
+test("createLedgerReadSignal distinguishes socket timeout from caller cancellation", async () => {
+  expect(INITIAL_LEDGER_READ_TIMEOUT_MS).toBe(6000);
+  const caller = new AbortController();
+  const timed = createLedgerReadSignal(caller.signal, 25);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(timed.signal?.aborted).toBe(true);
+  expect(timed.timedOut()).toBe(true);
+  timed.cleanup();
+
+  const cancelledCaller = new AbortController();
+  const cancelled = createLedgerReadSignal(cancelledCaller.signal, 5000);
+  cancelledCaller.abort();
+  expect(cancelled.signal?.aborted).toBe(true);
+  expect(cancelled.timedOut()).toBe(false);
+  cancelled.cleanup();
+
+  expect(reportRetryDelay(0, new Error("报表读取失败：网络连接异常"))).toBe(
+    100,
+  );
+  expect(
+    reportRetryDelay(0, new Error("报表读取失败：网关不可用（HTTP 503）")),
+  ).toBe(1000);
 });
