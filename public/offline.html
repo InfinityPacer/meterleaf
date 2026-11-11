@@ -2,117 +2,365 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f7f8fa" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, minimum-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#f7f7f8" />
     <title>Meterleaf · 暂时连不上</title>
     <style>
       :root {
+        --canvas: #f7f7f8;
+        --ink: #18181b;
+        --muted: #5f5f68;
+        --faint: #8e8e97;
+        --accent: #0e8a55;
+        --accent-ink: #ffffff;
+        --icon-shadow: 0 1px 2px rgb(24 24 27 / 6%);
         color-scheme: light;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #f7f8fa;
-        color: #17201d;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+        font-synthesis: none;
+        -webkit-font-smoothing: antialiased;
+        background: var(--canvas);
+        color: var(--ink);
+      }
+      :root.dark {
+        --canvas: #0f0f11;
+        --ink: #f2f2f3;
+        --muted: #a1a1aa;
+        --faint: #71717a;
+        --accent: #3ccb8a;
+        --accent-ink: #07130d;
+        --icon-shadow: none;
+        color-scheme: dark;
+      }
+      :root[data-palette="indigo"] {
+        --accent: #4f46e5;
+        --accent-ink: #ffffff;
+      }
+      :root.dark[data-palette="indigo"] {
+        --accent: #8b8cf6;
+        --accent-ink: #0d0d22;
+      }
+      :root[data-palette="mono"] {
+        --accent: #18181b;
+        --accent-ink: #ffffff;
+      }
+      :root.dark[data-palette="mono"] {
+        --accent: #f2f2f3;
+        --accent-ink: #111113;
       }
       body {
         box-sizing: border-box;
         display: grid;
         min-height: 100vh;
+        min-height: 100dvh;
         margin: 0;
         place-items: center;
-        padding: 24px;
+        padding: max(24px, env(safe-area-inset-top)) 24px
+          max(24px, env(safe-area-inset-bottom));
+      }
+      .boot-shell {
+        display: none;
+        justify-items: center;
+        gap: 14px;
+        color: var(--ink);
+        font-size: 15px;
+        font-weight: 500;
+        line-height: 1.5;
+      }
+      .boot-shell__mark {
+        box-sizing: border-box;
+        width: 34px;
+        height: 34px;
+        border: 3px solid color-mix(in srgb, var(--accent) 22%, transparent);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: shell-spin 900ms linear infinite;
       }
       main {
-        width: min(100%, 420px);
+        width: min(100%, 380px);
         text-align: center;
+        animation: panel-fade 160ms ease-out;
+      }
+      :root[data-state="connecting"] .boot-shell {
+        display: grid;
+      }
+      :root[data-state="connecting"] main {
+        display: none;
       }
       img {
-        width: 72px;
-        height: 72px;
-        margin-bottom: 20px;
+        display: block;
+        width: 68px;
+        height: 68px;
+        margin: 0 auto 20px;
         border-radius: 16px;
+        box-shadow: var(--icon-shadow);
       }
       h1 {
-        margin: 0 0 12px;
-        font-size: 1.5rem;
-        line-height: 1.25;
+        margin: 0 0 10px;
+        font-size: 22px;
+        font-weight: 600;
+        line-height: 1.3;
+        letter-spacing: 0;
       }
       p {
         margin: 0;
-        color: #414a55;
-        line-height: 1.7;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.65;
       }
       p + p {
-        margin-top: 8px;
+        margin-top: 6px;
+        color: var(--faint);
+        font-size: 13px;
       }
       button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
         min-height: 44px;
+        min-width: 120px;
         margin-top: 24px;
-        padding: 8px 24px;
+        padding: 0 20px;
         border: 0;
         border-radius: 8px;
-        background: #07594f;
-        color: white;
-        font: inherit;
+        background: var(--accent);
+        color: var(--accent-ink);
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 1;
         cursor: pointer;
+        user-select: none;
+        transition:
+          opacity 120ms ease,
+          transform 120ms ease;
+      }
+      button:hover:not(:disabled) {
+        opacity: 0.9;
+      }
+      button:active:not(:disabled) {
+        transform: translateY(1px);
+      }
+      button:disabled {
+        opacity: 0.72;
+        cursor: default;
       }
       button:focus-visible {
-        outline: 3px solid #174f91;
+        outline: 2px solid var(--accent);
         outline-offset: 3px;
       }
+      .button-spinner {
+        display: none;
+        box-sizing: border-box;
+        width: 14px;
+        height: 14px;
+        border: 2px solid color-mix(in srgb, currentColor 28%, transparent);
+        border-top-color: currentColor;
+        border-radius: 50%;
+        animation: shell-spin 800ms linear infinite;
+      }
+      button[aria-busy="true"] .button-spinner {
+        display: inline-block;
+      }
+      @keyframes shell-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @keyframes panel-fade {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-shell__mark,
+        .button-spinner,
+        main {
+          animation: none;
+        }
+        button {
+          transition: none;
+        }
+      }
     </style>
+    <script>
+      // 首帧绘制前恢复深浅色与强调色，并根据当前联网状态决定先展示启动提示还是离线提示。
+      (() => {
+        let mode = "system";
+        let palette = "green";
+        try {
+          mode = localStorage.getItem("meterleaf-theme") || "system";
+          const saved = localStorage.getItem("meterleaf-palette");
+          if (saved === "indigo" || saved === "mono") palette = saved;
+        } catch {}
+        const media = matchMedia("(prefers-color-scheme: dark)");
+        const applyTheme = () => {
+          const dark = mode === "dark" || (mode !== "light" && media.matches);
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.dataset.palette = palette;
+          const meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.content = dark ? "#0f0f11" : "#f7f7f8";
+        };
+        applyTheme();
+        media.addEventListener?.("change", applyTheme);
+        const initialState =
+          navigator.onLine === false ? "offline" : "connecting";
+        document.documentElement.dataset.state = initialState;
+        if (initialState === "connecting") document.title = "Meterleaf";
+      })();
+    </script>
   </head>
   <body>
+    <div class="boot-shell" role="status" aria-live="polite">
+      <span class="boot-shell__mark" aria-hidden="true"></span>
+      <span>正在连接 Meterleaf…</span>
+    </div>
     <main>
       <img
         src="/icons/meterleaf-leaf-192.png"
         alt="Meterleaf"
-        width="72"
-        height="72"
+        width="68"
+        height="68"
       />
       <h1>Meterleaf 暂时连不上</h1>
-      <p>正在自动重试，连上后会直接打开账本。</p>
+      <p id="status-copy">正在自动重试，连上后会直接打开账本。</p>
       <p>账本需要联网查看。</p>
-      <button type="button" onclick="location.reload()">重新连接</button>
+      <button type="button" id="reconnect-button">
+        <span class="button-spinner" aria-hidden="true"></span>
+        <span id="reconnect-label">重新连接</span>
+      </button>
     </main>
     <script>
       // 只探测服务是否可达，不读取任何账本数据；探测地址不能是 Worker 缓存过的资源，
       // 否则离线时也会“成功”并反复刷新。网络切换后的旧连接可能挂住，
-      // 每次探测都有超时；间隔逐步拉长，回到前台或网络恢复时立即再试。
+      // 首次进入先以启动提示承接慢网，超时或失败再切到离线提示，连上后通知 Worker 放宽导航超时并重载。
       (() => {
-        const timeoutMs = 8000;
+        const connectingGraceMs = 2200;
+        const timeoutMs = 4000;
         let delayMs = 3000;
-        let timer = 0;
-        let probing = false;
-        const schedule = (ms) => {
-          clearTimeout(timer);
-          timer = setTimeout(probe, ms);
+        let retryTimer = 0;
+        let graceTimer = 0;
+        let activeController = null;
+        let probeToken = 0;
+        let reloading = false;
+        const statusCopy = document.getElementById("status-copy");
+        const button = document.getElementById("reconnect-button");
+        const buttonLabel = document.getElementById("reconnect-label");
+
+        const setState = (state) => {
+          document.documentElement.dataset.state = state;
+          document.title =
+            state === "connecting" ? "Meterleaf" : "Meterleaf · 暂时连不上";
         };
-        async function probe() {
-          if (probing || document.visibilityState === "hidden") return;
-          probing = true;
+        const setManualBusy = (busy) => {
+          if (!button || !buttonLabel || !statusCopy) return;
+          button.disabled = busy;
+          if (busy) {
+            button.setAttribute("aria-busy", "true");
+            buttonLabel.textContent = "正在连接…";
+            statusCopy.textContent = "正在尝试连接，连上后会直接打开账本。";
+          } else {
+            button.removeAttribute("aria-busy");
+            buttonLabel.textContent = "重新连接";
+            statusCopy.textContent = "正在自动重试，连上后会直接打开账本。";
+          }
+        };
+        const showOffline = () => {
+          clearTimeout(graceTimer);
+          graceTimer = 0;
+          if (!reloading) setState("offline");
+        };
+        const schedule = (ms) => {
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => void probe(false), ms);
+        };
+        const isReachableResponse = (response) =>
+          response.ok ||
+          response.type === "opaqueredirect" ||
+          response.status === 401 ||
+          response.status === 403;
+
+        async function reloadIntoApp() {
+          if (reloading) return;
+          reloading = true;
+          clearTimeout(graceTimer);
+          clearTimeout(retryTimer);
+          setState("connecting");
+          const controller = navigator.serviceWorker?.controller;
+          if (controller) {
+            await new Promise((resolve) => {
+              const channel = new MessageChannel();
+              const fallback = setTimeout(resolve, 150);
+              channel.port1.onmessage = () => {
+                clearTimeout(fallback);
+                resolve();
+              };
+              controller.postMessage({ type: "meterleaf-prepare-navigate" }, [
+                channel.port2,
+              ]);
+            });
+          }
+          location.reload();
+        }
+
+        async function probe(manual) {
+          if (reloading) return;
+          if (!manual && document.visibilityState === "hidden") return;
+          clearTimeout(retryTimer);
+          if (activeController) activeController.abort();
+          const token = ++probeToken;
+          const controller = new AbortController();
+          activeController = controller;
+          if (manual) setManualBusy(true);
           try {
-            await fetch("/?probe=" + Date.now(), {
+            const timeoutSignal = AbortSignal.timeout(timeoutMs);
+            const signal = AbortSignal.any
+              ? AbortSignal.any([controller.signal, timeoutSignal])
+              : timeoutSignal;
+            const response = await fetch("/?probe=" + Date.now(), {
               cache: "no-store",
               redirect: "manual",
-              signal: AbortSignal.timeout(timeoutMs),
+              signal,
             });
-            location.reload();
+            if (!isReachableResponse(response)) {
+              throw new Error("upstream unavailable");
+            }
+            await reloadIntoApp();
             return;
           } catch {
-            delayMs = Math.min(delayMs * 2, 60000);
+            if (token !== probeToken || reloading) return;
+            showOffline();
+            if (manual) setManualBusy(false);
+            delayMs = manual ? 3000 : Math.min(delayMs * 2, 60000);
             schedule(delayMs);
           } finally {
-            probing = false;
+            if (activeController === controller) activeController = null;
           }
         }
-        const retryNow = () => {
+
+        const retryNow = (manual) => {
           delayMs = 3000;
-          schedule(0);
+          void probe(Boolean(manual));
         };
+
+        button?.addEventListener("click", () => retryNow(true));
         document.addEventListener("visibilitychange", () => {
-          if (document.visibilityState === "visible") retryNow();
+          if (document.visibilityState === "visible") retryNow(false);
         });
-        addEventListener("online", retryNow);
-        schedule(delayMs);
+        addEventListener("online", () => retryNow(false));
+
+        if (document.documentElement.dataset.state === "connecting") {
+          graceTimer = setTimeout(showOffline, connectingGraceMs);
+        }
+        void probe(false);
       })();
     </script>
   </body>
