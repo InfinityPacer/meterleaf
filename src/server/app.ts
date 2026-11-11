@@ -441,6 +441,7 @@ export function createApp({
           reply.header("Cache-Control", "public, max-age=31536000, immutable");
         } else if (
           logical === "/index.html" ||
+          logical === "/offline.html" ||
           logical === "/sw.js" ||
           logical === "/manifest.webmanifest"
         ) {

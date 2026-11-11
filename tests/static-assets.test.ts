@@ -14,6 +14,7 @@ test("static shell serves pre-compressed hashed assets with safe cache headers",
     join(root, "index.html"),
     '<div id="root"><div class="boot-shell">正在连接 Meterleaf…</div></div>',
   );
+  await writeFile(join(root, "offline.html"), "<h1>Meterleaf 暂时连不上</h1>");
   await writeFile(join(assets, "index-Abcd1234.js"), source);
   await writeFile(
     join(assets, "index-Abcd1234.js.br"),
@@ -36,6 +37,10 @@ test("static shell serves pre-compressed hashed assets with safe cache headers",
     expect(shell.statusCode).toBe(200);
     expect(shell.headers["cache-control"]).toBe("no-cache");
     expect(shell.body).toContain("boot-shell");
+
+    const offline = await app.inject("/offline.html");
+    expect(offline.statusCode).toBe(200);
+    expect(offline.headers["cache-control"]).toBe("no-cache");
 
     const brotli = await app.inject({
       method: "GET",
