@@ -43,7 +43,7 @@ test("bundled JSON contains separate USD branches with unchanged credits", () =>
   expect(api.usd.amount).toBe("6.075");
   expect(subscription.credits).toEqual(api.credits);
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-10-30.3");
+  expect(subscription.version).toBe("meterleaf@2026-10-30.4");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
@@ -170,6 +170,28 @@ test("GLM-5.3-Flash prices both USD branches at the Go teaching rate without a c
     defaultPriceBook,
   );
   expect(write.usd.reason).toBe("unsupported-rate-bucket");
+});
+
+test("GLM-5.3 prices both USD branches at the published Go and Zhipu rate without cache writes", () => {
+  const fact = {
+    ...usage,
+    occurredAt: "2026-10-30T00:00:00Z",
+    model: "glm-5.3",
+    tokens: {
+      ...usage.tokens,
+      input: 1_000_000,
+      cacheRead: 1_000_000,
+      output: 1_000_000,
+    },
+  };
+  expect(valueUsage(fact, defaultPriceBook).usd.amount).toBe("6.06");
+  expect(valueUsage(fact, defaultPriceBook, "api").usd.amount).toBe("6.06");
+  expect(
+    valueUsage(
+      { ...fact, tokens: { ...fact.tokens, cacheWrite: 1 } },
+      defaultPriceBook,
+    ).usd.reason,
+  ).toBe("unsupported-rate-bucket");
 });
 
 test("GPT-6.1 Sol and Terra prices follow the published pages with long context only in API USD", () => {
@@ -590,4 +612,130 @@ test("Antigravity models use their published Google, Anthropic and Model Garden 
     valueUsage({ ...baseFact, model: "gpt-oss-120b" }, defaultPriceBook).usd
       .reason,
   ).toBe("unsupported-rate-bucket");
+
+  // Gemini 4 Hydrogen: 常态费率 $1.50 / $0.075 / $7.50（Flex $0.75 / $0.0375 / $3.75），无促销分段。
+  const hydrogen = valueUsage(
+    { ...baseFact, model: "gemini-4-hydrogen" },
+    defaultPriceBook,
+  );
+  expect(hydrogen.subscriptionUsd.amount).toBe("9.075");
+  expect(hydrogen.apiUsd.amount).toBe("9.075");
+  expect(
+    valueUsage(
+      { ...baseFact, model: "gemini-4-hydrogen", tier: "flex" },
+      defaultPriceBook,
+    ).subscriptionUsd.amount,
+  ).toBe("4.5375");
+  expect(
+    valueUsage(
+      {
+        ...baseFact,
+        model: "gemini-4-hydrogen",
+        occurredAt: "2027-02-01T00:00:00Z",
+      },
+      defaultPriceBook,
+    ).subscriptionUsd.amount,
+  ).toBe("9.075");
+  expect(
+    valueUsage(
+      {
+        ...baseFact,
+        model: "gemini-4-hydrogen",
+        tokens: { ...baseFact.tokens, cacheWrite: 1 },
+      },
+      defaultPriceBook,
+    ).usd.reason,
+  ).toBe("unsupported-rate-bucket");
+
+  // Gemini 3.5 Flash-Lite: 标准档 $0.30 / $0.03 / $2.50；Flex 档文档舍入不一致，保留未计价。
+  const flashLite = valueUsage(
+    { ...baseFact, model: "gemini-3.5-flash-lite" },
+    defaultPriceBook,
+  );
+  expect(flashLite.subscriptionUsd.amount).toBe("2.83");
+  expect(flashLite.apiUsd.amount).toBe("2.83");
+  expect(
+    valueUsage(
+      { ...baseFact, model: "gemini-3.5-flash-lite", tier: "flex" },
+      defaultPriceBook,
+    ).usd.reason,
+  ).toBe("missing-rate");
+
+  // Claude Fable 5.2: 标准档 $8 / $0.20 (2.5%) / $10 (5m) / $16 (1h) / $40，快速模式翻倍并叠加缓存倍率。
+  const fable52Fact: UsageFact = {
+    ...baseFact,
+    model: "claude-fable-5-2",
+    tokens: {
+      ...baseFact.tokens,
+      cacheWrite: 1_000_000,
+      cacheWrite5m: 400_000,
+      cacheWrite1h: 600_000,
+    },
+  };
+  expect(valueUsage(fable52Fact, defaultPriceBook).subscriptionUsd.amount).toBe(
+    "61.8",
+  );
+  expect(valueUsage(fable52Fact, defaultPriceBook, "api").usd.amount).toBe(
+    "61.8",
+  );
+  expect(
+    valueUsage({ ...fable52Fact, tier: "fast" }, defaultPriceBook)
+      .subscriptionUsd.amount,
+  ).toBe("123.6");
+
+  // Claude Haiku 5.5: <=100K 为 $0.10/$0.01/$0.125/$0.20/$0.50，API 分支 >100K 升至 5 倍，订阅等价 USD 不加价。
+  const haikuAtBoundary: UsageFact = {
+    ...baseFact,
+    model: "claude-haiku-5-5",
+    tokens: {
+      input: 80_000,
+      cacheRead: 10_000,
+      cacheWrite: 10_000,
+      output: 20_000,
+      cacheWrite5m: 0,
+      cacheWrite1h: 10_000,
+      reasoning: null,
+    },
+  };
+  expect(
+    valueUsage(haikuAtBoundary, defaultPriceBook).subscriptionUsd.amount,
+  ).toBe("0.0201");
+  expect(valueUsage(haikuAtBoundary, defaultPriceBook, "api").usd.amount).toBe(
+    "0.0201",
+  );
+  const haikuOverBoundary: UsageFact = {
+    ...haikuAtBoundary,
+    tokens: { ...haikuAtBoundary.tokens, cacheRead: 10_001 },
+  };
+  expect(
+    valueUsage(haikuOverBoundary, defaultPriceBook).subscriptionUsd.amount,
+  ).toBe("0.02010001");
+  expect(
+    valueUsage(haikuOverBoundary, defaultPriceBook, "api").usd.amount,
+  ).toBe("0.10050005");
+
+  // GPT Image 2.6 Sunburst / Flare: 公布 USD 文本与图像单价，Codex Credits 未公布前保持未计价。
+  for (const model of [
+    "gpt-image-2.6-sunburst",
+    "gpt-image-2.6-flare",
+  ] as const) {
+    const imgFact: UsageFact = {
+      ...baseFact,
+      model,
+      tokens: {
+        input: 10_000,
+        cacheRead: 4_000,
+        cacheWrite: 0,
+        output: 5_000,
+        cacheWrite5m: null,
+        cacheWrite1h: null,
+        reasoning: null,
+        image: { input: 6_000, cacheRead: 2_000, output: 5_000 },
+      },
+    };
+    const priced = valueUsage(imgFact, defaultPriceBook);
+    expect(priced.subscriptionUsd.amount).toBe("0.2185");
+    expect(priced.apiUsd.amount).toBe("0.2185");
+    expect(priced.credits.amount).toBeNull();
+  }
 });

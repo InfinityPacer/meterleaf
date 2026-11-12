@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "meterleaf",
   "supersedes": ["meterleaf-openai"],
-  "version": "2026-10-30.3",
+  "version": "2026-10-30.4",
   "publishedAt": "2026-10-30T00:00:00Z",
   "unit": "per_million_tokens",
   "sources": [
@@ -16,6 +16,8 @@
     "https://developers.openai.com/api/docs/models/gpt-image-2",
     "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst",
     "https://developers.openai.com/api/docs/models/gpt-image-2.5-flare",
+    "https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst",
+    "https://developers.openai.com/api/docs/models/gpt-image-2.6-flare",
     "https://platform.claude.com/docs/en/about-claude/pricing",
     "https://platform.claude.com/docs/en/about-claude/models/overview",
     "https://opencode.ai/docs/go/",
@@ -31,25 +33,25 @@
     "API USD retains published long-context prices. Sol promotional prices are already applied in both USD branches.",
     "Credits follow the published subscription token rate card without importing API long-context uplifts. Cache-write credits remain unspecified.",
     "Historical records are revalued at this observed price snapshot and marked as estimates, not historical invoices.",
-    "Sol promotion is available at least through 2026-11-21. No unannounced post-promotion price is assumed.",
+    "Sol promotion is available through 2026-11-30 on the OpenAI API and at least through 2026-11-21 on Codex. No unannounced post-promotion price is assumed.",
     "GPT-5.4 and GPT-5.4 mini use their independently published Standard token rates. GPT-5.4 API prices above 272K use 2x input and 1.5x output. No unverified Fast USD, Flex or cache-write rates are inferred.",
-    "Only documented model IDs and snapshots are included; generic gpt-image-2.5 is not inferred as a variant alias.",
+    "Only documented model IDs and snapshots are included; generic gpt-image-2.5 and gpt-image-2.6 are not inferred as variant aliases, and Codex credit rates are not inferred for GPT Image 2.6 until listed on the Codex rate card.",
     "GPT-6 Sol and GPT-6 Luna use the rates published on 2026-09-22 with 2x input, cache and cache-write rates and 1.5x output above 272K input tokens. Fast mode maps to the priority tier at 2x.",
     "Anthropic rules use the published Claude API prices. Subscription-equivalent USD uses the same base prices; it is an estimate, not a Claude subscription invoice.",
     "Anthropic cacheWrite is the 5-minute cache write price and cacheWrite1h the 1-hour price; records without a TTL split stay unpriced when cache writes are present.",
-    "Claude fast mode maps to the priority tier for Opus 5.5 and Opus 5, with the published fast input and output prices and cache multipliers applied on top. US-only inference (1.1x) and web search fees are not applied.",
-    "Claude models on the current price list include the full context window at standard prices, so no long-context tier is configured.",
-    "Only Claude model IDs and aliases listed on the official models overview are configured: claude-fable-5-1, claude-opus-5-5, claude-opus-5 (legacy), claude-opus-4-6 (legacy), claude-sonnet-5-5, claude-sonnet-5 (legacy), claude-haiku-4-5-20251001 and its alias claude-haiku-4-5. Other models stay unpriced.",
+    "Claude fast mode maps to the priority tier for Fable 5.2, Opus 5.5, Opus 5 and Opus 4.8, with the published fast input and output prices and cache multipliers applied on top. US-only inference (1.1x) and web search fees are not applied.",
+    "Claude models on the current price list include the full context window at standard prices except Claude Haiku 5.5, whose API branch applies the published >100K prompt-token rates while subscription-equivalent USD retains base rates.",
+    "Only Claude model IDs and aliases listed on the official models overview are configured: claude-fable-5-2, claude-fable-5-1 (legacy), claude-opus-5-5, claude-opus-5 (legacy), claude-opus-4-8 (legacy), claude-opus-4-6 (legacy), claude-sonnet-5-5, claude-sonnet-5 (legacy), claude-haiku-5-5, claude-haiku-4-5-20251001 (legacy) and its alias claude-haiku-4-5. Other models stay unpriced.",
     "Codex Fast mode credits map to the priority tier at the published 2.5x of Standard credits for GPT-5.6 Sol, Terra and Luna and GPT-6 Astra, Sol and Luna, and 2x for GPT-5.4. GPT-5.4 mini has no published Fast credits rate.",
     "DeepSeek V4.1 Flash is valued at the per-token prices published for OpenCode Go, the only per-token basis Go publishes. Both USD branches use those prices as an estimate, not a Go invoice; the Go subscription is billed monthly regardless of token usage.",
     "OpenCode Go peak hours are 01:00-04:00 and 06:00-10:00 UTC on weekdays; all other UTC hours and weekends use the off-peak prices. Cache writes are not published for this model.",
-    "GLM-5.3-Flash uses the per-token prices published for OpenCode Go; they match Zhipu published prices. There is no peak/off-peak split and no published cache-write rate.",
+    "GLM-5.3 and GLM-5.3-Flash use the per-token prices published for OpenCode Go; they match Zhipu published prices. There is no peak/off-peak split and no published cache-write rate.",
     "GPT-6.1 Sol and Terra use the rates published on their model pages: input, cached input, cache writes and output, with 2x input and cache rates plus 1.5x output above 272K input tokens on the API branch. Fast mode is 2x Standard, Batch and Flex are 50% lower, and subscription-drawn usage has no long-context surcharge.",
     "GPT-6.1 Sol and Terra Credits use the Codex token rate card (Standard speed). Fast mode credits are 2x Standard; Ultrafast rates are not configured for text tiers.",
     "Codex records carry no cache TTL split, so GPT-6.1 Terra cache writes use the published 30-minute-retention price; the steeper 12-hour price is not configured separately.",
     "codex-auto-review is not published with its own prices. OpenAI routes Codex automatic reviews to gpt-6-luna, so codex-auto-review usage is estimated with luna published rates. This is an estimate of the routed model, not a distinct price list entry.",
-    "Gemini 4 Carbon, Gemini 4 Argon and Gemini 3.8 Flash use the text rates published on the Gemini API and Vertex AI pricing pages. All three models include the full 1M context window at a single rate with no long-context surcharge, and have no published per-token cache-write rate (context caching storage is billed per hour out of band). Promotional pricing applies through 2026-11-30 for Gemini 4 Carbon and Gemini 4 Argon ($2/$0.10/$10 Standard, $1/$0.05/$5 Flex) and through 2026-12-31 for Gemini 3.8 Flash ($0.75/$0.075/$3.75 Standard, $0.375/$0.0375/$1.875 Flex), with post-promotion rates taking effect on 2026-12-01 and 2027-01-01 respectively.",
-    "Claude Sonnet 5.5 uses the published Claude API rates ($2 input, $0.10 cache read at 5% of base input, $2.50 5-minute cache write, $4 1-hour cache write, $10 output), with the full 1M context window at standard prices and no published fast tier.",
+    "Gemini 4 Hydrogen, Gemini 4 Carbon, Gemini 4 Argon, Gemini 3.8 Flash and Gemini 3.5 Flash-Lite use the text rates published on the Gemini API and Vertex AI pricing pages. All five models include the full 1M context window at a single rate with no long-context surcharge, and have no published per-token cache-write rate currently in effect (context caching storage is billed per hour out of band; Vertex AI cache-write pricing for Gemini 4 Hydrogen is scheduled for 2027-01-12). Gemini 4 Hydrogen ($1.50/$0.075/$7.50 Standard, $0.75/$0.0375/$3.75 Flex) and Gemini 3.5 Flash-Lite ($0.30/$0.03/$2.50 Standard) use permanent list rates; Gemini 3.5 Flash-Lite Flex is omitted because Gemini API and Vertex AI publish different cached-input rounding ($0.02 vs $0.015). Promotional pricing applies through 2026-11-30 for Gemini 4 Carbon and Gemini 4 Argon ($2/$0.10/$10 Standard, $1/$0.05/$5 Flex) and through 2026-12-31 for Gemini 3.8 Flash ($0.75/$0.075/$3.75 Standard, $0.375/$0.0375/$1.875 Flex), with post-promotion rates taking effect on 2026-12-01 and 2027-01-01 respectively.",
+    "Claude Fable 5.2 uses the published Claude API rates ($8 input, $0.20 cache read at 2.5% of base input, $10 5-minute cache write, $16 1-hour cache write, $40 output; Fast mode $16/$0.40/$20/$32/$80). Claude Sonnet 5.5 uses $2/$0.10/$2.50/$4/$10 with no published fast tier. Claude Haiku 5.5 uses $0.10/$0.01/$0.125/$0.20/$0.50 up to 100K input tokens and $0.50/$0.05/$0.625/$1/$2.50 above 100K input tokens on the API branch.",
     "GPT-OSS 120B (openai/gpt-oss-120b-maas on Vertex AI Model Garden) uses the per-token rates published on Google Cloud Model Garden partner models pricing ($0.09 input, $0.36 output). Cache read and cache write rates are not published for this model and remain null."
   ],
   "rules": [
@@ -284,7 +286,7 @@
       "effectiveFrom": "1970-01-01T00:00:00Z",
       "promotion": {
         "description": "Published prices include the promotion; do not apply an additional 0.8 multiplier.",
-        "confirmedThrough": "2026-11-21"
+        "confirmedThrough": "2026-11-30"
       },
       "currency": "usd",
       "usdBasis": "subscription",
@@ -301,7 +303,7 @@
       "effectiveFrom": "1970-01-01T00:00:00Z",
       "promotion": {
         "description": "Published prices include the promotion; do not apply an additional 0.8 multiplier.",
-        "confirmedThrough": "2026-11-21"
+        "confirmedThrough": "2026-11-30"
       },
       "currency": "usd",
       "usdBasis": "subscription",
@@ -318,7 +320,7 @@
       "effectiveFrom": "1970-01-01T00:00:00Z",
       "promotion": {
         "description": "Published prices include the promotion; do not apply an additional 0.8 multiplier.",
-        "confirmedThrough": "2026-11-21"
+        "confirmedThrough": "2026-11-30"
       },
       "currency": "usd",
       "usdBasis": "subscription",
@@ -335,7 +337,7 @@
       "effectiveFrom": "1970-01-01T00:00:00Z",
       "promotion": {
         "description": "Published prices include the promotion; do not apply an additional 0.8 multiplier.",
-        "confirmedThrough": "2026-11-21"
+        "confirmedThrough": "2026-11-30"
       },
       "currency": "usd",
       "usdBasis": "api",
@@ -361,7 +363,7 @@
       "effectiveFrom": "1970-01-01T00:00:00Z",
       "promotion": {
         "description": "Published prices include the promotion; do not apply an additional 0.8 multiplier.",
-        "confirmedThrough": "2026-11-21"
+        "confirmedThrough": "2026-11-30"
       },
       "currency": "usd",
       "usdBasis": "api",
@@ -387,7 +389,7 @@
       "effectiveFrom": "1970-01-01T00:00:00Z",
       "promotion": {
         "description": "Published prices include the promotion; do not apply an additional 0.8 multiplier.",
-        "confirmedThrough": "2026-11-21"
+        "confirmedThrough": "2026-11-30"
       },
       "currency": "usd",
       "usdBasis": "api",
@@ -1275,6 +1277,134 @@
       }
     },
     {
+      "model": "gpt-image-2.6-sunburst",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.6-sunburst",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.6-flare",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "gpt-image-2.6-flare",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "5",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "output": "0"
+      },
+      "imageRates": {
+        "input": "8",
+        "cacheRead": "2",
+        "output": "30"
+      }
+    },
+    {
+      "model": "claude-fable-5-2",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "8",
+        "cacheRead": "0.2",
+        "cacheWrite": "10",
+        "cacheWrite1h": "16",
+        "output": "40"
+      }
+    },
+    {
+      "model": "claude-fable-5-2",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "8",
+        "cacheRead": "0.2",
+        "cacheWrite": "10",
+        "cacheWrite1h": "16",
+        "output": "40"
+      }
+    },
+    {
+      "model": "claude-fable-5-2",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "priority",
+      "rates": {
+        "input": "16",
+        "cacheRead": "0.4",
+        "cacheWrite": "20",
+        "cacheWrite1h": "32",
+        "output": "80"
+      }
+    },
+    {
+      "model": "claude-fable-5-2",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "priority",
+      "rates": {
+        "input": "16",
+        "cacheRead": "0.4",
+        "cacheWrite": "20",
+        "cacheWrite1h": "32",
+        "output": "80"
+      }
+    },
+    {
       "model": "claude-fable-5-1",
       "effectiveFrom": "1970-01-01T00:00:00Z",
       "currency": "usd",
@@ -1611,6 +1741,44 @@
       }
     },
     {
+      "model": "claude-haiku-5-5",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "0.1",
+        "cacheRead": "0.01",
+        "cacheWrite": "0.125",
+        "cacheWrite1h": "0.2",
+        "output": "0.5"
+      }
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "0.1",
+        "cacheRead": "0.01",
+        "cacheWrite": "0.125",
+        "cacheWrite1h": "0.2",
+        "output": "0.5"
+      },
+      "longContext": {
+        "threshold": 100000,
+        "rates": {
+          "input": "0.5",
+          "cacheRead": "0.05",
+          "cacheWrite": "0.625",
+          "cacheWrite1h": "1",
+          "output": "2.5"
+        }
+      }
+    },
+    {
       "model": "deepseek-v4.1-flash",
       "effectiveFrom": "1970-01-01T00:00:00Z",
       "currency": "usd",
@@ -1672,6 +1840,32 @@
           "cacheWrite": null,
           "output": "1.2"
         }
+      }
+    },
+    {
+      "model": "glm-5.3",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "1.4",
+        "cacheRead": "0.26",
+        "cacheWrite": null,
+        "output": "4.4"
+      }
+    },
+    {
+      "model": "glm-5.3",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "1.4",
+        "cacheRead": "0.26",
+        "cacheWrite": null,
+        "output": "4.4"
       }
     },
     {
@@ -2116,6 +2310,58 @@
       }
     },
     {
+      "model": "gemini-4-hydrogen",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "1.5",
+        "cacheRead": "0.075",
+        "cacheWrite": null,
+        "output": "7.5"
+      }
+    },
+    {
+      "model": "gemini-4-hydrogen",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "1.5",
+        "cacheRead": "0.075",
+        "cacheWrite": null,
+        "output": "7.5"
+      }
+    },
+    {
+      "model": "gemini-4-hydrogen",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "flex",
+      "rates": {
+        "input": "0.75",
+        "cacheRead": "0.0375",
+        "cacheWrite": null,
+        "output": "3.75"
+      }
+    },
+    {
+      "model": "gemini-4-hydrogen",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "flex",
+      "rates": {
+        "input": "0.75",
+        "cacheRead": "0.0375",
+        "cacheWrite": null,
+        "output": "3.75"
+      }
+    },
+    {
       "model": "gemini-4-carbon",
       "effectiveFrom": "1970-01-01T00:00:00Z",
       "effectiveUntil": "2026-12-01T00:00:00Z",
@@ -2485,6 +2731,32 @@
         "cacheRead": "0.075",
         "cacheWrite": null,
         "output": "3.75"
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "tier": "standard",
+      "rates": {
+        "input": "0.3",
+        "cacheRead": "0.03",
+        "cacheWrite": null,
+        "output": "2.5"
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "currency": "usd",
+      "usdBasis": "api",
+      "tier": "standard",
+      "rates": {
+        "input": "0.3",
+        "cacheRead": "0.03",
+        "cacheWrite": null,
+        "output": "2.5"
       }
     },
     {
