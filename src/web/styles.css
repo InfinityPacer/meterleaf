@@ -19,18 +19,15 @@
 }
 
 :root {
+  --font-sans:
+    "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   scrollbar-gutter: stable;
-  font-family:
-    "Geist Variable",
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    "PingFang SC",
-    "Microsoft YaHei",
-    sans-serif;
+  font-family: var(--font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   /*
    * 中性灰底色加一个强调色。强调色由配色（data-palette）决定，只用于
    * 进度、选中与主要操作；其余层次靠灰阶区分。旧变量名保留为别名，
@@ -38,55 +35,73 @@
    */
   --canvas: #f7f7f8;
   --surface: #ffffff;
-  --soft: #f0f0f2;
+  --soft: #f1f2f4;
+  --soft-hover: #e8eaee;
   /* 分段控件选中项等浮在 soft 底上的层，暗色下需要比底更亮。 */
   --elevated: #ffffff;
-  --line: #e4e4e7;
-  --line-soft: #ededf0;
+  --line: #e4e5e9;
+  --line-soft: #eff0f3;
   --ink: #18181b;
-  --muted: #5f5f68;
-  --faint: #8e8e97;
+  --muted: #5b5c66;
+  --faint: #8b8d98;
   --sidebar: #fbfbfc;
-  --track: #e9e9ec;
+  --track: #e8e9ed;
   --warn: #c2410c;
   --danger: #c8323f;
-  --control-line: #d4d4d8;
-  --shadow: 0 1px 2px rgb(24 24 27 / 5%);
+  --control-line: #d4d6dc;
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius: var(--radius-xs);
+  --control-height: 44px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 4%), 0 1px 1px rgb(15 23 42 / 2%);
+  --shadow-control: 0 1px 2px rgb(15 23 42 / 6%);
+  --shadow-float:
+    0 12px 32px -4px rgb(15 23 42 / 12%), 0 2px 6px rgb(15 23 42 / 5%);
+  --shadow: var(--shadow-card);
   --accent: #0e8a55;
   --accent-ink: #ffffff;
   --accent-rgb: 14 138 85;
   --accent-soft: rgb(var(--accent-rgb) / 8%);
-  --accent-line: rgb(var(--accent-rgb) / 30%);
+  --accent-line: rgb(var(--accent-rgb) / 28%);
   --teal: var(--accent);
   --blue: var(--accent);
   --tint: var(--accent-soft);
   --quota-alert: var(--warn);
-  --radius: 6px;
   color-scheme: light;
   color: var(--ink);
   background: var(--surface);
 }
 .dark {
   --canvas: #0f0f11;
-  --surface: #17171a;
-  --soft: #1f1f23;
-  --elevated: #2e2e33;
-  --line: #2a2a2f;
-  --line-soft: #212125;
+  --surface: #161619;
+  --soft: #1f1f24;
+  --soft-hover: #27272e;
+  --elevated: #2b2b33;
+  --line: #27272d;
+  --line-soft: #1f1f24;
   --ink: #f2f2f3;
-  --muted: #a1a1aa;
-  --faint: #71717a;
-  --sidebar: #131316;
-  --track: #27272b;
+  --muted: #a0a1ab;
+  --faint: #6e707a;
+  --sidebar: #121215;
+  --track: #26262c;
   --warn: #f08a5d;
   --danger: #f2798a;
-  --control-line: #3f3f46;
-  --shadow: none;
+  --control-line: #383842;
+  --shadow-card: inset 0 1px 0 rgb(255 255 255 / 3%);
+  --shadow-control:
+    inset 0 1px 0 rgb(255 255 255 / 5%), 0 1px 2px rgb(0 0 0 / 32%);
+  --shadow-float:
+    0 16px 40px -6px rgb(0 0 0 / 60%), inset 0 1px 0 rgb(255 255 255 / 6%);
+  --shadow: var(--shadow-card);
   --accent: #3ccb8a;
   --accent-ink: #07130d;
   --accent-rgb: 60 203 138;
   --accent-soft: rgb(var(--accent-rgb) / 12%);
-  --accent-line: rgb(var(--accent-rgb) / 36%);
+  --accent-line: rgb(var(--accent-rgb) / 34%);
   color-scheme: dark;
 }
 :root[data-palette="indigo"] {
@@ -349,12 +364,14 @@ nav button.active {
   white-space: nowrap;
 }
 .demo-badge {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--teal);
-  border: 1px solid color-mix(in srgb, var(--teal), transparent 65%);
-  padding: 2px 7px;
-  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  padding: 5px 8px;
+  border-radius: var(--radius-xs);
 }
 .timezone {
   font-size: 14px;
@@ -456,12 +473,12 @@ h1 {
   max-height: min(var(--available-height, 100dvh), calc(100dvh - 16px));
   overflow-y: auto;
   overscroll-behavior: contain;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 0 12px 32px #0000001a;
-  padding: 14px;
+  box-shadow: var(--shadow-float);
+  padding: 16px;
 }
 .date-range-heading {
   display: flex;
@@ -644,18 +661,21 @@ h3 {
   display: inline-flex;
   padding: 3px;
   background: var(--soft);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   height: 36px;
   flex-shrink: 0;
 }
 .segmented button {
   position: relative;
   min-width: 33px;
-  padding: 0 9px;
+  padding: 0 10px;
   border: none;
+  border-radius: var(--radius-xs);
   background: none;
   font-size: 13px;
+  font-weight: 500;
   color: var(--muted);
+  transition: color var(--duration-fast) var(--ease-out);
 }
 .segmented button > span:last-child {
   position: relative;
@@ -667,9 +687,9 @@ h3 {
 .segment-active {
   position: absolute;
   inset: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-xs);
   background: var(--elevated);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  box-shadow: var(--shadow-control);
 }
 .chart-toolbar {
   display: flex;
@@ -939,7 +959,8 @@ h3 {
   color: var(--muted);
   border: 1px solid var(--line);
   padding: 6px 10px;
-  border-radius: 6px;
+  border-color: var(--control-line);
+  border-radius: var(--radius-sm);
 }
 .search-control input {
   background: transparent;
@@ -997,6 +1018,9 @@ h3 {
 .model-donut .usage-chart {
   height: 320px;
 }
+.model-distribution td {
+  font-variant-numeric: tabular-nums;
+}
 .model-donut-total {
   position: absolute;
   inset: 0;
@@ -1008,6 +1032,7 @@ h3 {
   gap: 6px;
   font-size: 14px;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .model-donut-total strong {
   color: var(--ink);
@@ -1148,6 +1173,7 @@ tr:hover td {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  font-variant-numeric: tabular-nums;
 }
 .time-cell small {
   color: var(--muted);
@@ -1160,6 +1186,7 @@ tr:hover td {
   padding-top: 16px;
   color: var(--muted);
   font-size: 14px;
+  font-variant-numeric: tabular-nums;
 }
 .pagination > div {
   display: flex;
@@ -1187,86 +1214,125 @@ footer > span {
   margin: 0 3px;
 }
 .detail-sheet[data-slot="sheet-content"] {
-  border: 0;
-  width: min(440px, 100%);
-  max-width: 440px;
-  padding: 22px 18px;
-  gap: 8px;
+  border-left: 1px solid var(--line);
+  width: min(448px, 100%);
+  max-width: 448px;
+  padding: 16px 24px 20px;
+  gap: 0;
   overflow-y: auto;
 }
+.detail-sheet [data-slot="sheet-header"] {
+  padding: 2px 36px 14px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
 .detail-sheet [data-slot="sheet-title"] {
-  font-size: 23px;
+  font-size: 21px;
   font-weight: 600;
-  margin-top: 15px;
+  letter-spacing: -0.015em;
+  margin-top: 10px;
 }
 .detail-sheet [data-slot="sheet-description"] {
-  margin-top: 7px;
-  font-size: 14px;
+  margin-top: 4px;
+  font-size: 13px;
 }
 .detail-eyebrow {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 14px;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--muted);
 }
 .detail-body {
-  padding: 8px 16px 24px;
+  padding: 4px 0 0;
 }
 .detail-amount {
-  font-size: 36px;
-  font-weight: 550;
-  padding: 18px 0 24px;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  padding: 14px 0 16px;
   border-bottom: 1px solid var(--line);
   font-variant-numeric: tabular-nums;
 }
 .detail-amount span {
   display: block;
-  font-size: 14px;
+  font-size: 13px;
+  letter-spacing: 0;
   color: var(--muted);
   font-weight: 400;
-  margin-top: 3px;
+  margin-top: 6px;
 }
 .details-list {
   display: grid;
   /* 标签列按内容取宽，长 ID 只在数值列内折行，不能把标签挤成竖排。 */
   grid-template-columns: max-content minmax(0, 1fr);
-  gap: 17px 12px;
-  margin: 24px 0;
-  font-size: 14px;
+  gap: 0;
+  margin: 8px 0 14px;
+  font-size: 13.5px;
+}
+.details-list dt,
+.details-list dd {
+  padding: 6.5px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.details-list dt:last-of-type,
+.details-list dd:last-of-type {
+  border-bottom: 0;
 }
 .details-list dt {
+  padding-right: 16px;
   color: var(--muted);
   white-space: nowrap;
 }
 .details-list dd {
   margin: 0;
   text-align: right;
+  color: var(--ink);
   overflow-wrap: anywhere;
 }
-.inline-badge {
-  font-size: 12px;
+.inline-badge,
+.effort-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
   background: var(--soft);
-  padding: 3px 4px;
-  border-radius: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+}
+.faint-na {
+  color: var(--faint);
+}
+.detail-action-button {
+  width: 100%;
+  min-height: 40px;
+  margin-top: 4px;
 }
 .detail-body h3 {
-  padding-top: 21px;
+  padding-top: 16px;
+  margin-bottom: 2px;
   border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
 }
 .tokens-list {
-  margin-top: 18px;
+  margin-top: 6px;
 }
 .detail-footnote {
   display: block;
-  font-size: 14px;
-  color: var(--muted);
-  margin-top: 16px;
+  font-size: 12.5px;
+  color: var(--faint);
+  margin-top: 12px;
 }
 .account-detail-windows {
   display: grid;
-  gap: 26px;
-  padding: 22px 0;
+  gap: 20px;
+  padding: 18px 0;
   border-bottom: 1px solid var(--line);
 }
 .account-detail-windows .quota-bar > div:first-child {
@@ -2258,13 +2324,13 @@ button[data-size="icon-sm"],
   z-index: 80;
 }
 .account-menu-popup {
-  min-width: 160px;
-  padding: 4px;
+  min-width: 172px;
+  padding: 5px;
   background: var(--surface);
   color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px #0002;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-float);
 }
 .account-menu-item {
   display: flex;
@@ -2610,8 +2676,8 @@ button[data-size="icon-sm"],
   }
   :root[data-mobile-layout="app"] .usage-summary {
     margin-bottom: 16px;
-    padding: 16px;
-    border: 0;
+    padding: 18px 16px;
+    border: 1px solid var(--line);
     border-radius: var(--app-card-radius, 16px);
     background: var(--surface);
     box-shadow: var(--app-shadow, none);

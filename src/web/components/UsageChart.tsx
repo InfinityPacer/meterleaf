@@ -123,7 +123,9 @@ export function UsageChart({
         renderMode: "richText",
         backgroundColor: colors.surface,
         borderColor: colors.line,
-        textStyle: { color: colors.ink, fontSize: 13 },
+        borderWidth: 1,
+        padding: [8, 10],
+        textStyle: { color: colors.ink, fontSize: 12.5 },
         formatter: (params: unknown) => {
           const values = params as { dataIndex: number }[];
           const point = data[values[0]?.dataIndex ?? 0];
@@ -154,7 +156,7 @@ export function UsageChart({
             unit === "usd" ? `$${compactAxis(v)}` : compactAxis(v),
         },
         splitLine: {
-          lineStyle: { color: colors.lineSoft },
+          lineStyle: { color: colors.lineSoft, type: "dashed" },
         },
       },
       series: [
@@ -174,17 +176,17 @@ export function UsageChart({
                     x2: 0,
                     y2: 1,
                     colorStops: [
-                      { offset: 0, color: colors.accentAlpha(0.22) },
-                      { offset: 1, color: colors.accentAlpha(0.02) },
+                      { offset: 0, color: colors.accentAlpha(0.18) },
+                      { offset: 1, color: colors.accentAlpha(0.01) },
                     ],
                   },
                 }
               : undefined,
           data: data.map((point) => point.value),
-          barMaxWidth: 42,
+          barMaxWidth: 36,
           itemStyle: {
             color: colors.accent,
-            borderRadius: [3, 3, 0, 0],
+            borderRadius: [4, 4, 0, 0],
           },
           emphasis: { itemStyle: { color: colors.accent } },
         },
@@ -232,7 +234,7 @@ export function UsageChart({
           series: [
             {
               type: "pie",
-              radius: donut ? ["58%", "90%"] : "68%",
+              radius: donut ? ["64%", "88%"] : "68%",
               center: donut ? ["50%", "50%"] : ["50%", "43%"],
               stillShowZeroSum: false,
               label: {
@@ -247,6 +249,7 @@ export function UsageChart({
               itemStyle: {
                 borderColor: colors.surface,
                 borderWidth: 2,
+                borderRadius: donut ? 3 : 0,
               },
               data: pieData,
             },

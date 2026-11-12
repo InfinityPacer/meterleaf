@@ -322,17 +322,17 @@ export function ModelDistribution({
             <p className="mobile-model-empty muted">暂无可展示的占比</p>
           )}
         </div>
-      </div>
-      <div className="mobile-distribution-unit">
-        <Segmented
-          label="手机模型分布指标"
-          value={unit}
-          onChange={setUnit}
-          options={[
-            { value: "tokens", label: "Tokens" },
-            { value: "usd", label: "费用" },
-          ]}
-        />
+        <div className="mobile-distribution-unit">
+          <Segmented
+            label="手机模型分布指标"
+            value={unit}
+            onChange={setUnit}
+            options={[
+              { value: "tokens", label: "Tokens" },
+              { value: "usd", label: "费用" },
+            ]}
+          />
+        </div>
       </div>
     </section>
   );

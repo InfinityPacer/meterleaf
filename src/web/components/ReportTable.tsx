@@ -494,6 +494,20 @@ export function ReportTable({
             </details>
           );
         })}
+        {data.length > 1 &&
+          (() => {
+            const totals = totalRow(data);
+            return (
+              <div className="mobile-report-total">
+                <span>合计</span>
+                <span>{totals.requests.toLocaleString()}</span>
+                <span>{compact(totals.tokens)}</span>
+                <span className="mobile-report-usd">
+                  <strong>{amount(totals.usd, "usd")}</strong>
+                </span>
+              </div>
+            );
+          })()}
       </div>
       {!data.length ? (
         <div className="empty-state">
