@@ -48,12 +48,12 @@ test("report menu keeps every supported sorting field", () => {
     "输出",
     "请求数",
     "费用",
-    "Credits",
   ]) {
     expect(html).toContain(label);
   }
   expect(html).not.toContain("USD 估值");
   expect(html).not.toContain("Credits 估值");
+  expect(html).not.toContain("Credits");
   expect(html).not.toContain("订阅等价");
   expect(html).not.toContain("标准 API");
 });

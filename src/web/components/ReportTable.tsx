@@ -54,7 +54,6 @@ const reportSortOptions = [
   { value: "cacheRate", label: "缓存命中率" },
   { value: "requests", label: "请求数" },
   { value: "usd", label: "费用" },
-  { value: "credits", label: "Credits" },
 ] as const;
 const features = tableFeatures({
   rowSortingFeature,
@@ -93,7 +92,6 @@ function totalRow(data: Row[]) {
     output: sum(data.map((row) => row.output)),
     requests: data.reduce((total, row) => total + row.requests, 0),
     usd: sum(data.map((row) => numericAmount(row.usd))),
-    credits: sum(data.map((row) => numericAmount(row.credits))),
   };
 }
 
@@ -187,12 +185,6 @@ export function ReportTable({
       cell: (info) => (
         <strong>{amount(info.getValue<number | null>(), "usd")}</strong>
       ),
-    },
-    {
-      id: "credits",
-      accessorFn: (row) => numericAmount(row.credits),
-      header: "Credits",
-      cell: (info) => amount(info.getValue<number | null>(), "credits"),
     },
   ];
   const table = useTable({
@@ -376,7 +368,6 @@ export function ReportTable({
                     cacheRate: percent(cacheHitRate(totals)),
                     requests: totals.requests.toLocaleString(),
                     usd: amount(totals.usd, "usd"),
-                    credits: amount(totals.credits, "credits"),
                   };
                   return table.getAllLeafColumns().map((column) =>
                     column.id === "key" ? (
@@ -498,10 +489,6 @@ export function ReportTable({
                   <dd>
                     <strong>{amount(numericAmount(item.usd), "usd")}</strong>
                   </dd>
-                </div>
-                <div>
-                  <dt>Credits</dt>
-                  <dd>{amount(numericAmount(item.credits), "credits")}</dd>
                 </div>
               </dl>
             </details>
