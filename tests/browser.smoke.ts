@@ -590,11 +590,12 @@ try {
   await compactTheme.click();
   await page.goto(`${baseUrl}#overview`);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  const summaryCredits = page.locator("section.usage-summary .summary-credits");
   const apiTokens = await summaryCell(page, 0).innerText();
   const apiUsd = await summaryCell(page, 1).innerText();
-  const apiCredits = await summaryCredits.innerText();
   const apiRequests = await summaryCell(page, 2).innerText();
+  await expect(
+    page.locator("section.usage-summary .summary-credits"),
+  ).toHaveCount(0);
   const beforeBasisSwitch = mainLedgerRequests.length;
   await page.getByRole("button", { name: "订阅等价", exact: true }).click();
   await expect(
@@ -602,7 +603,6 @@ try {
   ).toHaveAttribute("aria-pressed", "true");
   await expect.poll(() => summaryCell(page, 1).innerText()).not.toBe(apiUsd);
   await expect(page.locator("section.usage-summary")).toContainText("订阅等价");
-  expect(await summaryCredits.innerText()).toBe(apiCredits);
   expect(await summaryCell(page, 0).innerText()).toBe(apiTokens);
   expect(await summaryCell(page, 2).innerText()).toBe(apiRequests);
   expect(

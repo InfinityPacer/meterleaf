@@ -48,10 +48,9 @@ export function createDemoLedger(
         .mul(rate)
         .div(1e6)
         .toFixed(6);
-      const credits = weighted.mul(rate).mul(25).div(1e6).toFixed(6);
-      const charge = (value: string, reason: string): Charge => ({
+      const charge = (value: string | null, reason: string): Charge => ({
         amount: value,
-        basis: "estimated",
+        basis: value === null ? "unpriced" : "estimated",
         reason,
         assumedStandard: true,
       });
@@ -67,7 +66,7 @@ export function createDemoLedger(
           longContext ? "demo-long-context-rule" : "demo-rate",
         ),
         subscriptionUsd: charge(subscriptionUsd, "demo-rate"),
-        credits: charge(credits, "demo-rate"),
+        credits: charge(null, "demo-no-credits"),
       };
       records.push({
         id: `demo-${String(h * 20 + j + 1).padStart(6, "0")}`,
@@ -84,7 +83,7 @@ export function createDemoLedger(
         cacheWrite,
         output,
         usd: valuation.usd.amount,
-        credits: valuation.credits.amount,
+        credits: null,
         tier: "unknown",
         quality: "estimated",
         priceVersion: "demo-2026-09",

@@ -1257,20 +1257,6 @@ footer > span {
 .tokens-list {
   margin-top: 18px;
 }
-.detail-credit {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--tint);
-  color: var(--teal);
-  padding: 15px;
-  border-radius: 6px;
-  margin-top: 24px;
-  font-size: 14px;
-}
-.detail-credit strong {
-  margin-left: auto;
-}
 .detail-footnote {
   display: block;
   font-size: 14px;

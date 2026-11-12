@@ -40,7 +40,7 @@ test("image and text sub-buckets are independently priced without double countin
   const valued = valueUsage(fact, book);
   expect(valued.apiUsd.amount).toBe("0.010725");
   expect(valued.subscriptionUsd.amount).toBe("0.010725");
-  expect(valued.credits.amount).toBe("0.268125");
+  expect(valued.credits.amount).toBeNull();
   expect(fact).toEqual(before);
 });
 
@@ -57,7 +57,7 @@ test("aggregate cache pricing preserves cached-only image requests without inven
   const valued = valueUsage(fact, book);
   expect(valued.apiUsd.amount).toBe("0.00475");
   expect(valued.subscriptionUsd.amount).toBe("0.00475");
-  expect(valued.credits.amount).toBe("0.11875");
+  expect(valued.credits.amount).toBeNull();
   expect(fact).toEqual(before);
 });
 
@@ -97,16 +97,16 @@ test("Image 2.5 variants and snapshots share Image 2 rates without adding generi
     const result = valueUsage({ ...imageFact(), model }, book);
     expect(result.apiUsd.amount).toBe("0.010725");
     expect(result.subscriptionUsd.amount).toBe("0.010725");
-    expect(result.credits.amount).toBe("0.268125");
+    expect(result.credits.amount).toBeNull();
     const textOutput = imageFact();
     textOutput.model = model;
     textOutput.tokens.output! += 1;
     expect(valueUsage(textOutput, book).usd.amount).toBe("0.010725");
   }
   expect(
-    valueUsage({ ...imageFact(), model: "gpt-image-2-2026-04-21" }, book)
-      .credits.amount,
-  ).toBe("0.268125");
+    valueUsage({ ...imageFact(), model: "gpt-image-2-2026-04-21" }, book).usd
+      .amount,
+  ).toBe("0.010725");
   expect(
     valueUsage({ ...imageFact(), model: "gpt-image-2.5" }, book).usd.amount,
   ).toBeNull();
@@ -145,31 +145,8 @@ test("unpublished image text-output and cache-write rates are not treated as fre
   const fact = imageFact();
   fact.tokens.output! += 1;
   expect(valueUsage(fact, book).usd.reason).toBe("unsupported-rate-bucket");
-  expect(valueUsage(fact, book).credits.amount).toBe("0.268375");
   fact.tokens.cacheWrite = 1;
-  expect(valueUsage(fact, book).credits.reason).toBe("unsupported-rate-bucket");
-});
-
-test("GPT-5.6 Credits retain the published token prices beyond 272K", () => {
-  for (const [model, expected] of [
-    ["gpt-5.6-luna", "1.5305"],
-    ["gpt-5.6-terra", "15.305"],
-    ["gpt-5.6-sol", "30.51"],
-  ]) {
-    const fact = imageFact();
-    fact.model = model!;
-    fact.tokens = {
-      ...fact.tokens,
-      input: 300000,
-      cacheRead: 1000,
-      output: 1000,
-    };
-    delete fact.tokens.image;
-    const value = valueUsage(fact, book);
-    expect(value.credits.amount).toBe(expected!);
-    expect(value.apiUsd.amount).not.toBe(value.subscriptionUsd.amount);
-    expect(valueUsage(fact, book, "api").credits).toEqual(value.credits);
-  }
+  expect(valueUsage(fact, book).usd.reason).toBe("unsupported-rate-bucket");
 });
 
 test("price revision revalues legacy image facts without replacing facts or sync state", async () => {
@@ -205,16 +182,16 @@ test("price revision revalues legacy image facts without replacing facts or sync
     store = new LedgerStore(path, book);
     const revised = store.usage();
     expect(revised).toHaveLength(2);
-    for (const [expected, usd, credits] of [
-      [fact, "0.006945", "0.173625"],
-      [normalizedFact, "0.01095", "0.27375"],
+    for (const [expected, usd] of [
+      [fact, "0.006945"],
+      [normalizedFact, "0.01095"],
     ] as const) {
       const row = revised.find(
         (item) => item.fact.externalId === expected.externalId,
       )!;
       expect(row.fact).toEqual(expected);
       expect(row.valuation.usd.amount).toBe(usd);
-      expect(row.valuation.credits.amount).toBe(credits);
+      expect(row.valuation.credits.amount).toBeNull();
       const stored = store.db
         .query<{ payload: string }, [string]>(
           "SELECT payload FROM usage_facts WHERE external_id=?",

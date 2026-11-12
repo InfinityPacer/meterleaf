@@ -309,22 +309,11 @@ function formatUsd(value: string | null) {
   return numeric === null ? "N/A" : amount(numeric, "usd");
 }
 
-function formatCredits(value: string | null) {
-  const numeric = numericAmount(value);
-  return numeric === null ? "N/A" : amount(numeric, "credits");
-}
-
-function windowAmount(
-  window: AccountWindow | null,
-  unit: "usd" | "credits",
-  asOf: string,
-) {
+function windowAmount(window: AccountWindow | null, unit: "usd", asOf: string) {
   if (!window || quotaState(window, asOf) === "expired") return "N/A";
-  if ((unit === "usd" ? window.periodUsd : window.periodCredits) == null)
-    return "N/A";
-  return unit === "usd"
-    ? formatUsd(window.periodUsd ?? null)
-    : formatCredits(window.periodCredits ?? null);
+  if (window.periodUsd == null) return "N/A";
+  void unit;
+  return formatUsd(window.periodUsd ?? null);
 }
 
 function readPage(): Page {
@@ -1706,7 +1695,6 @@ export function App() {
                             }
                             options={[
                               { value: "usd", label: "USD" },
-                              { value: "credits", label: "Credits" },
                               { value: "tokens", label: "Tokens" },
                             ]}
                           />
@@ -1717,7 +1705,6 @@ export function App() {
                             onChange={setUnit}
                             options={[
                               { value: "usd", label: "USD" },
-                              { value: "credits", label: "Credits" },
                               { value: "tokens", label: "Tokens" },
                             ]}
                           />
@@ -1726,11 +1713,7 @@ export function App() {
                       <div className="chart-toolbar">
                         <span>
                           <i className={`chart-series-symbol ${chartStyle}`} />
-                          {unit === "usd"
-                            ? "费用"
-                            : unit === "credits"
-                              ? "Credits"
-                              : "总 Tokens"}
+                          {unit === "usd" ? "费用" : "总 Tokens"}
                         </span>
                         <div className="chart-controls">
                           <ChartStyleControl
@@ -1825,11 +1808,7 @@ export function App() {
                       <div className="section-heading">
                         <h2>模型分布</h2>
                         <span className="muted">
-                          {unit === "usd"
-                            ? "USD"
-                            : unit === "credits"
-                              ? "Credits"
-                              : "Tokens"}
+                          {unit === "usd" ? "USD" : "Tokens"}
                         </span>
                       </div>
                       <div className="model-donut overview-donut">
@@ -1845,11 +1824,7 @@ export function App() {
                         </Suspense>
                         <div className="model-donut-total" aria-hidden="true">
                           <span>
-                            {unit === "tokens"
-                              ? "总 Tokens"
-                              : unit === "usd"
-                                ? "费用"
-                                : "Credits"}
+                            {unit === "tokens" ? "总 Tokens" : "费用"}
                           </span>
                           <strong>
                             {amount(totalSummary.hasKnown ? total : null, unit)}
@@ -2238,11 +2213,6 @@ export function App() {
                   </strong>
                 </dd>
               </dl>
-              <div className="detail-credit">
-                <Coins size={18} />
-                <span>Credits</span>
-                <strong>{formatCredits(selected.credits)}</strong>
-              </div>
               {snapshot?.mode === "demo" && (
                 <span className="detail-footnote">
                   演示数据，不代表真实扣费。
@@ -2337,27 +2307,11 @@ export function App() {
                             quotaAsOf,
                           )}
                         </dd>
-                        <dt>{detailPool}5h 周期 Credits</dt>
-                        <dd>
-                          {windowAmount(
-                            selectedAccount.fiveHour,
-                            "credits",
-                            quotaAsOf,
-                          )}
-                        </dd>
                       </>
                     )}
                     <dt>{detailPool}7d 周期费用</dt>
                     <dd>
                       {windowAmount(selectedAccount.sevenDay, "usd", quotaAsOf)}
-                    </dd>
-                    <dt>{detailPool}7d 周期 Credits</dt>
-                    <dd>
-                      {windowAmount(
-                        selectedAccount.sevenDay,
-                        "credits",
-                        quotaAsOf,
-                      )}
                     </dd>
                     {(!smallScreen ||
                       showQuotaEstimate(
@@ -2375,14 +2329,6 @@ export function App() {
                         </dd>
                         <dt>{detailPool}7d 费用预估依据</dt>
                         <dd>{estimateDescription(selectedAccount.sevenDay)}</dd>
-                        <dt>{detailPool}7d 预估 Credits</dt>
-                        <dd>
-                          {estimateAmount(
-                            selectedAccount.sevenDay,
-                            "credits",
-                            quotaAsOf,
-                          )}
-                        </dd>
                       </>
                     )}
                     {/* Claude 池与 Gemini 池的行同序：重置、5h 费用、7d 费用与预估。 */}

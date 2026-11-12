@@ -158,12 +158,10 @@ test("Astra subscription long context does not inherit the API 2x rate", () => {
     upstreamCredits: null,
     metadata: {},
   };
-  expect(valueUsage(fact, book).credits.amount).toBe("76.25");
+  expect(valueUsage(fact, book).credits.amount).toBeNull();
   expect(valueUsage(fact, book).usd.amount).toBe("3.05");
   expect(valueUsage(fact, book, "api").usd.amount).toBe("6.075");
-  expect(valueUsage(fact, book, "api").credits.amount).toBe("76.25");
-  fact.tokens.cacheWrite = 1;
-  expect(valueUsage(fact, book).credits.amount).toBeNull();
+  expect(valueUsage(fact, book, "api").credits.amount).toBeNull();
 });
 test("Sol uses published promotional rates without an extra uniform 20 percent discount", () => {
   const fact: UsageFact = {
@@ -190,5 +188,5 @@ test("Sol uses published promotional rates without an extra uniform 20 percent d
     metadata: {},
   };
   expect(valueUsage(fact, defaultPriceBook).usd.amount).toBe("2.44");
-  expect(valueUsage(fact, defaultPriceBook).credits.amount).toBe("61");
+  expect(valueUsage(fact, defaultPriceBook).credits.amount).toBeNull();
 });
