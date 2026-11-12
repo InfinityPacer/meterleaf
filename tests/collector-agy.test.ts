@@ -416,6 +416,50 @@ test("decodeAgyGenMetadata decodes wire fields, mutually exclusive buckets, and 
 test("normalizeAgyModel maps all Antigravity models and prices them through defaultPriceBook", () => {
   expect(
     normalizeAgyModel({
+      responseModel: "gemini-4-hydrogen-xhigh",
+      modelDisplayName: "Gemini 4 Hydrogen (XHigh)",
+      modelEnum: 1528,
+    }),
+  ).toEqual({
+    model: "gemini-4-hydrogen",
+    upstreamModel: "gemini-4-hydrogen-xhigh",
+    reasoningEffort: "xhigh",
+  });
+  expect(
+    normalizeAgyModel({
+      responseModel: null,
+      modelDisplayName: "Gemini 4 Hydrogen (Low)",
+      modelEnum: null,
+    }),
+  ).toEqual({
+    model: "gemini-4-hydrogen",
+    upstreamModel: null,
+    reasoningEffort: "low",
+  });
+  expect(
+    normalizeAgyModel({
+      responseModel: null,
+      modelDisplayName: null,
+      modelEnum: 1526,
+    }),
+  ).toEqual({
+    model: "gemini-4-hydrogen",
+    upstreamModel: null,
+    reasoningEffort: "medium",
+  });
+  expect(
+    normalizeAgyModel({
+      responseModel: "gemini-3.8-flash-tiered",
+      modelDisplayName: null,
+      modelEnum: 1322,
+    }),
+  ).toEqual({
+    model: "gemini-3.8-flash",
+    upstreamModel: "gemini-3.8-flash-tiered",
+    reasoningEffort: "high",
+  });
+  expect(
+    normalizeAgyModel({
       responseModel: "gemini-4-carbon-medium",
       modelDisplayName: "Gemini 4 Carbon (Medium)",
       modelEnum: 1437,
@@ -529,9 +573,11 @@ test("normalizeAgyModel maps all Antigravity models and prices them through defa
   const gemini = quotaModelScope("seven-day", true)!;
   const thirdParty = quotaModelScope("seven-day-3p")!;
   for (const model of [
+    "gemini-4-hydrogen",
     "gemini-4-carbon",
     "gemini-4-argon",
     "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
   ]) {
     expect([gemini(model), thirdParty(model)]).toEqual([true, false]);
   }
@@ -546,9 +592,11 @@ test("normalizeAgyModel maps all Antigravity models and prices them through defa
   expect(quotaModelScope("seven-day")).toBeNull();
 
   for (const model of [
+    "gemini-4-hydrogen",
     "gemini-4-carbon",
     "gemini-4-argon",
     "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
     "claude-opus-5-5",
     "claude-sonnet-5-5",
     "claude-opus-4-6",

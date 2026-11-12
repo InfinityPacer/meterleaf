@@ -657,18 +657,37 @@ const enumModels: Record<number, { model: string; effort?: string }> = {
   1045: { model: "claude-sonnet-5-5", effort: "low" },
   1046: { model: "claude-sonnet-5-5", effort: "medium" },
   1047: { model: "claude-sonnet-5-5", effort: "high" },
+  1050: { model: "gemini-3.1-flash-lite", effort: "low" },
+  1198: { model: "gemini-3.5-flash-lite", effort: "low" },
+  1318: { model: "gemini-3.8-flash", effort: "high" },
+  1319: { model: "gemini-3.8-flash", effort: "medium" },
+  1320: { model: "gemini-3.8-flash", effort: "low" },
+  1322: { model: "gemini-3.8-flash", effort: "high" },
+  1400: { model: "claude-opus-5-5", effort: "low" },
+  1401: { model: "claude-opus-5-5", effort: "medium" },
+  1402: { model: "claude-opus-5-5", effort: "high" },
+  1403: { model: "claude-sonnet-5-5", effort: "low" },
+  1404: { model: "claude-sonnet-5-5", effort: "medium" },
+  1405: { model: "claude-sonnet-5-5", effort: "high" },
   1417: { model: "gemini-4-argon", effort: "high" },
   1418: { model: "gemini-4-argon", effort: "medium" },
   1419: { model: "gemini-4-argon", effort: "low" },
   1427: { model: "gemini-4-carbon", effort: "high" },
   1437: { model: "gemini-4-carbon", effort: "medium" },
   1438: { model: "gemini-4-carbon", effort: "low" },
+  1525: { model: "gemini-4-hydrogen", effort: "high" },
+  1526: { model: "gemini-4-hydrogen", effort: "medium" },
+  1527: { model: "gemini-4-hydrogen", effort: "low" },
+  1528: { model: "gemini-4-hydrogen", effort: "xhigh" },
 };
 
 const displayModels: Record<string, string> = {
+  "gemini 4 hydrogen": "gemini-4-hydrogen",
   "gemini 4 carbon": "gemini-4-carbon",
   "gemini 4 argon": "gemini-4-argon",
   "gemini 3.8 flash": "gemini-3.8-flash",
+  "gemini 3.5 flash lite": "gemini-3.5-flash-lite",
+  "gemini 3.1 flash lite": "gemini-3.1-flash-lite",
   "claude opus 5.5": "claude-opus-5-5",
   "claude sonnet 5.5": "claude-sonnet-5-5",
   "gpt-oss 120b": "gpt-oss-120b",
@@ -687,7 +706,9 @@ export function normalizeAgyModel(input: {
 }): NormalizedAgyModel | null {
   let effort: string | null = null;
   const display = input.modelDisplayName?.trim() ?? "";
-  const displayMatch = /\((Low|Medium|High|Max|Minimal)\)$/i.exec(display);
+  const displayMatch = /\((Low|Medium|High|XHigh|Max|Minimal)\)$/i.exec(
+    display,
+  );
   if (displayMatch) effort = displayMatch[1]!.toLowerCase();
 
   const rawResponse = input.responseModel?.trim() ?? "";
@@ -705,8 +726,15 @@ export function normalizeAgyModel(input: {
         reasoningEffort: effort ?? "none",
       };
     }
+    if (cleaned === "gemini-3.8-flash-tiered") {
+      return {
+        model: "gemini-3.8-flash",
+        upstreamModel: rawResponse,
+        reasoningEffort: effort ?? "high",
+      };
+    }
     const effortSuffix =
-      /^(claude-(?:opus|sonnet|haiku|fable)-[0-9]+(?:-[0-9]+)*|gemini-[a-z0-9.-]+|gpt-oss-120b)-(low|medium|high|max|minimal)$/.exec(
+      /^(claude-(?:opus|sonnet|haiku|fable)-[0-9]+(?:-[0-9]+)*|gemini-[a-z0-9.-]+|gpt-oss-120b)-(low|medium|high|xhigh|max|minimal)$/.exec(
         cleaned,
       );
     if (effortSuffix) {

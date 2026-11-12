@@ -83,7 +83,7 @@ export const preferenceSchemas = {
   mobileLayout: z.enum(["sidebar", "app"]),
   accountOrder: z.array(z.string().min(1).max(512)).max(10000),
   page: z.enum(["overview", "reports", "ledger", "settings"]),
-  unit: z.enum(["usd", "credits", "tokens"]),
+  unit: z.enum(["usd", "tokens"]),
   distributionUnit: z.enum(["usd", "tokens"]),
   distributionSort: z.object({
     id: z.enum(["model", "requests", "tokens", "usd", "share"]),
@@ -117,7 +117,6 @@ export const preferenceSchemas = {
           "cacheRate",
           "requests",
           "usd",
-          "credits",
         ]),
         desc: z.boolean(),
       }),

@@ -200,11 +200,6 @@ export function UsageSummary({
               </>
             ) : null}
           </small>
-          {data.credits !== null && (
-            <small className="summary-credits">
-              订阅 Credits {amount(data.credits, "credits")}
-            </small>
-          )}
         </div>
         <div>
           <dt>请求</dt>

@@ -108,10 +108,7 @@ export function toLedgerRecord(
               fact.tier === "auto"
             ? "standard"
             : "unknown",
-    quality:
-      valuation.usd.amount === null || valuation.credits.amount === null
-        ? "unpriced"
-        : "estimated",
+    quality: valuation.usd.amount === null ? "unpriced" : "estimated",
     priceVersion: valuation.version,
     valuation,
     gatewayCost: fact.gatewayCost,

@@ -175,9 +175,9 @@ test("values aggregate Sub2API image cache without fabricating an image cache sp
     )!;
 
     expect(priced.valuation.usd.amount).toBe("0.01095");
-    expect(priced.valuation.credits.amount).toBe("0.27375");
+    expect(priced.valuation.credits.amount).toBeNull();
     expect(oversized.valuation.usd.amount).toBe("0.01275");
-    expect(oversized.valuation.credits.amount).toBe("0.31875");
+    expect(oversized.valuation.credits.amount).toBeNull();
     expect(missing.valuation.usd.amount).toBeNull();
     expect(missing.valuation.credits.amount).toBeNull();
     expect(invalid.valuation.usd.amount).toBeNull();

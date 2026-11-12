@@ -76,15 +76,18 @@ test("live snapshot preserves full quota periods across report ranges and USD br
     expect(subscription.accounts[0]!.sevenDay!.periodUsd).toBe("3.05");
     expect(subscription.accounts[0]!.sevenDay!.periodRequests).toBe(1);
     expect(subscription.accounts[0]!.sevenDay!.periodTokens).toBe(
-      fact.tokens.input! + fact.tokens.cacheRead! + fact.tokens.cacheWrite! + fact.tokens.output!,
+      fact.tokens.input! +
+        fact.tokens.cacheRead! +
+        fact.tokens.cacheWrite! +
+        fact.tokens.output!,
     );
     expect(subscription.accounts[0]!.sevenDay!.periodCacheRate).toBe(0);
     expect(api.accounts[0]!.sevenDay!.periodUsd).toBe("6.075");
-    expect(api.accounts[0]!.sevenDay!.periodCredits).toBe(
-      subscription.accounts[0]!.sevenDay!.periodCredits,
-    );
-    expect(subscription.accounts[0]!.sevenDay!.periodCredits).toBe("76.25");
-    expect(liveSnapshot(store, sync, 7, now).records[0]!.tier).toBe("standard");
+    expect(api.accounts[0]!.sevenDay!.periodCredits).toBeNull();
+    expect(subscription.accounts[0]!.sevenDay!.periodCredits).toBeNull();
+    const rows = liveSnapshot(store, sync, 7, now).records;
+    expect(rows[0]!.tier).toBe("standard");
+    expect(rows[0]!.quality).toBe("estimated");
     const resetTime = "2026-09-15T00:01:00.000Z";
     const expired = liveSnapshot(store, sync, 1, resetTime);
     expect(expired.accounts[0]!.sevenDay!.state).toBe("expired");

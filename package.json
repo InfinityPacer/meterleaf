@@ -20,7 +20,9 @@
     "test:browser": "bun tests/browser.smoke.ts",
     "collector": "bun src/collector/main.ts",
     "build:collector": "bun scripts/build-collector.ts",
-    "build:app": "bun scripts/build-collector.ts --release"
+    "build:app": "bun scripts/build-collector.ts --release",
+    "prices:build": "bun scripts/build-prices.ts",
+    "prices:check": "bun scripts/sync-prices.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
