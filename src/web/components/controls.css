@@ -15,16 +15,19 @@
   justify-content: space-between;
   gap: 10px;
   border: 1px solid var(--control-line);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   padding: 0 11px;
   background: var(--surface);
   color: var(--ink);
-  font-size: 14px;
+  font-size: 13.5px;
+  font-weight: 500;
   line-height: 1.25;
   text-align: left;
+  box-shadow: 0 1px 1px rgb(15 23 42 / 3%);
   transition:
-    border-color 140ms ease,
-    box-shadow 140ms ease;
+    border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
 }
 
 .filter-select-trigger:hover,
@@ -74,14 +77,14 @@
 .theme-control-popup,
 .sync-popup {
   border: 1px solid var(--control-line);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 0 14px 34px #0000002b;
+  box-shadow: var(--shadow-float);
   transform-origin: var(--transform-origin);
   transition:
-    opacity 140ms ease,
-    transform 140ms ease;
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
 
 .filter-select-popup[data-starting-style],
@@ -236,9 +239,9 @@
 }
 
 .sync-trigger-label {
-  font-size: 14px;
+  font-size: 13.5px;
   white-space: nowrap;
-  min-width: 172px;
+  min-width: 0;
   font-variant-numeric: tabular-nums;
 }
 

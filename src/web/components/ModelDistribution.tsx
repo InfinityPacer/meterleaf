@@ -215,6 +215,7 @@ export function ModelDistribution({
                     <th
                       key={option.id}
                       scope="col"
+                      className={option.id === "model" ? "" : "numeric"}
                       aria-sort={
                         sorting.id === option.id
                           ? sorting.desc
@@ -232,7 +233,7 @@ export function ModelDistribution({
                             <ArrowUp size={12} />
                           )
                         ) : (
-                          <ArrowUpDown size={12} />
+                          <ArrowUpDown size={11} className="sort-idle" />
                         )}
                       </button>
                     </th>
@@ -322,17 +323,17 @@ export function ModelDistribution({
             <p className="mobile-model-empty muted">暂无可展示的占比</p>
           )}
         </div>
-      </div>
-      <div className="mobile-distribution-unit">
-        <Segmented
-          label="手机模型分布指标"
-          value={unit}
-          onChange={setUnit}
-          options={[
-            { value: "tokens", label: "Tokens" },
-            { value: "usd", label: "费用" },
-          ]}
-        />
+        <div className="mobile-distribution-unit">
+          <Segmented
+            label="手机模型分布指标"
+            value={unit}
+            onChange={setUnit}
+            options={[
+              { value: "tokens", label: "Tokens" },
+              { value: "usd", label: "费用" },
+            ]}
+          />
+        </div>
       </div>
     </section>
   );

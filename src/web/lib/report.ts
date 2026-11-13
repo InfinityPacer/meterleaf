@@ -10,33 +10,49 @@ import type {
 
 /** 内置价格表中的模型使用固定且互不相同的颜色，跨图表和页面保持一致。 */
 export const modelColors: Record<string, string> = {
-  "gpt-6-astra": "#3779d5",
-  "gpt-6-sol": "#4f8fe0",
-  "gpt-6-luna": "#7ba7e8",
-  "gpt-5.6-sol": "#15998c",
-  "gpt-5.6-terra": "#bb8b42",
-  "gpt-5.6-luna": "#9b6fa5",
-  "gpt-5.4": "#5f7a91",
-  "gpt-5.4-mini": "#8a9bab",
-  "claude-opus-5-5": "#d9704f",
-  "claude-opus-5": "#c84c61",
-  "claude-opus-4-8": "#b0508f",
-  "claude-fable-5-1": "#e0a13a",
+  "gpt-6-astra": "#2f6fed",
+  "gpt-6.1-sol": "#3b82f6",
+  "gpt-6.1-terra": "#60a5fa",
+  "gpt-6-sol": "#4b83f0",
+  "gpt-6-luna": "#7aa6f7",
+  "gpt-5.6-sol": "#0d9488",
+  "gpt-5.6-terra": "#c58b2a",
+  "gpt-5.6-luna": "#8b6fc9",
+  "gpt-5.4": "#56708a",
+  "gpt-5.4-mini": "#8698ab",
+  "codex-auto-review": "#64748b",
+  "claude-fable-5-2": "#d97706",
+  "claude-fable-5-1": "#dd8b26",
+  "claude-opus-5-5": "#d46246",
+  "claude-opus-5": "#c44d5c",
+  "claude-opus-4-8": "#a84f84",
+  "claude-opus-4-6": "#9d5b7a",
+  "claude-sonnet-5-5": "#1d96b8",
   "claude-sonnet-5": "#2aa3c7",
-  "claude-haiku-4-5": "#5a9e4b",
-  "claude-haiku-4-5-20251001": "#5a9e4b",
+  "claude-haiku-5-5": "#3d9960",
+  "claude-haiku-4-5": "#539b57",
+  "claude-haiku-4-5-20251001": "#539b57",
+  "gemini-4-hydrogen": "#0e8a55",
+  "gemini-4-carbon": "#0f766e",
+  "gemini-4-argon": "#257985",
+  "gemini-3.8-flash": "#3898a6",
+  "gemini-3.5-flash-lite": "#67a8b4",
+  "deepseek-v4.1-flash": "#4f63d2",
+  "glm-5.3": "#7c5cbf",
+  "glm-5.3-flash": "#9b7ed9",
+  "gpt-oss-120b": "#71717a",
 };
 const fallbackModelColors = [
-  "#3779d5",
-  "#15998c",
-  "#bb8b42",
-  "#9b6fa5",
-  "#d9704f",
-  "#c84c61",
-  "#5f7a91",
-  "#5a9e4b",
-  "#2aa3c7",
-  "#b0508f",
+  "#2f6fed",
+  "#0d9488",
+  "#dd8b26",
+  "#d46246",
+  "#1d96b8",
+  "#7c5cbf",
+  "#3d9960",
+  "#56708a",
+  "#c44d5c",
+  "#a84f84",
 ];
 const tokenFields = ["input", "cacheRead", "cacheWrite", "output"] as const;
 export type TokenField = (typeof tokenFields)[number];
@@ -63,12 +79,54 @@ export function modelColor(model: string) {
 }
 
 export function modelLabel(model: string) {
-  return model
-    .replace("gpt-", "GPT ")
-    .replace(
-      /-(astra|sol|terra|luna)$/,
-      (_, name: string) => ` ${name[0]!.toUpperCase()}${name.slice(1)}`,
+  if (model === "codex-auto-review") return "Codex Auto Review";
+  if (model === "gpt-oss-120b") return "GPT-OSS 120B";
+  if (model.startsWith("gpt-image-")) {
+    return model
+      .replace(/^gpt-image-/, "GPT Image ")
+      .replace(
+        /-(sunburst|flare)(?=-|$)/,
+        (_, v: string) => ` ${v[0]!.toUpperCase()}${v.slice(1)}`,
+      );
+  }
+  if (model.startsWith("gpt-")) {
+    return model
+      .replace(/^gpt-/, "GPT ")
+      .replace(
+        /-(astra|sol|terra|luna|mini)$/,
+        (_, name: string) => ` ${name[0]!.toUpperCase()}${name.slice(1)}`,
+      );
+  }
+  const claudeMatch =
+    /^claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d+))?(?:-(\d{8}))?$/.exec(
+      model,
     );
+  if (claudeMatch) {
+    const [, tier, major, minor, snapshot] = claudeMatch;
+    const tierName = `${tier![0]!.toUpperCase()}${tier!.slice(1)}`;
+    const ver = minor ? `${major}.${minor}` : major!;
+    return snapshot
+      ? `Claude ${tierName} ${ver} (${snapshot})`
+      : `Claude ${tierName} ${ver}`;
+  }
+  const geminiMatch = /^gemini-([0-9.]+)-([a-z-]+)$/.exec(model);
+  if (geminiMatch) {
+    const [, ver, variant] = geminiMatch;
+    const formattedVariant = variant!
+      .split("-")
+      .map((part) => `${part[0]!.toUpperCase()}${part.slice(1)}`)
+      .join("-");
+    return `Gemini ${ver} ${formattedVariant}`;
+  }
+  if (model.startsWith("deepseek-")) {
+    return model
+      .replace(/^deepseek-v/i, "DeepSeek V")
+      .replace(/-flash$/i, " Flash");
+  }
+  if (model.startsWith("glm-")) {
+    return model.replace(/^glm-/i, "GLM ").replace(/-flash$/i, " Flash");
+  }
+  return model;
 }
 
 // 图表与表格每次渲染会格式化成百上千个值；Intl 格式器构造远比 format 昂贵，按选项复用。

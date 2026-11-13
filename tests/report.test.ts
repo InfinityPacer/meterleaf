@@ -14,6 +14,7 @@ import {
   recordValue,
   numericAmount,
   summarize,
+  modelLabel,
 } from "../src/web/lib/report";
 
 const snapshot = createDemoLedger();
@@ -267,5 +268,20 @@ describe("prototype report contract", () => {
     expect(reportCsv(api.records, "model", "api")).toContain(
       "credits_estimate",
     );
+  });
+  test("modelLabel formats known provider families and preserves unknown model IDs", () => {
+    expect(modelLabel("gpt-6-astra")).toBe("GPT 6 Astra");
+    expect(modelLabel("gpt-5.4-mini")).toBe("GPT 5.4 Mini");
+    expect(modelLabel("gpt-image-2.6-sunburst")).toBe("GPT Image 2.6 Sunburst");
+    expect(modelLabel("claude-fable-5-2")).toBe("Claude Fable 5.2");
+    expect(modelLabel("claude-haiku-4-5-20251001")).toBe(
+      "Claude Haiku 4.5 (20251001)",
+    );
+    expect(modelLabel("gemini-4-hydrogen")).toBe("Gemini 4 Hydrogen");
+    expect(modelLabel("gemini-3.5-flash-lite")).toBe("Gemini 3.5 Flash-Lite");
+    expect(modelLabel("deepseek-v4.1-flash")).toBe("DeepSeek V4.1 Flash");
+    expect(modelLabel("glm-5.3-flash")).toBe("GLM 5.3 Flash");
+    expect(modelLabel("codex-auto-review")).toBe("Codex Auto Review");
+    expect(modelLabel("tokens-only")).toBe("tokens-only");
   });
 });

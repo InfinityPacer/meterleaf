@@ -50,13 +50,13 @@
 .mobile-home-summary,
 .mobile-home-account-card {
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
-  box-shadow: none;
+  box-shadow: var(--shadow-card);
 }
 
 .mobile-home-summary {
-  padding: 18px 16px 12px;
+  padding: 20px 18px 14px;
 }
 
 .mobile-home-summary-hero {
@@ -74,10 +74,10 @@
 .mobile-home-summary-hero strong {
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 38px;
-  line-height: 1.05;
-  font-weight: 500;
-  letter-spacing: -0.02em;
+  font-size: 36px;
+  line-height: 1.06;
+  font-weight: 600;
+  letter-spacing: -0.028em;
   font-variant-numeric: tabular-nums;
 }
 

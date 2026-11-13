@@ -41,8 +41,8 @@
 /* App 视图采用独立布局，模式切换不改变计价或筛选契约。 */
 @media (max-width: 900px) {
   :root[data-mobile-layout="app"] {
-    --app-card-radius: 16px;
-    --app-shadow: var(--shadow);
+    --app-card-radius: var(--radius-lg);
+    --app-shadow: var(--shadow-card);
     --mobile-bar-height: 56px;
     /* 导航内容位于系统手势区上方，背景延伸到屏幕底部；无安全区时不预留高度。 */
     --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -51,9 +51,6 @@
     scroll-padding-bottom: calc(
       var(--mobile-bar-height) + var(--mobile-safe-bottom) + 16px
     );
-    &.dark {
-      --app-shadow: none;
-    }
     .app-shell {
       min-height: 100dvh;
       background: var(--canvas);
@@ -367,8 +364,9 @@
       grid-template-columns: auto minmax(0, 1fr);
       gap: 8px;
       background: var(--surface);
+      border: 1px solid var(--line);
       border-radius: var(--app-card-radius);
-      padding: 14px;
+      padding: 16px;
       box-shadow: var(--app-shadow);
     }
     .app-period .trend-panel .section-heading {
@@ -444,8 +442,8 @@
     .app-period .metric {
       position: relative;
       overflow: hidden;
-      border: 0;
-      padding: 12px 14px;
+      border: 1px solid var(--line);
+      padding: 14px 16px;
       background: var(--surface);
       border-radius: var(--app-card-radius);
       box-shadow: var(--app-shadow);
@@ -586,15 +584,21 @@
     margin-bottom: 12px;
   }
   .mobile-period-presets button {
-    min-height: 44px;
-    border: 0;
-    border-radius: 8px;
-    background: var(--soft);
+    min-height: 40px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--muted);
     font-size: 13px;
+    font-weight: 500;
+    box-shadow: 0 1px 1px rgb(15 23 42 / 3%);
   }
   .mobile-period-presets button[aria-pressed="true"] {
-    background: var(--teal);
-    color: var(--surface);
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 600;
+    box-shadow: var(--shadow-control);
   }
   .mobile-period-presets .date-range-trigger {
     width: 44px;
