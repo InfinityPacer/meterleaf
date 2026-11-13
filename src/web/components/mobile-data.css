@@ -406,7 +406,8 @@
   :root[data-mobile-layout="app"]
     .mobile-report-columns
     > button:not(:first-child) {
-    justify-content: flex-end;
+    flex-direction: row-reverse;
+    justify-content: flex-start;
     text-align: right;
   }
   :root[data-mobile-layout="app"] .mobile-report-columns > button svg {

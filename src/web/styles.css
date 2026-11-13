@@ -58,7 +58,7 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-fast: 150ms;
   --shadow-card: 0 1px 2px rgb(15 23 42 / 4%), 0 1px 1px rgb(15 23 42 / 2%);
-  --shadow-control: 0 1px 2px rgb(15 23 42 / 6%);
+  --shadow-control: 0 1px 3px rgb(15 23 42 / 10%), 0 0 0 1px rgb(15 23 42 / 5%);
   --shadow-float:
     0 12px 32px -4px rgb(15 23 42 / 12%), 0 2px 6px rgb(15 23 42 / 5%);
   --shadow: var(--shadow-card);
@@ -675,7 +675,18 @@ h3 {
   font-size: 13px;
   font-weight: 500;
   color: var(--muted);
-  transition: color var(--duration-fast) var(--ease-out);
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    transform 100ms var(--ease-out);
+}
+.segmented button:hover:not([aria-pressed="true"]) {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+.segmented button:active {
+  transform: scale(0.98);
 }
 .segmented button > span:last-child {
   position: relative;
@@ -683,6 +694,7 @@ h3 {
 }
 .segmented button[aria-pressed="true"] {
   color: var(--ink);
+  font-weight: 600;
 }
 .segment-active {
   position: absolute;
@@ -1072,7 +1084,7 @@ h3 {
 .model-distribution-scroll tbody th {
   background: transparent;
 }
-.model-distribution-scroll th button {
+.model-distribution-scroll tbody th button {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1080,10 +1092,6 @@ h3 {
   color: inherit;
   font-size: inherit;
   text-align: left;
-}
-.model-distribution-scroll thead th button {
-  font-size: 12px;
-  font-weight: 500;
 }
 .model-distribution-scroll th button span {
   max-width: 220px;
@@ -1129,20 +1137,51 @@ th {
   text-align: left;
   padding: 0 10px;
 }
-th button {
+thead th button {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  background: transparent;
+  gap: 4px;
+  min-width: 0;
+  min-height: 28px;
+  height: 28px;
+  padding: 0 6px;
+  margin: 0 -6px;
   border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
   color: inherit;
-  padding: 3px 0;
+  font-size: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
+}
+thead th.numeric button {
+  flex-direction: row-reverse;
+}
+thead th button:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+thead th button:active {
+  background: color-mix(in srgb, var(--ink) 11%, transparent);
+}
+thead th[aria-sort="ascending"] button,
+thead th[aria-sort="descending"] button {
+  color: var(--ink);
+  font-weight: 600;
+}
+thead th[aria-sort="ascending"] button svg,
+thead th[aria-sort="descending"] button svg {
+  color: var(--accent);
 }
 .sort-idle {
-  opacity: 0;
+  opacity: 0.38;
+  transition: opacity var(--duration-fast) var(--ease-out);
 }
-th:hover .sort-idle {
-  opacity: 0.7;
+thead th button:hover .sort-idle {
+  opacity: 0.9;
 }
 td {
   padding: 11px 10px;

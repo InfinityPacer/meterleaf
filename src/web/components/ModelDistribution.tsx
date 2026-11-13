@@ -215,6 +215,7 @@ export function ModelDistribution({
                     <th
                       key={option.id}
                       scope="col"
+                      className={option.id === "model" ? "" : "numeric"}
                       aria-sort={
                         sorting.id === option.id
                           ? sorting.desc
@@ -232,7 +233,7 @@ export function ModelDistribution({
                             <ArrowUp size={12} />
                           )
                         ) : (
-                          <ArrowUpDown size={12} />
+                          <ArrowUpDown size={11} className="sort-idle" />
                         )}
                       </button>
                     </th>

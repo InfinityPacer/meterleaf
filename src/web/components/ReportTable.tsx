@@ -35,6 +35,7 @@ import {
   type ReportDimension,
 } from "../lib/report";
 import { Button } from "./ui/button";
+import { Segmented } from "./Segmented";
 import "./mobile-data.css";
 
 const dimensions = [
@@ -284,17 +285,12 @@ export function ReportTable({
             </ActionMenu.Portal>
           </ActionMenu.Root>
         </div>
-        <div className="segmented" role="group" aria-label="汇总维度">
-          {dimensions.map((item) => (
-            <button
-              key={item.value}
-              aria-pressed={dimension === item.value}
-              onClick={() => onDimension(item.value)}
-            >
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="汇总维度"
+          value={dimension}
+          onChange={onDimension}
+          options={[...dimensions]}
+        />
       </div>
       {dimension === "week" && (
         <p className="muted report-period">周一起始，首尾周按所选范围统计</p>
@@ -331,7 +327,7 @@ export function ReportTable({
                       ) : header.column.getIsSorted() === "desc" ? (
                         <ArrowDown size={12} />
                       ) : (
-                        <ArrowUpDown size={12} />
+                        <ArrowUpDown size={11} className="sort-idle" />
                       )}
                     </button>
                   </th>
