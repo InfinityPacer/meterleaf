@@ -174,7 +174,14 @@ export function LedgerTable({
       id: "reasoningEffort",
       header: "推理强度",
       accessorFn: requestReasoningEffort,
-      cell: (info) => info.getValue<string | null>() ?? "N/A",
+      cell: (info) => {
+        const effort = info.getValue<string | null>();
+        return effort ? (
+          <span className="effort-badge">{effort}</span>
+        ) : (
+          <span className="faint-na">N/A</span>
+        );
+      },
       enableSorting: false,
     },
     {

@@ -14,7 +14,11 @@
     background: transparent;
     font: inherit;
   }
+  :root {
+    --control-height: 38px;
+  }
   .app-shell {
+    --control-height: 38px;
     --desktop-canvas: var(--canvas);
     --desktop-panel: var(--surface);
     --desktop-panel-soft: var(--sidebar);
@@ -24,7 +28,7 @@
     --desktop-muted: var(--muted);
     --desktop-teal: var(--accent);
     --desktop-blue: var(--accent);
-    --desktop-shadow: var(--shadow);
+    --desktop-shadow: var(--shadow-card);
     min-height: 100vh;
     background: var(--desktop-canvas);
     color: var(--desktop-ink);
@@ -86,6 +90,7 @@
     background: var(--soft);
     color: var(--desktop-ink);
     font-weight: 600;
+    box-shadow: inset 0 0 0 1px var(--line-soft);
   }
 
   .app-shell .sidebar nav button.active > svg {
@@ -93,13 +98,23 @@
   }
 
   .app-shell .sidebar-bottom {
-    padding: 32px 10px 0;
+    padding: 24px 4px 0;
   }
 
   .app-shell .about-link {
-    padding-top: 16px;
+    min-height: 40px;
+    padding: 0 10px;
+    border-radius: var(--radius-sm);
     color: var(--desktop-muted);
-    font-size: 14px;
+    font-size: 13.5px;
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
+  }
+
+  .app-shell .about-link:hover {
+    background: var(--soft);
+    color: var(--desktop-ink);
   }
 
   .app-shell .about-link span {
@@ -113,10 +128,10 @@
   }
 
   .app-shell .topbar {
-    height: 72px;
+    height: 68px;
     padding: 0 40px;
-    border-bottom: 0;
-    background: var(--desktop-canvas);
+    border-bottom: 1px solid var(--desktop-line-soft);
+    background: color-mix(in srgb, var(--desktop-canvas) 88%, var(--surface));
   }
 
   .app-shell .topbar-title {
@@ -166,16 +181,16 @@
 
   .app-shell main {
     width: 100%;
-    max-width: none;
-    padding: 8px 40px 40px;
-    min-height: calc(100dvh - 72px);
+    max-width: 1520px;
+    margin: 0 auto;
+    padding: 20px 40px 44px;
+    min-height: calc(100dvh - 68px);
   }
 
   .app-shell main > .filterbar {
     gap: 12px;
     min-height: 0;
-    margin-bottom: 20px;
-    padding: 0;
+    margin-bottom: 22px;
     border: 0;
     border-radius: 0;
     background: transparent;
@@ -188,32 +203,37 @@
 
   .app-shell .filterbar .filter-select-trigger,
   .app-shell .filterbar .date-range-trigger {
-    min-height: 40px;
-    border-color: var(--desktop-line);
-    border-radius: 8px;
+    min-height: var(--control-height);
+    height: var(--control-height);
+    border-color: var(--control-line);
+    border-radius: var(--radius-sm);
     background: var(--desktop-panel);
     color: var(--desktop-ink);
+    font-size: 13.5px;
+    font-weight: 500;
   }
 
   .app-shell .filterbar .filter-select-trigger:hover,
   .app-shell .filterbar .filter-select-trigger[aria-expanded="true"],
   .app-shell .filterbar .date-range-trigger:hover,
   .app-shell .filterbar .date-range-trigger[aria-expanded="true"] {
-    border-color: var(--control-line);
+    border-color: color-mix(in srgb, var(--ink) 26%, var(--control-line));
     background: var(--desktop-panel);
   }
 
   .app-shell .filterbar .segmented {
-    min-height: 40px;
+    min-height: var(--control-height);
+    height: var(--control-height);
     padding: 3px;
-    border: 0;
-    border-radius: 9px;
+    border: 1px solid var(--desktop-line);
+    border-radius: var(--radius-sm);
     background: var(--soft);
   }
 
   .app-shell .filterbar .segmented button {
-    min-height: 34px;
-    border-radius: 7px;
+    min-height: 30px;
+    height: 30px;
+    border-radius: var(--radius-xs);
     color: var(--desktop-muted);
   }
 
@@ -223,9 +243,9 @@
 
   .app-shell .filterbar .segmented .segment-active {
     border: 0;
-    border-radius: 7px;
+    border-radius: var(--radius-xs);
     background: var(--elevated);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+    box-shadow: var(--shadow-control);
   }
 
   .app-shell .section-heading {
@@ -325,17 +345,17 @@
   .app-shell .lifetime-summary dd {
     margin: 0;
     color: var(--desktop-ink);
-    font-size: clamp(30px, 2.7vw, 44px);
-    line-height: 1;
-    font-weight: 500;
-    letter-spacing: -0.02em;
+    font-size: clamp(30px, 2.6vw, 40px);
+    line-height: 1.05;
+    font-weight: 600;
+    letter-spacing: -0.028em;
     font-variant-numeric: tabular-nums;
     overflow-wrap: anywhere;
   }
-
   .app-shell .lifetime-summary small {
     color: var(--faint);
     font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
   }
 
   .app-shell .lifetime-summary dl > div > small + small {
@@ -512,10 +532,11 @@
   }
   .app-shell[data-page="overview"] .trend-panel,
   .app-shell[data-page="overview"] .model-panel {
-    padding: 20px;
+    padding: 22px 24px;
     border: 1px solid var(--desktop-line);
-    border-radius: 12px;
+    border-radius: var(--radius-md);
     background: var(--desktop-panel);
+    box-shadow: var(--desktop-shadow);
   }
 
   .app-shell .chart-toolbar {
@@ -545,9 +566,34 @@
     gap: 8px;
   }
 
+  .app-shell .segmented {
+    height: var(--control-height);
+    min-height: var(--control-height);
+    padding: 3px;
+    border: 1px solid var(--desktop-line);
+    border-radius: var(--radius-sm);
+    background: var(--soft);
+  }
+
+  .app-shell .segmented button {
+    min-height: 30px;
+    height: 30px;
+    min-width: 32px;
+    border-radius: var(--radius-xs);
+    color: var(--desktop-muted);
+  }
+
+  .app-shell .segmented button[aria-pressed="true"] {
+    color: var(--desktop-ink);
+  }
+
   .app-shell .chart-style-control button,
-  .app-shell .chart-toolbar .segmented {
-    border-radius: 9px;
+  .app-shell .model-sort-control > button {
+    width: var(--control-height);
+    height: var(--control-height);
+    min-width: var(--control-height);
+    min-height: var(--control-height);
+    border-radius: var(--radius-sm);
   }
 
   .app-shell .model-panel .section-heading {
@@ -579,15 +625,17 @@
     font-size: 14px;
   }
 
-  .app-shell .account-list-item,
-  .app-shell .account-list-item + .account-list-item {
-    margin-bottom: 12px;
-    border: 1px solid var(--desktop-line);
-    border-radius: 12px;
-    background: var(--desktop-panel);
-    box-shadow: var(--desktop-shadow);
+  .app-shell .account-list > .account-list-item,
+  .app-shell .account-list > .account-list-item + .account-list-item {
+    margin-bottom: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
-
+  .app-shell .account-list > .account-list-item + .account-list-item {
+    border-top: 1px solid var(--desktop-line-soft);
+  }
   .app-shell .account-row {
     display: grid;
     grid-template-columns:
@@ -603,7 +651,7 @@
   }
 
   .app-shell .account-row:hover {
-    background: var(--desktop-panel-soft);
+    background: color-mix(in srgb, var(--soft) 55%, transparent);
   }
 
   .app-shell .account-identity {
@@ -776,10 +824,10 @@
 
   .app-shell .account-capacity strong {
     color: var(--desktop-ink);
-    font-size: 24px;
+    font-size: 22px;
     line-height: 1.15;
-    font-weight: 500;
-    letter-spacing: -0.01em;
+    font-weight: 600;
+    letter-spacing: -0.02em;
   }
 
   .app-shell .account-row .row-arrow {
@@ -936,11 +984,12 @@
   .app-shell .model-donut-total {
     gap: 7px;
   }
-
   .app-shell .model-donut-total strong {
     color: var(--desktop-ink);
-    font-size: 26px;
-    font-weight: 500;
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
   }
 
   .app-shell .model-distribution-scroll {
@@ -994,10 +1043,18 @@
     background: var(--desktop-panel-soft);
   }
 
-  .app-shell .model-distribution-scroll th button {
+  .app-shell .model-distribution-scroll tbody th button {
     min-height: 36px;
     padding: 0;
-    color: inherit;
+    color: var(--desktop-ink);
+  }
+  .app-shell .model-distribution-scroll thead th button {
+    min-width: 0;
+    min-height: 28px;
+    height: 28px;
+    padding: 0 6px;
+    margin: 0 -6px;
+    font-size: 12px;
   }
 
   .app-shell .report-section .section-heading,
@@ -1006,23 +1063,25 @@
   }
 
   .app-shell .report-section .segmented {
-    min-height: 40px;
+    height: var(--control-height);
+    min-height: var(--control-height);
     padding: 3px;
-    border: 0;
-    border-radius: 9px;
+    border: 1px solid var(--desktop-line);
+    border-radius: var(--radius-sm);
     background: var(--soft);
   }
 
   .app-shell .report-section .segmented button {
-    min-height: 34px;
-    border-radius: 7px;
+    min-height: 30px;
+    height: 30px;
+    border-radius: var(--radius-xs);
   }
 
   .app-shell .report-section .segmented .segment-active {
     border: 0;
-    border-radius: 7px;
+    border-radius: var(--radius-xs);
     background: var(--elevated);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+    box-shadow: var(--shadow-control);
   }
 
   .app-shell .report-section table,
@@ -1032,29 +1091,37 @@
 
   .app-shell .report-section thead th,
   .app-shell .request-section thead th {
-    height: 36px;
+    height: 38px;
     padding: 0 14px;
     border-bottom: 1px solid var(--desktop-line);
-    background: var(--desktop-panel);
+    background: color-mix(in srgb, var(--soft) 45%, var(--desktop-panel));
     color: var(--desktop-muted);
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 550;
+  }
+  .app-shell .report-section thead th:first-child,
+  .app-shell .request-section thead th:first-child {
+    border-radius: var(--radius-xs) 0 0 var(--radius-xs);
+  }
+  .app-shell .report-section thead th:last-child,
+  .app-shell .request-section thead th:last-child {
+    border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
   }
 
   .app-shell .report-section tbody th {
-    background: var(--desktop-panel);
+    background: transparent;
     color: var(--desktop-ink);
     font-weight: 500;
   }
 
-  /* 合计行用较粗的顶线收尾，与普通数据行区分；各列同一条线，不留缺口。 */
+  /* 合计行用柔和底色与顶线收尾，与普通数据行清晰区分。 */
   .app-shell .report-section tfoot th,
   .app-shell .report-section tfoot td {
     height: 48px;
     padding: 0 14px;
-    border-top: 2px solid var(--desktop-line);
+    border-top: 1px solid var(--desktop-line);
     border-bottom: 0;
-    background: transparent;
+    background: color-mix(in srgb, var(--soft) 42%, var(--desktop-panel));
     color: var(--desktop-ink);
     font-weight: 600;
     text-align: left;
@@ -1099,13 +1166,17 @@
   }
 
   .app-shell .request-section .search-control {
-    min-height: 40px;
-    border-color: var(--desktop-line);
-    border-radius: 8px;
+    min-height: var(--control-height);
+    height: var(--control-height);
+    border-color: var(--control-line);
+    border-radius: var(--radius-sm);
     background: var(--desktop-panel);
+    box-shadow: 0 1px 1px rgb(15 23 42 / 3%);
   }
 
   .app-shell .request-section .search-control input {
+    min-height: 0;
+    height: 100%;
     width: 240px;
     color: var(--desktop-ink);
   }
@@ -1151,6 +1222,13 @@
   }
   .app-shell .ledger-page-total {
     display: inline;
+  }
+  .app-shell .pagination > div > button {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    border-radius: var(--radius-sm);
   }
   .app-shell .ledger-page-numbers {
     display: flex;
@@ -1202,10 +1280,10 @@
   }
   .app-shell[data-page="ledger"] .request-section .search-control {
     position: absolute;
-    top: 8px;
+    top: 20px;
     right: 40px;
     width: 300px;
-    height: 40px;
+    height: var(--control-height);
   }
   .app-shell[data-page="ledger"] .request-section .search-control input {
     min-width: 0;

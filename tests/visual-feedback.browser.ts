@@ -637,16 +637,16 @@ async function assertChartControls(width: number) {
   if (width <= 900) {
     const unit = page.getByRole("combobox", { name: "计量单位", exact: true });
     await unit.click();
-    await page.getByRole("option", { name: "Credits", exact: true }).click();
-    await expect(unit).toContainText("Credits");
+    await page.getByRole("option", { name: "Tokens", exact: true }).click();
+    await expect(unit).toContainText("Tokens");
     await expect(
       page.locator(".trend-panel .usage-chart").first(),
-    ).toHaveAttribute("data-chart-unit", "credits");
+    ).toHaveAttribute("data-chart-unit", "tokens");
   } else {
     const unit = page.getByRole("group", { name: "计量单位", exact: true });
-    await unit.getByRole("button", { name: "Credits", exact: true }).click();
+    await unit.getByRole("button", { name: "Tokens", exact: true }).click();
     await expect(
-      unit.getByRole("button", { name: "Credits", exact: true }),
+      unit.getByRole("button", { name: "Tokens", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
   }
 }

@@ -2128,9 +2128,13 @@ export function App() {
                     )}
                     <dt>推理强度</dt>
                     <dd>
-                      {selected.details.requestedReasoningEffort ??
-                        selected.details.reasoningEffort ??
-                        "N/A"}
+                      {(selected.details.requestedReasoningEffort ??
+                      selected.details.reasoningEffort) ? (
+                        (selected.details.requestedReasoningEffort ??
+                        selected.details.reasoningEffort)
+                      ) : (
+                        <span className="faint-na">N/A</span>
+                      )}
                     </dd>
                     {selected.details.requestedReasoningEffort &&
                       selected.details.reasoningEffort &&
@@ -2143,7 +2147,7 @@ export function App() {
                       )}
                     {selected.details.firstTokenMs !== null && (
                       <>
-                        <dt>首 token 延迟</dt>
+                        <dt>首 Token 延迟</dt>
                         <dd>
                           {selected.details.firstTokenMs.toLocaleString()} ms
                         </dd>
@@ -2161,22 +2165,42 @@ export function App() {
                 )}
                 <dt>速度档</dt>
                 <dd>
-                  {selected.tier === "unknown"
-                    ? "N/A"
-                    : selected.tier === "priority"
-                      ? "Priority"
-                      : selected.tier === "flex"
-                        ? "Flex"
-                        : "Standard"}
+                  {selected.tier === "unknown" ? (
+                    <span className="faint-na">N/A</span>
+                  ) : selected.tier === "priority" ? (
+                    "Priority"
+                  ) : selected.tier === "flex" ? (
+                    "Flex"
+                  ) : (
+                    "Standard"
+                  )}
                 </dd>
                 <dt>来源 ID</dt>
-                <dd>{selected.sourceId || "N/A"}</dd>
+                <dd>
+                  {selected.sourceId || <span className="faint-na">N/A</span>}
+                </dd>
                 <dt>源记录 ID</dt>
-                <dd>{selected.sourceRecordId || "N/A"}</dd>
+                <dd>
+                  {selected.sourceRecordId || (
+                    <span className="faint-na">N/A</span>
+                  )}
+                </dd>
                 <dt>网关成本</dt>
-                <dd>{formatUsd(selected.gatewayCost ?? null)}</dd>
+                <dd>
+                  {selected.gatewayCost == null ? (
+                    <span className="faint-na">N/A</span>
+                  ) : (
+                    formatUsd(selected.gatewayCost)
+                  )}
+                </dd>
                 <dt>网关计费</dt>
-                <dd>{formatUsd(selected.gatewayBilled ?? null)}</dd>
+                <dd>
+                  {selected.gatewayBilled == null ? (
+                    <span className="faint-na">N/A</span>
+                  ) : (
+                    formatUsd(selected.gatewayBilled)
+                  )}
+                </dd>
               </dl>
               <h3>Token 拆分</h3>
               <dl className="details-list tokens-list">
@@ -2256,7 +2280,7 @@ export function App() {
                         label={
                           key === "sevenDayFable"
                             ? "Fable 周额度"
-                            : `${label}窗口`
+                            : `${label} 窗口`
                         }
                         asOf={quotaAsOf}
                         waiting={waiting}
@@ -2488,6 +2512,7 @@ export function App() {
               )}
               <Button
                 variant="outline"
+                className="detail-action-button"
                 onClick={() => {
                   openAccountRequests(selectedAccount.id);
                   setSelectedAccount(null);
