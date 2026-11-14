@@ -16,10 +16,11 @@ export interface PlanBadge {
 /**
  * 已知上游的套餐标识。Claude 采集器上报 pro、max-5x、max-20x、team-standard、team-premium，
  * 只知道订阅类型时上报 max、team 或 enterprise。2026-10-30 起 Anthropic 把 Max 5x 改名 Max、
- * Max 20x 改名 Ultra，标识沿用原值，只改显示名。Sub2API 从 ChatGPT 凭据读取 plan_type，其中
- * prolite 是 Pro 5x、pro 是 Pro 20x。Antigravity 采集器原样上报 Google AI Ultra 这类套餐名，
- * 不带倍数，倍数由用户在套餐设置里指定为 ultra-5x 或 ultra-20x；读不到套餐时用户也可以指定
- * plus 或 pro。Google AI Plus 的额度低于其他各家的 1 档，不给档位。
+ * Max 20x 改名 Ultra，标识沿用原值，只改显示名。Codex 与 Sub2API 从 ChatGPT 凭据或额度通知读取
+ * plan_type，其中 go 为入门档（低于 1 档，不给档位），plus 为 1 档，prolite 是 Pro 10x（2 档），
+ * pro 是 Pro 20x（3 档），pro500 是 Pro 50x（3 档），team 与 business 只显示名称、不猜档位。Antigravity 采集器原样上报
+ * Google AI Ultra 这类套餐名，不带倍数，倍数由用户在套餐设置里指定为 ultra-5x 或 ultra-20x；
+ * 读不到套餐时用户也可以指定 plus 或 pro。Google AI Plus 的额度低于其他各家的 1 档，不给档位。
  */
 const knownPlans: Record<string, Record<string, PlanBadge>> = {
   anthropic: {
@@ -36,9 +37,14 @@ const knownPlans: Record<string, Record<string, PlanBadge>> = {
     enterprise: { label: "Enterprise", tier: null },
   },
   openai: {
+    free: { label: "Free", tier: null },
+    go: { label: "Go", tier: null },
     plus: { label: "Plus", tier: 1 },
-    prolite: { label: "Pro 5x", tier: 2 },
+    prolite: { label: "Pro 10x", tier: 2 },
     pro: { label: "Pro 20x", tier: 3 },
+    pro500: { label: "Pro 50x", tier: 3 },
+    team: { label: "Team", tier: null },
+    business: { label: "Business", tier: null },
   },
   google: {
     "google ai plus": { label: "Plus", tier: null },

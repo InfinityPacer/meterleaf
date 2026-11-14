@@ -37,15 +37,15 @@
 账户管理都在总览的账户区完成，手机首页相同。
 
 - 点击标题右侧的「排序」后，每个账户右侧出现拖拽手柄，可直接拖动账户或使用方向键调整顺序，点「完成」结束。新账户追加在末尾。
-- 每个账户右侧的「⋯」菜单提供合并额度与用量、重命名、设置套餐、归档和删除。设置套餐只对 Claude 账户显示。
+- 每个账户右侧的「⋯」菜单提供合并额度与用量、重命名、设置套餐、归档和删除。设置套餐对 Claude、Codex 和 Antigravity 账户显示。
 - 同一账号从多个来源采集时，在来源账户菜单选择「合并额度与用量」，选定目标账户后确认。全部历史及后续用量都会归入目标，原来源记录仍可在请求明细查看，不做跨来源去重；若两个来源都记录了同一次请求，会累计两次。同一额度窗口使用最新快照，百分比不会相加，未知或到期状态仍如实显示。目标账户的名称和套餐保留。
 - 在目标账户的「合并额度与用量」弹窗查看已合并账户，点击「解除合并」恢复各自展示。原始记录不删除，同步不会覆盖合并关系；连续合并多个账户时，解除某一层也会带回合并到它的账户。合并和解除后报表需要重新计算，数据较多时稍等片刻。
 - 归档账户不在账户区显示。有归档账户时，标题右侧出现「已归档 N」，点击后查看归档列表，可在菜单中恢复或删除，点「使用中账户」返回。
 - 归档账户不再出现在请求明细的账户筛选里。从归档列表打开某个账户的请求时，筛选仍保留这个账户并注明「已归档」，切回「全部账户」即可退出。
 - 删除账户只移除账户展示，不会删除历史请求、累计统计，也不影响 Sub2API 或本机采集器。
 - 重命名的名称只在 Meterleaf 中显示，最长 40 个字，不会改动上游。清空名称或选择恢复原名后，重新显示上游提供的名称。
-- 套餐徽标按使用倍数分三档显示，同一档外观相同。Claude Pro、Claude Team Standard、ChatGPT Plus 与 Google AI Pro 为一档，Claude Max、Claude Team Premium、ChatGPT Pro 5x 与 Google AI Ultra 5x 为二档，Claude Ultra、ChatGPT Pro 20x 与 Google AI Ultra 20x 为三档。Claude 的 Max 与 Ultra 即原来的 Max 5x 与 Max 20x。只知道订阅类型、不知道倍数时，例如只显示 Max 或 Team，不分档。无法识别的套餐只显示名称。
-- 采集器读不到套餐时，例如账户已不在这台电脑上登录，可以在「设置套餐」里选择 Pro、Max、Ultra、Team Standard 或 Team Premium，选「自动识别」恢复采集器上报的套餐。Antigravity 只报出 Google AI Ultra、不区分倍数，它的账户在「设置套餐」里选 Ultra 5x 或 Ultra 20x，徽标和档位随之显示。只在 omp 里登录、读不到套餐的 Google 账号，也可以选 Plus 或 Pro。Google AI Plus 的额度低于其他各家的一档，只显示名称、不分档。设置只保存在 Meterleaf 中，不会被同步覆盖，也不会让本周期的额度预估重新起算。
+- 套餐徽标按使用倍数分三档显示，同一档外观相同。Claude Pro、Claude Team Standard、ChatGPT Plus 与 Google AI Pro 为一档，Claude Max、Claude Team Premium、ChatGPT Pro 10x 与 Google AI Ultra 5x 为二档，Claude Ultra、ChatGPT Pro 20x / Pro 50x 与 Google AI Ultra 20x 为三档。Claude 的 Max 与 Ultra 即原来的 Max 5x 与 Max 20x。只知道订阅类型、不知道倍数时，例如只显示 Max、Team 或 Business，不分档。无法识别的套餐只显示名称。
+- 采集器读不到套餐时，例如账户已不在这台电脑上登录，可以在「设置套餐」里选择对应平台的套餐（如 Claude 的 Pro/Max/Ultra/Team、Codex 的 Go/Plus/Pro 10x/Pro 20x/Pro 50x/Team/Business），选「自动识别」恢复采集器上报的套餐。Antigravity 只报出 Google AI Ultra、不区分倍数，它的账户在「设置套餐」里选 Ultra 5x 或 Ultra 20x，徽标和档位随之显示。只在 omp 里登录、读不到套餐的 Google 账号，也可以选 Plus 或 Pro。Google AI Plus 与 ChatGPT Go 的额度低于其他各家的一档，只显示名称、不分档。设置只保存在 Meterleaf 中，不会被同步覆盖，也不会让本周期的额度预估重新起算。
 - 本地归档、删除状态和账户名称不会被同步覆盖。上游删除账户后，本地历史请求仍保留。
 
 ![账户合并示例](images/account-merge.png)
