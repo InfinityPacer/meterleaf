@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import {
+  isManualPlanPlatform,
+  manualAccountPlansByPlatform,
+} from "../src/shared/account-plan";
 import { planBadge } from "../src/web/lib/plan";
 
 const subscription = (platform: string | undefined, plan: string) =>
@@ -13,7 +17,7 @@ test("plan tiers align by usage multiple across upstreams", () => {
     tier: 2,
   });
   expect(subscription("openai", "prolite")).toEqual({
-    label: "Pro 5x",
+    label: "Pro 10x",
     tier: 2,
   });
   expect(subscription("anthropic", "max-20x")).toEqual({
@@ -41,6 +45,10 @@ test("plan tiers align by usage multiple across upstreams", () => {
   });
   // ChatGPT 的 pro 是 20x 档，与 Claude 的 Pro 同名但不同档。
   expect(subscription("openai", "pro")).toEqual({ label: "Pro 20x", tier: 3 });
+  expect(subscription("openai", "pro500")).toEqual({
+    label: "Pro 50x",
+    tier: 3,
+  });
 });
 
 test("unknown platforms or plans keep a label without guessing a tier", () => {
@@ -68,4 +76,15 @@ test("Antigravity reports Google AI Ultra without its multiple", () => {
     label: "Ultra",
     tier: null,
   });
+});
+test("Codex supports Go, Plus, Pro 5x, Pro 20x, Team and Business", () => {
+  expect(isManualPlanPlatform("openai")).toBe(true);
+  expect(subscription("openai", "go")).toEqual({ label: "Go", tier: null });
+  expect(subscription("openai", "business")).toEqual({
+    label: "Business",
+    tier: null,
+  });
+  for (const plan of manualAccountPlansByPlatform.openai) {
+    expect(subscription("openai", plan)).not.toBeNull();
+  }
 });
