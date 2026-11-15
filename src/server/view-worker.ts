@@ -104,7 +104,7 @@ function whileBuilding(): IndexState {
  */
 function prepareIndex(): IndexState {
   if (building) return whileBuilding();
-  const needed = projection.rebuildNeeded();
+  const { kind: needed, reason } = projection.rebuildNeeded();
   if (
     needed === "none" ||
     indexPath === ":memory:" ||
@@ -122,7 +122,7 @@ function prepareIndex(): IndexState {
       return { mode: "transitional", pricing: previousPricing };
     throw new Error("Report index rebuild failed recently");
   }
-  if (!startBackgroundBuild(previousPricing)) {
+  if (!startBackgroundBuild(previousPricing, reason)) {
     // 无法启动线程时只能同步重建，至少保证结果正确。
     ensureInline();
     return { mode: "current" };
@@ -160,7 +160,10 @@ function usablePricing(): IndexedPricing | null {
   return indexedPricing();
 }
 
-function startBackgroundBuild(previousPricing: IndexedPricing | null): boolean {
+function startBackgroundBuild(
+  previousPricing: IndexedPricing | null,
+  reason: string | null,
+): boolean {
   let worker: Worker;
   try {
     worker = new Worker(new URL("./index-builder.ts", import.meta.url), {
@@ -180,6 +183,7 @@ function startBackgroundBuild(previousPricing: IndexedPricing | null): boolean {
   building = { worker, since: new Date().toISOString(), previousPricing };
   diagnostics.info("report.index_rebuild_started", {
     background: true,
+    reason,
     transitional: previousPricing !== null,
   });
   let settled = false;

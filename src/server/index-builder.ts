@@ -21,6 +21,10 @@ if (parentPort) {
     priceBookKey: priceBookKey(config.book),
   });
   try {
+    // 新文件里几乎没有旧页，回滚日志放内存就够；失败时整个旁路文件会被丢弃。默认的 WAL
+    // 会把整份索引先写进日志再合并回文件，NAS 上每次重建多写一倍以上。
+    projection.index.db.exec("PRAGMA journal_mode=MEMORY");
+    lifetime.db.exec("PRAGMA journal_mode=MEMORY");
     store.db.transaction(() => {
       projection.ensure();
       lifetime.ensure({
