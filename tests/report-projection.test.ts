@@ -412,3 +412,49 @@ test("schema revision preserves compatible rows and rebuilds an outdated checkpo
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("new accounts rebuild only when they change who owns existing requests", () => {
+  const { dir, path, cache, store, save } = setup();
+  const projection = new ReportProjection(store, path, cache);
+  const account = (externalId: string, parentExternalId: string | null) => ({
+    sourceId: "test",
+    externalId,
+    name: externalId,
+    platform: "openai" as const,
+    kind: "subscription" as const,
+    plan: "pro",
+    parentExternalId,
+    subjectKey: null,
+  });
+  try {
+    store.saveAccountsSnapshot("test", [account("child", "parent")]);
+    save([fact("1")]);
+    projection.ensure();
+    const scan = spyOn(store, "reportUsages").mockImplementation(() => {
+      throw new Error("Unexpected full scan");
+    });
+    store.saveAccountsSnapshot("test", [
+      account("child", "parent"),
+      account("standalone", null),
+    ]);
+    expect(projection.ensure()).toBe(false);
+    expect(projection.accountsCurrent()).toBe(true);
+    expect(projection.index.read(meta, query).records[0]?.accountId).toBe(
+      "test:child",
+    );
+    scan.mockRestore();
+    store.saveAccountsSnapshot("test", [
+      account("child", "parent"),
+      account("standalone", null),
+      account("parent", null),
+    ]);
+    expect(projection.ensure()).toBe(true);
+    expect(projection.index.read(meta, query).records[0]?.accountId).toBe(
+      "test:parent",
+    );
+  } finally {
+    projection.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

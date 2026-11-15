@@ -48,14 +48,21 @@ export class ReportProjection {
    * 只判断下一次 ensure 是否需要全量重建，不写入索引。尚无索引或源文件身份变了
    * （账本被替换）时返回 replaced-source，旧索引不属于当前账本，不能作为过渡结果。
    */
-  rebuildNeeded(): "none" | "same-source" | "replaced-source" {
-    if (this.upToDate()) return "none";
+  rebuildNeeded(): {
+    kind: "none" | "same-source" | "replaced-source";
+    reason: string | null;
+  } {
+    if (this.upToDate()) return { kind: "none", reason: null };
     return this.store.db.transaction(() => {
-      const { previous, checkpoint, rebuild } = this.plan();
-      if (!rebuild) return "none";
-      return previous?.identity === checkpoint.identity
-        ? "same-source"
-        : "replaced-source";
+      const { previous, checkpoint, reason } = this.plan();
+      if (!reason) return { kind: "none" as const, reason };
+      return {
+        kind:
+          previous?.identity === checkpoint.identity
+            ? ("same-source" as const)
+            : ("replaced-source" as const),
+        reason,
+      };
     })();
   }
 
@@ -72,16 +79,26 @@ export class ReportProjection {
     const file = sourceFileState(this.sourcePath);
     const state = this.store.reportUsageChangeState();
     const accounts = this.store.accounts();
-    const mapping = JSON.stringify([
-      Object.entries(this.store.accountMerges()).sort(),
-      accounts
-        .map((account) => [
-          account.sourceId,
-          account.externalId,
-          account.parentExternalId,
-        ])
-        .sort(),
+    // 只记录归到别的账户名下的那部分归属。新增一个独立账户不改变任何已有记录的归属，
+    // 不必全量重建；新增账户若是某条父链或合并的目标，会让其他账户改归属，仍会重建。
+    const merges = this.store.accountMerges();
+    const resolve = createAccountResolver(accounts, merges);
+    const keys = new Set([
+      ...accounts.map((account) => ref(account.sourceId, account.externalId)),
+      ...Object.keys(merges),
     ]);
+    const mapping = JSON.stringify(
+      [...keys]
+        .flatMap((key) => {
+          const separator = key.indexOf(":");
+          const root = resolve(
+            decodeURIComponent(key.slice(0, separator)),
+            decodeURIComponent(key.slice(separator + 1)),
+          );
+          return root === key ? [] : [[key, root]];
+        })
+        .sort(),
+    );
     const row = this.index.db
       .query<{ payload: string }, []>(
         "SELECT payload FROM projection_checkpoint WHERE id=1",
@@ -103,22 +120,36 @@ export class ReportProjection {
       sequence: state.lastSequence,
       revision: this.store.revision(),
     };
-    const rebuild =
-      !previous ||
-      previous.format !== checkpoint.format ||
-      previous.schemaRevision !== checkpoint.schemaRevision ||
-      previous.identity !== file.identity ||
-      previous.book !== this.book ||
-      previous.accounts !== mapping ||
-      previous.tracked !== state.tracked ||
-      previous.sequence > state.lastSequence ||
-      (previous.tracked &&
-        changeFloor !== null &&
-        previous.sequence < changeFloor - 1) ||
-      previous.revision > checkpoint.revision ||
-      (this.initialized && this.revision > checkpoint.revision) ||
-      (!state.tracked && previous.stamp !== file.stamp);
-    return { accounts, state, previous, checkpoint, rebuild };
+    // 按顺序取第一个成立的原因，写进重建日志，便于事后判断是什么引起了全量重建。
+    const reasons: [string, boolean][] = [
+      ["no-index", !previous],
+      ["format", previous?.format !== checkpoint.format],
+      ["schema", previous?.schemaRevision !== checkpoint.schemaRevision],
+      ["source-replaced", previous?.identity !== file.identity],
+      ["price-book", previous?.book !== this.book],
+      ["account-ownership", previous?.accounts !== mapping],
+      ["change-tracking", previous?.tracked !== state.tracked],
+      [
+        "sequence-rollback",
+        previous !== null && previous.sequence > state.lastSequence,
+      ],
+      [
+        "changes-pruned",
+        previous !== null &&
+          previous.tracked &&
+          changeFloor !== null &&
+          previous.sequence < changeFloor - 1,
+      ],
+      [
+        "revision-rollback",
+        (previous !== null && previous.revision > checkpoint.revision) ||
+          (this.initialized && this.revision > checkpoint.revision),
+      ],
+      ["source-stamp", !state.tracked && previous?.stamp !== file.stamp],
+    ];
+    const reason = reasons.find(([, hit]) => hit)?.[0] ?? null;
+    const rebuild = reason !== null;
+    return { accounts, state, previous, checkpoint, rebuild, reason };
   }
 
   /** 返回是否改变了报表事实。配额或状态更新不会触发全量账单转换。 */
