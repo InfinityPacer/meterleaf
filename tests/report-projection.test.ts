@@ -458,3 +458,45 @@ test("new accounts rebuild only when they change who owns existing requests", ()
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("an index file from the previous format rebuilds once without its descending sort indexes", () => {
+  const { dir, path, cache, store, save } = setup();
+  let projection = new ReportProjection(store, path, cache);
+  const legacyIndexes = () =>
+    projection.index.db
+      .query<{ name: string }, []>(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE '%_desc'",
+      )
+      .all();
+  try {
+    save([fact("1"), fact("2")]);
+    projection.ensure();
+    // 模拟旧版本留下的文件：多一份降序分页索引，检查点仍是格式 1。
+    projection.index.db.exec(
+      "CREATE INDEX report_records_page_model_desc ON report_records (model DESC, id ASC, occurred_ms)",
+    );
+    const row = projection.index.db
+      .query<{ payload: string }, []>(
+        "SELECT payload FROM projection_checkpoint WHERE id=1",
+      )
+      .get()!;
+    projection.index.db
+      .query("UPDATE projection_checkpoint SET payload=? WHERE id=1")
+      .run(JSON.stringify({ ...JSON.parse(row.payload), format: 1 }));
+    projection.close();
+
+    projection = new ReportProjection(store, path, cache);
+    expect(projection.rebuildNeeded()).toEqual({
+      kind: "same-source",
+      reason: "format",
+    });
+    expect(projection.ensure()).toBe(true);
+    expect(legacyIndexes()).toEqual([]);
+    expect(projection.index.read(meta, query).view.count).toBe(2);
+    expect(projection.rebuildNeeded().kind).toBe("none");
+  } finally {
+    projection.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

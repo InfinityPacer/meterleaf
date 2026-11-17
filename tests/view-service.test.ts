@@ -1915,3 +1915,150 @@ test("background catch-up applies pushed usage to the index without a read and s
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("reads include freshly pushed usage without committing it to the index files", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-pending-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  const events: LogEvent[] = [];
+  const at = new Date(Date.now() - 60_000).toISOString();
+  const push = (id: string) =>
+    store.savePage(
+      "test",
+      "incremental",
+      { records: [viewUsage(id, at)], nextCursor: id, hasMore: false },
+      at,
+    );
+  push("1");
+  const reports = new ViewService(path, book, {
+    refreshIntervalMs: 0,
+    indexCatchUpIntervalMs: 0,
+    cachePath: null,
+    diagnostics: createDiagnosticsLogger({
+      level: "debug",
+      sink: (event) => events.push(event),
+    }),
+  });
+  // 另开连接只能看到已提交的索引内容。
+  const committed = () => {
+    const report = new Database(`${path}.reports.sqlite`, { readonly: true });
+    const lifetime = new Database(`${path}.reports.sqlite.lifetime`, {
+      readonly: true,
+    });
+    try {
+      return {
+        report: report
+          .query<{ count: number }, []>(
+            "SELECT COUNT(*) AS count FROM report_records",
+          )
+          .get()!.count,
+        lifetime: lifetime
+          .query<{ count: number }, []>(
+            "SELECT count FROM lifetime_index_state",
+          )
+          .get()!.count,
+      };
+    } finally {
+      report.close();
+      lifetime.close();
+    }
+  };
+  const read = async (pageSize: number) => {
+    const view = await reports.read(
+      { ...query, pageSize },
+      "subscription",
+      sync,
+    );
+    return { count: view.view.count, lifetime: view.lifetimeTotals?.count };
+  };
+  try {
+    expect(await read(1)).toEqual({ count: 1, lifetime: 1 });
+    expect(committed()).toEqual({ report: 1, lifetime: 1 });
+
+    push("2");
+    expect(await read(2)).toEqual({ count: 2, lifetime: 2 });
+    push("3");
+    expect(await read(3)).toEqual({ count: 3, lifetime: 3 });
+    expect(committed()).toEqual({ report: 1, lifetime: 1 });
+
+    // 读取时临时补进的变更回滚后，后台补齐仍要把它们真正提交。
+    (reports as unknown as { worker: Worker }).worker.postMessage({
+      type: "catch-up",
+    });
+    const deadline = Date.now() + 2_000;
+    const caughtUp = () =>
+      events.some(
+        (event) => event.event === "report.index_catch_up" && event.changed,
+      );
+    while (!caughtUp() && Date.now() < deadline) await Bun.sleep(10);
+    expect(caughtUp()).toBe(true);
+    expect(committed()).toEqual({ report: 3, lifetime: 3 });
+    expect(await read(4)).toEqual({ count: 3, lifetime: 3 });
+  } finally {
+    await reports.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reads commit pending usage once it exceeds the read limit", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-view-pending-limit-"));
+  const path = join(dir, "ledger.sqlite");
+  const book = await loadPriceBook();
+  const store = new LedgerStore(path, book);
+  const at = new Date(Date.now() - 60_000).toISOString();
+  const push = (ids: string[]) =>
+    store.savePage(
+      "test",
+      "incremental",
+      {
+        records: ids.map((id) => viewUsage(id, at)),
+        nextCursor: ids.at(-1)!,
+        hasMore: false,
+      },
+      at,
+    );
+  push(["1"]);
+  const reports = new ViewService(path, book, {
+    refreshIntervalMs: 0,
+    indexCatchUpIntervalMs: 0,
+    cachePath: null,
+    pendingReadLimit: 4,
+  });
+  const committed = () => {
+    const report = new Database(`${path}.reports.sqlite`, { readonly: true });
+    try {
+      return report
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM report_records",
+        )
+        .get()!.count;
+    } finally {
+      report.close();
+    }
+  };
+  try {
+    await reports.read({ ...query, pageSize: 1 }, "subscription", sync);
+    push(["2", "3"]);
+    const within = await reports.read(
+      { ...query, pageSize: 2 },
+      "subscription",
+      sync,
+    );
+    expect(within.view.count).toBe(3);
+    expect(committed()).toBe(1);
+    push(["4"]);
+    const beyond = await reports.read(
+      { ...query, pageSize: 3 },
+      "subscription",
+      sync,
+    );
+    expect(beyond.view.count).toBe(4);
+    expect(committed()).toBe(4);
+  } finally {
+    await reports.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

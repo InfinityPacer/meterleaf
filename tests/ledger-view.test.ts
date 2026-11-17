@@ -296,11 +296,22 @@ describe("shared ledger view", () => {
     ];
     const source = snapshot(rows);
     const defaultView = createLedgerView(source, query({ pageSize: 4 }));
+    // 默认按时间降序，同一时刻的记录按 id 降序，是升序结果的倒序。
     expect(defaultView.records.map((row) => row.id)).toEqual([
       "unknown-input",
       "high-input",
+      "same-b",
+      "same-a",
+    ]);
+    const ascending = createLedgerView(
+      source,
+      query({ sort: "occurredAt", desc: false, pageSize: 4 }),
+    );
+    expect(ascending.records.map((row) => row.id)).toEqual([
       "same-a",
       "same-b",
+      "high-input",
+      "unknown-input",
     ]);
 
     const filtered = createLedgerView(
