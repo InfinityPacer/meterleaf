@@ -105,7 +105,7 @@ docker compose up -d --no-build --pull never  # 已发布镜像
 
 采集器需要能访问 Meterleaf。采集器与服务在同一台电脑时使用 `http://127.0.0.1:4318`。服务在 NAS 等其他主机时，随附 Compose 默认只监听回环地址，局域网访问需把 `METERLEAF_BIND_ADDRESS` 改为 `0.0.0.0` 或宿主机局域网地址，或者经由已有的反向代理访问。HTTP 下写入密钥明文传输，只在可信局域网中使用。
 
-若要让外网的电脑推送，地址必须走 HTTPS。开启了 [GitHub 登录](#github-登录)时采集器写入与 OTEL 日志已绕过登录；如果改由反向代理做登录保护，只为 `POST /api/ingest/v1/batches` 和 `POST /api/otel/v1/logs` 绕过它，其余页面照旧。这两个地址都用写入密钥鉴权。反向代理的请求体上限至少设为 8 MB，Nginx 默认 1 MB 会拒绝大批次。以 Nginx 为例：
+若要让外网的电脑推送，地址必须走 HTTPS。开启了 [GitHub 登录](#github-登录)时采集器写入、OTEL 日志和额度摘要已绕过登录；如果改由反向代理做登录保护，只为 `POST /api/ingest/v1/batches`、`POST /api/otel/v1/logs` 和 `GET /api/collector/v1/quota-summary` 绕过它，其余页面照旧。这三个地址都用写入密钥鉴权。反向代理的请求体上限至少设为 8 MB，Nginx 默认 1 MB 会拒绝大批次。以 Nginx 为例：
 
 ```nginx
 location = /api/ingest/v1/batches {
@@ -125,7 +125,7 @@ location = /api/otel/v1/logs {
 }
 ```
 
-OTEL 日志只在采集器配置了 `claudeProfiles`、用来区分多个 Claude 账户时才需要放行，见[本机采集器](collector.md#多个-claude-账户)。
+OTEL 日志只在采集器配置了 `claudeProfiles`、用来区分多个 Claude 账户时才需要放行，见[本机采集器](collector.md#多个-claude-账户)。额度摘要只在本机会话要读取各账户额度时才需要放行，写法同上，改为 `limit_except GET`，不需要调大请求体，见[本机采集器](collector.md#供本机会话读取的额度摘要)。
 
 ## OpenCode Go 额度（可选）
 
@@ -172,7 +172,7 @@ Meterleaf 可以要求访问者先用 GitHub 账号登录，只有允许名单�
 
 登录保持在浏览器里，经常使用时自动顺延，闲置超过有效天数才需要重新登录。在「关于」页点击「退出登录」即可退出。从 `METERLEAF_GITHUB_USERS` 删除某个账号并重建容器后，该账号已有的登录立即失效；更换 Client Secret 会让所有人重新登录。
 
-开启后，健康检查 `/api/health`、采集器写入地址和图标等安装用的静态文件仍可直接访问，采集器继续用写入密钥推送，不需要登录。
+开启后，健康检查 `/api/health`、采集器写入与额度摘要地址和图标等安装用的静态文件仍可直接访问，采集器继续用写入密钥推送和读取摘要，不需要登录。写入密钥读不到网页报表和其他数据接口。
 
 ## 首次采集与自动同步
 

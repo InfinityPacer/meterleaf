@@ -10,7 +10,12 @@ import { silentLogger, type DiagnosticsLogger } from "./diagnostics";
 import { encodeLedger } from "../shared/ledger-wire";
 import type { SyncStatus } from "./sync";
 import { registerResponseCompression } from "./response-compression";
-import { registerIngestRoutes, type IngestTarget } from "./ingest";
+import {
+  registerIngestRoutes,
+  registerQuotaSummaryRoute,
+  type IngestTarget,
+} from "./ingest";
+import type { QuotaSummary } from "../shared/quota-summary";
 import { registerOtelRoutes } from "./otel";
 import {
   registerGithubAuth,
@@ -58,6 +63,8 @@ interface AppOptions {
   diagnostics?: DiagnosticsLogger;
   /** 本机采集器的推送入口；未配置写入密钥时不注册。 */
   ingest?: IngestTarget;
+  /** 采集器凭写入密钥读取的订阅额度摘要；需同时配置 ingest。 */
+  quotaSummary?: () => Promise<QuotaSummary>;
   /** 未配置时不做认证，由部署方在反向代理层负责。 */
   githubAuth?: GithubAuthConfig;
   githubClient?: GithubClient;
@@ -94,6 +101,7 @@ export function createApp({
   accountArchive,
   accountMerge,
   ingest,
+  quotaSummary,
   githubAuth,
   githubClient,
   now,
@@ -163,6 +171,7 @@ export function createApp({
     registerIngestRoutes(app, ingest, diagnostics);
     // 同一把写入密钥也接收 Claude Code 的 OTEL 日志；只补充请求归属。
     registerOtelRoutes(app, ingest, diagnostics);
+    if (quotaSummary) registerQuotaSummaryRoute(app, ingest.keys, quotaSummary);
   }
   const displayState = () => ({
     archived: accountArchive?.read() ?? [],

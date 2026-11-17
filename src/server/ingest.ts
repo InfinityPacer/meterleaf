@@ -10,6 +10,7 @@ import {
   type IngestResult,
 } from "../shared/ingest";
 import type { OtelRequestAccount } from "../shared/otel";
+import { QUOTA_SUMMARY_PATH, type QuotaSummary } from "../shared/quota-summary";
 import type { IngestKey } from "./config";
 import type { DiagnosticsLogger } from "./diagnostics";
 
@@ -125,4 +126,28 @@ export function registerIngestRoutes(
       return result;
     },
   );
+}
+
+/**
+ * 采集器用同一把写入密钥读取订阅额度摘要，交给本机会话；网页数据接口仍只认 GitHub 登录。
+ * 报表首次计算期间返回 202，采集器保留上一份摘要。
+ */
+export function registerQuotaSummaryRoute(
+  app: FastifyInstance,
+  keys: readonly IngestKey[],
+  read: () => Promise<QuotaSummary>,
+) {
+  if (!keys.length) return;
+  app.get(QUOTA_SUMMARY_PATH, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    if (!matchIngestKey(request.headers.authorization, keys))
+      return reply.code(401).send({ error: "invalid ingest key" });
+    try {
+      return await read();
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "ERR_REPORT_BUILDING")
+        return reply.code(202).send({ status: "building" });
+      throw error;
+    }
+  });
 }

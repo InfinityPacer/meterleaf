@@ -12,8 +12,21 @@ import { SyncRunner } from "./sync";
 import { createDiagnosticsLogger } from "./diagnostics";
 import { GoQuotaRefresher } from "./opencode-go";
 import { ViewService } from "./view-service";
+import type { ViewQuery } from "../shared/ledger-view";
+import { buildQuotaSummary } from "../shared/quota-summary";
 
 const logger = createDiagnosticsLogger();
+/** 额度摘要只用账户窗口；取总览最小的报表，采集器每分钟读取时顺带让它跟上新快照。 */
+const QUOTA_SUMMARY_QUERY: ViewQuery = {
+  filter: { days: 1, model: "all", account: "all", search: "" },
+  unit: "usd",
+  granularity: "day",
+  dimension: "model",
+  page: 0,
+  pageSize: 1,
+  sort: "occurredAt",
+  desc: true,
+};
 let stage = "configuration";
 
 /** 单进程拥有账本与采集任务；退出时先停止采集，再关闭数据库。 */
@@ -131,6 +144,24 @@ async function main() {
             store.saveIngestBatch(sourceId, batch, new Date().toISOString()),
           saveOtel: (sourceId, records, receivedAt) =>
             store.saveRequestAccounts(sourceId, records, receivedAt),
+        }
+      : undefined,
+    quotaSummary: reports
+      ? async () => {
+          const view = await reports.read(
+            QUOTA_SUMMARY_QUERY,
+            config.METERLEAF_USD_BASIS,
+          );
+          return buildQuotaSummary(
+            new Date().toISOString(),
+            view.accounts,
+            {
+              archived: store!.archivedAccounts(),
+              hidden: store!.hiddenAccounts(),
+              aliases: store!.accountAliases(),
+            },
+            store!.accountMembers(),
+          );
         }
       : undefined,
     diagnostics: logger,
