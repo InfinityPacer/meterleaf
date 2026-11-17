@@ -78,15 +78,16 @@ export async function fetchQuotaSummary(
   }
   if (response.status !== 200)
     return { issue: `额度摘要暂不可用（HTTP ${response.status}）` };
-  const body = (await response
-    .json()
-    .catch(() => ({}))) as Partial<QuotaSummary>;
+  // 中间层可能返回 null 或非对象正文，按格式不受支持处理，不能让推送这一轮失败。
+  const body: unknown = await response.json().catch(() => null);
+  const value = (body ?? {}) as Partial<QuotaSummary>;
   if (
-    body.schemaVersion !== QUOTA_SUMMARY_SCHEMA_VERSION ||
-    !Array.isArray(body.accounts)
+    typeof body !== "object" ||
+    value.schemaVersion !== QUOTA_SUMMARY_SCHEMA_VERSION ||
+    !Array.isArray(value.accounts)
   )
     return { issue: "额度摘要格式不受支持" };
-  return { summary: body as QuotaSummary };
+  return { summary: value as QuotaSummary };
 }
 
 /** 先写同目录临时文件再改名，读取方不会读到半份；临时文件只有当前用户可读。 */

@@ -24,7 +24,7 @@ export interface QuotaSummaryWindow {
   resetsAt: string | null;
   sampledAt: string | null;
   state: "active" | "expired" | "unknown";
-  /** 本周期剩余部分按当前花费速度折算的金额；5h、已到期或未计价的窗口为 null。 */
+  /** 本周期剩余部分按当前花费速度折算的金额；没有金额推算的 5 小时窗口（第三方池除外）、已到期或未计价的窗口为 null。 */
   remaining: { usd: string | null; credits: string | null };
 }
 

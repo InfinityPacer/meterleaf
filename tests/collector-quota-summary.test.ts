@@ -89,6 +89,9 @@ test("only a current-format 200 response replaces the local summary", async () =
         fetch: answer(200, { ...summary, schemaVersion: 2 }),
       })),
   ).toBe(true);
+  expect(
+    "issue" in (await fetchQuotaSummary(config, { fetch: answer(200, null) })),
+  ).toBe(true);
   const offline = (async () => {
     throw new Error("offline");
   }) as unknown as typeof fetch;

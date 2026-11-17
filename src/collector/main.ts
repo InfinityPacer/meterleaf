@@ -883,7 +883,15 @@ async function runSync(paths: CollectorPaths): Promise<number> {
       return 1;
     }
     state.setMeta("last_success_at", now);
-    await refreshQuotaSummary(paths, config, state, report);
+    // 摘要只供本机会话参考，取回或写入出任何问题都不影响本轮推送的结果。
+    await refreshQuotaSummary(paths, config, state, report).catch(
+      (error: unknown) =>
+        console.error(
+          `${new Date().toISOString()} 额度摘要处理失败: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+    );
     if (
       result.batches > 0 ||
       report.rewound > 0 ||
