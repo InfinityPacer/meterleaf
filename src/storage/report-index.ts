@@ -6,6 +6,7 @@ import {
 } from "./schema";
 import Decimal from "decimal.js";
 import { reportBounds } from "../shared/date-range";
+import { rollbackAfter } from "./rollback";
 import type { LedgerView, ViewQuery } from "../shared/ledger-view";
 import type {
   AccountLifetime,
@@ -706,6 +707,38 @@ const HOUR_FIELDS = `
   h.credits_known`;
 
 /**
+ * 明细表的二级索引；建库与全量重建共用同一份定义。分页排序索引每列只建升序一份：
+ * 降序分页的同值记录按 id 降序排列，SQLite 倒序扫描同一索引即可，不需要临时排序。
+ * 每份索引都会让每条新用量多写一组页。
+ */
+const RECORD_INDEXES = `
+  CREATE INDEX IF NOT EXISTS report_records_time
+    ON report_records (occurred_ms, id);
+  CREATE INDEX IF NOT EXISTS report_records_search_time
+    ON report_records (occurred_ms, search_text, model, account_id, id);
+  CREATE INDEX IF NOT EXISTS report_records_hour
+    ON report_records (hour_start, account_id, model);
+  CREATE INDEX IF NOT EXISTS report_records_account_time
+    ON report_records (account_id, occurred_ms, id);
+  CREATE INDEX IF NOT EXISTS report_records_model_time
+    ON report_records (model, occurred_ms, id);
+  CREATE INDEX IF NOT EXISTS report_records_page_model
+    ON report_records (model ASC, id ASC, occurred_ms);
+  CREATE INDEX IF NOT EXISTS report_records_page_account
+    ON report_records (account_id ASC, id ASC, occurred_ms);
+  CREATE INDEX IF NOT EXISTS report_records_page_input
+    ON report_records (input_total ASC, id ASC, occurred_ms);
+  CREATE INDEX IF NOT EXISTS report_records_page_cache_read
+    ON report_records (cache_read ASC, id ASC, occurred_ms);
+  CREATE INDEX IF NOT EXISTS report_records_page_output
+    ON report_records (output ASC, id ASC, occurred_ms);
+  CREATE INDEX IF NOT EXISTS report_records_page_subscription_usd
+    ON report_records (subscription_sort ASC, id ASC, occurred_ms);
+  CREATE INDEX IF NOT EXISTS report_records_page_api_usd
+    ON report_records (api_sort ASC, id ASC, occurred_ms);
+`;
+
+/**
  * SQLite 派生报表索引。账单行以订阅口径作为 canonical 输入，索引同时保存 API
  * 口径；JSON 只在最终明细页读取，聚合和筛选都依赖结构化列。
  */
@@ -759,48 +792,7 @@ export class ReportIndex {
         tier TEXT NOT NULL,
         payload TEXT NOT NULL
       ) STRICT;
-      CREATE INDEX IF NOT EXISTS report_records_time
-        ON report_records (occurred_ms, id);
-      CREATE INDEX IF NOT EXISTS report_records_search_time
-        ON report_records (occurred_ms, search_text, model, account_id, id);
-      CREATE INDEX IF NOT EXISTS report_records_hour
-        ON report_records (hour_start, account_id, model);
-      CREATE INDEX IF NOT EXISTS report_records_account_time
-        ON report_records (account_id, occurred_ms, id);
-      CREATE INDEX IF NOT EXISTS report_records_model_time
-        ON report_records (model, occurred_ms, id);
-      CREATE INDEX IF NOT EXISTS report_records_page_time
-        ON report_records (occurred_ms DESC, id ASC);
-      CREATE INDEX IF NOT EXISTS report_records_page_time_asc
-        ON report_records (occurred_ms ASC, id ASC);
-      CREATE INDEX IF NOT EXISTS report_records_page_model
-        ON report_records (model ASC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_model_desc
-        ON report_records (model DESC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_account
-        ON report_records (account_id ASC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_account_desc
-        ON report_records (account_id DESC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_input
-        ON report_records (input_total ASC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_input_desc
-        ON report_records (input_total DESC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_cache_read
-        ON report_records (cache_read ASC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_cache_read_desc
-        ON report_records (cache_read DESC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_output
-        ON report_records (output ASC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_output_desc
-        ON report_records (output DESC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_subscription_usd
-        ON report_records (subscription_sort ASC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_subscription_usd_desc
-        ON report_records (subscription_sort DESC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_api_usd
-        ON report_records (api_sort ASC, id ASC, occurred_ms);
-      CREATE INDEX IF NOT EXISTS report_records_page_api_usd_desc
-        ON report_records (api_sort DESC, id ASC, occurred_ms);
+      ${RECORD_INDEXES}
       CREATE TABLE IF NOT EXISTS report_hours (
         hour_start INTEGER NOT NULL,
         day_start INTEGER NOT NULL,
@@ -831,8 +823,6 @@ export class ReportIndex {
         credits_known INTEGER NOT NULL,
         PRIMARY KEY (hour_start, account_id, model)
       ) STRICT;
-      CREATE INDEX IF NOT EXISTS report_hours_time
-        ON report_hours (hour_start, account_id, model);
       CREATE INDEX IF NOT EXISTS report_hours_model_time
         ON report_hours (model, hour_start);
       CREATE INDEX IF NOT EXISTS report_hours_account_time
@@ -868,15 +858,16 @@ export class ReportIndex {
   }
 
   /**
-   * 全量重建时先移除明细表的二级索引，写完再一次性重建。逐行维护二十多个索引
-   * 是重建的主要耗时；整个过程在同一事务内，失败时索引定义随回滚恢复。
+   * 全量重建时先移除明细表的二级索引，写完再按当前定义一次性重建。逐行维护十几个
+   * 索引是重建的主要耗时；旧版本文件里多出的索引也随之去掉。整个过程在同一事务内，
+   * 失败时索引定义随回滚恢复。
    */
   replace(records: Iterable<LedgerRecord>): void {
     this.recentWindows = new Map();
     this.db.transaction(() => {
       const indexes = this.db
-        .query<{ name: string; sql: string }, []>(
-          "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='report_records' AND sql IS NOT NULL",
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='report_records' AND sql IS NOT NULL",
         )
         .all();
       for (const index of indexes) this.db.exec(`DROP INDEX "${index.name}"`);
@@ -885,7 +876,7 @@ export class ReportIndex {
         "DELETE FROM report_meta WHERE key LIKE 'account-lifetime:%'",
       );
       for (const record of records) this.writeRecord(storedRecord(record));
-      for (const index of indexes) this.db.exec(index.sql);
+      this.db.exec(RECORD_INDEXES);
       this.rebuildHours();
     })();
   }
@@ -1293,6 +1284,18 @@ export class ReportIndex {
     this.db.close();
   }
 
+  /**
+   * 在一个最终回滚的事务里运行 fn。返回后丢弃按这些写入算出的窗口汇总，后续读取
+   * 不会沿用未落盘的结果。
+   */
+  rollbackAfter<T>(fn: () => T): T {
+    try {
+      return rollbackAfter(this.db, fn);
+    } finally {
+      this.recentWindows = new Map();
+    }
+  }
+
   private cacheSummary(aggregate: Aggregate): MetricSummary {
     return {
       value: aggregate.cacheRead.value,
@@ -1606,60 +1609,36 @@ export class ReportIndex {
       query.sort === "" || !SORT_KEYS.has(query.sort) ? true : query.desc;
     const sortInfo =
       requestedSort === "occurredAt"
-        ? {
-            column: "r.occurred_ms",
-            asc: "report_records_page_time_asc",
-            desc: "report_records_page_time",
-          }
+        ? { column: "r.occurred_ms", index: "report_records_time" }
         : requestedSort === "model"
-          ? {
-              column: "r.model",
-              asc: "report_records_page_model",
-              desc: "report_records_page_model_desc",
-            }
+          ? { column: "r.model", index: "report_records_page_model" }
           : requestedSort === "accountId"
-            ? {
-                column: "r.account_id",
-                asc: "report_records_page_account",
-                desc: "report_records_page_account_desc",
-              }
+            ? { column: "r.account_id", index: "report_records_page_account" }
             : requestedSort === "input"
-              ? {
-                  column: "r.input_total",
-                  asc: "report_records_page_input",
-                  desc: "report_records_page_input_desc",
-                }
+              ? { column: "r.input_total", index: "report_records_page_input" }
               : requestedSort === "cacheRead"
                 ? {
                     column: "r.cache_read",
-                    asc: "report_records_page_cache_read",
-                    desc: "report_records_page_cache_read_desc",
+                    index: "report_records_page_cache_read",
                   }
                 : requestedSort === "output"
-                  ? {
-                      column: "r.output",
-                      asc: "report_records_page_output",
-                      desc: "report_records_page_output_desc",
-                    }
+                  ? { column: "r.output", index: "report_records_page_output" }
                   : basis === "api"
                     ? {
                         column: "r.api_sort",
-                        asc: "report_records_page_api_usd",
-                        desc: "report_records_page_api_usd_desc",
+                        index: "report_records_page_api_usd",
                       }
                     : {
                         column: "r.subscription_sort",
-                        asc: "report_records_page_subscription_usd",
-                        desc: "report_records_page_subscription_usd_desc",
+                        index: "report_records_page_subscription_usd",
                       };
+    // 同值记录按 id 与排序方向一致排列，降序正好是升序索引的倒序扫描。
     const direction = descending ? "DESC" : "ASC";
     const rows = this.db
       .query<PageSqlRow, SqlParam[]>(
-        `SELECT r.payload FROM report_records r INDEXED BY ${
-          descending ? sortInfo.desc : sortInfo.asc
-        }
+        `SELECT r.payload FROM report_records r INDEXED BY ${sortInfo.index}
          WHERE ${clauses.join(" AND ")}
-         ORDER BY ${sortInfo.column} ${direction}, r.id ASC
+         ORDER BY ${sortInfo.column} ${direction}, r.id ${direction}
          LIMIT ? OFFSET ?`,
       )
       .all(...params);

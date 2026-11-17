@@ -5,6 +5,7 @@ import {
   migrateSchema,
 } from "./schema";
 import Decimal from "decimal.js";
+import { rollbackAfter } from "./rollback";
 import type {
   ReportUsageChanges,
   ReportUsageChangeStream,
@@ -537,6 +538,20 @@ export class LifetimeIndex {
 
   close() {
     this.db.close();
+  }
+
+  /**
+   * 在一个最终回滚的事务里运行 fn；fn 内 ensure 写入的行与连接内的累计状态都在返回后
+   * 还原，之后的 ensure 仍会把这些变更真正提交。
+   */
+  rollbackAfter<T>(fn: () => T): T {
+    const { state, lastDataVersion } = this;
+    try {
+      return rollbackAfter(this.db, fn);
+    } finally {
+      this.state = state;
+      this.lastDataVersion = lastDataVersion;
+    }
   }
 
   private complete(dataVersion: string | undefined, changed: boolean) {

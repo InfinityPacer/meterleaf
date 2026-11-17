@@ -111,7 +111,9 @@ export class ReportProjection {
     // 更早则说明中间那段变更已经不可读，只能全量重建。
     const changeFloor = this.store.reportUsageChangeFloor();
     const checkpoint: ProjectionCheckpoint = {
-      format: 1,
+      // 格式 2 起明细表不再建降序分页索引；旧格式文件整份重建一次，回滚到旧版本时
+      // 旧版本也会因格式不符重建出它需要的索引。
+      format: 2,
       schemaRevision: currentSchemaRevision(this.index.db, "report"),
       ...file,
       book: this.book,
@@ -208,6 +210,30 @@ export class ReportProjection {
     this.initialized = true;
     if (changed) this.observedAccounts = undefined;
     return changed;
+  }
+
+  /**
+   * 在回滚的索引事务里运行 fn；fn 内 ensure 补进的变更与连接内的检查点观察都在返回后
+   * 还原，之后的 ensure 仍会把这些变更真正提交。
+   */
+  rollbackAfter<T>(fn: () => T): T {
+    const { initialized, revision, fingerprint, observedAccounts } = this;
+    try {
+      return this.index.rollbackAfter(fn);
+    } finally {
+      this.initialized = initialized;
+      this.revision = revision;
+      this.fingerprint = fingerprint;
+      this.observedAccounts = observedAccounts;
+    }
+  }
+
+  /** 索引事实已提交的消费水位与账本最新变更序号之差；不使用变更日志时返回 null。 */
+  pendingChanges(): number | null {
+    const committed = this.committedSequence();
+    if (committed === null) return null;
+    const state = this.store.reportUsageChangeState();
+    return state.tracked ? state.lastSequence - committed : null;
   }
 
   /** 索引内金额所依据的价格表；后台重建期间用它标注过渡结果。 */
