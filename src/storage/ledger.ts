@@ -528,6 +528,18 @@ export class LedgerStore {
     return this.getState<number>("local:account-merge-version") ?? 0;
   }
 
+  /** 报表账户 id 到合并进它的全部来源账户，含自身；与报表使用同一套合并解析。 */
+  accountMembers(): Record<string, string[]> {
+    const accounts = this.sourceAccounts();
+    const root = createAccountResolver(accounts, this.accountMerges());
+    const members: Record<string, string[]> = {};
+    for (const account of accounts)
+      (members[root(account.sourceId, account.externalId)] ??= []).push(
+        ref(account.sourceId, account.externalId),
+      );
+    return members;
+  }
+
   accountMergeState(): AccountMergeState {
     const accounts = this.accounts();
     const base = createAccountResolver(accounts);

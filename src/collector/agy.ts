@@ -1242,6 +1242,20 @@ function resolveInstanceLabel(
     activeAgyLabel(statuslineDir)
   );
 }
+/** 本机每个 Antigravity CLI 实例当前登录的账户；默认实例 profile 为 null，未识别时 account 为 null。 */
+export function agyInstanceAccounts(
+  sources: Pick<AgyReaderSources, "conversationsDir" | "statuslineDir">,
+): { appDataDir: string; profile: string | null; account: string | null }[] {
+  return discoverAgyInstances(sources.conversationsDir).map((instance) => {
+    const label = resolveInstanceLabel(instance, sources.statuslineDir);
+    return {
+      appDataDir: instance.appDataDir,
+      profile: instance.profileName,
+      account: label ? agyAccountId(label) : null,
+    };
+  });
+}
+
 /**
  * 读取一轮 Antigravity 状态栏额度缓存与本地会话数据库。
  * 1. 扫描 statuslineDir 下所有 quota-<label>.tsv，为每个 Google 账号建立 Gemini 与 Claude/GPT
