@@ -50,7 +50,7 @@ test("full replacement restores every secondary index and rolls back on failure"
       .all();
   try {
     const before = indexes();
-    expect(before.length).toBeGreaterThan(20);
+    expect(before.length).toBeGreaterThan(10);
     index.replace([row("a", "2026-08-01T00:00:00Z"), row("b", "2026-09-01T00:00:00Z")]);
     expect(indexes()).toEqual(before);
     expect(index.accountLifetime("account-a", "subscription").count).toBe(2);
@@ -64,6 +64,57 @@ test("full replacement restores every secondary index and rolls back on failure"
     ).toThrow("source read failed");
     expect(indexes()).toEqual(before);
     expect(index.accountLifetime("account-a", "subscription").count).toBe(2);
+  } finally { index.close(); }
+});
+
+test("detail pages sort both directions from one ascending index without a temporary sort", () => {
+  const index = new ReportIndex(":memory:");
+  try {
+    index.replace(fixtureRows());
+    const names = index.db
+      .query<{ name: string }, []>(
+        "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL",
+      )
+      .all()
+      .map((entry) => entry.name);
+    // 降序副本与主键重复的小时索引只会增加每条新用量的写入。
+    expect(
+      names.filter(
+        (name) =>
+          name.endsWith("_desc") ||
+          name.startsWith("report_records_page_time") ||
+          name === "report_hours_time",
+      ),
+    ).toEqual([]);
+
+    const queries = spyOn(index.db, "query");
+    for (const basis of ["subscription", "api"] as const)
+      for (const filter of [
+        emptyFilter,
+        { ...emptyFilter, model: "model-b" },
+        { ...emptyFilter, search: "fixture" },
+      ])
+        for (const sort of ["", "occurredAt", "model", "accountId", "input", "cacheRead", "output", "usd"])
+          for (const desc of [false, true])
+            index.read(metadata(basis), query({ filter, sort, desc, pageSize: 2 }));
+    const pages = [
+      ...new Set(
+        queries.mock.calls
+          .map(([sql]) => sql)
+          .filter((sql) => sql.includes("ORDER BY") && sql.includes("LIMIT")),
+      ),
+    ];
+    queries.mockRestore();
+    expect(pages.length).toBeGreaterThanOrEqual(16);
+    for (const sql of pages) {
+      const plan = index.db
+        .query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${sql}`)
+        .all()
+        .map((step) => step.detail)
+        .join(" | ");
+      expect(plan).toContain("USING INDEX report_records_");
+      expect(plan).not.toContain("TEMP B-TREE");
+    }
   } finally { index.close(); }
 });
 

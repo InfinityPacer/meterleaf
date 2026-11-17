@@ -17,7 +17,7 @@ import { buildQuotaSummary } from "../shared/quota-summary";
 
 const logger = createDiagnosticsLogger();
 /**
- * 每次刷新报表都会把新推送补进索引并提交，采集器每分钟读取一次，逐分钟提交会显著增加 NAS 写入；
+ * 每次刷新都要重算一份报表并临时补上未提交的新推送，采集器每分钟读取一次；
  * 摘要最多每 5 分钟刷新一次，其余读取直接返回缓存，窗口自带采样时间。
  */
 const QUOTA_SUMMARY_REFRESH_MS = 5 * 60_000;

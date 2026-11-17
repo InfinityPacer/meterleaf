@@ -233,15 +233,16 @@ function sortedRecords(
     value: sortValue(record, key),
   }));
   decorated.sort((left, right) => {
-    const result = compareValues(left.value, right.value);
-    if (result) return desc ? -result : result;
-    const idResult =
-      left.record.id < right.record.id
+    // 同值记录按 id 排列并跟随排序方向，降序结果正好是升序结果的倒序。
+    const result =
+      compareValues(left.value, right.value) ||
+      (left.record.id < right.record.id
         ? -1
         : left.record.id > right.record.id
           ? 1
-          : 0;
-    return idResult || left.index - right.index;
+          : 0);
+    if (result) return desc ? -result : result;
+    return left.index - right.index;
   });
   return decorated.map(({ record }) => record);
 }

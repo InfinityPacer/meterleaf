@@ -20,11 +20,14 @@ const config = workerData as {
   indexPath?: string;
   /** 账本事实少于此数时直接同步重建，耗时不到一秒，不值得启动线程。 */
   inlineRebuildLimit?: number;
+  /** 读取时临时应用而不提交的待补变更上限，超过时由读取直接提交。 */
+  pendingReadLimit?: number;
 };
 const store = new LedgerStore(config.path, config.book, { readonly: true });
 const indexPath = config.indexPath ?? ":memory:";
 const nextIndexPath = `${indexPath}.next`;
 const inlineRebuildLimit = config.inlineRebuildLimit ?? 2000;
+const pendingReadLimit = config.pendingReadLimit ?? 2000;
 /** 后台重建失败后，等待这段时间再重试，避免反复启动注定失败的线程。 */
 const retryDelayMs = 60_000;
 const diagnostics = createDiagnosticsLogger();
@@ -136,14 +139,45 @@ let lastEnsureChanged = false;
 function ensureInline() {
   const changed = projection.ensure();
   lastEnsureChanged = changed;
-  lifetime.ensure({
-    ...sourceFileState(config.path),
-    dataVersion: store.reportFingerprint(),
-  });
+  ensureLifetime();
   if (!initialized || changed) {
     diagnostics.info("report.index_updated", { initial: !initialized });
   }
   initialized = true;
+}
+
+function ensureLifetime() {
+  lifetime.ensure({
+    ...sourceFileState(config.path),
+    dataVersion: store.reportFingerprint(),
+  });
+}
+
+/**
+ * 读取只需增量补齐时，把待补变更写进一个最终回滚的事务再读：结果包含刚推送的用量，
+ * 索引却不落盘，提交留给定时补齐。页面和额度摘要的每次读取都各提交一次时，同一批
+ * 索引页会被反复写入 NAS。待补变更过多时直接提交，避免每次读取重放大量变更。
+ * 返回 null 表示这次读取不适用，调用方走常规路径。
+ */
+function readWithPendingChanges<T>(read: () => T): { value: T } | null {
+  if (building || indexPath === ":memory:") return null;
+  const pending = projection.pendingChanges();
+  const lifetimeCheckpoint = lifetime.committedCheckpoint();
+  if (pending === null || lifetimeCheckpoint === null) return null;
+  const lifetimePending =
+    store.reportUsageChangeState().lastSequence - lifetimeCheckpoint;
+  if (pending <= 0 && lifetimePending <= 0) return null;
+  if (Math.max(pending, lifetimePending) > pendingReadLimit) return null;
+  if (projection.rebuildNeeded().kind !== "none") return null;
+  return {
+    value: projection.rollbackAfter(() =>
+      lifetime.rollbackAfter(() => {
+        projection.ensure();
+        ensureLifetime();
+        return read();
+      }),
+    ),
+  };
 }
 
 function usageCount(): number {
@@ -311,24 +345,29 @@ parentPort!.on(
     try {
       const result = store.db.transaction(() => {
         const indexStarted = performance.now();
+        const read = (transitional: boolean) => {
+          indexMs = performance.now() - indexStarted;
+          const now = new Date().toISOString();
+          const readStarted = performance.now();
+          const view = readReportView(
+            { store, projection, lifetime, inputs },
+            request,
+            now,
+            transitional,
+          );
+          ({ snapshotMs, aggregateMs, materializeMs } = view.timings);
+          readMs = performance.now() - readStarted;
+          return view.result;
+        };
+        const previewed = readWithPendingChanges(() => read(false));
+        if (previewed) return previewed.value;
         state = prepareIndex();
-        indexMs = performance.now() - indexStarted;
         if (state.mode === "building") return null;
-        const transitional = state.mode === "transitional";
-        const now = new Date().toISOString();
-        const readStarted = performance.now();
-        const read = readReportView(
-          { store, projection, lifetime, inputs },
-          request,
-          now,
-          transitional,
-        );
-        ({ snapshotMs, aggregateMs, materializeMs } = read.timings);
-        readMs = performance.now() - readStarted;
+        const value = read(state.mode === "transitional");
         // 过渡结果的金额来自旧索引，价格版本也必须是旧的。
         return state.mode === "transitional"
-          ? { ...read.result, pricing: state.pricing }
-          : read.result;
+          ? { ...value, pricing: state.pricing }
+          : value;
       })();
       if (state.mode === "building") {
         parentPort!.postMessage({

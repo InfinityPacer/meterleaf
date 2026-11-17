@@ -18,7 +18,7 @@ const CACHE_LIMIT = 16;
 /** 定时刷新只是兜底；打开页面时读取会先返回缓存再后台刷新。 */
 const DEFAULT_REFRESH_INTERVAL_MS = 86_400_000;
 /**
- * 无人查看时索引不随每次推送写盘；按此间隔把新推送补进索引，下次打开只需补最近一段。
+ * 索引不随每次推送或读取写盘；按此间隔把新推送提交进索引，读取只临时补上最近一段。
  * 没有新用量时补齐是空操作，不产生写入。
  */
 const DEFAULT_INDEX_CATCH_UP_INTERVAL_MS = 3_600_000;
@@ -44,6 +44,11 @@ export interface ViewServiceOptions {
   indexCatchUpIntervalMs?: number;
   /** 账本事实少于此数时同步重建索引，默认 2000；测试用 0 验证后台重建。 */
   inlineRebuildLimit?: number;
+  /**
+   * 读取时只临时应用、不提交的待补变更记录上限，默认 2000，每条用量约占两条；
+   * 超过时读取直接提交。
+   */
+  pendingReadLimit?: number;
   diagnostics?: DiagnosticsLogger;
   /** 配置了拉取来源时提供；未提供表示只接收推送，报表照常计算和刷新。 */
   getSyncStatus?: () => SyncStatus;
@@ -303,6 +308,7 @@ export class ViewService {
         book,
         indexPath,
         inlineRebuildLimit: options.inlineRebuildLimit,
+        pendingReadLimit: options.pendingReadLimit,
       },
     });
     this.worker.on("message", (message: WorkerMessage) => {
