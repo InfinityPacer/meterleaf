@@ -9,6 +9,7 @@ import {
   readAgy,
   type AgyReaderReport,
   type AgyReaderSources,
+  agyInstanceAccounts,
 } from "./agy";
 import { readClaudeJson } from "./claude-code/account";
 import {
@@ -50,6 +51,12 @@ import { readOmp, type OmpReaderReport, type OmpReaderSources } from "./omp";
 import { startOtelRelay, type OtelRelay } from "./otel-relay";
 import { resolvePaths, type CollectorPaths } from "./paths";
 import { COLLECTOR_VERSION, pushOutbox } from "./push";
+import {
+  QUOTA_SUMMARY_FILE,
+  fetchQuotaSummary,
+  localLogins,
+  writeQuotaSummary,
+} from "./quota-summary";
 import type { SourceReaderReport } from "./sources";
 import { CollectorState, type UsageTotals } from "./state";
 import {
@@ -876,6 +883,15 @@ async function runSync(paths: CollectorPaths): Promise<number> {
       return 1;
     }
     state.setMeta("last_success_at", now);
+    // 摘要只供本机会话参考，取回或写入出任何问题都不影响本轮推送的结果。
+    await refreshQuotaSummary(paths, config, state, report).catch(
+      (error: unknown) =>
+        console.error(
+          `${new Date().toISOString()} 额度摘要处理失败: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+    );
     if (
       result.batches > 0 ||
       report.rewound > 0 ||
@@ -915,6 +931,46 @@ async function runSync(paths: CollectorPaths): Promise<number> {
     }
     state?.close();
     release();
+  }
+}
+
+/**
+ * 推送成功后取回服务端的订阅额度摘要，写给本机会话判断该用哪个账户。取不到时保留上一份，
+ * 原因只在变化时记一行，与额度来源问题的记法一致。
+ */
+async function refreshQuotaSummary(
+  paths: CollectorPaths,
+  config: CollectorConfig,
+  state: CollectorState,
+  report: CollectReport,
+) {
+  const result = await fetchQuotaSummary(config);
+  let issue = "";
+  if ("summary" in result) {
+    const agy = agyReaderConfig(config);
+    try {
+      writeQuotaSummary(join(paths.dataDir, QUOTA_SUMMARY_FILE), {
+        schemaVersion: 1,
+        fetchedAt: new Date().toISOString(),
+        logins: localLogins(config.sourceId, {
+          claude: [
+            { configDir: paths.claudeRoot, accountUuid: report.accountUuid },
+            ...report.profiles,
+          ],
+          agy: agy ? agyInstanceAccounts(agy) : [],
+          codexChannels: effectiveChannelAccounts(config).filter(
+            (rule) => rule.source === "codex",
+          ),
+        }),
+        summary: result.summary,
+      });
+    } catch (error) {
+      issue = `额度摘要写入失败: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  } else issue = result.issue;
+  if (issue !== (state.getMeta("last_quota_summary_issue") ?? "")) {
+    state.setMeta("last_quota_summary_issue", issue);
+    console.log(`${new Date().toISOString()} ${issue || "额度摘要已恢复"}`);
   }
 }
 

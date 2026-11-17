@@ -12,8 +12,26 @@ import { SyncRunner } from "./sync";
 import { createDiagnosticsLogger } from "./diagnostics";
 import { GoQuotaRefresher } from "./opencode-go";
 import { ViewService } from "./view-service";
+import type { ViewQuery } from "../shared/ledger-view";
+import { buildQuotaSummary } from "../shared/quota-summary";
 
 const logger = createDiagnosticsLogger();
+/**
+ * 每次刷新报表都会把新推送补进索引并提交，采集器每分钟读取一次，逐分钟提交会显著增加 NAS 写入；
+ * 摘要最多每 5 分钟刷新一次，其余读取直接返回缓存，窗口自带采样时间。
+ */
+const QUOTA_SUMMARY_REFRESH_MS = 5 * 60_000;
+/** 额度摘要只用账户窗口；取总览最小的报表，采集器读取时顺带让它跟上新快照。 */
+const QUOTA_SUMMARY_QUERY: ViewQuery = {
+  filter: { days: 1, model: "all", account: "all", search: "" },
+  unit: "usd",
+  granularity: "day",
+  dimension: "model",
+  page: 0,
+  pageSize: 1,
+  sort: "occurredAt",
+  desc: true,
+};
 let stage = "configuration";
 
 /** 单进程拥有账本与采集任务；退出时先停止采集，再关闭数据库。 */
@@ -88,6 +106,7 @@ async function main() {
         },
       )
     : null;
+  let quotaSummaryRefreshedAt = 0;
   const app = createApp({
     githubAuth: config.githubAuth,
     accountMerge: store
@@ -131,6 +150,29 @@ async function main() {
             store.saveIngestBatch(sourceId, batch, new Date().toISOString()),
           saveOtel: (sourceId, records, receivedAt) =>
             store.saveRequestAccounts(sourceId, records, receivedAt),
+        }
+      : undefined,
+    quotaSummary: reports
+      ? async () => {
+          const refresh =
+            Date.now() - quotaSummaryRefreshedAt >= QUOTA_SUMMARY_REFRESH_MS;
+          const view = await reports.read(
+            QUOTA_SUMMARY_QUERY,
+            config.METERLEAF_USD_BASIS,
+            undefined,
+            refresh,
+          );
+          if (refresh) quotaSummaryRefreshedAt = Date.now();
+          return buildQuotaSummary(
+            new Date().toISOString(),
+            view.accounts,
+            {
+              archived: store!.archivedAccounts(),
+              hidden: store!.hiddenAccounts(),
+              aliases: store!.accountAliases(),
+            },
+            store!.accountMembers(),
+          );
         }
       : undefined,
     diagnostics: logger,

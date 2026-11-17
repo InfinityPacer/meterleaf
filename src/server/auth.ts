@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { INGEST_BATCHES_PATH } from "../shared/ingest";
 import { OTEL_LOGS_PATH } from "../shared/otel";
+import { QUOTA_SUMMARY_PATH } from "../shared/quota-summary";
 import { silentLogger, type DiagnosticsLogger } from "./diagnostics";
 
 /**
@@ -40,13 +41,14 @@ const RENEW_AFTER_SECONDS = 86_400;
 const CALLBACK_PATH = "/auth/github/callback";
 const LOGIN_PATH = "/auth/github/login";
 
-/** 登录前也必须可读的路径：认证流程、健康检查、采集器写入（自带设备密钥）与品牌静态资源。 */
+/** 登录前也必须可读的路径：认证流程、健康检查、采集器写入与额度摘要（自带设备密钥）、品牌静态资源。 */
 function isPublicPath(path: string) {
   return (
     path.startsWith("/auth/") ||
     path === "/api/health" ||
     path === INGEST_BATCHES_PATH ||
     path === OTEL_LOGS_PATH ||
+    path === QUOTA_SUMMARY_PATH ||
     path === "/favicon.svg" ||
     path === "/manifest.webmanifest" ||
     path === "/offline.html" ||
