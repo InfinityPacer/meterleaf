@@ -3,6 +3,7 @@ import type { AccountWindow } from "../src/shared/report";
 import {
   estimateAmount,
   quotaLabel,
+  quotaFillStyle,
   quotaPercent,
   quotaState,
   nextQuotaRefreshDelay,
@@ -369,4 +370,16 @@ test("reset times round to the nearest minute so sub-second jitter shows one val
   );
   expect(quotaResetMinute(null)).toBeNull();
   expect(quotaResetMinute("invalid")).toBeNull();
+});
+
+test("quota fill passes the used share to the color rule", () => {
+  expect<object>(quotaFillStyle(62)).toEqual({
+    width: "62%",
+    "--quota-used": 62,
+  });
+  // 未知或等待时不显示填充，颜色按 0% 算。
+  expect<object>(quotaFillStyle(null)).toEqual({
+    width: "0%",
+    "--quota-used": 0,
+  });
 });

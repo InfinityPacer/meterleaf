@@ -70,7 +70,9 @@
   --teal: var(--accent);
   --blue: var(--accent);
   --tint: var(--accent-soft);
-  --quota-alert: var(--warn);
+  /* 额度进度条随用量变色的终点，浅色与深色下保持同一色相、只调明度：琥珀表示用量渐紧，红色表示用满。 */
+  --quota-warn: #d97706;
+  --quota-alert: #dc2626;
   color-scheme: light;
   color: var(--ink);
   background: var(--surface);
@@ -102,6 +104,8 @@
   --accent-rgb: 60 203 138;
   --accent-soft: rgb(var(--accent-rgb) / 12%);
   --accent-line: rgb(var(--accent-rgb) / 34%);
+  --quota-warn: #f59e0b;
+  --quota-alert: #ef4444;
   color-scheme: dark;
 }
 :root[data-palette="indigo"] {
@@ -918,10 +922,20 @@ h3 {
   height: 100%;
   display: block;
   border-radius: 2px;
-  background: var(--teal);
 }
-.progress-track > span.high {
-  background: var(--quota-alert);
+/*
+ * 额度进度条（账户详情的 QuotaBar 与卡片、账户行的 QuotaWindow）整条只用一个颜色，颜色随用量连续变化：
+ * 30% 以内是强调色，30% 到 65% 渐变到琥珀，65% 到 100% 再渐变到红色。用量由 quotaFillStyle 写入 --quota-used。
+ */
+.progress-track > span,
+.quota-window-progress > span {
+  --quota-warm: calc(clamp(0, (var(--quota-used, 0) - 30) / 35, 1) * 100%);
+  --quota-hot: calc(clamp(0, (var(--quota-used, 0) - 65) / 35, 1) * 100%);
+  background-color: color-mix(
+    in oklch,
+    color-mix(in oklch, var(--accent), var(--quota-warn) var(--quota-warm)),
+    var(--quota-alert) var(--quota-hot)
+  );
 }
 .account-reset {
   display: flex;
