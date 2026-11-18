@@ -1541,6 +1541,14 @@ const quotaBuckets: Record<string, AgyWindowKey> = {
 };
 const tsvOrder = [...Object.values(quotaBuckets), "plan"];
 
+/**
+ * 剩余比例换算成已用百分比整数。上游在剩余不足 1% 时就会拒绝请求，剩余比例停在零点几而不归零，
+ * 四舍五入会一直显示 99%；剩余不足 1% 按用满计。状态栏脚本写同一份缓存，换算规则须保持一致。
+ */
+function usedPercent(remaining: number): number {
+  return remaining < 0.01 ? 100 : Math.round((1 - remaining) * 100);
+}
+
 export interface AgyQuotaRefreshResult {
   /** 是否启动了 agy；节流或状态栏刚刷新过而跳过时为 false。 */
   attempted: boolean;
@@ -1633,8 +1641,10 @@ function parseUsageBuckets(output: string): Map<string, string> | string {
         !Number.isFinite(resetMs)
       )
         continue;
-      const used = Math.round((1 - remaining) * 100);
-      rows.set(key, `${key}\t${used}\t${Math.floor(resetMs / 1000)}`);
+      rows.set(
+        key,
+        `${key}\t${usedPercent(remaining)}\t${Math.floor(resetMs / 1000)}`,
+      );
     }
   }
   return rows.size > 0 ? rows : "agy /usage 没有可用的额度桶";
@@ -2036,8 +2046,10 @@ function parseOmpUsageReports(
         !Number.isFinite(resetMs)
       )
         continue;
-      const used = Math.round((1 - remaining) * 100);
-      rows.set(key, `${key}\t${used}\t${Math.floor(resetMs / 1000)}`);
+      rows.set(
+        key,
+        `${key}\t${usedPercent(remaining)}\t${Math.floor(resetMs / 1000)}`,
+      );
     }
     if (rows.size > 0) result.set(label, rows);
   }

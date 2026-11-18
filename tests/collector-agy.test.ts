@@ -1385,7 +1385,12 @@ test("maybeRefreshOmpAgyQuota writes every Google account omp holds and reads li
             "gemini-weekly": 1,
             "3p-weekly": 0.0116,
           }),
-          ompReport("bob@example.com", { "gemini-5h": 0.02 }),
+          ompReport("bob@example.com", {
+            "gemini-5h": 0.02,
+            // 剩余不足 1% 时上游已拒绝请求，按用满计；剩余 1.2% 仍按四舍五入显示 99%。
+            "gemini-weekly": 0.9919,
+            "3p-5h": 0.988,
+          }),
           { provider: "anthropic", metadata: { email: "c@example.com" } },
         ],
       }),
@@ -1417,7 +1422,7 @@ test("maybeRefreshOmpAgyQuota writes every Google account omp holds and reads li
       ].join("\n") + "\n",
     );
     expect(readFileSync(join(w.statuslineDir, "quota-bob.tsv"), "utf8")).toBe(
-      "gemini_5h\t2\t4102444800\n",
+      "gemini_5h\t2\t4102444800\ngemini_weekly\t100\t4102444800\n3p_5h\t99\t4102444800\n",
     );
     // omp 刷新不改 agy 的 current-account。
     expect(readdirSync(w.statuslineDir).sort()).toEqual([
