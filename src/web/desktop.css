@@ -26,7 +26,6 @@
     --desktop-line-soft: var(--line-soft);
     --desktop-ink: var(--ink);
     --desktop-muted: var(--muted);
-    --desktop-teal: var(--accent);
     --desktop-blue: var(--accent);
     --desktop-shadow: var(--shadow-card);
     min-height: 100vh;
@@ -709,18 +708,6 @@
     clip-path: none;
     color: var(--desktop-muted);
     font-size: 13px;
-  }
-
-  .app-shell .account-windows .quota-window-progress > span {
-    background: var(--desktop-teal);
-  }
-
-  .app-shell
-    .account-windows
-    .quota-window[data-exhausted="true"]
-    .quota-window-progress
-    > span {
-    background: var(--quota-alert);
   }
 
   .app-shell .account-windows .quota-window-foot strong {

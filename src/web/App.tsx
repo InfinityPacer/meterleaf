@@ -69,6 +69,7 @@ import {
   accountQuotaExhausted,
   estimateAmount,
   estimateDescription,
+  quotaFillStyle,
   quotaLabel,
   quotaPercent,
   quotaState,
@@ -335,14 +336,10 @@ function QuotaBar({
   reset?: React.ReactNode;
   waiting?: boolean;
 }) {
-  const state = quotaState(window, asOf);
   const percent = waiting ? null : quotaPercent(window, asOf);
   const suffix = waiting ? "等待更新" : quotaLabel(window, asOf);
   return (
-    <div
-      className="quota-bar"
-      data-quota-level={percent !== null && percent > 80 ? "high" : "normal"}
-    >
+    <div className="quota-bar">
       <div>
         <span>{label}</span>
         <span className="tabular">{suffix}</span>
@@ -356,10 +353,7 @@ function QuotaBar({
         aria-valuemax={100}
         aria-valuenow={percent ?? undefined}
       >
-        <span
-          style={{ width: `${percent ?? 0}%` }}
-          className={(percent ?? 0) > 80 ? "high" : state}
-        />
+        <span style={quotaFillStyle(percent)} />
       </div>
     </div>
   );

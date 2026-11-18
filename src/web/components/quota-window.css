@@ -97,12 +97,9 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--teal);
-  transition: width 220ms var(--ease-out);
-}
-
-.quota-window[data-exhausted="true"] .quota-window-progress > span {
-  background: var(--quota-alert);
+  transition:
+    width 220ms var(--ease-out),
+    background-color 220ms var(--ease-out);
 }
 
 /* 费用行固定为“左费用、右 Tokens 与请求数”；只有极窄时才整体换行，不拆开用量。 */
