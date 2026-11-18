@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import type { AccountWindow, LedgerAccount } from "../../shared/report";
 import { amount, numericAmount } from "./report";
 
@@ -285,6 +286,17 @@ export function quotaLabel(window: AccountWindow | null, asOf: string) {
   const percent = quotaPercent(window, asOf);
   if (percent === null) return "N/A";
   return `已用 ${percent}%`;
+}
+
+/**
+ * 进度条填充的宽度与用量。整条填充是一个颜色，样式按 `--quota-used` 随用量连续换色，
+ * 规则见 styles.css。未知或等待时宽度为 0，不显示填充。
+ */
+export function quotaFillStyle(percent: number | null): CSSProperties {
+  const used = percent ?? 0;
+  // 自定义属性不在 CSSProperties 的键里，先建对象再断言。
+  const style = { width: `${used}%`, "--quota-used": used };
+  return style as CSSProperties;
 }
 
 /** 估算依据跟随金额展示，历史与早期粗估不冒充本周期充分观测。 */

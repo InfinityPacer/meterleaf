@@ -2,6 +2,7 @@ import { amount, compact, numericAmount } from "../lib/report";
 import {
   estimateAmount,
   estimateDescription,
+  quotaFillStyle,
   quotaLabel,
   quotaPercent,
   quotaResetMinute,
@@ -154,7 +155,7 @@ export function QuotaWindow({
         aria-valuenow={usable ? percent : undefined}
         aria-valuetext={status}
       >
-        <span style={{ width: `${usable ? percent : 0}%` }} />
+        <span style={quotaFillStyle(percent)} />
       </span>
       <span className="quota-window-foot">
         {/* 周额度的整周预估紧跟已用费用，与右侧 Tokens、请求数同一行。 */}
