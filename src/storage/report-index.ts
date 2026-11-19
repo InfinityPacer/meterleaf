@@ -334,7 +334,8 @@ function windowSum(aggregate: Aggregate, usdBasis: UsdBasis) {
   const usd = summaryAmount(aggregate, usdBasis);
   return {
     count: aggregate.count,
-    tokens: aggregate.tokenIncompleteRows === 0 ? aggregate.tokenValue : null,
+    // 与总览和明细汇总一致：单条缺失个别桶不抹除同周期已统计的 token。
+    tokens: aggregate.tokenKnownRows > 0 ? aggregate.tokenValue : null,
     cacheRate: aggregate.completeCacheInput
       ? (aggregate.completeCacheRead / aggregate.completeCacheInput) * 100
       : null,

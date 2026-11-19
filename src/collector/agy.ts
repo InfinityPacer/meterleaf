@@ -679,9 +679,11 @@ const enumModels: Record<number, { model: string; effort?: string }> = {
   1526: { model: "gemini-4-hydrogen", effort: "medium" },
   1527: { model: "gemini-4-hydrogen", effort: "low" },
   1528: { model: "gemini-4-hydrogen", effort: "xhigh" },
+  1532: { model: "gemini-4-neon", effort: "high" },
 };
 
 const displayModels: Record<string, string> = {
+  "gemini 4 neon": "gemini-4-neon",
   "gemini 4 hydrogen": "gemini-4-hydrogen",
   "gemini 4 carbon": "gemini-4-carbon",
   "gemini 4 argon": "gemini-4-argon",

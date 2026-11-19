@@ -32,6 +32,7 @@ export const modelColors: Record<string, string> = {
   "claude-haiku-5-5": "#3d9960",
   "claude-haiku-4-5": "#539b57",
   "claude-haiku-4-5-20251001": "#539b57",
+  "gemini-4-neon": "#0a9e74",
   "gemini-4-hydrogen": "#0e8a55",
   "gemini-4-carbon": "#0f766e",
   "gemini-4-argon": "#257985",

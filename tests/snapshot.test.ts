@@ -6,7 +6,12 @@ import type {
 } from "../src/domain/connector";
 import { defaultPriceBook } from "../src/domain/default-prices";
 import { LedgerStore } from "../src/storage/ledger";
-import { liveSnapshot } from "../src/server/snapshot";
+import { ReportIndex } from "../src/storage/report-index";
+import {
+  createAccountResolver,
+  liveSnapshot,
+  toLedgerRecord,
+} from "../src/server/snapshot";
 import { SyncRunner } from "../src/server/sync";
 
 test("live snapshot preserves full quota periods across report ranges and USD branches", async () => {
@@ -331,6 +336,119 @@ test("live snapshot projects bounded request details without changing pricing fi
     });
   } finally {
     await sync.stop();
+    store.close();
+  }
+});
+
+test("ReportIndex windowSum keeps known period tokens when a request misses one bucket", async () => {
+  const now = "2026-11-19T02:00:00.000Z";
+  const makeFact = (
+    externalId: string,
+    occurredAt: string,
+    tokens: UsageFact["tokens"],
+  ): UsageFact => ({
+    sourceId: "test",
+    externalId,
+    accountExternalId: "agy-owl",
+    occurredAt,
+    model: "gemini-4-carbon",
+    upstreamModel: null,
+    tier: "standard",
+    tokens,
+    gatewayCost: null,
+    gatewayBilled: null,
+    upstreamUsd: null,
+    upstreamCredits: null,
+    metadata: {},
+  });
+  const store = new LedgerStore(":memory:", defaultPriceBook);
+  const index = new ReportIndex(":memory:");
+  try {
+    store.saveAccounts([
+      {
+        sourceId: "test",
+        externalId: "agy-owl",
+        name: "Antigravity (owl)",
+        kind: "subscription",
+        platform: "google",
+        plan: "Google AI Ultra",
+        parentExternalId: null,
+        subjectKey: null,
+      },
+    ]);
+    store.savePage(
+      "test",
+      "incremental",
+      {
+        records: [
+          makeFact("complete", "2026-11-18T14:54:08.000Z", {
+            input: 2_305,
+            cacheRead: 218_014,
+            cacheWrite: 0,
+            output: 4_703,
+            cacheWrite5m: null,
+            cacheWrite1h: null,
+            reasoning: 1_980,
+          }),
+          makeFact("missing-output", "2026-11-18T14:54:09.000Z", {
+            input: 45_479,
+            cacheRead: 202_732,
+            cacheWrite: 0,
+            output: null,
+            cacheWrite5m: null,
+            cacheWrite1h: null,
+            reasoning: null,
+          }),
+        ],
+        nextCursor: "1",
+        hasMore: false,
+      },
+      now,
+    );
+    const resolver = createAccountResolver(store.accounts());
+    index.replace(store.usage().map((row) => toLedgerRecord(row, resolver)));
+    const mixed = index.sumWindow(
+      "test:agy-owl",
+      "2026-11-18T02:22:00.000Z",
+      now,
+      "subscription",
+    );
+    expect(mixed.count).toBe(2);
+    expect(mixed.tokens).toBe(2_305 + 218_014 + 4_703 + 45_479 + 202_732);
+    expect(mixed.usd).not.toBeNull();
+
+    // 全四个桶都未知的窗口仍保留 null，不补零。
+    store.savePage(
+      "test",
+      "incremental",
+      {
+        records: [
+          makeFact("all-null", "2026-11-19T01:00:00.000Z", {
+            input: null,
+            cacheRead: null,
+            cacheWrite: null,
+            output: null,
+            cacheWrite5m: null,
+            cacheWrite1h: null,
+            reasoning: null,
+          }),
+        ],
+        nextCursor: "2",
+        hasMore: false,
+      },
+      now,
+    );
+    index.replace(store.usage().map((row) => toLedgerRecord(row, resolver)));
+    const allNull = index.sumWindow(
+      "test:agy-owl",
+      "2026-11-19T00:00:00.000Z",
+      now,
+      "subscription",
+    );
+    expect(allNull.count).toBe(1);
+    expect(allNull.tokens).toBeNull();
+  } finally {
+    index.close();
     store.close();
   }
 });
