@@ -277,6 +277,7 @@ describe("prototype report contract", () => {
     expect(modelLabel("claude-haiku-4-5-20251001")).toBe(
       "Claude Haiku 4.5 (20251001)",
     );
+    expect(modelLabel("gemini-4-neon")).toBe("Gemini 4 Neon");
     expect(modelLabel("gemini-4-hydrogen")).toBe("Gemini 4 Hydrogen");
     expect(modelLabel("gemini-3.5-flash-lite")).toBe("Gemini 3.5 Flash-Lite");
     expect(modelLabel("deepseek-v4.1-flash")).toBe("DeepSeek V4.1 Flash");
