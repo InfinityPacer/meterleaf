@@ -168,8 +168,15 @@ function rowsChargeReader(rows: readonly PricedUsage[]): QuotaChargeReader {
     });
     let cacheInput = 0;
     let cacheRead = 0;
+    let tokenTotal = 0;
+    let hasKnownTokens = false;
     for (const { fact } of selected) {
-      const { input, cacheRead: read, cacheWrite } = fact.tokens;
+      const { input, cacheRead: read, cacheWrite, output } = fact.tokens;
+      for (const value of [input, read, cacheWrite, output]) {
+        if (value === null) continue;
+        tokenTotal += value;
+        hasKnownTokens = true;
+      }
       if (input === null || read === null || cacheWrite === null) continue;
       cacheInput += input + read + cacheWrite;
       cacheRead += read;
@@ -178,21 +185,8 @@ function rowsChargeReader(rows: readonly PricedUsage[]): QuotaChargeReader {
       usd: sumCharges(selected, "usd"),
       credits: sumCharges(selected, "credits"),
       count: selected.length,
-      tokens: selected.some((row) =>
-        (["input", "cacheRead", "cacheWrite", "output"] as const).some(
-          (field) => row.fact.tokens[field] === null,
-        ),
-      )
-        ? null
-        : selected.reduce(
-            (total, row) =>
-              total +
-              (row.fact.tokens.input ?? 0) +
-              (row.fact.tokens.cacheRead ?? 0) +
-              (row.fact.tokens.cacheWrite ?? 0) +
-              (row.fact.tokens.output ?? 0),
-            0,
-          ),
+      // 与报表汇总一致：单条缺失个别桶不抹除同周期已统计的 token，全未知时仍保留 null。
+      tokens: selected.length === 0 ? 0 : hasKnownTokens ? tokenTotal : null,
       cacheRate: cacheInput ? (cacheRead / cacheInput) * 100 : null,
     };
   };
