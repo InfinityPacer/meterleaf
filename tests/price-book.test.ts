@@ -49,7 +49,7 @@ test("bundled JSON matches catalog generator and retires built-in credits", () =
   expect(subscription.credits.amount).toBeNull();
   expect(api.credits.amount).toBeNull();
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-11-13.1");
+  expect(subscription.version).toBe("meterleaf@2026-11-19.1");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
@@ -260,15 +260,15 @@ function ruleAccepted(rule: unknown) {
 test("bundled book values DeepSeek V4.1 Flash at Go's weekday peak and off-peak prices", () => {
   // Go 的峰时是 UTC 周一至周五 01:00-04:00 与 06:00-10:00，起点包含、终点不包含。
   for (const [occurredAt, amount] of [
-    ["2026-11-13T00:59:00Z", "0.753"],
-    ["2026-11-13T01:00:00Z", "1.506"],
-    ["2026-11-13T03:59:00Z", "1.506"],
-    ["2026-11-13T04:00:00Z", "0.753"],
-    ["2026-11-13T06:00:00Z", "1.506"],
-    ["2026-11-13T09:59:00Z", "1.506"],
-    ["2026-11-13T10:00:00Z", "0.753"],
-    ["2026-11-14T02:00:00Z", "0.753"],
-    ["2026-11-15T07:00:00Z", "0.753"],
+    ["2026-11-20T00:59:00Z", "0.753"],
+    ["2026-11-20T01:00:00Z", "1.506"],
+    ["2026-11-20T03:59:00Z", "1.506"],
+    ["2026-11-20T04:00:00Z", "0.753"],
+    ["2026-11-20T06:00:00Z", "1.506"],
+    ["2026-11-20T09:59:00Z", "1.506"],
+    ["2026-11-20T10:00:00Z", "0.753"],
+    ["2026-11-21T02:00:00Z", "0.753"],
+    ["2026-11-22T07:00:00Z", "0.753"],
   ] as const) {
     const fact = deepseekFact(occurredAt);
     const subscription = valueUsage(fact, defaultPriceBook);
@@ -586,6 +586,40 @@ test("Antigravity models use their published Google, Anthropic and Model Garden 
   expect(
     valueUsage({ ...baseFact, model: "gpt-oss-120b" }, defaultPriceBook).usd
       .reason,
+  ).toBe("unsupported-rate-bucket");
+
+  // Gemini 4 Neon: 常态费率 $3.00 / $0.15 / $15.00（Flex $1.50 / $0.075 / $7.50），无促销分段。
+  const neon = valueUsage(
+    { ...baseFact, model: "gemini-4-neon" },
+    defaultPriceBook,
+  );
+  expect(neon.subscriptionUsd.amount).toBe("18.15");
+  expect(neon.apiUsd.amount).toBe("18.15");
+  expect(
+    valueUsage(
+      { ...baseFact, model: "gemini-4-neon", tier: "flex" },
+      defaultPriceBook,
+    ).subscriptionUsd.amount,
+  ).toBe("9.075");
+  expect(
+    valueUsage(
+      {
+        ...baseFact,
+        model: "gemini-4-neon",
+        occurredAt: "2027-02-01T00:00:00Z",
+      },
+      defaultPriceBook,
+    ).subscriptionUsd.amount,
+  ).toBe("18.15");
+  expect(
+    valueUsage(
+      {
+        ...baseFact,
+        model: "gemini-4-neon",
+        tokens: { ...baseFact.tokens, cacheWrite: 1 },
+      },
+      defaultPriceBook,
+    ).usd.reason,
   ).toBe("unsupported-rate-bucket");
 
   // Gemini 4 Hydrogen: 常态费率 $1.50 / $0.075 / $7.50（Flex $0.75 / $0.0375 / $3.75），无促销分段。

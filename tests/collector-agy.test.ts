@@ -416,6 +416,39 @@ test("decodeAgyGenMetadata decodes wire fields, mutually exclusive buckets, and 
 test("normalizeAgyModel maps all Antigravity models and prices them through defaultPriceBook", () => {
   expect(
     normalizeAgyModel({
+      responseModel: "gemini-4-neon-xhigh",
+      modelDisplayName: "Gemini 4 Neon (XHigh)",
+      modelEnum: 1532,
+    }),
+  ).toEqual({
+    model: "gemini-4-neon",
+    upstreamModel: "gemini-4-neon-xhigh",
+    reasoningEffort: "xhigh",
+  });
+  expect(
+    normalizeAgyModel({
+      responseModel: null,
+      modelDisplayName: "Gemini 4 Neon (Low)",
+      modelEnum: null,
+    }),
+  ).toEqual({
+    model: "gemini-4-neon",
+    upstreamModel: null,
+    reasoningEffort: "low",
+  });
+  expect(
+    normalizeAgyModel({
+      responseModel: null,
+      modelDisplayName: null,
+      modelEnum: 1532,
+    }),
+  ).toEqual({
+    model: "gemini-4-neon",
+    upstreamModel: null,
+    reasoningEffort: "high",
+  });
+  expect(
+    normalizeAgyModel({
       responseModel: "gemini-4-hydrogen-xhigh",
       modelDisplayName: "Gemini 4 Hydrogen (XHigh)",
       modelEnum: 1528,
@@ -573,6 +606,7 @@ test("normalizeAgyModel maps all Antigravity models and prices them through defa
   const gemini = quotaModelScope("seven-day", true)!;
   const thirdParty = quotaModelScope("seven-day-3p")!;
   for (const model of [
+    "gemini-4-neon",
     "gemini-4-hydrogen",
     "gemini-4-carbon",
     "gemini-4-argon",
@@ -592,6 +626,7 @@ test("normalizeAgyModel maps all Antigravity models and prices them through defa
   expect(quotaModelScope("seven-day")).toBeNull();
 
   for (const model of [
+    "gemini-4-neon",
     "gemini-4-hydrogen",
     "gemini-4-carbon",
     "gemini-4-argon",

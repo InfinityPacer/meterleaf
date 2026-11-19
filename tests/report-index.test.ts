@@ -973,7 +973,7 @@ describe("ReportIndex", () => {
         ),
       ).toEqual({
         count: 4,
-        tokens: null,
+        tokens: 390,
         usd: "0.6",
         credits: "11",
         cacheRate: (1 / 3) * 100,
@@ -987,7 +987,7 @@ describe("ReportIndex", () => {
         ),
       ).toEqual({
         count: 1,
-        tokens: null,
+        tokens: 90,
         usd: null,
         credits: "4.4",
         cacheRate: null,
@@ -1001,7 +1001,7 @@ describe("ReportIndex", () => {
         ),
       ).toEqual({
         count: 4,
-        tokens: null,
+        tokens: 390,
         usd: "2",
         credits: "11",
         cacheRate: (1 / 3) * 100,

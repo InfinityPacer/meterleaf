@@ -7,7 +7,9 @@ const now = "2026-10-20T12:00:00.000Z";
 
 function usage(
   id: string,
-  tokens: Pick<UsageFact["tokens"], "input" | "cacheRead" | "cacheWrite">,
+  tokens: Pick<UsageFact["tokens"], "input" | "cacheRead" | "cacheWrite"> & {
+    output?: number | null;
+  },
 ): PricedUsage {
   return {
     fact: {
@@ -19,8 +21,10 @@ function usage(
       upstreamModel: null,
       tier: "standard",
       tokens: {
-        ...tokens,
-        output: 10,
+        input: tokens.input,
+        cacheRead: tokens.cacheRead,
+        cacheWrite: tokens.cacheWrite,
+        output: tokens.output === undefined ? 10 : tokens.output,
         cacheWrite5m: null,
         cacheWrite1h: null,
         reasoning: null,
@@ -75,4 +79,43 @@ test("quota cache rate stays unknown when no request has complete input buckets"
     now,
   );
   expect(view!.periodCacheRate).toBeNull();
+});
+
+test("quota period tokens sum known buckets across incomplete rows and stay null when all buckets are unknown", () => {
+  const mixed = quotaView(
+    history,
+    [
+      usage("complete", {
+        input: 100,
+        cacheRead: 400,
+        cacheWrite: 0,
+        output: 50,
+      }),
+      // 单条缺失输出桶的请求不能把整段窗口的 token 合计抹成 null。
+      usage("missing-output", {
+        input: 45_479,
+        cacheRead: 202_732,
+        cacheWrite: 0,
+        output: null,
+      }),
+    ],
+    now,
+  );
+  expect(mixed!.periodRequests).toBe(2);
+  expect(mixed!.periodTokens).toBe(550 + 45_479 + 202_732);
+
+  const allUnknown = quotaView(
+    history,
+    [
+      usage("all-null", {
+        input: null,
+        cacheRead: null,
+        cacheWrite: null,
+        output: null,
+      }),
+    ],
+    now,
+  );
+  expect(allUnknown!.periodRequests).toBe(1);
+  expect(allUnknown!.periodTokens).toBeNull();
 });
