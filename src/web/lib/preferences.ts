@@ -104,6 +104,7 @@ export const preferenceSchemas = {
     ]),
     desc: z.boolean(),
   }),
+  reportMode: z.enum(["usage", "performance"]),
   reportSort: z
     .array(
       z.object({
@@ -117,6 +118,10 @@ export const preferenceSchemas = {
           "cacheRate",
           "requests",
           "usd",
+          "perfSamples",
+          "avgFirstTokenMs",
+          "avgDurationMs",
+          "tps",
         ]),
         desc: z.boolean(),
       }),

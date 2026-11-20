@@ -104,11 +104,13 @@ import { Segmented } from "./components/Segmented";
 import {
   amount,
   compact,
+  formatTps,
   localTime,
   modelColor,
   modelLabel,
   numericAmount,
   quotaUnavailableNote,
+  recordTps,
   summarize,
 } from "./lib/report";
 import { LedgerTable } from "./components/LedgerTable";
@@ -2155,6 +2157,20 @@ export function App() {
                         </dd>
                       </>
                     )}
+                    {(() => {
+                      const tps = recordTps(
+                        selected.output,
+                        selected.details.durationMs,
+                      );
+                      return (
+                        tps !== null && (
+                          <>
+                            <dt>生成速度</dt>
+                            <dd>{formatTps(tps)}</dd>
+                          </>
+                        )
+                      );
+                    })()}
                   </>
                 )}
                 <dt>速度档</dt>

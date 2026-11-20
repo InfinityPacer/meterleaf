@@ -56,6 +56,15 @@ function isoTime(value: unknown): string | null {
   return new Date(ms).toISOString();
 }
 
+function durationMs(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+    return null;
+  const rounded = Math.round(value);
+  return Number.isSafeInteger(rounded) && rounded <= 86_400_000
+    ? rounded
+    : null;
+}
+
 /**
  * 解析 omp 会话里的一条已完成助手消息。四个基础桶在 omp 里已经互斥（输入已扣除缓存），
  * 输出包含推理量；不采用 omp 自带的 cost，费用由服务端按价格表估值。
@@ -68,6 +77,8 @@ export function ompMessage(
   usage: Omit<IngestUsage, "accountExternalId" | "model" | "metadata">;
   provider: string;
   rawModel: string;
+  durationMs: number | null;
+  firstTokenMs: number | null;
 } | null {
   const message = object(entry.message);
   const usage = object(message?.usage);
@@ -105,9 +116,18 @@ export function ompMessage(
     rawTier && serviceTiers.includes(rawTier) ? rawTier : context.tier;
   const provider = message.provider.trim();
   const rawModel = message.model.trim();
+  const totalDurationMs = durationMs(message.duration);
+  const rawTtftMs = durationMs(message.ttft);
+  const firstTokenMs =
+    rawTtftMs !== null &&
+    (totalDurationMs === null || rawTtftMs <= totalDurationMs)
+      ? rawTtftMs
+      : null;
   return {
     provider,
     rawModel,
+    durationMs: totalDurationMs,
+    firstTokenMs,
     usage: {
       // 哈希输入不含文件路径和会话 ID：会话文件迁移目录、从中间分支复制历史消息时
       // 请求本身不变，不能因此重复入账。
@@ -336,7 +356,13 @@ export async function readOmp(
     }
     if (!parsed) return;
     report.read++;
-    const { usage, provider, rawModel } = parsed;
+    const {
+      usage,
+      provider,
+      rawModel,
+      durationMs: totalDurationMs,
+      firstTokenMs,
+    } = parsed;
     if (usage.occurredAt < startIso) {
       report.beforeStart++;
       return;
@@ -348,6 +374,8 @@ export async function readOmp(
     let model = rawModel;
     let effort = context.effort;
     const metadata: IngestUsage["metadata"] = { origin: "omp_local" };
+    if (totalDurationMs !== null) metadata.duration_ms = totalDurationMs;
+    if (firstTokenMs !== null) metadata.first_token_ms = firstTokenMs;
     if (toAgy) {
       const credential = message.credentialId;
       const label =

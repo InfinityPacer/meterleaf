@@ -57,3 +57,31 @@ test("report menu keeps every supported sorting field", () => {
   expect(html).not.toContain("订阅等价");
   expect(html).not.toContain("标准 API");
 });
+
+test("performance mode renders latency and weighted TPS columns with mobile summary", () => {
+  const html = renderToStaticMarkup(
+    <ReportTable
+      data={aggregateReport(snapshot.records.slice(0, 6), "model")}
+      count={6}
+      accounts={snapshot.accounts}
+      dimension="model"
+      onDimension={() => {}}
+      mode="performance"
+    />,
+  );
+
+  for (const label of [
+    "有效样本",
+    "平均首字延迟",
+    "平均总耗时",
+    "生成速度",
+    "tok/s",
+  ]) {
+    expect(html).toContain(label);
+  }
+  const headers =
+    html.match(/<div class="mobile-report-columns">[\s\S]*?<\/div>/)?.[0] ?? "";
+  expect(headers).toContain("样本");
+  expect(headers).toContain("首字");
+  expect(headers).toContain("速度");
+});

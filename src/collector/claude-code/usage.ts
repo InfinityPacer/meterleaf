@@ -10,6 +10,8 @@ export type UsageFact = Omit<IngestUsage, "accountExternalId" | "occurredAt">;
 export interface UsageObservation {
   key: string;
   timestamp: string;
+  /** 对应的 api-request 记录 ID，用于计算请求总耗时；advisor 迭代不共用外层请求起点。 */
+  requestRef?: string | null;
   /** 普通输入、输出、缓存读取、缓存写入四个互斥桶之和，未知桶不计入。 */
   total: number;
   fact: UsageFact;
@@ -135,6 +137,7 @@ export function parseLine(raw: string): LineResult {
     {
       key,
       timestamp: at,
+      requestRef: text(line.requestRef, 128),
       total: bucketTotal(tokens),
       fact: {
         externalId: key,
@@ -181,4 +184,29 @@ export function parseLine(raw: string): LineResult {
 /** 行级预筛：只有含 usage 的行才可能是计费响应，避免解析大段工具输出。 */
 export function mayContainUsage(raw: string): boolean {
   return raw.includes('"usage"');
+}
+
+/** 行级预筛：只有含 api-request 的行才记录上游请求发起时刻。 */
+export function mayContainApiRequest(raw: string): boolean {
+  return raw.includes('"api-request"');
+}
+
+/** 提取 Claude Code api-request 行的请求引用 ID 与发起毫秒时间戳。 */
+export function parseApiRequestStart(
+  raw: string,
+): { id: string; atMs: number } | null {
+  if (!mayContainApiRequest(raw)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const line = object(parsed);
+  if (!line || line.type !== "api-request") return null;
+  const id = text(line.id, 128);
+  const at = timestamp(line.timestamp);
+  if (!id || !at) return null;
+  const atMs = Date.parse(at);
+  return Number.isFinite(atMs) ? { id, atMs } : null;
 }
