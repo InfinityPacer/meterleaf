@@ -65,6 +65,87 @@ export interface MetricSummary {
   incompleteRows: number;
 }
 
+/** 分组响应性能汇总；保留可加总原始量，供跨小时与合计行计算加权速度与平均延迟。 */
+export interface ReportPerformance {
+  durationKnown: number;
+  durationSumMs: number;
+  firstTokenKnown: number;
+  firstTokenSumMs: number;
+  tpsKnown: number;
+  tpsOutputSum: number;
+  tpsDurationSumMs: number;
+}
+
+export function recordTps(
+  output: number | null | undefined,
+  durationMs: number | null | undefined,
+): number | null {
+  if (
+    output === null ||
+    output === undefined ||
+    durationMs === null ||
+    durationMs === undefined ||
+    !Number.isFinite(output) ||
+    !Number.isFinite(durationMs) ||
+    output <= 0 ||
+    durationMs <= 0
+  )
+    return null;
+  return output / (durationMs / 1000);
+}
+
+export function performanceAvgFirstTokenMs(
+  performance: ReportPerformance | null | undefined,
+): number | null {
+  return performance && performance.firstTokenKnown > 0
+    ? performance.firstTokenSumMs / performance.firstTokenKnown
+    : null;
+}
+
+export function performanceAvgDurationMs(
+  performance: ReportPerformance | null | undefined,
+): number | null {
+  return performance && performance.durationKnown > 0
+    ? performance.durationSumMs / performance.durationKnown
+    : null;
+}
+
+export function performanceTps(
+  performance: ReportPerformance | null | undefined,
+): number | null {
+  return performance &&
+    performance.tpsKnown > 0 &&
+    performance.tpsDurationSumMs > 0
+    ? performance.tpsOutputSum / (performance.tpsDurationSumMs / 1000)
+    : null;
+}
+
+export function formatLatencyMs(value: number | null | undefined): string {
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(value) ||
+    value < 0
+  )
+    return "N/A";
+  if (value < 1000) return `${Math.round(value).toLocaleString()} ms`;
+  const seconds = value / 1000;
+  return `${seconds >= 10 ? seconds.toFixed(1) : seconds.toFixed(2)} s`;
+}
+
+export function formatTps(value: number | null | undefined): string {
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(value) ||
+    value <= 0
+  )
+    return "N/A";
+  if (value >= 100) return `${Math.round(value).toLocaleString()} tok/s`;
+  if (value >= 10) return `${value.toFixed(1)} tok/s`;
+  return `${value.toFixed(2)} tok/s`;
+}
+
 export function isKnownNumber(value: number | null): value is number {
   return value !== null && Number.isFinite(value);
 }
@@ -464,6 +545,41 @@ export function aggregateReport(
       .reduce((total, value) => total.add(new Decimal(value)), new Decimal(0))
       .toString();
   };
+  const sumPerformance = (rows: LedgerRecord[]): ReportPerformance => {
+    let durationKnown = 0;
+    let durationSumMs = 0;
+    let firstTokenKnown = 0;
+    let firstTokenSumMs = 0;
+    let tpsKnown = 0;
+    let tpsOutputSum = 0;
+    let tpsDurationSumMs = 0;
+    for (const row of rows) {
+      const durationMs = row.details?.durationMs ?? null;
+      const firstTokenMs = row.details?.firstTokenMs ?? null;
+      if (isKnownNumber(durationMs) && durationMs > 0) {
+        durationKnown += 1;
+        durationSumMs += durationMs;
+        if (isKnownNumber(row.output) && row.output > 0) {
+          tpsKnown += 1;
+          tpsOutputSum += row.output;
+          tpsDurationSumMs += durationMs;
+        }
+      }
+      if (isKnownNumber(firstTokenMs) && firstTokenMs >= 0) {
+        firstTokenKnown += 1;
+        firstTokenSumMs += firstTokenMs;
+      }
+    }
+    return {
+      durationKnown,
+      durationSumMs,
+      firstTokenKnown,
+      firstTokenSumMs,
+      tpsKnown,
+      tpsOutputSum,
+      tpsDurationSumMs,
+    };
+  };
   return [...groups]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, rows]) => ({
@@ -485,6 +601,7 @@ export function aggregateReport(
       apiUsd: sumUsdBasis(rows, "api"),
       subscriptionUsd: sumUsdBasis(rows, "subscription"),
       credits: sumAmount(rows, "credits"),
+      performance: sumPerformance(rows),
     }));
 }
 

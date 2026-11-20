@@ -617,7 +617,41 @@ export class CollectorState {
       }
       return false;
     }
-    if (observation.total <= existing.total) return false;
+    if (observation.total < existing.total) return false;
+    if (observation.total === existing.total) {
+      const incomingDuration =
+        typeof observation.fact.metadata.duration_ms === "number" &&
+        Number.isFinite(observation.fact.metadata.duration_ms) &&
+        observation.fact.metadata.duration_ms > 0
+          ? observation.fact.metadata.duration_ms
+          : null;
+      if (incomingDuration === null) return false;
+      const storedFact = JSON.parse(existing.observation) as UsageFact;
+      const storedDuration =
+        typeof storedFact.metadata.duration_ms === "number" &&
+        Number.isFinite(storedFact.metadata.duration_ms)
+          ? storedFact.metadata.duration_ms
+          : null;
+      if (storedDuration !== null && incomingDuration <= storedDuration)
+        return false;
+      const updatedFact: UsageFact = {
+        ...storedFact,
+        metadata: { ...storedFact.metadata, duration_ms: incomingDuration },
+      };
+      this.db
+        .query("UPDATE events SET observation = ? WHERE key = ?")
+        .run(JSON.stringify(updatedFact), observation.key);
+      if (existing.total > 0) {
+        this.enqueueUsage(
+          updatedFact,
+          existing.occurred_at,
+          existing.account,
+          this.attributionOf(updatedFact.model),
+        );
+        return true;
+      }
+      return false;
+    }
     this.db
       .query("UPDATE events SET total = ?, observation = ? WHERE key = ?")
       .run(observation.total, serialized, observation.key);

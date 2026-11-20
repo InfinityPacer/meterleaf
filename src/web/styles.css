@@ -1010,6 +1010,12 @@ h3 {
   position: relative;
   overflow-x: auto;
 }
+.report-heading-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
 .report-section table {
   min-width: 680px;
 }

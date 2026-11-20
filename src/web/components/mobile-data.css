@@ -63,6 +63,7 @@
   :root[data-mobile-layout="app"] .report-table-scroll,
   :root[data-mobile-layout="app"] .model-distribution-scroll,
   :root[data-mobile-layout="app"] .report-heading > .segmented,
+  :root[data-mobile-layout="app"] .report-heading-controls,
   :root[data-mobile-layout="app"]
     .model-chart-tool
     > .section-heading
@@ -487,6 +488,9 @@
     font-size: 12px;
     font-weight: 400;
     white-space: normal;
+  }
+  :root[data-mobile-layout="app"] .mobile-report-item::details-content {
+    grid-column: 1 / -1;
   }
   :root[data-mobile-layout="app"] .mobile-report-details {
     grid-column: 1 / -1;

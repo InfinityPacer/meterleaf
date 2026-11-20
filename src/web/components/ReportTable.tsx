@@ -28,15 +28,28 @@ import {
   aggregateReport,
   amount,
   compact,
+  formatLatencyMs,
+  formatTps,
   localTime,
   modelLabel,
   modelColor,
   numericAmount,
+  performanceAvgDurationMs,
+  performanceAvgFirstTokenMs,
+  performanceTps,
   type ReportDimension,
+  type ReportPerformance,
 } from "../lib/report";
 import { Button } from "./ui/button";
 import { Segmented } from "./Segmented";
 import "./mobile-data.css";
+
+export type ReportMode = "usage" | "performance";
+
+const reportModes = [
+  { value: "usage", label: "用量与费用" },
+  { value: "performance", label: "响应性能" },
+] as const;
 
 const dimensions = [
   { value: "hour", label: "小时" },
@@ -45,7 +58,7 @@ const dimensions = [
   { value: "model", label: "模型" },
   { value: "account", label: "账户" },
 ] as const;
-const reportSortOptions = [
+const usageSortOptions = [
   { value: "key", label: "分组" },
   { value: "tokens", label: "总 Tokens" },
   { value: "input", label: "输入" },
@@ -56,6 +69,14 @@ const reportSortOptions = [
   { value: "requests", label: "请求数" },
   { value: "usd", label: "费用" },
 ] as const;
+const performanceSortOptions = [
+  { value: "key", label: "分组" },
+  { value: "requests", label: "请求数" },
+  { value: "perfSamples", label: "有效样本" },
+  { value: "avgFirstTokenMs", label: "平均首字延迟" },
+  { value: "avgDurationMs", label: "平均总耗时" },
+  { value: "tps", label: "生成速度" },
+] as const;
 const features = tableFeatures({
   rowSortingFeature,
   rowPaginationFeature,
@@ -64,6 +85,29 @@ const features = tableFeatures({
   sortFns: { alphanumeric: sortFn_alphanumeric, basic: sortFn_basic },
 });
 type Row = ReturnType<typeof aggregateReport>[number];
+
+function emptyPerformance(): ReportPerformance {
+  return {
+    durationKnown: 0,
+    durationSumMs: 0,
+    firstTokenKnown: 0,
+    firstTokenSumMs: 0,
+    tpsKnown: 0,
+    tpsOutputSum: 0,
+    tpsDurationSumMs: 0,
+  };
+}
+
+function rowPerformance(row: Row): ReportPerformance {
+  return row.performance ?? emptyPerformance();
+}
+
+function performanceSamplesText(perf: ReportPerformance, requests: number) {
+  if (perf.durationKnown <= 0) return "N/A";
+  return perf.durationKnown < requests
+    ? `${perf.durationKnown.toLocaleString()} / ${requests.toLocaleString()}`
+    : perf.durationKnown.toLocaleString();
+}
 
 /** 命中率 = 缓存读取 ÷ 输入侧三个桶，均按分组内已知值求和；任一桶未知时不给比例。 */
 export function cacheHitRate(
@@ -79,12 +123,23 @@ function percent(value: number | null) {
   return value === null ? "N/A" : `${value.toFixed(1)}%`;
 }
 
-/** 合计沿用各列的未知语义：整列都未知才显示 N/A，金额保留已知部分。 */
+/** 合计沿用各列的未知语义：整列都未知才显示 N/A，金额保留已知部分，性能按总样本加权。 */
 function totalRow(data: Row[]) {
   const sum = (values: (number | null)[]) =>
     values.some((value) => value !== null)
       ? values.reduce<number>((total, value) => total + (value ?? 0), 0)
       : null;
+  const performance = data.reduce<ReportPerformance>((acc, row) => {
+    const p = rowPerformance(row);
+    acc.durationKnown += p.durationKnown;
+    acc.durationSumMs += p.durationSumMs;
+    acc.firstTokenKnown += p.firstTokenKnown;
+    acc.firstTokenSumMs += p.firstTokenSumMs;
+    acc.tpsKnown += p.tpsKnown;
+    acc.tpsOutputSum += p.tpsOutputSum;
+    acc.tpsDurationSumMs += p.tpsDurationSumMs;
+    return acc;
+  }, emptyPerformance());
   return {
     tokens: sum(data.map((row) => row.tokens)),
     input: sum(data.map((row) => row.input)),
@@ -93,6 +148,7 @@ function totalRow(data: Row[]) {
     output: sum(data.map((row) => row.output)),
     requests: data.reduce((total, row) => total + row.requests, 0),
     usd: sum(data.map((row) => numericAmount(row.usd))),
+    performance,
   };
 }
 
@@ -119,20 +175,31 @@ export function ReportTable({
   accounts,
   dimension,
   onDimension,
+  mode: controlledMode,
+  onMode: onControlledMode,
 }: {
   data: Row[];
   count: number;
   accounts: LedgerAccount[];
   dimension: ReportDimension;
   onDimension: (dimension: ReportDimension) => void;
+  mode?: ReportMode;
+  onMode?: (mode: ReportMode) => void;
 }) {
+  const [storedMode, setStoredMode] = usePreference<ReportMode>(
+    "report-mode",
+    preferenceSchemas.reportMode,
+    "usage",
+  );
+  const mode = controlledMode ?? storedMode;
+  const setMode = onControlledMode ?? setStoredMode;
   const [sorting, setSorting] = usePreference<SortingState>(
     "report-sort",
     preferenceSchemas.reportSort,
     [{ id: "key", desc: false }],
   );
   const label = dimensions.find((item) => item.value === dimension)!.label;
-  const columns: ColumnDef<typeof features, Row>[] = [
+  const usageColumns: ColumnDef<typeof features, Row>[] = [
     {
       accessorKey: "key",
       header: label,
@@ -188,24 +255,85 @@ export function ReportTable({
       ),
     },
   ];
+  const performanceColumns: ColumnDef<typeof features, Row>[] = [
+    {
+      accessorKey: "key",
+      header: label,
+      cell: (info) =>
+        reportRowLabel(info.getValue<string>(), dimension, accounts),
+    },
+    {
+      accessorKey: "requests",
+      header: "请求数",
+      cell: (info) => info.getValue<number>().toLocaleString(),
+    },
+    {
+      id: "perfSamples",
+      accessorFn: (row) => rowPerformance(row).durationKnown,
+      header: "有效样本",
+      cell: (info) =>
+        performanceSamplesText(
+          rowPerformance(info.row.original),
+          info.row.original.requests,
+        ),
+    },
+    {
+      id: "avgFirstTokenMs",
+      accessorFn: (row) => performanceAvgFirstTokenMs(rowPerformance(row)),
+      header: "平均首字延迟",
+      cell: (info) => formatLatencyMs(info.getValue<number | null>()),
+    },
+    {
+      id: "avgDurationMs",
+      accessorFn: (row) => performanceAvgDurationMs(rowPerformance(row)),
+      header: "平均总耗时",
+      cell: (info) => formatLatencyMs(info.getValue<number | null>()),
+    },
+    {
+      id: "tps",
+      accessorFn: (row) => performanceTps(rowPerformance(row)),
+      header: "生成速度",
+      cell: (info) => (
+        <strong>{formatTps(info.getValue<number | null>())}</strong>
+      ),
+    },
+  ];
+  const columns = mode === "performance" ? performanceColumns : usageColumns;
+  const activeSortOptions =
+    mode === "performance" ? performanceSortOptions : usageSortOptions;
+  const allowedSortIds = new Set<string>(
+    activeSortOptions.map((option) => option.value),
+  );
+  const effectiveSorting: SortingState =
+    sorting[0] && allowedSortIds.has(sorting[0].id)
+      ? sorting
+      : [{ id: "key", desc: false }];
   const table = useTable({
     features,
     data,
     columns,
-    state: { sorting },
+    state: { sorting: effectiveSorting },
     onSortingChange: setSorting,
     initialState: { pagination: { pageIndex: 0, pageSize: 12 } },
   });
   useEffect(() => {
     table.setPageIndex(0);
-  }, [data]);
-  const activeSorting = sorting[0] ?? { id: "key", desc: false };
-  const mobileReportHeaders = [
-    { id: "key", label },
-    { id: "requests", label: "请求数" },
-    { id: "tokens", label: "Tokens" },
-    { id: "usd", label: "费用" },
-  ] as const;
+  }, [data, mode]);
+  const activeSorting = effectiveSorting[0] ?? { id: "key", desc: false };
+  const mobileReportHeaders =
+    mode === "performance"
+      ? ([
+          { id: "key", label },
+          { id: "perfSamples", label: "样本" },
+          { id: "avgFirstTokenMs", label: "首字" },
+          { id: "tps", label: "速度" },
+        ] as const)
+      : ([
+          { id: "key", label },
+          { id: "requests", label: "请求数" },
+          { id: "tokens", label: "Tokens" },
+          { id: "usd", label: "费用" },
+        ] as const);
   return (
     <section
       className="ledger-section report-section"
@@ -233,6 +361,21 @@ export function ReportTable({
               >
                 <ActionMenu.Popup className="data-menu">
                   <ActionMenu.Group>
+                    <ActionMenu.GroupLabel>查看指标</ActionMenu.GroupLabel>
+                    {reportModes.map((item) => (
+                      <ActionMenu.Item
+                        key={item.value}
+                        onClick={() => setMode(item.value)}
+                      >
+                        {item.label}
+                        {mode === item.value && (
+                          <Check size={15} aria-hidden="true" />
+                        )}
+                      </ActionMenu.Item>
+                    ))}
+                  </ActionMenu.Group>
+                  <ActionMenu.Separator />
+                  <ActionMenu.Group>
                     <ActionMenu.GroupLabel>汇总维度</ActionMenu.GroupLabel>
                     {dimensions.map((item) => (
                       <ActionMenu.Item
@@ -249,7 +392,7 @@ export function ReportTable({
                   <ActionMenu.Separator />
                   <ActionMenu.Group>
                     <ActionMenu.GroupLabel>排序字段</ActionMenu.GroupLabel>
-                    {reportSortOptions.map((option) => (
+                    {activeSortOptions.map((option) => (
                       <ActionMenu.Item
                         key={option.value}
                         onClick={() =>
@@ -285,12 +428,20 @@ export function ReportTable({
             </ActionMenu.Portal>
           </ActionMenu.Root>
         </div>
-        <Segmented
-          label="汇总维度"
-          value={dimension}
-          onChange={onDimension}
-          options={[...dimensions]}
-        />
+        <div className="report-heading-controls">
+          <Segmented
+            label="汇总视角"
+            value={mode}
+            onChange={setMode}
+            options={[...reportModes]}
+          />
+          <Segmented
+            label="汇总维度"
+            value={dimension}
+            onChange={onDimension}
+            options={[...dimensions]}
+          />
+        </div>
       </div>
       {dimension === "week" && (
         <p className="muted report-period">周一起始，首尾周按所选范围统计</p>
@@ -364,6 +515,17 @@ export function ReportTable({
                     cacheRate: percent(cacheHitRate(totals)),
                     requests: totals.requests.toLocaleString(),
                     usd: amount(totals.usd, "usd"),
+                    perfSamples: performanceSamplesText(
+                      totals.performance,
+                      totals.requests,
+                    ),
+                    avgFirstTokenMs: formatLatencyMs(
+                      performanceAvgFirstTokenMs(totals.performance),
+                    ),
+                    avgDurationMs: formatLatencyMs(
+                      performanceAvgDurationMs(totals.performance),
+                    ),
+                    tps: formatTps(performanceTps(totals.performance)),
                   };
                   return table.getAllLeafColumns().map((column) =>
                     column.id === "key" ? (
@@ -422,6 +584,7 @@ export function ReportTable({
         {table.getRowModel().rows.map((row) => {
           const item = row.original;
           const keyLabel = reportRowLabel(item.key, dimension, accounts);
+          const perf = rowPerformance(item);
           return (
             <details key={item.key} className="mobile-report-item">
               <summary>
@@ -434,58 +597,112 @@ export function ReportTable({
                   )}
                   <span>{keyLabel}</span>
                 </span>
-                <span>
-                  <span className="sr-only">请求数 </span>
-                  {item.requests.toLocaleString()}
-                </span>
-                <span>
-                  <span className="sr-only">Tokens </span>
-                  {compact(item.tokens)}
-                </span>
-                <span className="mobile-report-usd">
-                  <span className="sr-only">费用 </span>
-                  <strong>{amount(numericAmount(item.usd), "usd")}</strong>
-                </span>
+                {mode === "performance" ? (
+                  <>
+                    <span>
+                      <span className="sr-only">有效样本 </span>
+                      {perf.durationKnown > 0
+                        ? perf.durationKnown.toLocaleString()
+                        : "N/A"}
+                    </span>
+                    <span>
+                      <span className="sr-only">平均首字延迟 </span>
+                      {formatLatencyMs(performanceAvgFirstTokenMs(perf))}
+                    </span>
+                    <span className="mobile-report-usd">
+                      <span className="sr-only">生成速度 </span>
+                      <strong>{formatTps(performanceTps(perf))}</strong>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span>
+                      <span className="sr-only">请求数 </span>
+                      {item.requests.toLocaleString()}
+                    </span>
+                    <span>
+                      <span className="sr-only">Tokens </span>
+                      {compact(item.tokens)}
+                    </span>
+                    <span className="mobile-report-usd">
+                      <span className="sr-only">费用 </span>
+                      <strong>{amount(numericAmount(item.usd), "usd")}</strong>
+                    </span>
+                  </>
+                )}
               </summary>
               <dl className="mobile-report-details">
                 <div>
                   <dt>分组</dt>
                   <dd>{keyLabel}</dd>
                 </div>
-                <div>
-                  <dt>总 Tokens</dt>
-                  <dd>{compact(item.tokens)}</dd>
-                </div>
-                <div>
-                  <dt>输入</dt>
-                  <dd>{compact(item.input)}</dd>
-                </div>
-                <div>
-                  <dt>缓存读取</dt>
-                  <dd className="cache-text">{compact(item.cacheRead)}</dd>
-                </div>
-                <div>
-                  <dt>缓存写入</dt>
-                  <dd>{compact(item.cacheWrite)}</dd>
-                </div>
-                <div>
-                  <dt>输出</dt>
-                  <dd>{compact(item.output)}</dd>
-                </div>
-                <div>
-                  <dt>缓存命中率</dt>
-                  <dd>{percent(cacheHitRate(item))}</dd>
-                </div>
-                <div>
-                  <dt>请求数</dt>
-                  <dd>{item.requests.toLocaleString()}</dd>
-                </div>
-                <div>
-                  <dt>费用</dt>
-                  <dd>
-                    <strong>{amount(numericAmount(item.usd), "usd")}</strong>
-                  </dd>
-                </div>
+                {mode === "performance" ? (
+                  <>
+                    <div>
+                      <dt>请求数</dt>
+                      <dd>{item.requests.toLocaleString()}</dd>
+                    </div>
+                    <div>
+                      <dt>有效样本</dt>
+                      <dd>{performanceSamplesText(perf, item.requests)}</dd>
+                    </div>
+                    <div>
+                      <dt>平均首字延迟</dt>
+                      <dd>
+                        {formatLatencyMs(performanceAvgFirstTokenMs(perf))}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>平均总耗时</dt>
+                      <dd>{formatLatencyMs(performanceAvgDurationMs(perf))}</dd>
+                    </div>
+                    <div>
+                      <dt>生成速度</dt>
+                      <dd>
+                        <strong>{formatTps(performanceTps(perf))}</strong>
+                      </dd>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <dt>总 Tokens</dt>
+                      <dd>{compact(item.tokens)}</dd>
+                    </div>
+                    <div>
+                      <dt>输入</dt>
+                      <dd>{compact(item.input)}</dd>
+                    </div>
+                    <div>
+                      <dt>缓存读取</dt>
+                      <dd className="cache-text">{compact(item.cacheRead)}</dd>
+                    </div>
+                    <div>
+                      <dt>缓存写入</dt>
+                      <dd>{compact(item.cacheWrite)}</dd>
+                    </div>
+                    <div>
+                      <dt>输出</dt>
+                      <dd>{compact(item.output)}</dd>
+                    </div>
+                    <div>
+                      <dt>缓存命中率</dt>
+                      <dd>{percent(cacheHitRate(item))}</dd>
+                    </div>
+                    <div>
+                      <dt>请求数</dt>
+                      <dd>{item.requests.toLocaleString()}</dd>
+                    </div>
+                    <div>
+                      <dt>费用</dt>
+                      <dd>
+                        <strong>
+                          {amount(numericAmount(item.usd), "usd")}
+                        </strong>
+                      </dd>
+                    </div>
+                  </>
+                )}
               </dl>
             </details>
           );
@@ -496,11 +713,33 @@ export function ReportTable({
             return (
               <div className="mobile-report-total">
                 <span>合计</span>
-                <span>{totals.requests.toLocaleString()}</span>
-                <span>{compact(totals.tokens)}</span>
-                <span className="mobile-report-usd">
-                  <strong>{amount(totals.usd, "usd")}</strong>
-                </span>
+                {mode === "performance" ? (
+                  <>
+                    <span>
+                      {totals.performance.durationKnown > 0
+                        ? totals.performance.durationKnown.toLocaleString()
+                        : "N/A"}
+                    </span>
+                    <span>
+                      {formatLatencyMs(
+                        performanceAvgFirstTokenMs(totals.performance),
+                      )}
+                    </span>
+                    <span className="mobile-report-usd">
+                      <strong>
+                        {formatTps(performanceTps(totals.performance))}
+                      </strong>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span>{totals.requests.toLocaleString()}</span>
+                    <span>{compact(totals.tokens)}</span>
+                    <span className="mobile-report-usd">
+                      <strong>{amount(totals.usd, "usd")}</strong>
+                    </span>
+                  </>
+                )}
               </div>
             );
           })()}

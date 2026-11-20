@@ -320,6 +320,10 @@ export interface DecodedAgyChatModel {
   usage: DecodedAgyModelUsage | null;
   /** #9.#4: ChatStartMetadata.created_at */
   createdAt: string | null;
+  /** #11: 首字耗时（毫秒） */
+  ttftMs: number | null;
+  /** #12: 流式输出耗时（毫秒） */
+  streamingMs: number | null;
   /** #19: 上游实际执行的模型标识字符串 */
   responseModel: string | null;
   /** #20: 键值元数据（如 used_non_gemini_model、request_id、model_enum） */
@@ -449,6 +453,35 @@ function decodeTimestamp(buf: Uint8Array): string | null {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
+/** 解码 google.protobuf.Duration 为毫秒整数；负值或超出一天的异常值返回 null。 */
+function decodeDurationMs(buf: Uint8Array): number | null {
+  let seconds = 0n;
+  let nanos = 0n;
+  let sawField = false;
+  walkProto(buf, (field, wire, value) => {
+    if (wire === 0 && typeof value === "bigint") {
+      if (field === 1) {
+        seconds = value;
+        sawField = true;
+      } else if (field === 2) {
+        nanos = value;
+        sawField = true;
+      }
+    }
+  });
+  // proto3 中 0s Duration 可编码为空消息，只要外层字段存在即视为 0ms。
+  if (
+    seconds < 0n ||
+    seconds > 86_400n ||
+    nanos < 0n ||
+    nanos >= 1_000_000_000n
+  )
+    return null;
+  if (!sawField && buf.byteLength > 0) return null;
+  const ms = Math.round(Number(seconds) * 1000 + Number(nanos) / 1_000_000);
+  return Number.isSafeInteger(ms) && ms >= 0 ? ms : null;
+}
+
 function decodeModelUsageStats(buf: Uint8Array): DecodedAgyModelUsage {
   const usage: DecodedAgyModelUsage = {
     modelEnum: null,
@@ -536,6 +569,8 @@ function decodeChatModelMetadata(buf: Uint8Array): DecodedAgyChatModel {
     modelEnum: null,
     usage: null,
     createdAt: null,
+    ttftMs: null,
+    streamingMs: null,
     responseModel: null,
     customMetadata: {},
     modelDisplayName: null,
@@ -549,6 +584,10 @@ function decodeChatModelMetadata(buf: Uint8Array): DecodedAgyChatModel {
         chatModel.usage = decodeModelUsageStats(value);
       } else if (field === 9) {
         chatModel.createdAt = decodeChatStartMetadata(value);
+      } else if (field === 11) {
+        chatModel.ttftMs = decodeDurationMs(value);
+      } else if (field === 12) {
+        chatModel.streamingMs = decodeDurationMs(value);
       } else if (field === 19) {
         const text = Buffer.from(value).toString("utf8").trim();
         if (text) chatModel.responseModel = text;
@@ -1493,6 +1532,14 @@ export function readAgy(
             };
             if (normalized.upstreamModel) {
               metadata.upstream_model = normalized.upstreamModel;
+            }
+            const ttftMs = decoded.chatModel?.ttftMs ?? null;
+            const streamingMs = decoded.chatModel?.streamingMs ?? null;
+            if (ttftMs !== null) {
+              metadata.first_token_ms = ttftMs;
+              if (streamingMs !== null) {
+                metadata.duration_ms = ttftMs + streamingMs;
+              }
             }
 
             const usage: IngestUsage = {
