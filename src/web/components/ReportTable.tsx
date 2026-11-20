@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Menu as ActionMenu } from "@base-ui/react/menu";
 import { preferenceSchemas, usePreference } from "../lib/preferences";
 import {
@@ -43,6 +43,10 @@ import {
 import { Button } from "./ui/button";
 import { Segmented } from "./Segmented";
 import "./mobile-data.css";
+
+const PerformanceChart = lazy(() =>
+  import("./PerformanceChart").then((m) => ({ default: m.PerformanceChart })),
+);
 
 export type ReportMode = "usage" | "performance";
 
@@ -445,6 +449,15 @@ export function ReportTable({
       </div>
       {dimension === "week" && (
         <p className="muted report-period">周一起始，首尾周按所选范围统计</p>
+      )}
+      {mode === "performance" && data.length > 0 && (
+        <Suspense fallback={<div className="performance-chart-wrap" />}>
+          <PerformanceChart
+            data={data}
+            dimension={dimension}
+            accounts={accounts}
+          />
+        </Suspense>
       )}
       <div
         className="table-scroll report-table-scroll"

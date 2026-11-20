@@ -1016,6 +1016,30 @@ h3 {
   align-items: center;
   gap: 10px;
 }
+.performance-chart-wrap {
+  margin-bottom: 16px;
+  padding: 12px 14px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--soft) 24%, var(--surface));
+}
+.performance-chart {
+  width: 100%;
+  height: 220px;
+}
+@media (max-width: 900px) {
+  .performance-chart-wrap {
+    margin-bottom: 12px;
+    padding: 10px 10px 6px;
+    border-color: var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+  }
+  .performance-chart {
+    height: 196px;
+  }
+}
 .report-section table {
   min-width: 680px;
 }
