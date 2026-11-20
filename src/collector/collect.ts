@@ -24,7 +24,11 @@ import {
 import { attribute } from "./attribution";
 import { modelAccountsDigest, type ModelAccountRule } from "./model-accounts";
 import { UNATTRIBUTED_ACCOUNT_ID } from "./claude-code/account";
-import { mayContainUsage, parseLine } from "./claude-code/usage";
+import {
+  mayContainUsage,
+  parseApiRequestStart,
+  parseLine,
+} from "./claude-code/usage";
 import type { CollectorState, FileCursor, FileObservation } from "./state";
 
 export interface CollectSources {
@@ -174,29 +178,108 @@ export function ingestFile(
     }
 
     const observations = new Map<string, FileObservation>();
+    const requestStarts = new Map<string, number>();
+    const maxRequestDurationMs = 3_600_000;
+    let lookedBackRequests = start === 0;
+    const ensureRequestStartsLookback = () => {
+      if (lookedBackRequests) return;
+      lookedBackRequests = true;
+      // 增量读取恰好落在请求发出与响应完成之间时，向前回看最近 512 KiB 以找回对应的 api-request。
+      const lookbackBytes = 512 * 1024;
+      const from = Math.max(0, start - lookbackBytes);
+      const length = start - from;
+      if (length <= 0) return;
+      const buf = Buffer.allocUnsafe(length);
+      let filled = 0;
+      while (filled < length) {
+        const read = readSync(fd, buf, filled, length - filled, from + filled);
+        if (read <= 0) break;
+        filled += read;
+      }
+      const text = buf.subarray(0, filled).toString("utf8");
+      const firstNewline = from > 0 ? text.indexOf("\n") : -1;
+      const slice = firstNewline >= 0 ? text.slice(firstNewline + 1) : text;
+      for (const prevLine of slice.split("\n")) {
+        const req = parseApiRequestStart(prevLine);
+        if (req && !requestStarts.has(req.id))
+          requestStarts.set(req.id, req.atMs);
+      }
+    };
     const handleLine = (raw: string) => {
       report.lines += 1;
       // 登录线索先于本文件的事件入库，本文件中切换前后的事件随即按切换时刻归属。
       const login = loginMoment(raw);
       if (login && state.recordLoginHint({ at: login, source: "transcript" }))
         onLogin(login);
+      const apiRequest = parseApiRequestStart(raw);
+      if (apiRequest) {
+        requestStarts.set(apiRequest.id, apiRequest.atMs);
+        return;
+      }
       if (!mayContainUsage(raw)) return;
       const result = parseLine(raw);
       if (result.kind === "malformed") report.malformed += 1;
       if (result.kind === "synthetic") report.synthetic += 1;
       if (result.kind !== "usage") return;
       for (const observation of result.observations) {
+        let fact = observation.fact;
+        let durationMs: number | null = null;
+        if (observation.requestRef) {
+          if (!requestStarts.has(observation.requestRef))
+            ensureRequestStartsLookback();
+          const startedAt = requestStarts.get(observation.requestRef);
+          if (startedAt !== undefined) {
+            const elapsed = Math.round(
+              Date.parse(observation.timestamp) - startedAt,
+            );
+            if (
+              Number.isSafeInteger(elapsed) &&
+              elapsed > 0 &&
+              elapsed <= maxRequestDurationMs
+            ) {
+              durationMs = elapsed;
+              fact = {
+                ...fact,
+                metadata: { ...fact.metadata, duration_ms: elapsed },
+              };
+            }
+          }
+        }
         const seen = observations.get(observation.key);
         if (!seen) {
           observations.set(observation.key, {
             key: observation.key,
             firstTimestamp: observation.timestamp,
             total: observation.total,
-            fact: observation.fact,
+            fact,
           });
         } else if (observation.total > seen.total) {
+          const previousDuration =
+            typeof seen.fact.metadata.duration_ms === "number"
+              ? seen.fact.metadata.duration_ms
+              : null;
+          if (
+            previousDuration !== null &&
+            (durationMs === null || previousDuration > durationMs)
+          ) {
+            fact = {
+              ...fact,
+              metadata: { ...fact.metadata, duration_ms: previousDuration },
+            };
+          }
           seen.total = observation.total;
-          seen.fact = observation.fact;
+          seen.fact = fact;
+        } else if (observation.total === seen.total && durationMs !== null) {
+          const previousDuration =
+            typeof seen.fact.metadata.duration_ms === "number"
+              ? seen.fact.metadata.duration_ms
+              : null;
+          if (previousDuration === null || durationMs > previousDuration) {
+            seen.fact = {
+              ...seen.fact,
+              metadata: { ...seen.fact.metadata, duration_ms: durationMs },
+            };
+          }
         }
       }
     };

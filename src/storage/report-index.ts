@@ -62,6 +62,8 @@ interface StoredRecord {
   apiSort: string | null;
   subscriptionSort: string | null;
   tier: LedgerRecord["tier"];
+  durationMs: number | null;
+  firstTokenMs: number | null;
   payload: string;
 }
 
@@ -80,6 +82,8 @@ interface MetricSqlRow {
   subscription_usd: string | null;
   credits: string | null;
   tier: string;
+  duration_ms: number | null;
+  first_token_ms: number | null;
 }
 
 interface HourSqlRow {
@@ -110,6 +114,13 @@ interface HourSqlRow {
   subscription_usd_known: number;
   credits_sum: string;
   credits_known: number;
+  duration_sum: number;
+  duration_known: number;
+  first_token_sum: number;
+  first_token_known: number;
+  tps_output_sum: number;
+  tps_duration_sum: number;
+  tps_known: number;
 }
 
 interface PageSqlRow {
@@ -142,6 +153,11 @@ interface Aggregate {
   apiUsd: MutableAmountSummary;
   subscriptionUsd: MutableAmountSummary;
   credits: MutableAmountSummary;
+  duration: MutableNumberSummary;
+  firstToken: MutableNumberSummary;
+  tpsOutputSum: number;
+  tpsDurationSum: number;
+  tpsKnownRows: number;
 }
 
 interface Contribution {
@@ -196,6 +212,11 @@ function emptyAggregate(): Aggregate {
     apiUsd: emptyAmountSummary(),
     subscriptionUsd: emptyAmountSummary(),
     credits: emptyAmountSummary(),
+    duration: emptyNumberSummary(),
+    firstToken: emptyNumberSummary(),
+    tpsOutputSum: 0,
+    tpsDurationSum: 0,
+    tpsKnownRows: 0,
   };
 }
 
@@ -262,6 +283,12 @@ function storedRecord(record: LedgerRecord): StoredRecord {
   const subscriptionUsd = valueForUsd(record, "subscription");
   const apiUsd = valueForUsd(record, "api");
   const credits = valueForCredits(record);
+  const rawDuration = finiteNumber(record.details?.durationMs ?? null);
+  const durationMs =
+    rawDuration !== null && rawDuration > 0 ? rawDuration : null;
+  const rawFirstToken = finiteNumber(record.details?.firstTokenMs ?? null);
+  const firstTokenMs =
+    rawFirstToken !== null && rawFirstToken >= 0 ? rawFirstToken : null;
   return {
     id: record.id,
     occurredAt: record.occurredAt,
@@ -282,6 +309,8 @@ function storedRecord(record: LedgerRecord): StoredRecord {
     apiSort: amountSortKey(apiUsd),
     subscriptionSort: amountSortKey(subscriptionUsd),
     tier: record.tier,
+    durationMs,
+    firstTokenMs,
     payload: JSON.stringify(record),
   };
 }
@@ -302,6 +331,8 @@ function recordMetric(value: StoredRecord): MetricSqlRow {
     subscription_usd: value.subscriptionUsd,
     credits: value.credits,
     tier: value.tier,
+    duration_ms: value.durationMs,
+    first_token_ms: value.firstTokenMs,
   };
 }
 
@@ -384,6 +415,15 @@ function addAggregate(target: Aggregate, source: Aggregate) {
     source.credits.value.toString(),
     source.credits.knownRows,
   );
+  addNumber(target.duration, source.duration.value, source.duration.knownRows);
+  addNumber(
+    target.firstToken,
+    source.firstToken.value,
+    source.firstToken.knownRows,
+  );
+  target.tpsOutputSum += source.tpsOutputSum;
+  target.tpsDurationSum += source.tpsDurationSum;
+  target.tpsKnownRows += source.tpsKnownRows;
 }
 
 function detailAggregate(row: MetricSqlRow): Aggregate {
@@ -422,6 +462,17 @@ function detailAggregate(row: MetricSqlRow): Aggregate {
     row.subscription_usd === null ? 0 : 1,
   );
   addAmount(result.credits, row.credits ?? "0", row.credits === null ? 0 : 1);
+  if (row.duration_ms !== null && row.duration_ms > 0) {
+    addNumber(result.duration, row.duration_ms, 1);
+    if (row.output !== null && row.output > 0) {
+      result.tpsKnownRows = 1;
+      result.tpsOutputSum = row.output;
+      result.tpsDurationSum = row.duration_ms;
+    }
+  }
+  if (row.first_token_ms !== null && row.first_token_ms >= 0) {
+    addNumber(result.firstToken, row.first_token_ms, 1);
+  }
   return result;
 }
 
@@ -463,6 +514,17 @@ function hourAggregate(row: HourSqlRow): Aggregate {
     value: new Decimal(row.credits_sum),
     knownRows: Number(row.credits_known),
   };
+  result.duration = {
+    value: Number(row.duration_sum),
+    knownRows: Number(row.duration_known),
+  };
+  result.firstToken = {
+    value: Number(row.first_token_sum),
+    knownRows: Number(row.first_token_known),
+  };
+  result.tpsOutputSum = Number(row.tps_output_sum);
+  result.tpsDurationSum = Number(row.tps_duration_sum);
+  result.tpsKnownRows = Number(row.tps_known);
   return result;
 }
 
@@ -676,7 +738,9 @@ const DETAIL_FIELDS = `
   r.api_usd,
   r.subscription_usd,
   r.credits,
-  r.tier`;
+  r.tier,
+  r.duration_ms,
+  r.first_token_ms`;
 
 const HOUR_FIELDS = `
   h.hour_start,
@@ -705,7 +769,14 @@ const HOUR_FIELDS = `
   h.subscription_usd_sum,
   h.subscription_usd_known,
   h.credits_sum,
-  h.credits_known`;
+  h.credits_known,
+  h.duration_sum,
+  h.duration_known,
+  h.first_token_sum,
+  h.first_token_known,
+  h.tps_output_sum,
+  h.tps_duration_sum,
+  h.tps_known`;
 
 /**
  * 明细表的二级索引；建库与全量重建共用同一份定义。分页排序索引每列只建升序一份：
@@ -791,6 +862,8 @@ export class ReportIndex {
         api_sort TEXT,
         subscription_sort TEXT,
         tier TEXT NOT NULL,
+        duration_ms REAL,
+        first_token_ms REAL,
         payload TEXT NOT NULL
       ) STRICT;
       ${RECORD_INDEXES}
@@ -822,6 +895,13 @@ export class ReportIndex {
         subscription_usd_known INTEGER NOT NULL,
         credits_sum TEXT NOT NULL,
         credits_known INTEGER NOT NULL,
+        duration_sum REAL NOT NULL DEFAULT 0,
+        duration_known INTEGER NOT NULL DEFAULT 0,
+        first_token_sum REAL NOT NULL DEFAULT 0,
+        first_token_known INTEGER NOT NULL DEFAULT 0,
+        tps_output_sum REAL NOT NULL DEFAULT 0,
+        tps_duration_sum REAL NOT NULL DEFAULT 0,
+        tps_known INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (hour_start, account_id, model)
       ) STRICT;
       CREATE INDEX IF NOT EXISTS report_hours_model_time
@@ -835,6 +915,37 @@ export class ReportIndex {
         downRevision: null,
         apply: initializeSchema,
       },
+    ]);
+    this.ensurePerformanceColumns();
+  }
+
+  /** 为早期格式 2 的派生索引库幂等补齐性能列；随后由 ReportProjection 按格式 3 全量回填。 */
+  private ensurePerformanceColumns(): void {
+    const addMissing = (table: string, columns: [string, string][]) => {
+      const existing = new Set(
+        this.db
+          .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+          .all()
+          .map((row) => row.name),
+      );
+      for (const [name, definition] of columns) {
+        if (!existing.has(name)) {
+          this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+        }
+      }
+    };
+    addMissing("report_records", [
+      ["duration_ms", "REAL"],
+      ["first_token_ms", "REAL"],
+    ]);
+    addMissing("report_hours", [
+      ["duration_sum", "REAL NOT NULL DEFAULT 0"],
+      ["duration_known", "INTEGER NOT NULL DEFAULT 0"],
+      ["first_token_sum", "REAL NOT NULL DEFAULT 0"],
+      ["first_token_known", "INTEGER NOT NULL DEFAULT 0"],
+      ["tps_output_sum", "REAL NOT NULL DEFAULT 0"],
+      ["tps_duration_sum", "REAL NOT NULL DEFAULT 0"],
+      ["tps_known", "INTEGER NOT NULL DEFAULT 0"],
     ]);
   }
 
@@ -926,7 +1037,7 @@ export class ReportIndex {
           >(
             `SELECT occurred_at, hour_start, day_start, week_start, account_id, model,
               input, cache_read, cache_write, output, input_total,
-              api_usd, subscription_usd, credits, tier, payload
+              api_usd, subscription_usd, credits, tier, duration_ms, first_token_ms, payload
              FROM report_records WHERE id=?`,
           )
           .get(value.id);
@@ -947,7 +1058,9 @@ export class ReportIndex {
           previous.api_usd === value.apiUsd &&
           previous.subscription_usd === value.subscriptionUsd &&
           previous.credits === value.credits &&
-          previous.tier === value.tier
+          previous.tier === value.tier &&
+          previous.duration_ms === value.durationMs &&
+          previous.first_token_ms === value.firstTokenMs
         ) {
           if (previous.payload !== value.payload)
             this.db
@@ -1341,6 +1454,15 @@ export class ReportIndex {
       apiUsd: amountString(aggregate.apiUsd),
       subscriptionUsd: amountString(aggregate.subscriptionUsd),
       credits: amountString(aggregate.credits),
+      performance: {
+        durationKnown: aggregate.duration.knownRows,
+        durationSumMs: aggregate.duration.value,
+        firstTokenKnown: aggregate.firstToken.knownRows,
+        firstTokenSumMs: aggregate.firstToken.value,
+        tpsKnown: aggregate.tpsKnownRows,
+        tpsOutputSum: aggregate.tpsOutputSum,
+        tpsDurationSumMs: aggregate.tpsDurationSum,
+      },
     };
   }
 
@@ -1352,8 +1474,8 @@ export class ReportIndex {
           account_id, model, id_lc, account_lc, model_lc, search_text,
           input, cache_read, cache_write, output, input_total,
           api_usd, subscription_usd, credits, api_sort, subscription_sort,
-          tier, payload
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          tier, duration_ms, first_token_ms, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           occurred_at=excluded.occurred_at,
           occurred_ms=excluded.occurred_ms,
@@ -1377,6 +1499,8 @@ export class ReportIndex {
           api_sort=excluded.api_sort,
           subscription_sort=excluded.subscription_sort,
           tier=excluded.tier,
+          duration_ms=excluded.duration_ms,
+          first_token_ms=excluded.first_token_ms,
           payload=excluded.payload`,
       )
       .run(
@@ -1403,6 +1527,8 @@ export class ReportIndex {
         value.apiSort,
         value.subscriptionSort,
         value.tier,
+        value.durationMs,
+        value.firstTokenMs,
         value.payload,
       );
   }
@@ -1413,7 +1539,7 @@ export class ReportIndex {
       const rows = this.db.query<MetricSqlRow, []>(
         `SELECT hour_start, day_start, week_start, account_id, model,
            input, cache_read, cache_write, output, input_total,
-           api_usd, subscription_usd, credits, tier
+           api_usd, subscription_usd, credits, tier, duration_ms, first_token_ms
          FROM report_records
          ORDER BY hour_start, account_id, model, id`,
       );
@@ -1425,7 +1551,7 @@ export class ReportIndex {
       const rows = this.db.query<MetricSqlRow, [number]>(
         `SELECT hour_start, day_start, week_start, account_id, model,
            input, cache_read, cache_write, output, input_total,
-           api_usd, subscription_usd, credits, tier
+           api_usd, subscription_usd, credits, tier, duration_ms, first_token_ms
          FROM report_records
          WHERE hour_start=?
          ORDER BY account_id, model, id`,
@@ -1461,8 +1587,10 @@ export class ReportIndex {
             token_sum, token_known, token_incomplete, complete_cache_count,
             complete_cache_input_sum, complete_cache_read_sum, unknown_tier,
             api_usd_sum, api_usd_known,
-            subscription_usd_sum, subscription_usd_known, credits_sum, credits_known
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            subscription_usd_sum, subscription_usd_known, credits_sum, credits_known,
+            duration_sum, duration_known, first_token_sum, first_token_known,
+            tps_output_sum, tps_duration_sum, tps_known
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           row.hour_start,
@@ -1492,6 +1620,13 @@ export class ReportIndex {
           aggregate.subscriptionUsd.knownRows,
           aggregate.credits.value.toString(),
           aggregate.credits.knownRows,
+          aggregate.duration.value,
+          aggregate.duration.knownRows,
+          aggregate.firstToken.value,
+          aggregate.firstToken.knownRows,
+          aggregate.tpsOutputSum,
+          aggregate.tpsDurationSum,
+          aggregate.tpsKnownRows,
         );
     }
   }

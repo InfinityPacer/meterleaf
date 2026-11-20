@@ -111,9 +111,9 @@ export class ReportProjection {
     // 更早则说明中间那段变更已经不可读，只能全量重建。
     const changeFloor = this.store.reportUsageChangeFloor();
     const checkpoint: ProjectionCheckpoint = {
-      // 格式 2 起明细表不再建降序分页索引；旧格式文件整份重建一次，回滚到旧版本时
-      // 旧版本也会因格式不符重建出它需要的索引。
-      format: 2,
+      // 格式 3 为明细与小时汇总补充响应耗时与首字延迟列；旧格式文件整份重建一次，
+      // 回滚到旧版本时旧版本也会因格式不符重建出它需要的结构。
+      format: 3,
       schemaRevision: currentSchemaRevision(this.index.db, "report"),
       ...file,
       book: this.book,
