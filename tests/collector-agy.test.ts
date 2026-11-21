@@ -1701,3 +1701,128 @@ exit 0
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("readAgyQuotaFile, refreshAgyQuota, and maybeRefreshOmpAgyQuota preserve unopened 0/0 windows", async () => {
+  const w = refreshWorkspace();
+  const state = new CollectorState(":memory:");
+  try {
+    writeFileSync(join(w.statuslineDir, "current-account"), "alice\n");
+    writeFileSync(w.quota, "plan\tGoogle AI Ultra\t-\n");
+    utimesSync(w.quota, longAgo, longAgo);
+
+    const agy = fakeAgy(w.dir, {
+      output: JSON.stringify({
+        status: "SUCCESS",
+        command: {
+          data: {
+            groups: [
+              {
+                buckets: [
+                  {
+                    id: "gemini-weekly",
+                    remaining_fraction: 1,
+                    reset_time: null,
+                  },
+                  { id: "3p-weekly", remaining_fraction: 1 },
+                  // 已用额度非 0 但缺少 reset_time 的异常桶仍丢弃
+                  { id: "gemini-5h", remaining_fraction: 0.5 },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+      loggedInAs: "alice@example.com",
+    });
+
+    const refreshed = await refreshAgyQuota(w.sources, { agyBin: agy.script });
+    expect(refreshed).toMatchObject({
+      attempted: true,
+      refreshed: true,
+      label: "alice",
+      error: null,
+    });
+    expect(readFileSync(w.quota, "utf8")).toBe(
+      [
+        "gemini_weekly\t0\t0",
+        "3p_weekly\t0\t0",
+        "plan\tGoogle AI Ultra\t-",
+      ].join("\n") + "\n",
+    );
+
+    const parsed = readAgyQuotaFile(
+      w.quota,
+      "alice",
+      new Date("2026-10-31T12:00:00.000Z"),
+    )!;
+    expect(parsed.ignoredLines).toBe(0);
+    expect(parsed.entries).toEqual([
+      {
+        key: "gemini_weekly",
+        pool: "gemini",
+        accountExternalId: "agy-alice",
+        window: "seven-day",
+        windowMinutes: 10080,
+        percent: 0,
+        resetsAt: null,
+        expired: false,
+      },
+      {
+        key: "3p_weekly",
+        pool: "3p",
+        accountExternalId: "agy-alice",
+        window: "seven-day-3p",
+        windowMinutes: 10080,
+        percent: 0,
+        resetsAt: null,
+        expired: false,
+      },
+    ]);
+
+    // 确认非 0 百分比配 resetEpoch 0 仍作为无效行忽略
+    const badFile = join(w.statuslineDir, "quota-bad.tsv");
+    writeFileSync(badFile, "gemini_weekly\t50\t0\n3p_weekly\t0\t0\n");
+    const parsedBad = readAgyQuotaFile(
+      badFile,
+      "bad",
+      new Date("2026-10-31T12:00:00.000Z"),
+    )!;
+    expect(parsedBad.ignoredLines).toBe(1);
+    expect(parsedBad.entries.map((e) => e.key)).toEqual(["3p_weekly"]);
+
+    // omp usage --json 返回 remainingFraction === 1 且无 resetsAt 时同样保留为 0\t0
+    const omp = fakeOmp(
+      w.dir,
+      JSON.stringify({
+        reports: [
+          {
+            provider: "google-antigravity",
+            fetchedAt: 1793702034369,
+            metadata: { email: "bob@example.com", projectId: "p" },
+            limits: [
+              {
+                id: "google-antigravity:anthropic:default:3p-weekly",
+                window: { resetsAt: 0 },
+                amount: { remainingFraction: 1 },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const ompRes = await maybeRefreshOmpAgyQuota(
+      state,
+      w.sources,
+      { exhausted: false },
+      new Date("2026-10-31T12:00:00.000Z"),
+      { ompBin: omp.script },
+    );
+    expect(ompRes).toMatchObject({ refreshed: true, labels: ["bob"] });
+    expect(readFileSync(join(w.statuslineDir, "quota-bob.tsv"), "utf8")).toBe(
+      "3p_weekly\t0\t0\n",
+    );
+  } finally {
+    state.close();
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});

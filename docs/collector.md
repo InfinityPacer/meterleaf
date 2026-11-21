@@ -388,17 +388,38 @@ METERLEAF_TASK_STATE_DIR="$HOME/Library/Application Support/Meterleaf Collector/
 
 这依赖 Claude Code 当前的会话记录格式。以后 Claude Code 换了判断方式，最坏的结果是这些会话重新不在列表里，用会话 ID 仍然可以打开。
 
-### 周额度到期自动预热（开窗）
+### 额度到期与重置自动预热（开窗）
 
-Antigravity（各实例的 Gemini 与 Claude/GPT 池）和 Codex 的 7 天周窗口与 5 小时窗口，都是在上一周期到期后的第一笔请求时才起算新周期。如果到期时电脑睡眠或闲置，新周期的重置时间就会往后顺延。
+Antigravity（各实例的 Gemini 与 Claude/GPT 池）和 Codex 的 7 天周窗口与 5 小时窗口，都是在上一周期到期或被上游重置后的第一笔请求时才起算新周期。如果窗口在电脑睡眠或闲置期间到期或重置，新周期的重置时间就会往后顺延。
 
-仓库里的 `scripts/quota-warmup.ts` 检查本机已有的 Antigravity 状态栏额度缓存（含默认实例与同级 `antigravity-cli-<name>` 额外实例）和 `~/.codex/sessions` 最新会话的额度通知。平时不发任何请求；一旦发现某个窗口的重置时间已过，就随机挑一条极简问候语（`ok`、`hi` 等），用该池最廉价的模型发一次单轮请求触发新周期开窗：
+仓库里的 `scripts/quota-warmup.ts` 检查本机已有的 Antigravity 状态栏额度缓存（含默认实例与同级 `antigravity-cli-<name>` 额外实例）和 `~/.codex/sessions` 最新会话的额度通知。已启用的 Antigravity 账号如果本地缓存缺失或较旧，会按带随机抖动的间隔（默认 50–80 分钟）执行一次只读 `agy -p /usage`（不调用模型、不消耗额度）以发现上游中途提前重置；一旦发现窗口已到期或处于未开窗状态（`0\t0`），就随机挑一条极简问候语（`ok`、`hi` 等），用该池最廉价的模型发一次单轮请求触发新周期开窗：
 
-- **Antigravity Gemini 池**（`gemini_weekly`）：调用 `gemini-3.8-flash-low`，随后执行一次 `agy -p /usage` 把新周期写回状态栏缓存。
-- **Antigravity 第三方池**（`3p_weekly`）：优先调用 `gpt-oss-120b-medium`（失败时回退 `claude-sonnet-5-5-low`），随后执行 `agy -p /usage` 刷新缓存。
-- **Codex**（`seven-day`）：在临时目录下调用 `codex exec --ignore-user-config`（指定 `openai` 通道、`gpt-6-luna`、`low` 推理档位与仅单字回复指令），产生的会话记录由下一轮采集器同步自动读取新周期额度。
+- **Antigravity Gemini 池**（`gemini_weekly` / `gemini_5h`）：调用 `gemini-3.8-flash-low`，随后执行一次 `agy -p /usage` 把新周期写回状态栏缓存。
+- **Antigravity 第三方池**（`3p_weekly` / `3p_5h`）：优先调用 `gpt-oss-120b-medium`（失败时回退 `claude-sonnet-5-5-low`），随后执行 `agy -p /usage` 刷新缓存。
+- **Codex**（`seven-day` / `five-hour`）：在临时目录下调用 `codex exec --ignore-user-config`（指定 `openai` 通道、`gpt-6-luna`、`low` 推理档位与仅单字回复指令），产生的会话记录由下一轮采集器同步自动读取新周期额度。
 
-默认只预热 7 天周窗口；传入 `--codex-5h`（或 `METERLEAF_WARMUP_CODEX_5H=1`）时一并预热 Codex 的 5 小时窗口，传入 `--include-5h`（或 `METERLEAF_WARMUP_5H=1`）时预热全部来源的 5 小时窗口。每个已成功预热的旧周期在 `tasks/quota-warmup/state.json` 里记录，只触发一次；如果当轮失败，下一轮任务（5 分钟后）会自动重试。
+默认只预热 7 天周窗口；传入 `--codex-5h`（或 `METERLEAF_WARMUP_CODEX_5H=1`）时一并预热 Codex 的 5 小时窗口，传入 `--include-5h`（或 `METERLEAF_WARMUP_5H=1`）时预热全部来源的 5 小时窗口。每个已成功预热的旧周期在 `tasks/quota-warmup/state.json` 里记录，只触发一次；未开窗状态（`0\t0`）按 30 分钟冷却避免重复刷屏；如果当轮失败，下一轮任务（5 分钟后）会自动重试。
+
+需要按账号、按池子或按窗口（`5h` / `7d`）分别控制开关，或调整只读 `/usage` 刷新的随机间隔时，可在 `tasks/quota-warmup/config.json`（与 `state.json` 同目录，也可用 `METERLEAF_WARMUP_CONFIG` 指定路径）里编写配置：
+
+```json
+{
+  "usageRefreshMinutes": { "min": 50, "max": 80 },
+  "defaults": { "enabled": true, "5h": false, "7d": true },
+  "accounts": {
+    "codex": { "enabled": true, "5h": true, "7d": true },
+    "agy:tern": { "enabled": true, "5h": true, "7d": true },
+    "agy:tide": { "enabled": true, "5h": false, "7d": true },
+    "agy:owl": {
+      "enabled": true,
+      "gemini": { "5h": true, "7d": true },
+      "3p": { "5h": false, "7d": true }
+    }
+  }
+}
+```
+
+`defaults` 适用于未单独列出的账号（含后续新增账号）；`accounts` 支持 `codex` 与 `agy:<账号标签>`（也可按 `agy:@<实例名>` 或 `agy:<实例名>` 兜底匹配，精确标签优先），将某账号设为 `enabled: false` 会同时跳过它的只读 `/usage` 巡检与全部预热。`5h` 开关的优先级为：池级配置 > 账号级配置 > 命令行参数 / 环境变量 > `defaults` > 内置默认（`false`）。
 
 ```sh
 install -m 755 scripts/quota-warmup.ts ~/.local/bin/meterleaf-quota-warmup

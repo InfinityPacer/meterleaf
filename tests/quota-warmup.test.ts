@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +12,13 @@ import { join } from "node:path";
 import {
   AGY_POOL_MODELS,
   CODEX_WARMUP_MODEL,
+  DEFAULT_USAGE_REFRESH_MAX_MINUTES,
+  DEFAULT_USAGE_REFRESH_MIN_MINUTES,
+  UNOPENED_WARMUP_COOLDOWN_SEC,
   WARMUP_PROMPTS,
+  loadWarmupConfig,
+  parseUsageBuckets,
+  readAgyQuotaTsv,
   runWarmup,
   type CommandRunner,
 } from "../scripts/quota-warmup";
@@ -132,8 +139,9 @@ describe("quota-warmup task script", () => {
     const nowSec = 1_800_000_000;
 
     // phronara: 3p_weekly 已到期 (nowSec - 600)，gemini_5h 已到期 (nowSec - 300)，gemini_weekly 未到期
+    const phronaraQuota = join(sb.statuslineDir, "quota-phronara.tsv");
     writeFileSync(
-      join(sb.statuslineDir, "quota-phronara.tsv"),
+      phronaraQuota,
       [
         `gemini_5h\t40\t${nowSec - 300}`,
         `gemini_weekly\t15\t${nowSec + 86400}`,
@@ -142,10 +150,13 @@ describe("quota-warmup task script", () => {
         "plan\tGoogle AI Ultra\t-",
       ].join("\n") + "\n",
     );
+    const freshMtime = new Date((nowSec - 60) * 1000);
+    utimesSync(phronaraQuota, freshMtime, freshMtime);
 
     // tidewren (@tide): gemini_weekly 已到期 (nowSec - 120)，3p_weekly 未到期
+    const tideQuota = join(sb.statuslineDir, "quota-tidewren.tsv");
     writeFileSync(
-      join(sb.statuslineDir, "quota-tidewren.tsv"),
+      tideQuota,
       [
         `gemini_5h\t80\t${nowSec - 120}`,
         `gemini_weekly\t100\t${nowSec - 120}`,
@@ -154,6 +165,7 @@ describe("quota-warmup task script", () => {
         "plan\tGoogle AI Ultra\t-",
       ].join("\n") + "\n",
     );
+    utimesSync(tideQuota, freshMtime, freshMtime);
 
     // codex: seven-day 已到期 (nowSec - 50)，five-hour 未到期
     writeCodexRollout(join(sb.codexSessions, "rollout-1.jsonl"), {
@@ -284,8 +296,9 @@ describe("quota-warmup task script", () => {
     const nowSec = 1_800_000_000;
 
     // phronara: 仅 3p_5h 到期，3p_weekly 未到期
+    const phronaraQuota = join(sb.statuslineDir, "quota-phronara.tsv");
     writeFileSync(
-      join(sb.statuslineDir, "quota-phronara.tsv"),
+      phronaraQuota,
       [
         `gemini_5h\t10\t${nowSec + 3600}`,
         `gemini_weekly\t15\t${nowSec + 86400}`,
@@ -293,6 +306,8 @@ describe("quota-warmup task script", () => {
         `3p_weekly\t40\t${nowSec + 86400}`,
       ].join("\n") + "\n",
     );
+    const freshMtime = new Date((nowSec - 60) * 1000);
+    utimesSync(phronaraQuota, freshMtime, freshMtime);
 
     // codex: 仅 five-hour 到期，seven-day 未到期
     writeCodexRollout(join(sb.codexSessions, "rollout-1.jsonl"), {
@@ -378,5 +393,724 @@ describe("quota-warmup task script", () => {
     expect(second.actions).toHaveLength(1);
     expect(second.actions[0]!.succeeded).toBe(true);
     expect(runCount).toBe(2);
+  });
+
+  test("parseUsageBuckets and readAgyQuotaTsv preserve unopened 0/0 windows while rejecting invalid rows", () => {
+    const sb = createSandbox();
+    const futureIso = "2027-01-20T00:00:00.000Z";
+    const futureSec = Math.floor(Date.parse(futureIso) / 1000);
+    const parsed = parseUsageBuckets(
+      JSON.stringify({
+        status: "SUCCESS",
+        command: {
+          data: {
+            groups: [
+              {
+                buckets: [
+                  // 缺失 / null / 空串 / 0 / epoch 0 且 remaining_fraction === 1，均保留为 0\t0
+                  { id: "gemini-5h", remaining_fraction: 1 },
+                  {
+                    id: "gemini-weekly",
+                    remaining_fraction: 1,
+                    reset_time: null,
+                  },
+                  { id: "3p-5h", remaining_fraction: 1, reset_time: "" },
+                  { id: "3p-weekly", remaining_fraction: 1, reset_time: 0 },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    );
+    expect(parsed).toBeInstanceOf(Map);
+    const rows = parsed as Map<string, string>;
+    expect(rows.get("gemini_5h")).toBe("gemini_5h\t0\t0");
+    expect(rows.get("gemini_weekly")).toBe("gemini_weekly\t0\t0");
+    expect(rows.get("3p_5h")).toBe("3p_5h\t0\t0");
+    expect(rows.get("3p_weekly")).toBe("3p_weekly\t0\t0");
+
+    // remaining_fraction < 1 却没有 reset_time、或 reset_time 格式非法时，应丢弃该桶
+    const mixed = parseUsageBuckets(
+      JSON.stringify({
+        status: "SUCCESS",
+        command: {
+          data: {
+            groups: [
+              {
+                buckets: [
+                  { id: "gemini-5h", remaining_fraction: 0.5 },
+                  {
+                    id: "gemini-weekly",
+                    remaining_fraction: 1,
+                    reset_time: "not-a-date",
+                  },
+                  {
+                    id: "3p-5h",
+                    remaining_fraction: 1,
+                    reset_time: "1970-01-01T00:00:00Z",
+                  },
+                  {
+                    id: "3p-weekly",
+                    remaining_fraction: 0.005,
+                    reset_time: futureIso,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    );
+    expect(mixed).toBeInstanceOf(Map);
+    const mixedRows = mixed as Map<string, string>;
+    expect(mixedRows.has("gemini_5h")).toBe(false);
+    expect(mixedRows.has("gemini_weekly")).toBe(false);
+    expect(mixedRows.get("3p_5h")).toBe("3p_5h\t0\t0");
+    expect(mixedRows.get("3p_weekly")).toBe(`3p_weekly\t100\t${futureSec}`);
+
+    const tsvPath = join(sb.statuslineDir, "quota-phronara.tsv");
+    writeFileSync(
+      tsvPath,
+      [
+        "gemini_5h\t\t",
+        "gemini_weekly\t50\t0",
+        "3p_5h\t0\t0",
+        `3p_weekly\t12\t${futureSec}`,
+        "plan\tGoogle AI Ultra\t-",
+      ].join("\n") + "\n",
+    );
+    const tsv = readAgyQuotaTsv(tsvPath)!;
+    expect(tsv.windows.has("gemini_5h")).toBe(false);
+    expect(tsv.windows.has("gemini_weekly")).toBe(false);
+    expect(tsv.windows.get("3p_5h")).toEqual({ percent: 0, resetEpoch: 0 });
+    expect(tsv.windows.get("3p_weekly")).toEqual({
+      percent: 12,
+      resetEpoch: futureSec,
+    });
+  });
+
+  test("warms up resetEpoch === 0 targets even with legacy handled state and writes refreshed resetEpoch", async () => {
+    const sb = createSandbox();
+    const nowSec = 1_800_000_000;
+    const nextWeekSec = nowSec + 604_800;
+
+    // 模拟旧版 state.json：handled 已有历史时间戳，绝不能锁死 resetEpoch === 0
+    writeFileSync(
+      join(sb.stateDir, "state.json"),
+      JSON.stringify({ handled: { "agy:phronara:3p": nowSec - 86_400 } }),
+    );
+
+    const phronaraQuota = join(sb.statuslineDir, "quota-phronara.tsv");
+    writeFileSync(
+      phronaraQuota,
+      [
+        `gemini_weekly\t10\t${nowSec + 86_400}`,
+        "3p_weekly\t0\t0",
+        "plan\tGoogle AI Ultra\t-",
+      ].join("\n") + "\n",
+    );
+    const freshMtime = new Date((nowSec - 60) * 1000);
+    utimesSync(phronaraQuota, freshMtime, freshMtime);
+
+    // tidewren 保持未到期，避免干扰本用例断言
+    const tideQuota = join(sb.statuslineDir, "quota-tidewren.tsv");
+    writeFileSync(
+      tideQuota,
+      [
+        `gemini_weekly\t10\t${nowSec + 86_400}`,
+        `3p_weekly\t10\t${nowSec + 86_400}`,
+      ].join("\n") + "\n",
+    );
+    utimesSync(tideQuota, freshMtime, freshMtime);
+
+    const runner: CommandRunner = async (argv) => {
+      if (argv.includes("/usage")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            status: "SUCCESS",
+            command: {
+              data: {
+                groups: [
+                  {
+                    buckets: [
+                      {
+                        id: "3p-weekly",
+                        remaining_fraction: 1,
+                        reset_time: new Date(nextWeekSec * 1000).toISOString(),
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          }),
+          logText: "",
+        };
+      }
+      return { exitCode: 0, stdout: "ok\n", logText: "" };
+    };
+
+    const report = await runWarmup(sb.env, {
+      now: () => new Date(nowSec * 1000),
+      runner,
+    });
+
+    expect(report.actions).toHaveLength(1);
+    expect(report.actions[0]).toMatchObject({
+      key: "agy:phronara:3p",
+      windows: ["3p_weekly"],
+      resetEpoch: 0,
+      succeeded: true,
+      refreshedQuota: true,
+    });
+    expect(readFileSync(phronaraQuota, "utf8")).toContain(
+      `3p_weekly\t0\t${nextWeekSec}`,
+    );
+    const savedState = JSON.parse(
+      readFileSync(join(sb.stateDir, "state.json"), "utf8"),
+    ) as {
+      handled: Record<string, number>;
+      unopenedWarmupAt: Record<string, number>;
+    };
+    expect(savedState.handled["agy:phronara:3p"]).toBe(nowSec - 86_400);
+    expect(savedState.unopenedWarmupAt["agy:phronara:3p"]).toBe(nowSec);
+  });
+
+  test("applies cooldown to resetEpoch === 0 targets that stay unopened and retries after cooldown expires", async () => {
+    const sb = createSandbox();
+    const nowSec = 1_800_000_000;
+    const phronaraQuota = join(sb.statuslineDir, "quota-phronara.tsv");
+    const tideQuota = join(sb.statuslineDir, "quota-tidewren.tsv");
+    const writeQuotas = (atSec: number) => {
+      writeFileSync(
+        phronaraQuota,
+        [`gemini_weekly\t10\t${atSec + 86_400}`, "3p_weekly\t0\t0"].join("\n") +
+          "\n",
+      );
+      writeFileSync(
+        tideQuota,
+        [
+          `gemini_weekly\t10\t${atSec + 86_400}`,
+          `3p_weekly\t10\t${atSec + 86_400}`,
+        ].join("\n") + "\n",
+      );
+      const mtime = new Date((atSec - 30) * 1000);
+      utimesSync(phronaraQuota, mtime, mtime);
+      utimesSync(tideQuota, mtime, mtime);
+    };
+    writeQuotas(nowSec);
+
+    let warmupRuns = 0;
+    const runner: CommandRunner = async (argv) => {
+      if (argv.includes("/usage")) {
+        // 上游持续返回未开窗的 0\t0
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            status: "SUCCESS",
+            command: {
+              data: {
+                groups: [
+                  {
+                    buckets: [
+                      {
+                        id: "3p-weekly",
+                        remaining_fraction: 1,
+                        reset_time: null,
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          }),
+          logText: "",
+        };
+      }
+      warmupRuns += 1;
+      return { exitCode: 0, stdout: "ok\n", logText: "" };
+    };
+
+    const first = await runWarmup(sb.env, {
+      now: () => new Date(nowSec * 1000),
+      runner,
+    });
+    expect(first.actions).toHaveLength(1);
+    expect(warmupRuns).toBe(1);
+
+    // 5 分钟后仍在冷却期内：跳过，不重复发送预热消息
+    const withinCooldownSec = nowSec + 5 * 60;
+    utimesSync(
+      phronaraQuota,
+      new Date((withinCooldownSec - 30) * 1000),
+      new Date((withinCooldownSec - 30) * 1000),
+    );
+    utimesSync(
+      tideQuota,
+      new Date((withinCooldownSec - 30) * 1000),
+      new Date((withinCooldownSec - 30) * 1000),
+    );
+    const second = await runWarmup(sb.env, {
+      now: () => new Date(withinCooldownSec * 1000),
+      runner,
+    });
+    expect(second.actions).toHaveLength(0);
+    expect(second.skippedHandled).toContain("agy:phronara:3p");
+    expect(warmupRuns).toBe(1);
+
+    // 30 分钟冷却期满后：允许重试
+    const afterCooldownSec = nowSec + UNOPENED_WARMUP_COOLDOWN_SEC;
+    utimesSync(
+      phronaraQuota,
+      new Date((afterCooldownSec - 30) * 1000),
+      new Date((afterCooldownSec - 30) * 1000),
+    );
+    utimesSync(
+      tideQuota,
+      new Date((afterCooldownSec - 30) * 1000),
+      new Date((afterCooldownSec - 30) * 1000),
+    );
+    const third = await runWarmup(sb.env, {
+      now: () => new Date(afterCooldownSec * 1000),
+      runner,
+    });
+    expect(third.actions).toHaveLength(1);
+    expect(third.actions[0]!.key).toBe("agy:phronara:3p");
+    expect(warmupRuns).toBe(2);
+  });
+
+  test("refreshes stale Antigravity quota cache via read-only /usage to detect mid-cycle resets and throttles repeat probes with jitter", async () => {
+    const sb = createSandbox();
+    const nowSec = 1_800_000_000;
+    const minSec = DEFAULT_USAGE_REFRESH_MIN_MINUTES * 60;
+    const maxSec = DEFAULT_USAGE_REFRESH_MAX_MINUTES * 60;
+    const staleMtime = new Date((nowSec - maxSec - 60) * 1000);
+    const freshMtime = new Date((nowSec - 60) * 1000);
+    const newWeekSec = nowSec + 604_800;
+
+    // phronara 缓存陈旧，本地仍显示未来重置时间，但上游已中途重置为 0\t0
+    const phronaraQuota = join(sb.statuslineDir, "quota-phronara.tsv");
+    writeFileSync(
+      phronaraQuota,
+      [
+        `gemini_weekly\t40\t${nowSec + 259_200}`,
+        `3p_weekly\t30\t${nowSec + 259_200}`,
+        "plan\tGoogle AI Ultra\t-",
+      ].join("\n") + "\n",
+    );
+    utimesSync(phronaraQuota, staleMtime, staleMtime);
+
+    // tidewren 缓存同样陈旧，但上游未发生重置（仍返回未来重置时间）
+    const tideQuota = join(sb.statuslineDir, "quota-tidewren.tsv");
+    writeFileSync(
+      tideQuota,
+      [
+        `gemini_weekly\t20\t${nowSec + 259_200}`,
+        `3p_weekly\t10\t${nowSec + 259_200}`,
+      ].join("\n") + "\n",
+    );
+    utimesSync(tideQuota, staleMtime, staleMtime);
+
+    const calls: string[][] = [];
+    let phronaraWarmed = false;
+    const runner: CommandRunner = async (argv) => {
+      calls.push(argv);
+      const isTide = argv.includes("antigravity-cli-tide");
+      if (argv.includes("/usage")) {
+        if (isTide) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              status: "SUCCESS",
+              command: {
+                data: {
+                  groups: [
+                    {
+                      buckets: [
+                        {
+                          id: "gemini-weekly",
+                          remaining_fraction: 0.8,
+                          reset_time: new Date(
+                            (nowSec + 259_200) * 1000,
+                          ).toISOString(),
+                        },
+                        {
+                          id: "3p-weekly",
+                          remaining_fraction: 0.9,
+                          reset_time: new Date(
+                            (nowSec + 259_200) * 1000,
+                          ).toISOString(),
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            }),
+            logText: "",
+          };
+        }
+        // 首次 /usage 返回被上游提前重置的 gemini-weekly（remaining=1，无 reset_time）；
+        // 预热后第二次 /usage 返回新开启的 7 天周期。
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            status: "SUCCESS",
+            command: {
+              data: {
+                groups: [
+                  {
+                    buckets: [
+                      phronaraWarmed
+                        ? {
+                            id: "gemini-weekly",
+                            remaining_fraction: 1,
+                            reset_time: new Date(
+                              newWeekSec * 1000,
+                            ).toISOString(),
+                          }
+                        : {
+                            id: "gemini-weekly",
+                            remaining_fraction: 1,
+                            reset_time: null,
+                          },
+                      {
+                        id: "3p-weekly",
+                        remaining_fraction: 0.7,
+                        reset_time: new Date(
+                          (nowSec + 259_200) * 1000,
+                        ).toISOString(),
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          }),
+          logText: "",
+        };
+      }
+      phronaraWarmed = true;
+      return { exitCode: 0, stdout: "ok\n", logText: "" };
+    };
+
+    // dry-run 不发起任何 /usage 或预热命令
+    const dryReport = await runWarmup(sb.env, {
+      dryRun: true,
+      now: () => new Date(nowSec * 1000),
+      runner,
+    });
+    expect(calls).toHaveLength(0);
+    expect(dryReport.refreshedAgyAccounts).toEqual([]);
+    expect(dryReport.actions).toHaveLength(0);
+
+    // 正式运行：注入确定性 random，phronara 巡检取 min(0)、tidewren 巡检取中点(0.5=65m)、
+    // phronara 预热后刷新取 max(1=80m)。
+    const rngValues = [0, 0.5, 1];
+    const report = await runWarmup(sb.env, {
+      now: () => new Date(nowSec * 1000),
+      random: () => rngValues.shift() ?? 0,
+      runner,
+    });
+    expect(report.refreshedAgyAccounts).toEqual(["phronara", "tidewren"]);
+    expect(report.actions).toHaveLength(1);
+    expect(report.actions[0]).toMatchObject({
+      key: "agy:phronara:gemini",
+      windows: ["gemini_weekly"],
+      resetEpoch: 0,
+      succeeded: true,
+      refreshedQuota: true,
+    });
+    expect(readFileSync(phronaraQuota, "utf8")).toContain(
+      `gemini_weekly\t0\t${newWeekSec}`,
+    );
+    expect(readFileSync(phronaraQuota, "utf8")).toContain(
+      "plan\tGoogle AI Ultra\t-",
+    );
+
+    const savedState = JSON.parse(
+      readFileSync(join(sb.stateDir, "state.json"), "utf8"),
+    ) as { nextUsageRefreshAt: Record<string, number> };
+    expect(savedState.nextUsageRefreshAt.phronara).toBe(nowSec + maxSec);
+    expect(savedState.nextUsageRefreshAt.tidewren).toBe(
+      nowSec + Math.round((minSec + maxSec) / 2),
+    );
+
+    // 55 分钟后（已超过 min=50m，但未到 tidewren 的 65m 抖动时间点）：不触发刷新
+    const callsAfterFirst = calls.length;
+    utimesSync(phronaraQuota, freshMtime, freshMtime);
+    utimesSync(tideQuota, staleMtime, staleMtime);
+    const beforeJitter = await runWarmup(sb.env, {
+      now: () => new Date((nowSec + 55 * 60) * 1000),
+      random: () => 0,
+      runner,
+    });
+    expect(beforeJitter.refreshedAgyAccounts).toEqual([]);
+    expect(calls).toHaveLength(callsAfterFirst);
+
+    // 65 分钟到达 tidewren 的抖动时间点：仅刷新 tidewren
+    const atJitter = await runWarmup(sb.env, {
+      now: () => new Date((nowSec + 65 * 60) * 1000),
+      random: () => 1,
+      runner,
+    });
+    expect(atJitter.refreshedAgyAccounts).toEqual(["tidewren"]);
+    expect(calls).toHaveLength(callsAfterFirst + 1);
+  });
+
+  test("backs off failed /usage refresh with custom jitter range and migrates legacy usageRefreshAt state", async () => {
+    const sb = createSandbox();
+    const nowSec = 1_800_000_000;
+    const staleMtime = new Date((nowSec - 7200) * 1000);
+
+    // 自定义抖动区间 20-40 分钟
+    writeFileSync(
+      join(sb.stateDir, "config.json"),
+      JSON.stringify({
+        usageRefreshMinutes: { min: 20, max: 40 },
+      }),
+    );
+
+    // 旧版 state.json 仅有 usageRefreshAt：phronara 10 分钟前刷新过（应平滑折算为 +20m=10m 后才允许刷新）
+    writeFileSync(
+      join(sb.stateDir, "state.json"),
+      JSON.stringify({
+        handled: {},
+        usageRefreshAt: { phronara: nowSec - 600 },
+      }),
+    );
+
+    const phronaraQuota = join(sb.statuslineDir, "quota-phronara.tsv");
+    const tideQuota = join(sb.statuslineDir, "quota-tidewren.tsv");
+    for (const file of [phronaraQuota, tideQuota]) {
+      writeFileSync(
+        file,
+        [
+          `gemini_weekly\t10\t${nowSec + 86_400}`,
+          `3p_weekly\t10\t${nowSec + 86_400}`,
+        ].join("\n") + "\n",
+      );
+      utimesSync(file, staleMtime, staleMtime);
+    }
+
+    const usageTargets: string[] = [];
+    const runner: CommandRunner = async (argv) => {
+      usageTargets.push(
+        argv.includes("antigravity-cli-tide") ? "tidewren" : "phronara",
+      );
+      return { exitCode: 1, stdout: "", logText: "" };
+    };
+
+    // 第 1 轮：phronara 仍在旧版 usageRefreshAt + 20m 窗口内被跳过；tidewren 失败后按 max(40m) 退避
+    await runWarmup(sb.env, {
+      now: () => new Date(nowSec * 1000),
+      random: () => 1,
+      runner,
+    });
+    expect(usageTargets).toEqual(["tidewren"]);
+
+    // 10 分钟后：phronara 到达折算的下次刷新点（-10m + 20m = nowSec + 600）；tidewren 仍在 40m 退避期内
+    await runWarmup(sb.env, {
+      now: () => new Date((nowSec + 600) * 1000),
+      random: () => 0,
+      runner,
+    });
+    expect(usageTargets).toEqual(["tidewren", "phronara"]);
+
+    // 39 分钟后：tidewren 仍未到 40m；40 分钟后才重试
+    await runWarmup(sb.env, {
+      now: () => new Date((nowSec + 39 * 60) * 1000),
+      random: () => 0,
+      runner,
+    });
+    expect(usageTargets).toEqual(["tidewren", "phronara", "phronara"]);
+
+    await runWarmup(sb.env, {
+      now: () => new Date((nowSec + 40 * 60) * 1000),
+      random: () => 0,
+      runner,
+    });
+    expect(usageTargets).toEqual([
+      "tidewren",
+      "phronara",
+      "phronara",
+      "tidewren",
+    ]);
+  });
+
+  test("applies per-account, per-pool, and per-window config switches with precedence over CLI flags", async () => {
+    const sb = createSandbox();
+    const nowSec = 1_800_000_000;
+    const staleMtime = new Date((nowSec - 7200) * 1000);
+    const freshMtime = new Date((nowSec - 60) * 1000);
+
+    // 增加第三个实例 @tern（账号标签 tern），用来测试 profile 兜底匹配与 defaults 继承
+    const ternAppData = join(
+      sb.root,
+      "home",
+      ".gemini",
+      "antigravity-cli-tern",
+    );
+    mkdirSync(join(ternAppData, "conversations"), { recursive: true });
+    writeFileSync(
+      join(ternAppData, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "tern@gmail.com" }),
+    );
+    // 再增加第四个未在 config.accounts 中列出的实例 @extra，用来验证 defaults 继承
+    const extraAppData = join(
+      sb.root,
+      "home",
+      ".gemini",
+      "antigravity-cli-extra",
+    );
+    mkdirSync(join(extraAppData, "conversations"), { recursive: true });
+    writeFileSync(
+      join(extraAppData, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "extra@gmail.com" }),
+    );
+
+    const writeAllExpired = (file: string, mtime: Date) => {
+      writeFileSync(
+        file,
+        [
+          `gemini_5h\t80\t${nowSec - 60}`,
+          `gemini_weekly\t80\t${nowSec - 60}`,
+          `3p_5h\t80\t${nowSec - 60}`,
+          `3p_weekly\t80\t${nowSec - 60}`,
+        ].join("\n") + "\n",
+      );
+      utimesSync(file, mtime, mtime);
+    };
+
+    // phronara: gemini 开 5h+7d，3p 关 5h、开 7d（验证池级覆盖）
+    writeAllExpired(join(sb.statuslineDir, "quota-phronara.tsv"), freshMtime);
+    // tidewren (@tide): 通过 profile 兜底键 agy:tide 设为 enabled: false，缓存故意设为陈旧验证不触发 /usage
+    writeAllExpired(join(sb.statuslineDir, "quota-tidewren.tsv"), staleMtime);
+    // tern (@tern): 通过 agy:@tern 开启 5h、关闭 7d
+    writeAllExpired(join(sb.statuslineDir, "quota-tern.tsv"), freshMtime);
+    // extra (@extra): 未列出，继承 defaults（5h: false, 7d: true）
+    writeAllExpired(join(sb.statuslineDir, "quota-extra.tsv"), freshMtime);
+
+    // codex: 两个窗口均到期，配置文件明确关 5h、开 7d，即使命令行传入 --codex-5h / --include-5h 也以配置明确项为准
+    writeCodexRollout(join(sb.codexSessions, "rollout-1.jsonl"), {
+      timestamp: new Date((nowSec - 10) * 1000).toISOString(),
+      fiveHourReset: nowSec - 30,
+      sevenDayReset: nowSec - 30,
+    });
+
+    const customConfigPath = join(sb.root, "custom-warmup-config.json");
+    writeFileSync(
+      customConfigPath,
+      JSON.stringify({
+        defaults: { enabled: true, "5h": false, "7d": true },
+        accounts: {
+          codex: { enabled: true, "5h": false, "7d": true },
+          "agy:phronara": {
+            enabled: true,
+            gemini: { "5h": true, "7d": true },
+            "3p": { "5h": false, "7d": true },
+          },
+          "agy:tide": { enabled: false },
+          "agy:@tern": { enabled: true, "5h": true, "7d": false },
+        },
+      }),
+    );
+
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (argv) => {
+      calls.push(argv);
+      return { exitCode: 0, stdout: "ok\n", logText: "" };
+    };
+
+    const report = await runWarmup(
+      { ...sb.env, METERLEAF_WARMUP_CONFIG: customConfigPath },
+      {
+        includeCodex5h: true,
+        now: () => new Date(nowSec * 1000),
+        runner,
+      },
+    );
+
+    // tidewren 被 enabled: false 禁用：既不做陈旧 /usage 巡检，也不进入 checkedAgyAccounts 与 actions
+    expect(report.refreshedAgyAccounts).toEqual([]);
+    expect(report.checkedAgyAccounts).toEqual(["phronara", "extra", "tern"]);
+    expect(calls.some((argv) => argv.includes("antigravity-cli-tide"))).toBe(
+      false,
+    );
+
+    const byKey = new Map(report.actions.map((a) => [a.key, a.windows]));
+    expect(byKey.get("agy:phronara:gemini")).toEqual([
+      "gemini_weekly",
+      "gemini_5h",
+    ]);
+    expect(byKey.get("agy:phronara:3p")).toEqual(["3p_weekly"]);
+    expect(byKey.get("agy:tern:gemini")).toEqual(["gemini_5h"]);
+    expect(byKey.get("agy:tern:3p")).toEqual(["3p_5h"]);
+    expect(byKey.get("agy:extra:gemini")).toEqual(["gemini_weekly"]);
+    expect(byKey.get("agy:extra:3p")).toEqual(["3p_weekly"]);
+    // codex 显式配置 5h: false，覆盖了传入的 includeCodex5h: true
+    expect(byKey.get("codex:default")).toEqual(["seven-day"]);
+
+    // 验证精确匹配 agy:<label> 优先于 agy:<profile>，以及 --include-5h 覆盖未列出账号的 defaults["5h"]
+    writeFileSync(
+      customConfigPath,
+      JSON.stringify({
+        defaults: { enabled: true, "5h": false, "7d": false },
+        accounts: {
+          codex: { enabled: false },
+          "agy:tidewren": {
+            enabled: true,
+            gemini: { enabled: false },
+            "3p": { "5h": true, "7d": false },
+          },
+          "agy:tide": { enabled: false },
+        },
+      }),
+    );
+    utimesSync(
+      join(sb.statuslineDir, "quota-tidewren.tsv"),
+      freshMtime,
+      freshMtime,
+    );
+    // extra 进入新一轮 5h / 7d 到期，避免命中第 1 轮已记录的 handledEpoch
+    writeFileSync(
+      join(sb.statuslineDir, "quota-extra.tsv"),
+      [
+        `gemini_5h\t80\t${nowSec + 10}`,
+        `gemini_weekly\t80\t${nowSec + 10}`,
+        `3p_5h\t80\t${nowSec + 10}`,
+        `3p_weekly\t80\t${nowSec + 10}`,
+      ].join("\n") + "\n",
+    );
+    utimesSync(
+      join(sb.statuslineDir, "quota-extra.tsv"),
+      freshMtime,
+      freshMtime,
+    );
+
+    const second = await runWarmup(
+      { ...sb.env, METERLEAF_WARMUP_CONFIG: customConfigPath },
+      {
+        dryRun: true,
+        include5h: true,
+        now: () => new Date((nowSec + 60) * 1000),
+        runner,
+      },
+    );
+    expect(second.checkedCodex).toBe(false);
+    const secondByKey = new Map(second.actions.map((a) => [a.key, a.windows]));
+    // agy:tidewren 精确匹配胜过 agy:tide，且 gemini 池被单独关闭、3p 池开启 5h
+    expect(secondByKey.has("agy:tidewren:gemini")).toBe(false);
+    expect(secondByKey.get("agy:tidewren:3p")).toEqual(["3p_5h"]);
+    // 未列出账号（extra）在 --include-5h 下覆盖 defaults["5h"]: false，启用 5h 但保持 7d: false
+    expect(secondByKey.get("agy:extra:gemini")).toEqual(["gemini_5h"]);
+    expect(secondByKey.get("agy:extra:3p")).toEqual(["3p_5h"]);
+
+    // 损坏的 JSON 配置文件必须明确报错，避免静默忽略用户的停用规则
+    const brokenPath = join(sb.root, "broken-config.json");
+    writeFileSync(brokenPath, "{ invalid json");
+    expect(() => loadWarmupConfig(brokenPath)).toThrow("不是有效 JSON");
   });
 });
