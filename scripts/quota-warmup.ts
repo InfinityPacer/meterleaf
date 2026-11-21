@@ -5,12 +5,18 @@
  *
  * Antigravity 与 Codex 的周额度（7 天）和 5 小时窗口都是从窗口到期后的第一笔请求起算。
  * 如果窗口在睡眠或闲置期间到期，直到人手动发消息才开始新周期，周期轮转时间就会顺延。
- * 本脚本作为采集器的额外任务运行（每 5 分钟一次，睡眠唤醒后随下一轮 sync 自动补跑），
- * 仅靠本地额度缓存与会话文件判断窗口是否已到期，平时不发起任何探测请求。
+ * 本脚本作为采集器的额外任务运行（每 5 分钟一次，睡眠唤醒后随下一轮 sync 自动补跑）。
+ * 平时依靠本地额度缓存与会话文件判断窗口是否到期或处于未开窗状态（`0\t0`）；
+ * 当某已启用 Antigravity 账号的额度缓存缺失或陈旧时，按带随机抖动的间隔（默认 50–80 分钟）
+ * 发一次只读 `agy -p /usage` 刷新缓存（不调用模型、不消耗额度），以便及时发现上游中途重置。
+ * 未开窗目标（`resetEpoch === 0`）按 30 分钟冷却重试，避免上游持续返回未开窗时每 5 分钟刷屏。
  *
- * 默认只预热周窗口（`gemini_weekly`、`3p_weekly`、`codex:seven-day`）；
- * 传入 `--codex-5h`（或环境变量 `METERLEAF_WARMUP_CODEX_5H=1`）时开启 Codex 5 小时窗口预热，
- * 传入 `--include-5h`（或环境变量 `METERLEAF_WARMUP_5H=1`）时一并开启所有 5 小时窗口预热。
+ * 窗口与账号开关可在状态目录的 `config.json`（或环境变量 `METERLEAF_WARMUP_CONFIG` 指定路径）
+ * 中按账号、按池子与窗口（`5h` / `7d`）独立配置。无配置文件时默认只预热周窗口
+ * （`gemini_weekly`、`3p_weekly`、`codex:seven-day`），传入 `--codex-5h`（或
+ * `METERLEAF_WARMUP_CODEX_5H=1`）开启 Codex 5 小时预热，传入 `--include-5h`（或
+ * `METERLEAF_WARMUP_5H=1`）开启全部 5 小时预热。
+ * 优先级：配置文件账号/池明确项 > 命令行参数与环境变量 > 配置文件 `defaults` > 内置默认。
  *
  * 用法: bun scripts/quota-warmup.ts [--dry-run] [--codex-5h] [--include-5h]
  */
@@ -61,6 +67,13 @@ export const CODEX_WARMUP_MODEL = "gpt-6-luna";
 
 const COMMAND_TIMEOUT_MS = 45_000;
 
+/** 未开窗目标（resetEpoch === 0）预热后的冷却秒数，避免上游迟迟不返回重置时间时每 5 分钟重复预热。 */
+export const UNOPENED_WARMUP_COOLDOWN_SEC = 30 * 60;
+
+/** Antigravity 闲置账号只读 /usage 刷新的默认随机抖动区间（分钟）。 */
+export const DEFAULT_USAGE_REFRESH_MIN_MINUTES = 50;
+export const DEFAULT_USAGE_REFRESH_MAX_MINUTES = 80;
+
 const quotaBuckets: Record<string, AgyWindowKey> = {
   "gemini-5h": "gemini_5h",
   "gemini-weekly": "gemini_weekly",
@@ -106,15 +119,42 @@ export interface WarmupAction {
 
 export interface WarmupReport {
   checkedAgyAccounts: string[];
+  refreshedAgyAccounts: string[];
   checkedCodex: boolean;
   eligible: WarmupTarget[];
   actions: WarmupAction[];
   skippedHandled: string[];
 }
 
+export interface WindowRuleConfig {
+  enabled?: boolean;
+  "5h"?: boolean;
+  "7d"?: boolean;
+}
+
+export interface AgyAccountRuleConfig extends WindowRuleConfig {
+  gemini?: WindowRuleConfig;
+  "3p"?: WindowRuleConfig;
+}
+
+export interface UsageRefreshMinutesConfig {
+  min?: number;
+  max?: number;
+}
+
+export interface WarmupConfig {
+  usageRefreshMinutes?: UsageRefreshMinutesConfig;
+  defaults?: WindowRuleConfig;
+  accounts?: Record<string, AgyAccountRuleConfig>;
+}
+
 interface StateFile {
   /** 已成功预热的 `target.key -> resetEpoch`，同一旧周期只触发一次。 */
   handled: Record<string, number>;
+  /** 未开窗目标（resetEpoch === 0）最近一次成功预热的 Unix 秒，用于冷却防刷屏。 */
+  unopenedWarmupAt: Record<string, number>;
+  /** 各 Antigravity 账号下次允许执行只读 /usage 刷新的 Unix 秒（含随机抖动与失败退避）。 */
+  nextUsageRefreshAt: Record<string, number>;
 }
 
 export interface CommandExecution {
@@ -179,17 +219,226 @@ function codexHome(env: Env): string {
   return env.CODEX_HOME || join(env.HOME || homedir(), ".codex");
 }
 
-function loadState(path: string): StateFile {
+function configFilePath(env: Env, stateDirectory: string): string {
+  return env.METERLEAF_WARMUP_CONFIG || join(stateDirectory, "config.json");
+}
+
+function parseWindowRule(raw: unknown): WindowRuleConfig | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const rule: WindowRuleConfig = {};
+  if (typeof obj.enabled === "boolean") rule.enabled = obj.enabled;
+  if (typeof obj["5h"] === "boolean") rule["5h"] = obj["5h"];
+  if (typeof obj["7d"] === "boolean") rule["7d"] = obj["7d"];
+  return rule;
+}
+
+function parseAccountRule(raw: unknown): AgyAccountRuleConfig | undefined {
+  const base = parseWindowRule(raw);
+  if (!base) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const rule: AgyAccountRuleConfig = { ...base };
+  const gemini = parseWindowRule(obj.gemini);
+  if (gemini) rule.gemini = gemini;
+  const thirdParty = parseWindowRule(obj["3p"]);
+  if (thirdParty) rule["3p"] = thirdParty;
+  return rule;
+}
+
+/** 读取可选的预热配置文件；文件不存在时返回空对象，格式错误时抛出明确报错。 */
+export function loadWarmupConfig(path: string): WarmupConfig {
+  let rawText: string;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<StateFile>;
+    rawText = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return {};
+    }
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (error) {
+    throw new Error(
+      `预热配置文件不是有效 JSON (${path}): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`预热配置文件根节点必须是 JSON 对象 (${path})`);
+  }
+  const obj = parsed as Record<string, unknown>;
+  const config: WarmupConfig = {};
+  if (
+    obj.usageRefreshMinutes &&
+    typeof obj.usageRefreshMinutes === "object" &&
+    !Array.isArray(obj.usageRefreshMinutes)
+  ) {
+    const minutes = obj.usageRefreshMinutes as Record<string, unknown>;
+    config.usageRefreshMinutes = {
+      ...(typeof minutes.min === "number" ? { min: minutes.min } : {}),
+      ...(typeof minutes.max === "number" ? { max: minutes.max } : {}),
+    };
+  }
+  const defaults = parseWindowRule(obj.defaults);
+  if (defaults) config.defaults = defaults;
+  if (
+    obj.accounts &&
+    typeof obj.accounts === "object" &&
+    !Array.isArray(obj.accounts)
+  ) {
+    const accounts: Record<string, AgyAccountRuleConfig> = {};
+    for (const [key, value] of Object.entries(
+      obj.accounts as Record<string, unknown>,
+    )) {
+      const rule = parseAccountRule(value);
+      if (rule) accounts[key] = rule;
+    }
+    config.accounts = accounts;
+  }
+  return config;
+}
+
+function resolveUsageRefreshBoundsSec(
+  config: UsageRefreshMinutesConfig | undefined,
+): { minSec: number; maxSec: number } {
+  const rawMin =
+    typeof config?.min === "number" &&
+    Number.isFinite(config.min) &&
+    config.min >= 1
+      ? config.min
+      : undefined;
+  const rawMax =
+    typeof config?.max === "number" &&
+    Number.isFinite(config.max) &&
+    config.max >= 1
+      ? config.max
+      : undefined;
+  let minMinutes =
+    rawMin ??
+    (rawMax !== undefined
+      ? Math.min(DEFAULT_USAGE_REFRESH_MIN_MINUTES, rawMax)
+      : DEFAULT_USAGE_REFRESH_MIN_MINUTES);
+  let maxMinutes =
+    rawMax ?? Math.max(DEFAULT_USAGE_REFRESH_MAX_MINUTES, minMinutes);
+  if (minMinutes > maxMinutes) {
+    [minMinutes, maxMinutes] = [maxMinutes, minMinutes];
+  }
+  return {
+    minSec: Math.round(minMinutes * 60),
+    maxSec: Math.round(maxMinutes * 60),
+  };
+}
+
+function pickUsageRefreshIntervalSec(
+  minSec: number,
+  maxSec: number,
+  random: () => number,
+): number {
+  if (maxSec <= minSec) return minSec;
+  const sample = random();
+  const clamped = Number.isFinite(sample)
+    ? Math.min(1, Math.max(0, sample))
+    : 0;
+  return Math.round(minSec + clamped * (maxSec - minSec));
+}
+
+function parseOptionalEnvFlag(value: string | undefined): boolean | undefined {
+  if (value === "1" || value === "true") return true;
+  if (value === "0" || value === "false") return false;
+  return undefined;
+}
+
+function findAgyAccountRule(
+  accounts: Record<string, AgyAccountRuleConfig> | undefined,
+  label: string,
+  profileName: string | null,
+): AgyAccountRuleConfig | undefined {
+  if (!accounts) return undefined;
+  const byLabel = accounts[`agy:${label}`];
+  if (byLabel) return byLabel;
+  if (profileName !== null) {
+    return accounts[`agy:@${profileName}`] ?? accounts[`agy:${profileName}`];
+  }
+  return undefined;
+}
+
+function findCodexAccountRule(
+  accounts: Record<string, AgyAccountRuleConfig> | undefined,
+): WindowRuleConfig | undefined {
+  if (!accounts) return undefined;
+  return accounts.codex ?? accounts["codex:default"];
+}
+
+function resolveAgyPoolPolicy(
+  defaults: WindowRuleConfig | undefined,
+  accountRule: AgyAccountRuleConfig | undefined,
+  pool: "gemini" | "3p",
+  cliInclude5h: boolean | undefined,
+): { enabled: boolean; fiveHour: boolean; sevenDay: boolean } {
+  const accountEnabled = accountRule?.enabled ?? defaults?.enabled ?? true;
+  const poolRule = accountRule?.[pool];
+  return {
+    enabled: accountEnabled && (poolRule?.enabled ?? true),
+    fiveHour:
+      poolRule?.["5h"] ??
+      accountRule?.["5h"] ??
+      cliInclude5h ??
+      defaults?.["5h"] ??
+      false,
+    sevenDay:
+      poolRule?.["7d"] ?? accountRule?.["7d"] ?? defaults?.["7d"] ?? true,
+  };
+}
+
+function resolveCodexPolicy(
+  defaults: WindowRuleConfig | undefined,
+  accountRule: WindowRuleConfig | undefined,
+  cliInclude5h: boolean | undefined,
+  cliIncludeCodex5h: boolean | undefined,
+): { enabled: boolean; fiveHour: boolean; sevenDay: boolean } {
+  const cli5h =
+    cliInclude5h === true ? true : (cliIncludeCodex5h ?? cliInclude5h);
+  return {
+    enabled: accountRule?.enabled ?? defaults?.enabled ?? true,
+    fiveHour: accountRule?.["5h"] ?? cli5h ?? defaults?.["5h"] ?? false,
+    sevenDay: accountRule?.["7d"] ?? defaults?.["7d"] ?? true,
+  };
+}
+
+function readNumberMap(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function loadState(path: string, legacyRefreshIntervalSec: number): StateFile {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<
+      StateFile & { usageRefreshAt?: Record<string, number> }
+    >;
+    const nextUsageRefreshAt = readNumberMap(parsed?.nextUsageRefreshAt);
+    // 兼容旧版 state.json 的 usageRefreshAt（上次刷新时间），按最小间隔折算为下次允许时间。
+    const legacyUsageRefreshAt = readNumberMap(parsed?.usageRefreshAt);
+    for (const [label, lastAt] of Object.entries(legacyUsageRefreshAt)) {
+      if (nextUsageRefreshAt[label] === undefined) {
+        nextUsageRefreshAt[label] = lastAt + legacyRefreshIntervalSec;
+      }
+    }
     return {
-      handled:
-        parsed?.handled && typeof parsed.handled === "object"
-          ? parsed.handled
-          : {},
+      handled: readNumberMap(parsed?.handled),
+      unopenedWarmupAt: readNumberMap(parsed?.unopenedWarmupAt),
+      nextUsageRefreshAt,
     };
   } catch {
-    return { handled: {} };
+    return { handled: {}, unopenedWarmupAt: {}, nextUsageRefreshAt: {} };
   }
 }
 
@@ -486,14 +735,19 @@ export function readAgyQuotaTsv(path: string): ParsedAgyQuota | null {
       key !== "3p_weekly"
     )
       continue;
-    const percent = Number(second.trim());
-    const resetEpoch = Number(third.trim());
+    const percentText = second.trim();
+    const resetText = third.trim();
+    if (!/^\d+$/.test(percentText) || !/^\d+$/.test(resetText)) continue;
+    const percent = Number(percentText);
+    const resetEpoch = Number(resetText);
+    // 0\t0 表示窗口刚被重置或新账号尚未开窗，保留为 resetEpoch = 0 以便触发首次预热。
     if (
-      !Number.isInteger(percent) ||
+      !Number.isSafeInteger(percent) ||
       percent < 0 ||
       percent > 100 ||
-      !Number.isInteger(resetEpoch) ||
-      resetEpoch <= 0
+      !Number.isSafeInteger(resetEpoch) ||
+      resetEpoch < 0 ||
+      (resetEpoch === 0 && percent !== 0)
     )
       continue;
     windows.set(key, { percent, resetEpoch });
@@ -501,7 +755,38 @@ export function readAgyQuotaTsv(path: string): ParsedAgyQuota | null {
   return windows.size > 0 || plan ? { windows, plan } : null;
 }
 
-function parseUsageBuckets(output: string): Map<string, string> | string {
+/** 剩余不足 1% 时上游已拒绝请求，按 100% 计，与采集器口径一致。 */
+function usedPercent(remaining: number): number {
+  return remaining < 0.01 ? 100 : Math.round((1 - remaining) * 100);
+}
+
+/**
+ * 解析 /usage 桶的 reset_time 为 Unix 秒。
+ * remaining_fraction 为 1 且 reset_time 缺失、为 null/空字符串/0 时表示未开窗或刚重置，记为 0。
+ */
+function parseAgyUsageResetEpoch(
+  resetTime: unknown,
+  remaining: number,
+): number | null {
+  if (
+    resetTime === undefined ||
+    resetTime === null ||
+    resetTime === "" ||
+    resetTime === 0 ||
+    resetTime === "0"
+  ) {
+    return remaining === 1 ? 0 : null;
+  }
+  if (typeof resetTime !== "string") return null;
+  const resetMs = Date.parse(resetTime);
+  if (!Number.isFinite(resetMs)) return null;
+  const sec = Math.floor(resetMs / 1000);
+  return sec > 0 ? sec : remaining === 1 ? 0 : null;
+}
+
+export function parseUsageBuckets(
+  output: string,
+): Map<string, string> | string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(output);
@@ -520,21 +805,17 @@ function parseUsageBuckets(output: string): Map<string, string> | string {
       const key =
         typeof bucket?.id === "string" ? quotaBuckets[bucket.id] : null;
       const remaining = bucket?.remaining_fraction;
-      const resetMs =
-        typeof bucket?.reset_time === "string"
-          ? Date.parse(bucket.reset_time)
-          : NaN;
       if (
         !key ||
         typeof remaining !== "number" ||
         !Number.isFinite(remaining) ||
         remaining < 0 ||
-        remaining > 1 ||
-        !Number.isFinite(resetMs)
+        remaining > 1
       )
         continue;
-      const used = Math.round((1 - remaining) * 100);
-      rows.set(key, `${key}\t${used}\t${Math.floor(resetMs / 1000)}`);
+      const resetEpoch = parseAgyUsageResetEpoch(bucket?.reset_time, remaining);
+      if (resetEpoch === null) continue;
+      rows.set(key, `${key}\t${usedPercent(remaining)}\t${resetEpoch}`);
     }
   }
   return rows.size > 0 ? rows : "agy /usage 没有可用的额度桶";
@@ -686,6 +967,7 @@ export interface WarmupOptions {
   include5h?: boolean;
   includeCodex5h?: boolean;
   now?: () => Date;
+  random?: () => number;
   pickPrompt?: (prompts: readonly string[]) => string;
   runner?: CommandRunner;
 }
@@ -696,14 +978,12 @@ export async function runWarmup(
 ): Promise<WarmupReport> {
   const now = options.now ?? (() => new Date());
   const nowSec = Math.floor(now().getTime() / 1000);
-  const include5h =
-    options.include5h ??
-    (env.METERLEAF_WARMUP_5H === "1" || env.METERLEAF_WARMUP_5H === "true");
-  const includeCodex5h =
-    include5h ||
-    (options.includeCodex5h ??
-      (env.METERLEAF_WARMUP_CODEX_5H === "1" ||
-        env.METERLEAF_WARMUP_CODEX_5H === "true"));
+  const random = options.random ?? Math.random;
+  const cliInclude5h =
+    options.include5h ?? parseOptionalEnvFlag(env.METERLEAF_WARMUP_5H);
+  const cliIncludeCodex5h =
+    options.includeCodex5h ??
+    parseOptionalEnvFlag(env.METERLEAF_WARMUP_CODEX_5H);
   const pickPrompt =
     options.pickPrompt ??
     ((prompts) => prompts[Math.floor(Math.random() * prompts.length)]!);
@@ -711,8 +991,11 @@ export async function runWarmup(
 
   const stateDirectory = stateDir(env);
   mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
+  const config = loadWarmupConfig(configFilePath(env, stateDirectory));
+  const { minSec: refreshMinSec, maxSec: refreshMaxSec } =
+    resolveUsageRefreshBoundsSec(config.usageRefreshMinutes);
   const statePath = join(stateDirectory, "state.json");
-  const state = loadState(statePath);
+  const state = loadState(statePath, refreshMinSec);
 
   const statusDir = statuslineDir(env);
   const defaultConvDir = conversationsDir(env);
@@ -720,33 +1003,109 @@ export async function runWarmup(
 
   const report: WarmupReport = {
     checkedAgyAccounts: [],
+    refreshedAgyAccounts: [],
     checkedCodex: false,
     eligible: [],
     actions: [],
     skippedHandled: [],
   };
 
-  // 1. 收集 Antigravity 各实例已到期的池子（同一池子的 weekly 与 5h 共用一次请求）。
+  let stateModified = false;
+  const unopenedTargetKeys = new Set<string>();
+
+  // 1. 收集 Antigravity 各实例已到期或未开窗的池子（同一池子的 weekly 与 5h 共用一次请求）。
   const seenAgyLabels = new Set<string>();
   for (const instance of instances) {
     const label = instance.label;
     if (!label || seenAgyLabels.has(label)) continue;
     seenAgyLabels.add(label);
-    const quota = readAgyQuotaTsv(join(statusDir, `quota-${label}.tsv`));
+
+    const accountRule = findAgyAccountRule(
+      config.accounts,
+      label,
+      instance.profileName,
+    );
+    const poolPolicies = {
+      gemini: resolveAgyPoolPolicy(
+        config.defaults,
+        accountRule,
+        "gemini",
+        cliInclude5h,
+      ),
+      "3p": resolveAgyPoolPolicy(
+        config.defaults,
+        accountRule,
+        "3p",
+        cliInclude5h,
+      ),
+    };
+    const accountActive =
+      (poolPolicies.gemini.enabled &&
+        (poolPolicies.gemini.fiveHour || poolPolicies.gemini.sevenDay)) ||
+      (poolPolicies["3p"].enabled &&
+        (poolPolicies["3p"].fiveHour || poolPolicies["3p"].sevenDay));
+    // 账号停用或全部池子窗口均关闭时，跳过陈旧 /usage 巡检与全部预热。
+    if (!accountActive) continue;
+
+    const quotaPath = join(statusDir, `quota-${label}.tsv`);
+
+    // 闲置账号的本地缓存可能保留旧的未来重置时间，无法发现上游中途重置；
+    // 缓存缺失或 mtime 超过最小刷新阈值且到达该账号的随机抖动时间点时，做一次只读 /usage 刷新。
+    if (!options.dryRun) {
+      let fileMtimeSec: number | null = null;
+      try {
+        const st = statSync(quotaPath);
+        if (st.isFile()) fileMtimeSec = Math.floor(st.mtimeMs / 1000);
+      } catch {
+        // 缓存尚未生成。
+      }
+      const cacheStale =
+        fileMtimeSec === null || nowSec - fileMtimeSec >= refreshMinSec;
+      const nextRefreshAt = state.nextUsageRefreshAt[label];
+      const refreshDue =
+        nextRefreshAt === undefined ||
+        nowSec >= nextRefreshAt ||
+        nextRefreshAt - nowSec > refreshMaxSec;
+      if (cacheStale && refreshDue) {
+        const intervalSec = pickUsageRefreshIntervalSec(
+          refreshMinSec,
+          refreshMaxSec,
+          random,
+        );
+        state.nextUsageRefreshAt[label] = nowSec + intervalSec;
+        stateModified = true;
+        const refreshed = await refreshStaleAgyQuota(
+          instance,
+          label,
+          statusDir,
+          env,
+          runner,
+        );
+        if (refreshed) {
+          report.refreshedAgyAccounts.push(label);
+        }
+      }
+    }
+
+    const quota = readAgyQuotaTsv(quotaPath);
     if (!quota) continue;
     report.checkedAgyAccounts.push(label);
 
     for (const pool of ["gemini", "3p"] as const) {
+      const policy = poolPolicies[pool];
+      if (!policy.enabled) continue;
       const weeklyKey: AgyWindowKey =
         pool === "gemini" ? "gemini_weekly" : "3p_weekly";
       const fiveHourKey: AgyWindowKey =
         pool === "gemini" ? "gemini_5h" : "3p_5h";
       const candidates: { window: AgyWindowKey; resetEpoch: number }[] = [];
-      const weekly = quota.windows.get(weeklyKey);
-      if (weekly && weekly.resetEpoch <= nowSec) {
-        candidates.push({ window: weeklyKey, resetEpoch: weekly.resetEpoch });
+      if (policy.sevenDay) {
+        const weekly = quota.windows.get(weeklyKey);
+        if (weekly && weekly.resetEpoch <= nowSec) {
+          candidates.push({ window: weeklyKey, resetEpoch: weekly.resetEpoch });
+        }
       }
-      if (include5h) {
+      if (policy.fiveHour) {
         const fiveHour = quota.windows.get(fiveHourKey);
         if (fiveHour && fiveHour.resetEpoch <= nowSec) {
           candidates.push({
@@ -756,9 +1115,13 @@ export async function runWarmup(
         }
       }
       if (candidates.length === 0) continue;
+      const key = `agy:${label}:${pool}`;
+      if (candidates.some((c) => c.resetEpoch === 0)) {
+        unopenedTargetKeys.add(key);
+      }
       const maxResetEpoch = Math.max(...candidates.map((c) => c.resetEpoch));
       report.eligible.push({
-        key: `agy:${label}:${pool}`,
+        key,
         provider: "agy",
         account: label,
         profileName: instance.profileName,
@@ -772,46 +1135,78 @@ export async function runWarmup(
   }
 
   // 2. 收集 Codex 已到期的窗口。
-  const codexLimits = readLatestCodexLimits(codexHome(env));
-  if (codexLimits) {
-    report.checkedCodex = true;
-    const candidates: { window: CodexWindowKey; resetEpoch: number }[] = [];
-    const weekly = codexLimits.windows.get("seven-day");
-    if (weekly && weekly.resetEpoch <= nowSec) {
-      candidates.push({ window: "seven-day", resetEpoch: weekly.resetEpoch });
-    }
-    if (includeCodex5h) {
-      const fiveHour = codexLimits.windows.get("five-hour");
-      if (fiveHour && fiveHour.resetEpoch <= nowSec) {
-        candidates.push({
-          window: "five-hour",
-          resetEpoch: fiveHour.resetEpoch,
+  const codexPolicy = resolveCodexPolicy(
+    config.defaults,
+    findCodexAccountRule(config.accounts),
+    cliInclude5h,
+    cliIncludeCodex5h,
+  );
+  if (codexPolicy.enabled && (codexPolicy.fiveHour || codexPolicy.sevenDay)) {
+    const codexLimits = readLatestCodexLimits(codexHome(env));
+    if (codexLimits) {
+      report.checkedCodex = true;
+      const candidates: { window: CodexWindowKey; resetEpoch: number }[] = [];
+      if (codexPolicy.sevenDay) {
+        const weekly = codexLimits.windows.get("seven-day");
+        if (weekly && weekly.resetEpoch <= nowSec) {
+          candidates.push({
+            window: "seven-day",
+            resetEpoch: weekly.resetEpoch,
+          });
+        }
+      }
+      if (codexPolicy.fiveHour) {
+        const fiveHour = codexLimits.windows.get("five-hour");
+        if (fiveHour && fiveHour.resetEpoch <= nowSec) {
+          candidates.push({
+            window: "five-hour",
+            resetEpoch: fiveHour.resetEpoch,
+          });
+        }
+      }
+      if (candidates.length > 0) {
+        const maxResetEpoch = Math.max(...candidates.map((c) => c.resetEpoch));
+        report.eligible.push({
+          key: "codex:default",
+          provider: "codex",
+          account: "codex",
+          profileName: null,
+          pool: "codex",
+          windows: candidates.map((c) => c.window),
+          resetEpoch: maxResetEpoch,
+          models: [CODEX_WARMUP_MODEL],
         });
       }
-    }
-    if (candidates.length > 0) {
-      const maxResetEpoch = Math.max(...candidates.map((c) => c.resetEpoch));
-      report.eligible.push({
-        key: "codex:default",
-        provider: "codex",
-        account: "codex",
-        profileName: null,
-        pool: "codex",
-        windows: candidates.map((c) => c.window),
-        resetEpoch: maxResetEpoch,
-        models: [CODEX_WARMUP_MODEL],
-      });
     }
   }
 
   // 3. 逐个执行预热。
-  let stateModified = false;
   for (const target of report.eligible) {
     const handledEpoch = state.handled[target.key];
-    if (handledEpoch !== undefined && handledEpoch >= target.resetEpoch) {
+    const hasUnopened = unopenedTargetKeys.has(target.key);
+    const expiredAlreadyHandled =
+      target.resetEpoch > 0 &&
+      handledEpoch !== undefined &&
+      handledEpoch >= target.resetEpoch;
+
+    // 未开窗目标（resetEpoch === 0）不能与历史 handledEpoch 比较，否则记录一次后就会永久锁死；
+    // 改按 30 分钟冷却，避免上游持续返回 0\t0 时每 5 分钟重复预热。
+    if (expiredAlreadyHandled && !hasUnopened) {
       report.skippedHandled.push(target.key);
       continue;
     }
+    if (target.resetEpoch === 0 || (expiredAlreadyHandled && hasUnopened)) {
+      const lastUnopenedAt = state.unopenedWarmupAt[target.key];
+      if (
+        lastUnopenedAt !== undefined &&
+        nowSec >= lastUnopenedAt &&
+        nowSec - lastUnopenedAt < UNOPENED_WARMUP_COOLDOWN_SEC
+      ) {
+        report.skippedHandled.push(target.key);
+        continue;
+      }
+    }
+
     const prompt = pickPrompt(WARMUP_PROMPTS);
     if (options.dryRun) {
       report.actions.push({
@@ -837,7 +1232,20 @@ export async function runWarmup(
         : await warmupCodexTarget(target, prompt, env, runner);
     report.actions.push(action);
     if (action.succeeded) {
-      state.handled[target.key] = target.resetEpoch;
+      if (target.resetEpoch > 0) {
+        state.handled[target.key] = Math.max(
+          state.handled[target.key] ?? 0,
+          target.resetEpoch,
+        );
+      }
+      if (target.resetEpoch === 0 || hasUnopened) {
+        state.unopenedWarmupAt[target.key] = nowSec;
+      }
+      if (target.provider === "agy" && action.refreshedQuota) {
+        state.nextUsageRefreshAt[target.account] =
+          nowSec +
+          pickUsageRefreshIntervalSec(refreshMinSec, refreshMaxSec, random);
+      }
       stateModified = true;
     }
   }
@@ -846,6 +1254,86 @@ export async function runWarmup(
     saveState(statePath, state);
   }
   return report;
+}
+
+function buildAgyExec(
+  agyBin: string,
+  instance: AgyInstance,
+  env: Env,
+): { execEnv: Record<string, string>; prefixArgs: string[] } {
+  const execEnv = childEnv(env);
+  execEnv.METERLEAF_AGY_PROBE = "1";
+  execEnv.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
+  execEnv.BROWSER = "/usr/bin/false";
+
+  const prefixArgs = [agyBin];
+  if (instance.profileName !== null) {
+    execEnv.WSL_INTEROP = "1";
+    prefixArgs.push("--gemini_dir", instance.geminiDir);
+    prefixArgs.push(
+      "--app_data_dir",
+      `antigravity-cli-${instance.profileName}`,
+    );
+  }
+  return { execEnv, prefixArgs };
+}
+
+async function runAgyUsageRefresh(
+  label: string,
+  prefixArgs: string[],
+  execEnv: Record<string, string>,
+  tempDir: string,
+  statusDir: string,
+  runner: CommandRunner,
+): Promise<boolean> {
+  const usageLog = join(tempDir, "usage.log");
+  const usageArgv = [
+    ...prefixArgs,
+    "-p",
+    "/usage",
+    "--output-format",
+    "json",
+    "--print-timeout",
+    "30s",
+    "--log-file",
+    usageLog,
+  ];
+  const usageRes = await runner(usageArgv, {
+    cwd: tempDir,
+    env: execEnv,
+    logFile: usageLog,
+  });
+  if (usageRes.exitCode !== 0) return false;
+  const buckets = parseUsageBuckets(usageRes.stdout);
+  if (typeof buckets === "string") return false;
+  mkdirSync(statusDir, { recursive: true, mode: 0o700 });
+  mergeQuotaFile(join(statusDir, `quota-${label}.tsv`), buckets);
+  return true;
+}
+
+async function refreshStaleAgyQuota(
+  instance: AgyInstance,
+  label: string,
+  statusDir: string,
+  env: Env,
+  runner: CommandRunner,
+): Promise<boolean> {
+  const agyBin = findExecutable("agy", env.AGY_BIN, env);
+  if (!agyBin) return false;
+  const tempDir = mkdtempSync(join(tmpdir(), "meterleaf-warmup-usage-"));
+  try {
+    const { execEnv, prefixArgs } = buildAgyExec(agyBin, instance, env);
+    return await runAgyUsageRefresh(
+      label,
+      prefixArgs,
+      execEnv,
+      tempDir,
+      statusDir,
+      runner,
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function warmupAgyTarget(
@@ -875,21 +1363,7 @@ async function warmupAgyTarget(
 
   const tempDir = mkdtempSync(join(tmpdir(), "meterleaf-warmup-agy-"));
   try {
-    const execEnv = childEnv(env);
-    execEnv.METERLEAF_AGY_PROBE = "1";
-    execEnv.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
-    execEnv.BROWSER = "/usr/bin/false";
-
-    const instance = target.instance!;
-    const prefixArgs = [agyBin];
-    if (instance.profileName !== null) {
-      execEnv.WSL_INTEROP = "1";
-      prefixArgs.push("--gemini_dir", instance.geminiDir);
-      prefixArgs.push(
-        "--app_data_dir",
-        `antigravity-cli-${instance.profileName}`,
-      );
-    }
+    const { execEnv, prefixArgs } = buildAgyExec(agyBin, target.instance!, env);
 
     let chosenModel = target.models[0]!;
     let lastError: string | null = null;
@@ -944,32 +1418,14 @@ async function warmupAgyTarget(
     }
 
     // 紧接着跑一次 /usage 把新周期的 resetsAt 写回 quota-<label>.tsv，避免下一轮任务读到旧的到期秒数。
-    const usageLog = join(tempDir, "usage.log");
-    const usageArgv = [
-      ...prefixArgs,
-      "-p",
-      "/usage",
-      "--output-format",
-      "json",
-      "--print-timeout",
-      "30s",
-      "--log-file",
-      usageLog,
-    ];
-    const usageRes = await runner(usageArgv, {
-      cwd: tempDir,
-      env: execEnv,
-      logFile: usageLog,
-    });
-    let refreshedQuota = false;
-    if (usageRes.exitCode === 0) {
-      const buckets = parseUsageBuckets(usageRes.stdout);
-      if (typeof buckets !== "string") {
-        mkdirSync(statusDir, { recursive: true, mode: 0o700 });
-        mergeQuotaFile(join(statusDir, `quota-${target.account}.tsv`), buckets);
-        refreshedQuota = true;
-      }
-    }
+    const refreshedQuota = await runAgyUsageRefresh(
+      target.account,
+      prefixArgs,
+      execEnv,
+      tempDir,
+      statusDir,
+      runner,
+    );
 
     return {
       key: target.key,

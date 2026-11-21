@@ -230,6 +230,9 @@ export function readAgyQuotaFile(
     let resetMs: number | null;
     if (resetText === "-") {
       resetMs = null;
+    } else if (resetText === "0" && rawPercent === 0) {
+      // 上游刚重置或新账号未开窗时，缓存写为 0\t0（已用 0%、暂无重置时间），保留读数而非当作损坏行丢弃。
+      resetMs = null;
     } else if (/^\d{9,11}$/.test(resetText)) {
       const sec = Number(resetText);
       if (!Number.isSafeInteger(sec) || sec <= 0) {
@@ -1657,6 +1660,31 @@ function labelFromAgyLog(log: string): string | null {
   return email ? agyLabelFromEmail(email) : null;
 }
 
+/**
+ * 解析 agy /usage 桶的 reset_time 为 Unix 秒。
+ * 窗口未开窗或刚被上游重置时，remaining_fraction 为 1 且 reset_time 缺失、为 null 或 0，
+ * 统一记为 0（写入 TSV 的 `0\t0`），让预热任务和采集器都能识别未开窗状态。
+ */
+function parseAgyUsageResetEpoch(
+  resetTime: unknown,
+  remaining: number,
+): number | null {
+  if (
+    resetTime === undefined ||
+    resetTime === null ||
+    resetTime === "" ||
+    resetTime === 0 ||
+    resetTime === "0"
+  ) {
+    return remaining === 1 ? 0 : null;
+  }
+  if (typeof resetTime !== "string") return null;
+  const resetMs = Date.parse(resetTime);
+  if (!Number.isFinite(resetMs)) return null;
+  const sec = Math.floor(resetMs / 1000);
+  return sec > 0 ? sec : remaining === 1 ? 0 : null;
+}
+
 /** agy -p /usage 返回的四个额度桶，换算成状态栏缓存的行：窗口名、已用百分比整数、重置 Unix 秒。 */
 function parseUsageBuckets(output: string): Map<string, string> | string {
   let parsed: unknown;
@@ -1677,23 +1705,17 @@ function parseUsageBuckets(output: string): Map<string, string> | string {
       const key =
         typeof bucket?.id === "string" ? quotaBuckets[bucket.id] : null;
       const remaining = bucket?.remaining_fraction;
-      const resetMs =
-        typeof bucket?.reset_time === "string"
-          ? Date.parse(bucket.reset_time)
-          : NaN;
       if (
         !key ||
         typeof remaining !== "number" ||
         !Number.isFinite(remaining) ||
         remaining < 0 ||
-        remaining > 1 ||
-        !Number.isFinite(resetMs)
+        remaining > 1
       )
         continue;
-      rows.set(
-        key,
-        `${key}\t${usedPercent(remaining)}\t${Math.floor(resetMs / 1000)}`,
-      );
+      const resetEpoch = parseAgyUsageResetEpoch(bucket?.reset_time, remaining);
+      if (resetEpoch === null) continue;
+      rows.set(key, `${key}\t${usedPercent(remaining)}\t${resetEpoch}`);
     }
   }
   return rows.size > 0 ? rows : "agy /usage 没有可用的额度桶";
@@ -2084,21 +2106,27 @@ function parseOmpUsageReports(
           : undefined;
       const remaining = (limit?.amount as { remainingFraction?: unknown })
         ?.remainingFraction;
-      const resetMs = (limit?.window as { resetsAt?: unknown })?.resetsAt;
+      const rawResetMs = (limit?.window as { resetsAt?: unknown })?.resetsAt;
       if (
         !key ||
         typeof remaining !== "number" ||
         !Number.isFinite(remaining) ||
         remaining < 0 ||
-        remaining > 1 ||
-        typeof resetMs !== "number" ||
-        !Number.isFinite(resetMs)
+        remaining > 1
       )
         continue;
-      rows.set(
-        key,
-        `${key}\t${usedPercent(remaining)}\t${Math.floor(resetMs / 1000)}`,
-      );
+      let resetEpoch: number | null = null;
+      if (rawResetMs === undefined || rawResetMs === null || rawResetMs === 0) {
+        resetEpoch = remaining === 1 ? 0 : null;
+      } else if (
+        typeof rawResetMs === "number" &&
+        Number.isFinite(rawResetMs)
+      ) {
+        const sec = Math.floor(rawResetMs / 1000);
+        resetEpoch = sec > 0 ? sec : remaining === 1 ? 0 : null;
+      }
+      if (resetEpoch === null) continue;
+      rows.set(key, `${key}\t${usedPercent(remaining)}\t${resetEpoch}`);
     }
     if (rows.size > 0) result.set(label, rows);
   }
