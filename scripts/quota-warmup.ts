@@ -25,6 +25,7 @@ import {
   closeSync,
   constants,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -36,7 +37,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 type Env = Record<string, string | undefined>;
 
@@ -646,18 +647,19 @@ export function discoverAgyInstances(
   defaultConvDir: string,
   statusDir: string,
 ): AgyInstance[] {
-  const appDataDir = dirname(defaultConvDir);
+  const absDefaultConvDir = resolve(defaultConvDir);
+  const appDataDir = dirname(absDefaultConvDir);
   const geminiDir = dirname(appDataDir);
   const rawInstances: Omit<AgyInstance, "label">[] = [
     {
       profileName: null,
       appDataDir,
       geminiDir,
-      conversationsDir: defaultConvDir,
+      conversationsDir: absDefaultConvDir,
     },
   ];
   if (
-    basename(defaultConvDir) === "conversations" &&
+    basename(absDefaultConvDir) === "conversations" &&
     basename(appDataDir) === "antigravity-cli"
   ) {
     try {
@@ -670,6 +672,12 @@ export function discoverAgyInstances(
         try {
           if (!statSync(profileAppDataDir).isDirectory()) continue;
         } catch {
+          continue;
+        }
+        if (
+          /(?:^|[-_])(backup|bak)(?:$|[-_])/i.test(profileName) ||
+          !hasNonEmptyOAuthTokenFile(profileAppDataDir)
+        ) {
           continue;
         }
         rawInstances.push({
@@ -699,6 +707,18 @@ export function discoverAgyInstances(
           singleQuotaLabel);
     return { ...inst, label };
   });
+}
+
+/** 额外实例目录必须存在非空普通文件 antigravity-oauth-token（不跟随符号链接），否则严禁拉起 agy。 */
+function hasNonEmptyOAuthTokenFile(appDataDir: string): boolean {
+  try {
+    const tokenStat = lstatSync(join(appDataDir, "antigravity-oauth-token"));
+    return (
+      !tokenStat.isSymbolicLink() && tokenStat.isFile() && tokenStat.size > 0
+    );
+  } catch {
+    return false;
+  }
 }
 
 export interface ParsedAgyQuota {
@@ -1262,6 +1282,9 @@ function buildAgyExec(
   env: Env,
 ): { execEnv: Record<string, string>; prefixArgs: string[] } {
   const execEnv = childEnv(env);
+  delete execEnv.SSH_CONNECTION;
+  delete execEnv.SSH_CLIENT;
+  delete execEnv.SSH_TTY;
   execEnv.METERLEAF_AGY_PROBE = "1";
   execEnv.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
   execEnv.BROWSER = "/usr/bin/false";
@@ -1269,11 +1292,13 @@ function buildAgyExec(
   const prefixArgs = [agyBin];
   if (instance.profileName !== null) {
     execEnv.WSL_INTEROP = "1";
-    prefixArgs.push("--gemini_dir", instance.geminiDir);
+    prefixArgs.push("--gemini_dir", resolve(instance.geminiDir));
     prefixArgs.push(
       "--app_data_dir",
       `antigravity-cli-${instance.profileName}`,
     );
+  } else {
+    delete execEnv.WSL_INTEROP;
   }
   return { execEnv, prefixArgs };
 }
@@ -1318,10 +1343,17 @@ async function refreshStaleAgyQuota(
   env: Env,
   runner: CommandRunner,
 ): Promise<boolean> {
+  if (
+    instance.profileName !== null &&
+    !hasNonEmptyOAuthTokenFile(instance.appDataDir)
+  ) {
+    return false;
+  }
   const agyBin = findExecutable("agy", env.AGY_BIN, env);
   if (!agyBin) return false;
-  const tempDir = mkdtempSync(join(tmpdir(), "meterleaf-warmup-usage-"));
+  let tempDir: string | null = null;
   try {
+    tempDir = mkdtempSync(join(tmpdir(), "meterleaf-warmup-usage-"));
     const { execEnv, prefixArgs } = buildAgyExec(agyBin, instance, env);
     return await runAgyUsageRefresh(
       label,
@@ -1331,8 +1363,16 @@ async function refreshStaleAgyQuota(
       statusDir,
       runner,
     );
+  } catch {
+    return false;
   } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+    if (tempDir) {
+      try {
+        rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // 清理失败不覆盖已取得的刷新结果。
+      }
+    }
   }
 }
 
@@ -1343,6 +1383,28 @@ async function warmupAgyTarget(
   env: Env,
   runner: CommandRunner,
 ): Promise<WarmupAction> {
+  const instance = target.instance!;
+  const missingTokenError =
+    "额外实例缺少有效的 antigravity-oauth-token，已跳过 agy 预热";
+  if (
+    instance.profileName !== null &&
+    !hasNonEmptyOAuthTokenFile(instance.appDataDir)
+  ) {
+    return {
+      key: target.key,
+      provider: "agy",
+      account: target.account,
+      profileName: target.profileName,
+      pool: target.pool,
+      windows: target.windows,
+      resetEpoch: target.resetEpoch,
+      model: target.models[0]!,
+      prompt,
+      succeeded: false,
+      refreshedQuota: false,
+      error: missingTokenError,
+    };
+  }
   const agyBin = findExecutable("agy", env.AGY_BIN, env);
   if (!agyBin) {
     return {
@@ -1361,15 +1423,23 @@ async function warmupAgyTarget(
     };
   }
 
-  const tempDir = mkdtempSync(join(tmpdir(), "meterleaf-warmup-agy-"));
+  let tempDir: string | null = null;
   try {
-    const { execEnv, prefixArgs } = buildAgyExec(agyBin, target.instance!, env);
+    tempDir = mkdtempSync(join(tmpdir(), "meterleaf-warmup-agy-"));
+    const { execEnv, prefixArgs } = buildAgyExec(agyBin, instance, env);
 
     let chosenModel = target.models[0]!;
     let lastError: string | null = null;
     let promptSucceeded = false;
 
     for (const model of target.models) {
+      if (
+        instance.profileName !== null &&
+        !hasNonEmptyOAuthTokenFile(instance.appDataDir)
+      ) {
+        lastError = missingTokenError;
+        break;
+      }
       chosenModel = model;
       const logFile = join(tempDir, `prompt-${model}.log`);
       const argv = [
@@ -1417,15 +1487,26 @@ async function warmupAgyTarget(
       };
     }
 
-    // 紧接着跑一次 /usage 把新周期的 resetsAt 写回 quota-<label>.tsv，避免下一轮任务读到旧的到期秒数。
-    const refreshedQuota = await runAgyUsageRefresh(
-      target.account,
-      prefixArgs,
-      execEnv,
-      tempDir,
-      statusDir,
-      runner,
-    );
+    // 派发 /usage 前再次复核令牌，防止预热 await 期间令牌被移除后弹浏览器；
+    // 紧随的 /usage 或写缓存失败只影响 refreshedQuota，不覆盖已成功的预热结果。
+    const canRefresh =
+      instance.profileName === null ||
+      hasNonEmptyOAuthTokenFile(instance.appDataDir);
+    let refreshedQuota = false;
+    if (canRefresh) {
+      try {
+        refreshedQuota = await runAgyUsageRefresh(
+          target.account,
+          prefixArgs,
+          execEnv,
+          tempDir,
+          statusDir,
+          runner,
+        );
+      } catch {
+        refreshedQuota = false;
+      }
+    }
 
     return {
       key: target.key,
@@ -1441,8 +1522,29 @@ async function warmupAgyTarget(
       refreshedQuota,
       error: null,
     };
+  } catch (error) {
+    return {
+      key: target.key,
+      provider: "agy",
+      account: target.account,
+      profileName: target.profileName,
+      pool: target.pool,
+      windows: target.windows,
+      resetEpoch: target.resetEpoch,
+      model: target.models[0]!,
+      prompt,
+      succeeded: false,
+      refreshedQuota: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+    if (tempDir) {
+      try {
+        rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // 清理失败不覆盖本次预热结果。
+      }
+    }
   }
 }
 
