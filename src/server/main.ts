@@ -39,7 +39,10 @@ async function main() {
   const config = readConfig(process.env);
   const demo = config.METERLEAF_DEMO === "true";
   stage = "price-book";
-  const book = await loadPriceBook(config.METERLEAF_PRICE_BOOK);
+  const book = await loadPriceBook(
+    config.METERLEAF_PRICE_BOOK,
+    config.METERLEAF_MODEL_ALIASES,
+  );
   let store: LedgerStore | null = null;
   let sync: SyncRunner | null = null;
   if (!demo) {

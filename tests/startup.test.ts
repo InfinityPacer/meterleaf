@@ -21,6 +21,7 @@ test("entrypoint serves explicit demo and shuts down on SIGTERM", async () => {
       METERLEAF_DEMO: "true",
       METERLEAF_LOG_LEVEL: "info",
       METERLEAF_PRICE_BOOK: "",
+      METERLEAF_MODEL_ALIASES: "",
       SUB2API_DATABASE_URL: undefined,
     },
     stdout: "pipe",
@@ -67,5 +68,41 @@ test("entrypoint serves explicit demo and shuts down on SIGTERM", async () => {
   } finally {
     if (child.exitCode === null) child.kill("SIGKILL");
     await child.exited;
+  }
+}, 10_000);
+
+test("entrypoint fails fast at price-book stage when METERLEAF_MODEL_ALIASES points to a missing file", async () => {
+  const reservation = createServer();
+  await new Promise<void>((resolve) =>
+    reservation.listen(0, "127.0.0.1", resolve),
+  );
+  const address = reservation.address();
+  if (!address || typeof address === "string") throw new Error("Missing port");
+  const port = address.port;
+  await new Promise<void>((resolve, reject) =>
+    reservation.close((error) => (error ? reject(error) : resolve())),
+  );
+  const child = Bun.spawn([process.execPath, "src/server/main.ts"], {
+    env: {
+      ...process.env,
+      METERLEAF_HOST: "127.0.0.1",
+      METERLEAF_PORT: String(port),
+      METERLEAF_DEMO: "true",
+      METERLEAF_LOG_LEVEL: "info",
+      METERLEAF_PRICE_BOOK: "",
+      METERLEAF_MODEL_ALIASES: "/nonexistent/meterleaf-model-aliases.json",
+      SUB2API_DATABASE_URL: undefined,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  try {
+    expect(await child.exited).toBe(1);
+    const stdout = await new Response(child.stdout).text();
+    const stderr = await new Response(child.stderr).text();
+    const combined = `${stdout}\n${stderr}`;
+    expect(combined).toContain("price-book");
+  } finally {
+    if (child.exitCode === null) child.kill("SIGKILL");
   }
 }, 10_000);

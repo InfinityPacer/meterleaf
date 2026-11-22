@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import Decimal from "decimal.js";
 import { z } from "zod";
 import type { UsageFact } from "./connector";
@@ -57,6 +58,8 @@ export const priceBookSchema = z
     publishedAt: z.iso.datetime({ offset: true }),
     sources: z.array(z.string()).min(1),
     notes: z.array(z.string()).optional(),
+    /** 显式模型别名表，只做单跳精确映射到已有费率规则的模型，不覆盖已有规则。 */
+    modelAliases: z.record(z.string().min(1), z.string().min(1)).optional(),
     rules: z.array(
       z
         .object({
@@ -132,8 +135,84 @@ export const priceBookSchema = z
           });
       }
     }
+    if (book.modelAliases) {
+      const ruleModels = new Set(book.rules.map((rule) => rule.model));
+      for (const [alias, target] of Object.entries(book.modelAliases)) {
+        if (alias === target) {
+          context.addIssue({
+            code: "custom",
+            path: ["modelAliases", alias],
+            message: "Model alias cannot point to itself",
+          });
+          continue;
+        }
+        if (ruleModels.has(alias)) {
+          context.addIssue({
+            code: "custom",
+            path: ["modelAliases", alias],
+            message: "Model alias cannot shadow an existing priced model",
+          });
+          continue;
+        }
+        if (!ruleModels.has(target)) {
+          context.addIssue({
+            code: "custom",
+            path: ["modelAliases", alias],
+            message: "Model alias target must match a priced model in rules",
+          });
+        }
+      }
+    }
   });
 export type PriceBook = z.infer<typeof priceBookSchema>;
+
+export const modelAliasesFileSchema = z
+  .object({
+    aliases: z.record(z.string().min(1), z.string().min(1)),
+    notes: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+export type ModelAliasesFile = z.infer<typeof modelAliasesFileSchema>;
+
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** 把本机私有别名表叠加到当前价格表，并将规范化内容摘要并入版本键以触发自动重估。 */
+export function applyModelAliases(
+  book: PriceBook,
+  overlay: ModelAliasesFile,
+): PriceBook {
+  if (book.version.includes("@"))
+    throw new Error("Base price book version must not contain '@'");
+  const sortedOverlayEntries = Object.entries(overlay.aliases).sort(
+    ([a], [b]) => compareCodeUnits(a, b),
+  );
+  const overlayNotes = overlay.notes ?? [];
+  if (sortedOverlayEntries.length === 0 && overlayNotes.length === 0)
+    return book;
+  // 按已排序的 [key, target] 数组序列化，避免普通对象枚举重排纯数字字符串键。
+  const canonicalOverlay = {
+    aliases: sortedOverlayEntries,
+    notes: overlayNotes,
+  };
+  const digest = createHash("sha256")
+    .update(JSON.stringify(canonicalOverlay))
+    .digest("hex");
+  const mergedEntries = Object.entries({
+    ...(book.modelAliases ?? {}),
+    ...Object.fromEntries(sortedOverlayEntries),
+  }).sort(([a], [b]) => compareCodeUnits(a, b));
+  const mergedNotes = [...(book.notes ?? []), ...overlayNotes];
+  return priceBookSchema.parse({
+    ...book,
+    version: `${book.version}+aliases-${digest}`,
+    ...(mergedEntries.length > 0
+      ? { modelAliases: Object.fromEntries(mergedEntries) }
+      : {}),
+    ...(mergedNotes.length > 0 ? { notes: mergedNotes } : {}),
+  });
+}
 /** 文件版本只在同一价格表身份内唯一，存储与账单使用完整版本键。 */
 export function priceBookKey(book: PriceBook) {
   return `${book.id}@${book.version}`;
@@ -150,11 +229,48 @@ export interface Charge {
 export interface Valuation {
   version: string;
   usdBasis: UsdBasis;
+  /** 经显式别名或路由前缀解析后实际命中的计价模型；与原始模型相同时省略。 */
+  pricingModel?: string;
   /** 当前展示口径及两个分支同时保存，切换展示不需要重采源用量。 */
   usd: Charge;
   apiUsd: Charge;
   subscriptionUsd: Charge;
   credits: Charge;
+}
+
+const ruleModelIndex = new WeakMap<PriceBook, Set<string>>();
+
+function getRuleModels(book: PriceBook): Set<string> {
+  let models = ruleModelIndex.get(book);
+  if (!models) {
+    models = new Set(book.rules.map((rule) => rule.model));
+    ruleModelIndex.set(book, models);
+  }
+  return models;
+}
+
+/**
+ * 解析计价模型：1) 原始模型名精确匹配；2) 显式别名表精确匹配；3) 非 `group/` 前缀且含 `/` 时
+ * 剥离路由前缀取末段精确匹配。三步均不做模糊或链式推导；原名已存在规则时不回退到末段，
+ * `group/*` 私有路由分组必须通过显式别名映射，绝不自动套用末段公开费率。
+ */
+function resolvePricingModel(
+  model: string,
+  book: PriceBook,
+): { pricingModel: string; hasRules: boolean } {
+  const models = getRuleModels(book);
+  if (models.has(model)) return { pricingModel: model, hasRules: true };
+  const aliased = book.modelAliases?.[model];
+  if (aliased && models.has(aliased))
+    return { pricingModel: aliased, hasRules: true };
+  if (!model.startsWith("group/")) {
+    const slash = model.lastIndexOf("/");
+    if (slash >= 0 && slash < model.length - 1) {
+      const suffix = model.slice(slash + 1);
+      if (models.has(suffix)) return { pricingModel: suffix, hasRules: true };
+    }
+  }
+  return { pricingModel: model, hasRules: false };
 }
 
 /** 时段价按 occurredAt 的 UTC 星期和分钟判定，不受运行环境时区影响。 */
@@ -194,6 +310,8 @@ export function valueUsage(
     reason,
     assumedStandard,
   });
+  const resolved = resolvePricingModel(fact.model, book);
+  const pricingModel = resolved.pricingModel;
   const calculate = (currency: "usd" | "credits", basis?: UsdBasis): Charge => {
     const upstream =
       currency === "usd" ? fact.upstreamUsd : fact.upstreamCredits;
@@ -222,7 +340,7 @@ export function valueUsage(
       return unpriced("missing-or-invalid-token-bucket");
     const matches = book.rules.filter(
       (rule) =>
-        rule.model === fact.model &&
+        rule.model === pricingModel &&
         rule.tier === tier &&
         rule.currency === currency &&
         (currency === "credits" || rule.usdBasis === basis) &&
@@ -338,6 +456,9 @@ export function valueUsage(
   return {
     version: priceBookKey(book),
     usdBasis,
+    ...(resolved.hasRules && pricingModel !== fact.model
+      ? { pricingModel }
+      : {}),
     usd: usdBasis === "api" ? apiUsd : subscriptionUsd,
     apiUsd,
     subscriptionUsd,
