@@ -127,6 +127,14 @@ CREATE TABLE IF NOT EXISTS agy_files (
   wal_modified REAL NOT NULL,
   account TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agy_shared_logs (
+  path TEXT PRIMARY KEY,
+  inode TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  modified REAL NOT NULL,
+  default_label TEXT NOT NULL,
+  events TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS source_usage (external_id TEXT PRIMARY KEY, source TEXT NOT NULL);
 `;
 
@@ -543,6 +551,80 @@ export class CollectorState {
     let removed = 0;
     const remove = this.db.query("DELETE FROM agy_files WHERE path = ?");
     for (const path of this.agyFilePaths()) {
+      if (!present.has(path)) {
+        remove.run(path);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  /** 共享 conversations/ 目录场景下按日志文件缓存解析出的轮次归属事件，避免每轮全量重读历史日志。 */
+  agySharedLog(path: string): {
+    inode: string;
+    size: number;
+    modified: number;
+    defaultLabel: string;
+    events: string;
+  } | null {
+    const row = this.db
+      .query<
+        {
+          inode: string;
+          size: number;
+          modified: number;
+          default_label: string;
+          events: string;
+        },
+        [string]
+      >(
+        "SELECT inode, size, modified, default_label, events FROM agy_shared_logs WHERE path = ?",
+      )
+      .get(path);
+    return row
+      ? {
+          inode: row.inode,
+          size: row.size,
+          modified: row.modified,
+          defaultLabel: row.default_label,
+          events: row.events,
+        }
+      : null;
+  }
+
+  saveAgySharedLog(row: {
+    path: string;
+    inode: string;
+    size: number;
+    modified: number;
+    defaultLabel: string;
+    events: string;
+  }) {
+    this.db
+      .query(
+        `INSERT INTO agy_shared_logs (path, inode, size, modified, default_label, events)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (path) DO UPDATE SET inode = excluded.inode, size = excluded.size,
+           modified = excluded.modified, default_label = excluded.default_label,
+           events = excluded.events`,
+      )
+      .run(
+        row.path,
+        row.inode,
+        row.size,
+        row.modified,
+        row.defaultLabel,
+        row.events,
+      );
+  }
+
+  forgetMissingAgySharedLogs(present: ReadonlySet<string>): number {
+    let removed = 0;
+    const rows = this.db
+      .query<{ path: string }, []>("SELECT path FROM agy_shared_logs")
+      .all();
+    const remove = this.db.query("DELETE FROM agy_shared_logs WHERE path = ?");
+    for (const { path } of rows) {
       if (!present.has(path)) {
         remove.run(path);
         removed += 1;

@@ -707,6 +707,7 @@ function settleAgy(first: AgyReaderReport, again: AgyReaderReport) {
     skipped: again.skipped,
     quotas: first.quotas + again.quotas,
     activeAccount: again.activeAccount,
+    missingQuotaProfiles: again.missingQuotaProfiles,
   };
 }
 

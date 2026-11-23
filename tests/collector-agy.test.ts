@@ -2634,3 +2634,153 @@ test("readAgy 在夏令时回拨重复小时不会让回拨后发送覆盖先前
     }
   }
 });
+
+test("shared conversation log cache skips unchanged logs across rounds, saves watermark when primary is unauthenticated, and normalizes relative conversationsDir", async () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-log-cache-"));
+  const geminiDir = join(root, ".gemini");
+  const primaryAppDir = join(geminiDir, "antigravity-cli");
+  const primaryConvDir = join(primaryAppDir, "conversations");
+  const acct2AppDir = join(geminiDir, "antigravity-cli-acct2");
+  const statusDir = join(root, "statusline");
+  mkdirSync(primaryConvDir, { recursive: true });
+  mkdirSync(join(primaryAppDir, "log"), { recursive: true });
+  mkdirSync(join(acct2AppDir, "log"), { recursive: true });
+  mkdirSync(statusDir, { recursive: true });
+  symlinkSync(primaryConvDir, join(acct2AppDir, "conversations"));
+
+  // 默认实例故意不写 current-account/token（模拟默认账号未登录，仅副账号 acct2 登录）。
+  writeFileSync(
+    join(acct2AppDir, "antigravity-oauth-token"),
+    JSON.stringify({ id_token_email: "bob@example.com" }),
+  );
+
+  const conv1 = "11111111-2222-4333-8444-555555555551";
+  const conv2 = "11111111-2222-4333-8444-555555555552";
+  const t1 = new Date(2026, 10, 22, 12, 0, 10, 0);
+  const t2 = new Date(2026, 10, 22, 12, 5, 10, 0);
+
+  const writeConvDb = (
+    convId: string,
+    when: Date,
+    execId: string,
+    inputTokens: number,
+  ) => {
+    const dbPath = join(primaryConvDir, `${convId}.db`);
+    const db = new Database(dbPath);
+    db.exec(
+      "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+        "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+    );
+    const sec = Math.floor(when.getTime() / 1000);
+    db.query(
+      "INSERT INTO steps (idx, type, status, metadata) VALUES (1, 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', 'DONE', ?1)",
+    ).run(
+      buildStepMetadataFixture({
+        createdAtSeconds: sec - 2,
+        finishedAtSeconds: sec - 1,
+        completedAtSeconds: sec,
+        executionId: execId,
+      }),
+    );
+    db.query(
+      "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (1, ?1, ?2)",
+    ).run(
+      execId,
+      buildGenMetadataFixture({
+        modelEnum: 1532,
+        responseModel: "gemini-4-neon",
+        modelDisplayName: "Gemini 4 Neon (High)",
+        inputTokens,
+        outputTokens: 100,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        thinkingOutputTokens: 0,
+        responseOutputTokens: 100,
+        messageId: `msg-${execId}`,
+        executionId: execId,
+        stepIndices: [1],
+      }),
+    );
+    db.close();
+    utimesSync(dbPath, when, when);
+  };
+
+  writeConvDb(conv1, t1, "exec-1", 4_200);
+  const oldLog = join(acct2AppDir, "log", "acp-server-20261122_120000-300.log");
+  writeFileSync(
+    oldLog,
+    [
+      "I1122 12:00:01.000000 300 server_oauth.go:226] OAuth: authenticated successfully as bob@example.com",
+      `I1122 12:00:05.000000 300 server.go:1883] Sending user message to conversation ${conv1} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  utimesSync(oldLog, t1, t1);
+
+  const openedLogs: string[] = [];
+  const trackingOps = {
+    openSync(path: string, flags: string) {
+      openedLogs.push(path);
+      return openSync(path, flags);
+    },
+  };
+
+  const state = new CollectorState(":memory:");
+  try {
+    const { relative } = await import("node:path");
+    const relConvDir = relative(process.cwd(), primaryConvDir);
+    // 相对路径经 discoverAgyInstances 归一化后也能发现额外实例。
+    expect(
+      agyInstanceAccounts({
+        conversationsDir: relConvDir,
+        statuslineDir: statusDir,
+      }).map((item) => item.profile),
+    ).toEqual([null, "acct2"]);
+
+    const sources = {
+      conversationsDir: relConvDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+    };
+
+    const first = readAgy(state, sources, t1, trackingOps);
+    expect(first.filesRead).toBe(1);
+    expect(first.recorded).toBe(1);
+    expect(first.skipped).toEqual({});
+    expect(openedLogs).toEqual([oldLog]);
+
+    // 默认实例虽未登录，但所有记录已通过共享日志归属，水位应已保存，第二轮不再重扫 conv1.db。
+    openedLogs.length = 0;
+    const second = readAgy(state, sources, t1, trackingOps);
+    expect(second.filesRead).toBe(0);
+    expect(second.recorded).toBe(0);
+    expect(openedLogs).toEqual([]);
+
+    // 新增会话 conv2 与新日志 newLog；旧日志 oldLog 未变动，不得再次打开读取。
+    writeConvDb(conv2, t2, "exec-2", 6_300);
+    const newLog = join(
+      acct2AppDir,
+      "log",
+      "acp-server-20261122_120500-301.log",
+    );
+    writeFileSync(
+      newLog,
+      [
+        "I1122 12:05:01.000000 301 server_oauth.go:226] OAuth: authenticated successfully as bob@example.com",
+        `I1122 12:05:05.000000 301 server.go:1883] Sending user message to conversation ${conv2} (items=1, media=0)`,
+      ].join("\n") + "\n",
+    );
+    utimesSync(newLog, t2, t2);
+
+    const third = readAgy(state, sources, t2, trackingOps);
+    expect(third.filesRead).toBe(1);
+    expect(third.recorded).toBe(1);
+    expect(openedLogs).toEqual([newLog]);
+    const accounts = state
+      .pending<IngestUsage>("usage", 10)
+      .map((item) => item.payload.accountExternalId);
+    expect(accounts).toEqual(["agy-bob", "agy-bob"]);
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

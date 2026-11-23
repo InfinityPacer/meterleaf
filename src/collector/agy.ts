@@ -1174,18 +1174,19 @@ function hasNonEmptyOAuthTokenFile(appDataDir: string): boolean {
  * 自动发现同级 <geminiDir>/antigravity-cli-<name> 下已登录（存在非空 antigravity-oauth-token）的额外账户实例。
  */
 function discoverAgyInstances(conversationsDir: string): AgyInstance[] {
-  const appDataDir = dirname(conversationsDir);
+  const absConversationsDir = resolve(conversationsDir);
+  const appDataDir = dirname(absConversationsDir);
   const geminiDir = dirname(appDataDir);
   const instances: AgyInstance[] = [
     {
       profileName: null,
       appDataDir,
       geminiDir,
-      conversationsDir,
+      conversationsDir: absConversationsDir,
     },
   ];
   if (
-    basename(conversationsDir) !== "conversations" ||
+    basename(absConversationsDir) !== "conversations" ||
     basename(appDataDir) !== "antigravity-cli"
   ) {
     return instances;
@@ -1448,9 +1449,18 @@ function narrowFileGlogTimestamps(
   return perLine;
 }
 
+interface CachedSharedLogEvent extends AgyTurnAttribution {
+  convId: string;
+}
+
 export interface SharedLogFileOps {
   openSync: (path: string, flags: string) => number;
-  fstatSync: (fd: number) => { isFile(): boolean; mtimeMs: number };
+  fstatSync: (fd: number) => {
+    isFile(): boolean;
+    mtimeMs: number;
+    size?: number;
+    ino?: number | bigint;
+  };
   readFileSync: (fd: number, encoding: "utf8") => string;
   closeSync: (fd: number) => void;
 }
@@ -1458,15 +1468,17 @@ export interface SharedLogFileOps {
 /**
  * 多个账号通过软链共享同一个 conversations/ 目录时，读取各实例隔离的 log/ 目录，
  * 提取本次待扫描会话的账号切换与发消息时间点，使跨账号加载的同一会话也能按轮次精准归账。
+ * 解析结果按日志文件的 inode/size/mtime 缓存在 CollectorState 中，未变动的老日志不重复读盘。
  */
 function indexSharedConversationLogs(
+  state: CollectorState,
   members: readonly { instance: AgyInstance; label: string | null }[],
   conversationIds: ReadonlySet<string>,
+  presentLogPaths: Set<string>,
   logFileOps?: Partial<SharedLogFileOps>,
 ): Map<string, AgyTurnAttribution[]> {
   const index = new Map<string, AgyTurnAttribution[]>();
   if (conversationIds.size === 0) return index;
-  const needles = [...conversationIds];
   const ops: SharedLogFileOps = {
     openSync,
     fstatSync,
@@ -1474,9 +1486,37 @@ function indexSharedConversationLogs(
     closeSync,
     ...logFileOps,
   };
+  const pendingCacheWrites: {
+    path: string;
+    inode: string;
+    size: number;
+    modified: number;
+    defaultLabel: string;
+    events: string;
+  }[] = [];
 
   for (const { instance, label: defaultLabel } of members) {
-    const candidatePaths: string[] = [];
+    const candidateFiles: {
+      path: string;
+      inode: string;
+      size: number;
+      mtimeMs: number;
+    }[] = [];
+    const collectFile = (path: string) => {
+      try {
+        const st = statSync(path);
+        if (st.isFile()) {
+          candidateFiles.push({
+            path,
+            inode: String(st.ino),
+            size: st.size,
+            mtimeMs: st.mtimeMs,
+          });
+        }
+      } catch {
+        // 忽略不存在或读取瞬间消失的日志。
+      }
+    };
     const logDir = join(instance.appDataDir, "log");
     try {
       for (const name of readdirSync(logDir)) {
@@ -1486,38 +1526,65 @@ function indexSharedConversationLogs(
         ) {
           continue;
         }
-        const path = join(logDir, name);
-        try {
-          if (statSync(path).isFile()) {
-            candidatePaths.push(path);
-          }
-        } catch {
-          // 忽略读取瞬间消失的日志。
-        }
+        collectFile(join(logDir, name));
       }
     } catch {
       // 没有 log 子目录时只试 cli.log。
     }
-    const rootCliLog = join(instance.appDataDir, "cli.log");
-    try {
-      if (statSync(rootCliLog).isFile()) {
-        candidatePaths.push(rootCliLog);
-      }
-    } catch {
-      // 忽略不存在。
-    }
+    collectFile(join(instance.appDataDir, "cli.log"));
 
-    for (const filePath of candidatePaths) {
+    const defaultLabelKey = `${instance.profileName ?? ""}\0${defaultLabel ?? ""}`;
+    for (const candidate of candidateFiles) {
+      const filePath = candidate.path;
+      presentLogPaths.add(filePath);
+      const cached = state.agySharedLog(filePath);
+      if (
+        cached &&
+        cached.inode === candidate.inode &&
+        cached.size === candidate.size &&
+        cached.modified === candidate.mtimeMs &&
+        cached.defaultLabel === defaultLabelKey
+      ) {
+        try {
+          const parsed = JSON.parse(cached.events) as CachedSharedLogEvent[];
+          for (const ev of parsed) {
+            if (!conversationIds.has(ev.convId)) continue;
+            const list = index.get(ev.convId) ?? [];
+            list.push({
+              minAtMs: ev.minAtMs,
+              maxAtMs: ev.maxAtMs,
+              label: ev.label,
+              profileName: ev.profileName,
+              priority: ev.priority,
+            });
+            index.set(ev.convId, list);
+          }
+          continue;
+        } catch {
+          // 缓存损坏时回退到重读文件。
+        }
+      }
+
       let raw: string;
       let postReadMtimeMs: number;
+      let postReadSize: number;
+      let postReadInode: string;
       let fd: number | null = null;
       try {
         fd = ops.openSync(filePath, "r");
         const preStat = ops.fstatSync(fd);
         if (!preStat.isFile()) continue;
         raw = ops.readFileSync(fd, "utf8");
-        // 在正文读完后对同一文件描述符 fstat，确保 mtime 上界不早于本次读到的任何追加内容。
-        postReadMtimeMs = Math.max(preStat.mtimeMs, ops.fstatSync(fd).mtimeMs);
+        // 在正文读完后对同一文件描述符 fstat，确保 mtime 上界与缓存水位不早于本次读到的任何追加内容。
+        const postStat = ops.fstatSync(fd);
+        postReadMtimeMs = Math.max(preStat.mtimeMs, postStat.mtimeMs);
+        postReadSize = postStat.size ?? preStat.size ?? candidate.size;
+        postReadInode =
+          postStat.ino !== undefined
+            ? String(postStat.ino)
+            : preStat.ino !== undefined
+              ? String(preStat.ino)
+              : candidate.inode;
       } catch {
         continue;
       } finally {
@@ -1529,7 +1596,6 @@ function indexSharedConversationLogs(
           }
         }
       }
-      if (!needles.some((id) => raw.includes(id))) continue;
 
       const dateMatch = logFileDateRe.exec(basename(filePath));
       const mtimeDate = new Date(postReadMtimeMs);
@@ -1563,7 +1629,7 @@ function indexSharedConversationLogs(
         const turnMatch = turnMessageRe.exec(line);
         const openMatch = turnMatch ? null : sessionOpenRe.exec(line);
         const convId = turnMatch?.[1] ?? openMatch?.[1] ?? null;
-        if (!convId || !conversationIds.has(convId)) continue;
+        if (!convId) continue;
         const cands = parseGlogTimestampCandidatesMs(
           line,
           anchorYear,
@@ -1591,20 +1657,45 @@ function indexSharedConversationLogs(
           )
         : null;
 
+      const fileEvents: CachedSharedLogEvent[] = [];
       for (const item of pending) {
         const cands = narrowed?.[item.lineIdx] ?? item.cands;
         if (!cands || cands.length === 0) continue;
-        const list = index.get(item.convId) ?? [];
-        list.push({
+        const ev: CachedSharedLogEvent = {
+          convId: item.convId,
           minAtMs: cands[0]!,
           maxAtMs: cands[cands.length - 1]!,
           label: item.label,
           profileName: instance.profileName,
           priority: item.priority,
+        };
+        fileEvents.push(ev);
+        if (!conversationIds.has(item.convId)) continue;
+        const list = index.get(item.convId) ?? [];
+        list.push({
+          minAtMs: ev.minAtMs,
+          maxAtMs: ev.maxAtMs,
+          label: ev.label,
+          profileName: ev.profileName,
+          priority: ev.priority,
         });
         index.set(item.convId, list);
       }
+      pendingCacheWrites.push({
+        path: filePath,
+        inode: postReadInode,
+        size: postReadSize,
+        modified: postReadMtimeMs,
+        defaultLabel: defaultLabelKey,
+        events: JSON.stringify(fileEvents),
+      });
     }
+  }
+
+  if (pendingCacheWrites.length > 0) {
+    state.write(() => {
+      for (const item of pendingCacheWrites) state.saveAgySharedLog(item);
+    });
   }
 
   for (const list of index.values()) {
@@ -1802,10 +1893,15 @@ export function readAgy(
   }
 
   state.forgetMissingAgyFiles(allDbPaths);
+  const allSharedLogPaths = new Set<string>();
+  let scannedSharedLogs = false;
+  let hasAnySharedGroup = false;
 
   for (const group of groups.values()) {
     const { instance, label: instanceAccount } = group.primary;
     const isShared = group.members.length > 1;
+    if (isShared) hasAnySharedGroup = true;
+    const watermarkAccount = instanceAccount ?? (isShared ? "__shared__" : "");
 
     // 预筛发生变化的文件；共享目录只在存在待读文件时才按需扫描各实例日志。
     interface PendingDb {
@@ -1851,7 +1947,7 @@ export function readAgy(
         saved.walSize === walSize &&
         saved.walModified === walModified &&
         saved.account !== "" &&
-        saved.account === (instanceAccount ?? "")
+        saved.account === watermarkAccount
       ) {
         continue;
       }
@@ -1896,7 +1992,7 @@ export function readAgy(
           continue;
         }
         if (!hasGen) {
-          if (instanceAccount) {
+          if (watermarkAccount) {
             state.saveAgyFile({
               path,
               inode,
@@ -1904,7 +2000,7 @@ export function readAgy(
               modified,
               walSize,
               walModified,
-              account: instanceAccount,
+              account: watermarkAccount,
             });
           }
           continue;
@@ -1936,10 +2032,13 @@ export function readAgy(
         loadedDbs.map((entry) => entry.item.conversationId),
       );
       sharedTurnIndex = indexSharedConversationLogs(
+        state,
         group.members,
         dirtyConvIds,
+        allSharedLogPaths,
         logFileOps,
       );
+      scannedSharedLogs = true;
     }
 
     for (const { item, genRows, steps } of loadedDbs) {
@@ -1955,6 +2054,7 @@ export function readAgy(
       const turnEvents = sharedTurnIndex?.get(conversationId);
 
       state.write(() => {
+        let skippedMissingInFile = 0;
         for (const row of genRows) {
           if (
             (typeof row.data !== "string" &&
@@ -2012,6 +2112,7 @@ export function readAgy(
           if (!resolvedLabel) {
             report.skipped["(缺失账户)"] =
               (report.skipped["(缺失账户)"] ?? 0) + 1;
+            skippedMissingInFile += 1;
             dirtyProfiles.add(instance.profileName);
             continue;
           }
@@ -2056,7 +2157,7 @@ export function readAgy(
           }
         }
 
-        if (instanceAccount) {
+        if (watermarkAccount && skippedMissingInFile === 0) {
           state.saveAgyFile({
             path,
             inode,
@@ -2064,11 +2165,17 @@ export function readAgy(
             modified,
             walSize,
             walModified,
-            account: instanceAccount,
+            account: watermarkAccount,
           });
         }
       });
     }
+  }
+
+  if (scannedSharedLogs) {
+    state.forgetMissingAgySharedLogs(allSharedLogPaths);
+  } else if (!hasAnySharedGroup) {
+    state.forgetMissingAgySharedLogs(allSharedLogPaths);
   }
 
   state.setMeta("agy_dirty_profiles", JSON.stringify([...dirtyProfiles]));
