@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -1112,5 +1113,116 @@ describe("quota-warmup task script", () => {
     const brokenPath = join(sb.root, "broken-config.json");
     writeFileSync(brokenPath, "{ invalid json");
     expect(() => loadWarmupConfig(brokenPath)).toThrow("不是有效 JSON");
+  });
+
+  test("rejects symlink/directory tokens and rechecks extra-profile token before post-warmup /usage", async () => {
+    const sb = createSandbox();
+    const nowSec = Math.floor(
+      new Date("2026-11-23T01:00:00Z").getTime() / 1000,
+    );
+    const expiredSec = nowSec - 600;
+    const futureSec = nowSec + 5 * 86400;
+
+    const freshMtime = new Date((nowSec - 60) * 1000);
+    // 默认实例未到期，仅用于保持默认目录存在。
+    const phronaraQuota = join(sb.statuslineDir, "quota-phronara.tsv");
+    writeFileSync(
+      phronaraQuota,
+      [
+        `gemini_5h\t10\t${futureSec}`,
+        `gemini_weekly\t10\t${futureSec}`,
+        `3p_5h\t10\t${futureSec}`,
+        `3p_weekly\t10\t${futureSec}`,
+      ].join("\n") + "\n",
+    );
+    utimesSync(phronaraQuota, freshMtime, freshMtime);
+    // tide 实例有真实普通文件令牌，且 gemini_weekly 已到期。
+    const tideQuota = join(sb.statuslineDir, "quota-tidewren.tsv");
+    writeFileSync(
+      tideQuota,
+      [
+        `gemini_5h\t10\t${futureSec}`,
+        `gemini_weekly\t100\t${expiredSec}`,
+        `3p_5h\t10\t${futureSec}`,
+        `3p_weekly\t10\t${futureSec}`,
+      ].join("\n") + "\n",
+    );
+    utimesSync(tideQuota, freshMtime, freshMtime);
+
+    // 新增两个非法令牌的额外目录：软链令牌与目录型令牌。
+    const geminiDir = join(sb.defaultAppData, "..");
+    const symlinkAppDir = join(geminiDir, "antigravity-cli-symlinked");
+    const dirTokenAppDir = join(geminiDir, "antigravity-cli-dirtoken");
+    const externalToken = join(sb.root, "external-token.json");
+    writeFileSync(
+      externalToken,
+      JSON.stringify({ id_token_email: "symlinked@example.com" }),
+    );
+    mkdirSync(join(symlinkAppDir, "conversations"), { recursive: true });
+    symlinkSync(externalToken, join(symlinkAppDir, "antigravity-oauth-token"));
+    mkdirSync(join(dirTokenAppDir, "conversations"), { recursive: true });
+    mkdirSync(join(dirTokenAppDir, "antigravity-oauth-token"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(sb.statuslineDir, "current-account-dirtoken"),
+      "dirtoken\n",
+    );
+    writeFileSync(
+      join(sb.statuslineDir, "quota-dirtoken.tsv"),
+      `gemini_weekly\t100\t${expiredSec}\n`,
+    );
+    utimesSync(
+      join(sb.statuslineDir, "quota-dirtoken.tsv"),
+      freshMtime,
+      freshMtime,
+    );
+    writeFileSync(
+      join(sb.statuslineDir, "quota-symlinked.tsv"),
+      `gemini_weekly\t100\t${expiredSec}\n`,
+    );
+    utimesSync(
+      join(sb.statuslineDir, "quota-symlinked.tsv"),
+      freshMtime,
+      freshMtime,
+    );
+
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (argv) => {
+      calls.push(argv);
+      // 模拟在 tide 预热 prompt 执行期间，令牌文件被移除。
+      if (argv.includes("antigravity-cli-tide") && !argv.includes("/usage")) {
+        rmSync(join(sb.tideAppData, "antigravity-oauth-token"), {
+          force: true,
+        });
+        return { exitCode: 0, stdout: "ok\n", logText: "" };
+      }
+      return { exitCode: 0, stdout: "", logText: "" };
+    };
+
+    const report = await runWarmup(sb.env, {
+      now: () => new Date(nowSec * 1000),
+      runner,
+    });
+
+    // 非法令牌目录完全不被发现或调用。
+    expect(
+      calls.some(
+        (argv) =>
+          argv.includes("antigravity-cli-symlinked") ||
+          argv.includes("antigravity-cli-dirtoken"),
+      ),
+    ).toBe(false);
+    // tide 只调用了一次 prompt；由于 prompt 期间令牌被删，紧随其后的 /usage 被拦截未调用。
+    const tideCalls = calls.filter((argv) =>
+      argv.includes("antigravity-cli-tide"),
+    );
+    expect(tideCalls).toHaveLength(1);
+    expect(tideCalls[0]!.includes("/usage")).toBe(false);
+    const tideAction = report.actions.find(
+      (a) => a.key === "agy:tidewren:gemini",
+    );
+    expect(tideAction?.succeeded).toBe(true);
+    expect(tideAction?.refreshedQuota).toBe(false);
   });
 });
