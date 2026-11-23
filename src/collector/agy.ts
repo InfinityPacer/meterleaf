@@ -6,18 +6,20 @@ import {
   copyFileSync,
   existsSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Database } from "bun:sqlite";
 import type { IngestAccount, IngestQuota, IngestUsage } from "../shared/ingest";
@@ -932,6 +934,8 @@ export interface AgyReaderReport extends SourceReaderReport {
   quotas: number;
   quotaIgnoredLines: number;
   activeAccount: string | null;
+  /** 存在尚未生成额度缓存的已登录额外实例，供 sync 首次补刷额度。 */
+  missingQuotaProfiles: number;
   /** 本轮是否按需运行了 agy -p /usage 并写出新的额度缓存。 */
   quotaRefreshed: boolean;
   /** 本轮按需刷新失败的原因；未尝试或成功时为 null。 */
@@ -947,6 +951,7 @@ export function emptyAgyReport(): AgyReaderReport {
     quotas: 0,
     quotaIgnoredLines: 0,
     activeAccount: null,
+    missingQuotaProfiles: 0,
     quotaRefreshed: false,
     quotaRefreshError: null,
   };
@@ -1153,24 +1158,35 @@ interface AgyInstance {
   conversationsDir: string;
 }
 
+/** 额外实例必须存在非空普通文件 antigravity-oauth-token，避免在 macOS 触发 agy 弹浏览器登录。 */
+function hasNonEmptyOAuthTokenFile(appDataDir: string): boolean {
+  try {
+    const stat = lstatSync(join(appDataDir, "antigravity-oauth-token"));
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 列出所有需要扫描的 Antigravity CLI 实例。
  * 默认实例取 sources.conversationsDir；当它位于 <geminiDir>/antigravity-cli/conversations 时，
- * 自动发现同级 <geminiDir>/antigravity-cli-<name> 下的额外账户实例。
+ * 自动发现同级 <geminiDir>/antigravity-cli-<name> 下已登录（存在非空 antigravity-oauth-token）的额外账户实例。
  */
 function discoverAgyInstances(conversationsDir: string): AgyInstance[] {
-  const appDataDir = dirname(conversationsDir);
+  const absConversationsDir = resolve(conversationsDir);
+  const appDataDir = dirname(absConversationsDir);
   const geminiDir = dirname(appDataDir);
   const instances: AgyInstance[] = [
     {
       profileName: null,
       appDataDir,
       geminiDir,
-      conversationsDir,
+      conversationsDir: absConversationsDir,
     },
   ];
   if (
-    basename(conversationsDir) !== "conversations" ||
+    basename(absConversationsDir) !== "conversations" ||
     basename(appDataDir) !== "antigravity-cli"
   ) {
     return instances;
@@ -1190,6 +1206,13 @@ function discoverAgyInstances(conversationsDir: string): AgyInstance[] {
     try {
       if (!statSync(profileAppDataDir).isDirectory()) continue;
     } catch {
+      continue;
+    }
+    // 跳过备份快照目录以及尚未完成登录（缺少非空普通文件 antigravity-oauth-token）的目录。
+    if (
+      /(?:^|[-_])(backup|bak)(?:$|[-_])/i.test(profileName) ||
+      !hasNonEmptyOAuthTokenFile(profileAppDataDir)
+    ) {
       continue;
     }
     instances.push({
@@ -1236,17 +1259,28 @@ function labelFromOAuthTokenFile(appDataDir: string): string | null {
   }
 }
 
-/** 从实例目录最近几份 log/cli-*.log 或 cli.log 中提取最近一次登录成功的账号标签。 */
+/** 从实例目录最近几份 log/acp-server-*.log、log/cli-*.log 或 cli.log 中提取最近一次登录成功的账号标签。 */
 function labelFromAppDataLogs(appDataDir: string): string | null {
   const candidates: string[] = [];
   try {
     const logDir = join(appDataDir, "log");
-    const names = readdirSync(logDir)
-      .filter((name) => name.startsWith("cli-") && name.endsWith(".log"))
-      .sort()
-      .reverse()
-      .slice(0, 5);
-    for (const name of names) candidates.push(join(logDir, name));
+    const entries = readdirSync(logDir)
+      .filter(
+        (name) =>
+          (name.startsWith("acp-server-") || name.startsWith("cli-")) &&
+          name.endsWith(".log"),
+      )
+      .map((name) => {
+        const path = join(logDir, name);
+        try {
+          return { path, mtimeMs: statSync(path).mtimeMs };
+        } catch {
+          return { path, mtimeMs: 0 };
+        }
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs || b.path.localeCompare(a.path))
+      .slice(0, 10);
+    for (const entry of entries) candidates.push(entry.path);
   } catch {
     // 没有 log 子目录时只试 cli.log。
   }
@@ -1260,6 +1294,459 @@ function labelFromAppDataLogs(appDataDir: string): string | null {
     }
   }
   return null;
+}
+
+interface AgyTurnAttribution {
+  minAtMs: number;
+  maxAtMs: number;
+  label: string;
+  profileName: string | null;
+  /** 2 = 实际发送用户消息（轮次级），1 = 创建/加载会话（会话级）。 */
+  priority: 1 | 2;
+}
+
+const glogLineRe = /^[IWEF](\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3,6})\s/;
+const logFileDateRe = /(?:^|[-_])(\d{4})(\d{2})(\d{2})_/;
+const oauthLineRe = /authenticated successfully as ([^\s]+)/;
+const turnMessageRe =
+  /(?:Sending user message to conversation |SEND_USER_CASCADE_MESSAGE_LATENCY[^\n]*\bcascade_id:)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+const sessionOpenRe =
+  /(?:Created conversation |Loading\/Resuming session: )([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+const dstProbeOffsetsMs = [
+  -24 * 3600_000,
+  -3 * 3600_000,
+  0,
+  3 * 3600_000,
+  24 * 3600_000,
+] as const;
+const glogMtimeSlackMs = 1_000;
+const glogMonotonicJitterMs = 60_000;
+
+/**
+ * 解析 glog 本地时间戳为所有合法的 epoch 毫秒候选（升序去重），结合日志文件名/修改时间的年月处理跨年边界。
+ * 普通时刻返回单元素数组；夏令时回拨重复小时返回两个候选 [首次, 回拨后]，
+ * 供文件内单调性与 mtime 上界进一步收窄，避免较晚发送的请求被解析到前一小时而抢占归属。
+ */
+function parseGlogTimestampCandidatesMs(
+  line: string,
+  anchorYear: number,
+  anchorMonth: number,
+  anchorFromStart: boolean,
+): number[] | null {
+  const match = glogLineRe.exec(line);
+  if (!match) return null;
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  const hour = Number(match[3]);
+  const minute = Number(match[4]);
+  const second = Number(match[5]);
+  const ms = Number(match[6]!.slice(0, 3));
+  let year = anchorYear;
+  if (anchorFromStart && anchorMonth === 12 && month === 1) year += 1;
+  else if (!anchorFromStart && anchorMonth === 1 && month === 12) year -= 1;
+
+  const wallAsUtc = Date.UTC(year, month - 1, day, hour, minute, second, ms);
+  const baseMs = new Date(
+    year,
+    month - 1,
+    day,
+    hour,
+    minute,
+    second,
+    ms,
+  ).getTime();
+  if (!Number.isFinite(wallAsUtc) || !Number.isFinite(baseMs)) return null;
+
+  const tzOffsets = new Set<number>();
+  for (const deltaMs of dstProbeOffsetsMs) {
+    tzOffsets.add(new Date(baseMs + deltaMs).getTimezoneOffset());
+  }
+
+  const candidates: number[] = [];
+  for (const offsetMinutes of tzOffsets) {
+    const candidate = wallAsUtc + offsetMinutes * 60_000;
+    const d = new Date(candidate);
+    if (
+      d.getFullYear() === year &&
+      d.getMonth() === month - 1 &&
+      d.getDate() === day &&
+      d.getHours() === hour &&
+      d.getMinutes() === minute &&
+      d.getSeconds() === second &&
+      d.getMilliseconds() === ms
+    ) {
+      candidates.push(candidate);
+    }
+  }
+  if (candidates.length === 0) return [baseMs];
+  candidates.sort((a, b) => a - b);
+  return candidates;
+}
+
+/**
+ * 利用单文件 mtime 的 UTC 上界与文件内前后行时间单调性（容忍 60s 内的并发刷盘乱序，
+ * 远小于 30–60 分钟的夏令时回拨跨度）收窄重复本地小时的候选 epoch。
+ */
+function narrowFileGlogTimestamps(
+  lines: readonly string[],
+  anchorYear: number,
+  anchorMonth: number,
+  anchorFromStart: boolean,
+  fileMtimeMs: number,
+): (number[] | null)[] {
+  const perLine = lines.map((line) =>
+    parseGlogTimestampCandidatesMs(
+      line,
+      anchorYear,
+      anchorMonth,
+      anchorFromStart,
+    ),
+  );
+  const maxAllowedMs = Number.isFinite(fileMtimeMs)
+    ? Math.ceil(fileMtimeMs) + glogMtimeSlackMs
+    : Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < perLine.length; i += 1) {
+    const cands = perLine[i];
+    if (!cands || cands.length <= 1) continue;
+    const bounded = cands.filter((t) => t <= maxAllowedMs);
+    if (bounded.length > 0) perLine[i] = bounded;
+  }
+
+  let prevMinMs = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < perLine.length; i += 1) {
+    let cands = perLine[i];
+    if (!cands || cands.length === 0) continue;
+    if (cands.length > 1 && Number.isFinite(prevMinMs)) {
+      const forward = cands.filter(
+        (t) => t >= prevMinMs - glogMonotonicJitterMs,
+      );
+      if (forward.length > 0) {
+        cands = forward;
+        perLine[i] = cands;
+      }
+    }
+    if (cands[0]! > prevMinMs) prevMinMs = cands[0]!;
+  }
+
+  let nextMaxMs = Number.POSITIVE_INFINITY;
+  for (let i = perLine.length - 1; i >= 0; i -= 1) {
+    let cands = perLine[i];
+    if (!cands || cands.length === 0) continue;
+    if (cands.length > 1 && Number.isFinite(nextMaxMs)) {
+      const backward = cands.filter(
+        (t) => t <= nextMaxMs + glogMonotonicJitterMs,
+      );
+      if (backward.length > 0) {
+        cands = backward;
+        perLine[i] = cands;
+      }
+    }
+    const last = cands[cands.length - 1]!;
+    if (last < nextMaxMs) nextMaxMs = last;
+  }
+
+  return perLine;
+}
+
+interface CachedSharedLogEvent extends AgyTurnAttribution {
+  convId: string;
+}
+
+export interface SharedLogFileOps {
+  openSync: (path: string, flags: string) => number;
+  fstatSync: (fd: number) => {
+    isFile(): boolean;
+    mtimeMs: number;
+    size?: number;
+    ino?: number | bigint;
+  };
+  readFileSync: (fd: number, encoding: "utf8") => string;
+  closeSync: (fd: number) => void;
+}
+
+/**
+ * 多个账号通过软链共享同一个 conversations/ 目录时，读取各实例隔离的 log/ 目录，
+ * 提取本次待扫描会话的账号切换与发消息时间点，使跨账号加载的同一会话也能按轮次精准归账。
+ * 解析结果按日志文件的 inode/size/mtime 缓存在 CollectorState 中，未变动的老日志不重复读盘。
+ */
+function indexSharedConversationLogs(
+  state: CollectorState,
+  members: readonly { instance: AgyInstance; label: string | null }[],
+  conversationIds: ReadonlySet<string>,
+  presentLogPaths: Set<string>,
+  logFileOps?: Partial<SharedLogFileOps>,
+): Map<string, AgyTurnAttribution[]> {
+  const index = new Map<string, AgyTurnAttribution[]>();
+  if (conversationIds.size === 0) return index;
+  const ops: SharedLogFileOps = {
+    openSync,
+    fstatSync,
+    readFileSync,
+    closeSync,
+    ...logFileOps,
+  };
+  const pendingCacheWrites: {
+    path: string;
+    inode: string;
+    size: number;
+    modified: number;
+    defaultLabel: string;
+    events: string;
+  }[] = [];
+
+  for (const { instance, label: defaultLabel } of members) {
+    const candidateFiles: {
+      path: string;
+      inode: string;
+      size: number;
+      mtimeMs: number;
+    }[] = [];
+    const collectFile = (path: string) => {
+      try {
+        const st = statSync(path);
+        if (st.isFile()) {
+          candidateFiles.push({
+            path,
+            inode: String(st.ino),
+            size: st.size,
+            mtimeMs: st.mtimeMs,
+          });
+        }
+      } catch {
+        // 忽略不存在或读取瞬间消失的日志。
+      }
+    };
+    const logDir = join(instance.appDataDir, "log");
+    try {
+      for (const name of readdirSync(logDir)) {
+        if (
+          !(name.startsWith("acp-server-") || name.startsWith("cli-")) ||
+          !name.endsWith(".log")
+        ) {
+          continue;
+        }
+        collectFile(join(logDir, name));
+      }
+    } catch {
+      // 没有 log 子目录时只试 cli.log。
+    }
+    collectFile(join(instance.appDataDir, "cli.log"));
+
+    const defaultLabelKey = `${instance.profileName ?? ""}\0${defaultLabel ?? ""}`;
+    for (const candidate of candidateFiles) {
+      const filePath = candidate.path;
+      presentLogPaths.add(filePath);
+      const cached = state.agySharedLog(filePath);
+      if (
+        cached &&
+        cached.inode === candidate.inode &&
+        cached.size === candidate.size &&
+        cached.modified === candidate.mtimeMs &&
+        cached.defaultLabel === defaultLabelKey
+      ) {
+        try {
+          const parsed = JSON.parse(cached.events) as CachedSharedLogEvent[];
+          for (const ev of parsed) {
+            if (!conversationIds.has(ev.convId)) continue;
+            const list = index.get(ev.convId) ?? [];
+            list.push({
+              minAtMs: ev.minAtMs,
+              maxAtMs: ev.maxAtMs,
+              label: ev.label,
+              profileName: ev.profileName,
+              priority: ev.priority,
+            });
+            index.set(ev.convId, list);
+          }
+          continue;
+        } catch {
+          // 缓存损坏时回退到重读文件。
+        }
+      }
+
+      let raw: string;
+      let postReadMtimeMs: number;
+      let postReadSize: number;
+      let postReadInode: string;
+      let fd: number | null = null;
+      try {
+        fd = ops.openSync(filePath, "r");
+        const preStat = ops.fstatSync(fd);
+        if (!preStat.isFile()) continue;
+        raw = ops.readFileSync(fd, "utf8");
+        // 在正文读完后对同一文件描述符 fstat，确保 mtime 上界与缓存水位不早于本次读到的任何追加内容。
+        const postStat = ops.fstatSync(fd);
+        postReadMtimeMs = Math.max(preStat.mtimeMs, postStat.mtimeMs);
+        postReadSize = postStat.size ?? preStat.size ?? candidate.size;
+        postReadInode =
+          postStat.ino !== undefined
+            ? String(postStat.ino)
+            : preStat.ino !== undefined
+              ? String(preStat.ino)
+              : candidate.inode;
+      } catch {
+        continue;
+      } finally {
+        if (fd !== null) {
+          try {
+            ops.closeSync(fd);
+          } catch {
+            // 忽略关闭异常。
+          }
+        }
+      }
+
+      const dateMatch = logFileDateRe.exec(basename(filePath));
+      const mtimeDate = new Date(postReadMtimeMs);
+      const anchorYear = dateMatch
+        ? Number(dateMatch[1])
+        : mtimeDate.getFullYear();
+      const anchorMonth = dateMatch
+        ? Number(dateMatch[2])
+        : mtimeDate.getMonth() + 1;
+      const anchorFromStart = Boolean(dateMatch);
+
+      const lines = raw.split("\n");
+      const pending: {
+        lineIdx: number;
+        convId: string;
+        label: string;
+        priority: 1 | 2;
+        cands: number[];
+      }[] = [];
+      let hasAmbiguous = false;
+      let currentLabel = defaultLabel;
+      for (let lineIdx = 0; lineIdx < lines.length; lineIdx += 1) {
+        const line = lines[lineIdx]!;
+        const auth = oauthLineRe.exec(line);
+        if (auth?.[1]) {
+          const parsedLabel = agyLabelFromEmail(auth[1]);
+          if (parsedLabel) currentLabel = parsedLabel;
+          continue;
+        }
+        if (!currentLabel) continue;
+        const turnMatch = turnMessageRe.exec(line);
+        const openMatch = turnMatch ? null : sessionOpenRe.exec(line);
+        const convId = turnMatch?.[1] ?? openMatch?.[1] ?? null;
+        if (!convId) continue;
+        const cands = parseGlogTimestampCandidatesMs(
+          line,
+          anchorYear,
+          anchorMonth,
+          anchorFromStart,
+        );
+        if (!cands || cands.length === 0) continue;
+        if (cands.length > 1) hasAmbiguous = true;
+        pending.push({
+          lineIdx,
+          convId,
+          label: currentLabel,
+          priority: turnMatch ? 2 : 1,
+          cands,
+        });
+      }
+
+      const narrowed = hasAmbiguous
+        ? narrowFileGlogTimestamps(
+            lines,
+            anchorYear,
+            anchorMonth,
+            anchorFromStart,
+            postReadMtimeMs,
+          )
+        : null;
+
+      const fileEvents: CachedSharedLogEvent[] = [];
+      for (const item of pending) {
+        const cands = narrowed?.[item.lineIdx] ?? item.cands;
+        if (!cands || cands.length === 0) continue;
+        const ev: CachedSharedLogEvent = {
+          convId: item.convId,
+          minAtMs: cands[0]!,
+          maxAtMs: cands[cands.length - 1]!,
+          label: item.label,
+          profileName: instance.profileName,
+          priority: item.priority,
+        };
+        fileEvents.push(ev);
+        if (!conversationIds.has(item.convId)) continue;
+        const list = index.get(item.convId) ?? [];
+        list.push({
+          minAtMs: ev.minAtMs,
+          maxAtMs: ev.maxAtMs,
+          label: ev.label,
+          profileName: ev.profileName,
+          priority: ev.priority,
+        });
+        index.set(item.convId, list);
+      }
+      pendingCacheWrites.push({
+        path: filePath,
+        inode: postReadInode,
+        size: postReadSize,
+        modified: postReadMtimeMs,
+        defaultLabel: defaultLabelKey,
+        events: JSON.stringify(fileEvents),
+      });
+    }
+  }
+
+  if (pendingCacheWrites.length > 0) {
+    state.write(() => {
+      for (const item of pendingCacheWrites) state.saveAgySharedLog(item);
+    });
+  }
+
+  for (const list of index.values()) {
+    list.sort(
+      (a, b) =>
+        a.maxAtMs - b.maxAtMs ||
+        a.minAtMs - b.minAtMs ||
+        a.priority - b.priority,
+    );
+  }
+  return index;
+}
+
+/**
+ * 取所有合法候选时刻均严格早于事件完成时刻（`event.maxAtMs < occurredAtMs`）的最近一次轮次归属：
+ * - 因毫秒截断具有单调性（`t_next >= t_done => floor(t_next) >= floor(t_done)`），严格 `<`
+ *   可在毫秒精度下保证完成时刻之后（含同毫秒内）的下一轮发送绝不抢占上一轮；
+ * - 夏令时回拨重复小时若收窄后仍存在前后两小时双候选，要求 `maxAtMs < occurredAtMs` 才采信，
+ *   防止回拨后较晚发送的请求被按较早一小时错误归到先前已完成的轮次；
+ * - 优先采用实际发送请求事件（priority=2），防止另一账号仅被动打开/加载同一会话（priority=1）
+ *   在生成期间覆盖正在运行的发送者；仅当截止时间前没有任何发送记录时，才回退到最近的打开事件。
+ */
+function resolveSharedTurnAttribution(
+  events: readonly AgyTurnAttribution[] | undefined,
+  occurredAtMs: number,
+): { label: string; profileName: string | null } | null {
+  if (!events || events.length === 0 || !Number.isFinite(occurredAtMs)) {
+    return null;
+  }
+  let matchedTurn: AgyTurnAttribution | null = null;
+  let matchedOpen: AgyTurnAttribution | null = null;
+  for (const event of events) {
+    if (event.maxAtMs >= occurredAtMs) break;
+    if (event.priority >= 2) {
+      matchedTurn = event;
+    } else {
+      matchedOpen = event;
+    }
+  }
+  const matched = matchedTurn ?? matchedOpen;
+  return matched
+    ? { label: matched.label, profileName: matched.profileName }
+    : null;
+}
+
+function canonicalDir(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
 }
 
 /**
@@ -1312,6 +1799,7 @@ export function readAgy(
   state: CollectorState,
   sources: AgyReaderSources,
   now: Date = new Date(),
+  logFileOps?: Partial<SharedLogFileOps>,
 ): AgyReaderReport {
   const report = emptyAgyReport();
   const plans = readPlanMap(state);
@@ -1350,11 +1838,14 @@ export function readAgy(
   const startMs = Date.parse(sources.start);
   const startIso = new Date(startMs).toISOString();
   const allDbPaths = new Set<string>();
-  const instanceDbs: {
-    instance: AgyInstance;
-    label: string | null;
+  const dirtyProfiles = new Set<string | null>();
+
+  interface ConvGroup {
+    primary: { instance: AgyInstance; label: string | null };
+    members: { instance: AgyInstance; label: string | null }[];
     dbPaths: string[];
-  }[] = [];
+  }
+  const groups = new Map<string, ConvGroup>();
 
   for (const instance of instances) {
     const label =
@@ -1365,8 +1856,22 @@ export function readAgy(
       const accounts = agyAccountsForLabel(label, plans[label] ?? null);
       state.upsertAccount(accounts.account);
       for (const legacy of accounts.legacy) state.upsertAccount(legacy);
+      // 已登录的额外实例尚无本地额度缓存时，纳入本轮待刷新列表（仍受 5 分钟退避约束）。
+      if (
+        instance.profileName !== null &&
+        !existsSync(join(sources.statuslineDir, agyQuotaFileName(label)))
+      ) {
+        dirtyProfiles.add(instance.profileName);
+        report.missingQuotaProfiles += 1;
+      }
     }
     if (!existsSync(instance.conversationsDir)) continue;
+    const key = canonicalDir(instance.conversationsDir);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.members.push({ instance, label });
+      continue;
+    }
     let dbNames: string[] = [];
     try {
       dbNames = readdirSync(instance.conversationsDir)
@@ -1379,14 +1884,38 @@ export function readAgy(
       join(instance.conversationsDir, name),
     );
     for (const path of dbPaths) allDbPaths.add(path);
-    instanceDbs.push({ instance, label, dbPaths });
+    const member = { instance, label };
+    groups.set(key, {
+      primary: member,
+      members: [member],
+      dbPaths,
+    });
   }
 
   state.forgetMissingAgyFiles(allDbPaths);
-  const dirtyProfiles = new Set<string | null>();
+  const allSharedLogPaths = new Set<string>();
+  let scannedSharedLogs = false;
+  let hasAnySharedGroup = false;
 
-  for (const { instance, label: instanceAccount, dbPaths } of instanceDbs) {
-    for (const path of dbPaths) {
+  for (const group of groups.values()) {
+    const { instance, label: instanceAccount } = group.primary;
+    const isShared = group.members.length > 1;
+    if (isShared) hasAnySharedGroup = true;
+    const watermarkAccount = instanceAccount ?? (isShared ? "__shared__" : "");
+
+    // 预筛发生变化的文件；共享目录只在存在待读文件时才按需扫描各实例日志。
+    interface PendingDb {
+      path: string;
+      conversationId: string;
+      inode: string;
+      size: number;
+      modified: number;
+      walSize: number;
+      walModified: number;
+      latestMtimeMs: number;
+    }
+    const pendingDbs: PendingDb[] = [];
+    for (const path of group.dbPaths) {
       let stat;
       try {
         stat = statSync(path);
@@ -1418,11 +1947,32 @@ export function readAgy(
         saved.walSize === walSize &&
         saved.walModified === walModified &&
         saved.account !== "" &&
-        saved.account === (instanceAccount ?? "")
+        saved.account === watermarkAccount
       ) {
         continue;
       }
+      pendingDbs.push({
+        path,
+        conversationId: basename(path, ".db"),
+        inode,
+        size: stat.size,
+        modified: stat.mtimeMs,
+        walSize,
+        walModified,
+        latestMtimeMs: Math.max(stat.mtimeMs, walModified),
+      });
+    }
 
+    // 先完整快照待读会话库的 gen_metadata 与 steps，再读取共享日志做轮次归属：
+    // agy 先写发送日志再提交数据库，先拷库后读日志可消除顺序写入期间的读取竞态。
+    const loadedDbs: {
+      item: (typeof pendingDbs)[number];
+      genRows: { idx: number; data: string | Uint8Array }[];
+      steps: ReturnType<typeof buildStepTimeIndex>;
+    }[] = [];
+
+    for (const item of pendingDbs) {
+      const { path, inode, size, modified, walSize, walModified } = item;
       const opened = openConversationDb(path);
       if (!opened) {
         report.unreadable += 1;
@@ -1430,21 +1980,27 @@ export function readAgy(
       }
 
       try {
-        const hasGen = opened.db
-          .query<{ name: string }, []>(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'gen_metadata'",
-          )
-          .get();
+        let hasGen: { name: string } | null;
+        try {
+          hasGen = opened.db
+            .query<{ name: string }, []>(
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'gen_metadata'",
+            )
+            .get();
+        } catch {
+          report.unreadable += 1;
+          continue;
+        }
         if (!hasGen) {
-          if (instanceAccount) {
+          if (watermarkAccount) {
             state.saveAgyFile({
               path,
               inode,
-              size: stat.size,
-              modified: stat.mtimeMs,
+              size,
+              modified,
               walSize,
               walModified,
-              account: instanceAccount,
+              account: watermarkAccount,
             });
           }
           continue;
@@ -1464,118 +2020,162 @@ export function readAgy(
 
         report.filesRead += 1;
         const steps = buildStepTimeIndex(opened.db);
-        const conversationId = basename(path, ".db");
-
-        state.write(() => {
-          for (const row of genRows) {
-            if (
-              (typeof row.data !== "string" &&
-                !(row.data instanceof Uint8Array)) ||
-              (typeof row.data === "string" && row.data.trim() === "") ||
-              (row.data instanceof Uint8Array && row.data.byteLength === 0)
-            ) {
-              report.invalid += 1;
-              continue;
-            }
-            let decoded: DecodedAgyGenMetadata;
-            try {
-              decoded = decodeAgyGenMetadata(row.data);
-            } catch {
-              report.invalid += 1;
-              continue;
-            }
-
-            const extracted = extractAgyTokens(decoded);
-            if (extracted.kind === "aborted" || extracted.kind === "empty") {
-              continue;
-            }
-            if (extracted.kind === "invalid") {
-              report.invalid += 1;
-              continue;
-            }
-
-            const normalized = normalizeAgyModel({
-              responseModel: decoded.chatModel?.responseModel,
-              modelDisplayName: decoded.chatModel?.modelDisplayName,
-              modelEnum:
-                decoded.chatModel?.usage?.modelEnum ??
-                decoded.chatModel?.modelEnum,
-            });
-            const occurredAt = resolveOccurredAt(decoded, steps);
-            if (!normalized || !occurredAt) {
-              report.invalid += 1;
-              continue;
-            }
-
-            report.read += 1;
-            if (occurredAt < startIso) {
-              report.beforeStart += 1;
-              continue;
-            }
-
-            if (!instanceAccount) {
-              report.skipped["(缺失账户)"] =
-                (report.skipped["(缺失账户)"] ?? 0) + 1;
-              dirtyProfiles.add(instance.profileName);
-              continue;
-            }
-
-            const accountExternalId = agyAccountId(instanceAccount);
-            const uniqueKey = JSON.stringify([
-              conversationId,
-              row.idx,
-              decoded.executionId ??
-                decoded.chatModel?.usage?.messageId ??
-                decoded.chatModel?.usage?.responseId ??
-                "",
-            ]);
-            const metadata: IngestUsage["metadata"] = {
-              origin: "agy_local",
-              reasoning_effort: normalized.reasoningEffort,
-            };
-            if (normalized.upstreamModel) {
-              metadata.upstream_model = normalized.upstreamModel;
-            }
-            const ttftMs = decoded.chatModel?.ttftMs ?? null;
-            const streamingMs = decoded.chatModel?.streamingMs ?? null;
-            if (ttftMs !== null) {
-              metadata.first_token_ms = ttftMs;
-              if (streamingMs !== null) {
-                metadata.duration_ms = ttftMs + streamingMs;
-              }
-            }
-
-            const usage: IngestUsage = {
-              externalId: `agy-${hash(uniqueKey)}`,
-              occurredAt,
-              accountExternalId,
-              model: normalized.model,
-              tier: extracted.tier,
-              tokens: extracted.tokens,
-              metadata,
-            };
-            if (state.recordSourceUsage("agy", usage)) {
-              report.recorded += 1;
-              dirtyProfiles.add(instance.profileName);
-            }
-          }
-
-          if (instanceAccount) {
-            state.saveAgyFile({
-              path,
-              inode,
-              size: stat.size,
-              modified: stat.mtimeMs,
-              walSize,
-              walModified,
-              account: instanceAccount,
-            });
-          }
-        });
+        loadedDbs.push({ item, genRows, steps });
       } finally {
         opened.close();
       }
     }
+
+    let sharedTurnIndex: Map<string, AgyTurnAttribution[]> | null = null;
+    if (isShared && loadedDbs.length > 0) {
+      const dirtyConvIds = new Set(
+        loadedDbs.map((entry) => entry.item.conversationId),
+      );
+      sharedTurnIndex = indexSharedConversationLogs(
+        state,
+        group.members,
+        dirtyConvIds,
+        allSharedLogPaths,
+        logFileOps,
+      );
+      scannedSharedLogs = true;
+    }
+
+    for (const { item, genRows, steps } of loadedDbs) {
+      const {
+        path,
+        conversationId,
+        inode,
+        size,
+        modified,
+        walSize,
+        walModified,
+      } = item;
+      const turnEvents = sharedTurnIndex?.get(conversationId);
+
+      state.write(() => {
+        let skippedMissingInFile = 0;
+        for (const row of genRows) {
+          if (
+            (typeof row.data !== "string" &&
+              !(row.data instanceof Uint8Array)) ||
+            (typeof row.data === "string" && row.data.trim() === "") ||
+            (row.data instanceof Uint8Array && row.data.byteLength === 0)
+          ) {
+            report.invalid += 1;
+            continue;
+          }
+          let decoded: DecodedAgyGenMetadata;
+          try {
+            decoded = decodeAgyGenMetadata(row.data);
+          } catch {
+            report.invalid += 1;
+            continue;
+          }
+
+          const extracted = extractAgyTokens(decoded);
+          if (extracted.kind === "aborted" || extracted.kind === "empty") {
+            continue;
+          }
+          if (extracted.kind === "invalid") {
+            report.invalid += 1;
+            continue;
+          }
+
+          const normalized = normalizeAgyModel({
+            responseModel: decoded.chatModel?.responseModel,
+            modelDisplayName: decoded.chatModel?.modelDisplayName,
+            modelEnum:
+              decoded.chatModel?.usage?.modelEnum ??
+              decoded.chatModel?.modelEnum,
+          });
+          const occurredAt = resolveOccurredAt(decoded, steps);
+          if (!normalized || !occurredAt) {
+            report.invalid += 1;
+            continue;
+          }
+
+          report.read += 1;
+          if (occurredAt < startIso) {
+            report.beforeStart += 1;
+            continue;
+          }
+
+          const sharedHit = isShared
+            ? resolveSharedTurnAttribution(turnEvents, Date.parse(occurredAt))
+            : null;
+          const resolvedLabel = sharedHit?.label ?? instanceAccount;
+          const resolvedProfile = sharedHit
+            ? sharedHit.profileName
+            : instance.profileName;
+
+          if (!resolvedLabel) {
+            report.skipped["(缺失账户)"] =
+              (report.skipped["(缺失账户)"] ?? 0) + 1;
+            skippedMissingInFile += 1;
+            dirtyProfiles.add(instance.profileName);
+            continue;
+          }
+
+          const accountExternalId = agyAccountId(resolvedLabel);
+          const uniqueKey = JSON.stringify([
+            conversationId,
+            row.idx,
+            decoded.executionId ??
+              decoded.chatModel?.usage?.messageId ??
+              decoded.chatModel?.usage?.responseId ??
+              "",
+          ]);
+          const metadata: IngestUsage["metadata"] = {
+            origin: "agy_local",
+            reasoning_effort: normalized.reasoningEffort,
+          };
+          if (normalized.upstreamModel) {
+            metadata.upstream_model = normalized.upstreamModel;
+          }
+          const ttftMs = decoded.chatModel?.ttftMs ?? null;
+          const streamingMs = decoded.chatModel?.streamingMs ?? null;
+          if (ttftMs !== null) {
+            metadata.first_token_ms = ttftMs;
+            if (streamingMs !== null) {
+              metadata.duration_ms = ttftMs + streamingMs;
+            }
+          }
+
+          const usage: IngestUsage = {
+            externalId: `agy-${hash(uniqueKey)}`,
+            occurredAt,
+            accountExternalId,
+            model: normalized.model,
+            tier: extracted.tier,
+            tokens: extracted.tokens,
+            metadata,
+          };
+          if (state.recordSourceUsage("agy", usage)) {
+            report.recorded += 1;
+            dirtyProfiles.add(resolvedProfile);
+          }
+        }
+
+        if (watermarkAccount && skippedMissingInFile === 0) {
+          state.saveAgyFile({
+            path,
+            inode,
+            size,
+            modified,
+            walSize,
+            walModified,
+            account: watermarkAccount,
+          });
+        }
+      });
+    }
+  }
+
+  if (scannedSharedLogs) {
+    state.forgetMissingAgySharedLogs(allSharedLogPaths);
+  } else if (!hasAnySharedGroup) {
+    state.forgetMissingAgySharedLogs(allSharedLogPaths);
   }
 
   state.setMeta("agy_dirty_profiles", JSON.stringify([...dirtyProfiles]));
@@ -1839,15 +2439,55 @@ export async function refreshAgyQuota(
     label: null,
     error: null,
   };
+  const profileName = options.profileName ?? null;
+  let effectiveGeminiDir = options.geminiDir
+    ? resolve(options.geminiDir)
+    : null;
+  if (profileName !== null) {
+    const expectedDirName = `antigravity-cli-${profileName}`;
+    if (!effectiveGeminiDir && options.appDataDir) {
+      const absAppDataDir = resolve(options.appDataDir);
+      if (basename(absAppDataDir) !== expectedDirName) {
+        return {
+          ...result,
+          error: "额外实例目录名与 profileName 不一致，已跳过 agy 探测",
+        };
+      }
+      effectiveGeminiDir = dirname(absAppDataDir);
+    }
+    const resolvedAppDataDir = effectiveGeminiDir
+      ? join(effectiveGeminiDir, expectedDirName)
+      : null;
+    if (
+      resolvedAppDataDir &&
+      options.appDataDir &&
+      resolve(options.appDataDir) !== resolve(resolvedAppDataDir)
+    ) {
+      return {
+        ...result,
+        error: "额外实例 appDataDir 与派发目录不一致，已跳过 agy 探测",
+      };
+    }
+    if (!resolvedAppDataDir || !hasNonEmptyOAuthTokenFile(resolvedAppDataDir)) {
+      return {
+        ...result,
+        error: "额外实例缺少有效的 antigravity-oauth-token，已跳过 agy 探测",
+      };
+    }
+  }
   const agyBin = findExecutable("agy", options.agyBin ?? process.env.AGY_BIN);
   if (!agyBin) return { ...result, error: "找不到 agy 可执行文件" };
   result.attempted = true;
-  const tempDir = mkdtempSync(join(tmpdir(), "meterleaf-agy-usage-"));
-  const logFile = join(tempDir, "agy.log");
-  const outFile = join(tempDir, "usage.json");
-  const profileName = options.profileName ?? null;
+  let tempDir: string | null = null;
   try {
+    tempDir = mkdtempSync(join(tmpdir(), "meterleaf-agy-usage-"));
+    const logFile = join(tempDir, "agy.log");
+    const outFile = join(tempDir, "usage.json");
     const env = probeEnv();
+    // 清除 SSH 环境变量（agy -p /usage 在 SSH_CONNECTION 下会挂起）；默认实例同时清 WSL_INTEROP 以走 Keychain。
+    delete env.SSH_CONNECTION;
+    delete env.SSH_CLIENT;
+    delete env.SSH_TTY;
     env.METERLEAF_AGY_PROBE = "1";
     env.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
     env.BROWSER = "/usr/bin/false";
@@ -1855,8 +2495,10 @@ export async function refreshAgyQuota(
     const argv = [agyBin];
     if (profileName !== null) {
       env.WSL_INTEROP = "1";
-      if (options.geminiDir) argv.push("--gemini_dir", options.geminiDir);
+      if (effectiveGeminiDir) argv.push("--gemini_dir", effectiveGeminiDir);
       argv.push("--app_data_dir", `antigravity-cli-${profileName}`);
+    } else {
+      delete env.WSL_INTEROP;
     }
     argv.push(
       "-p",
@@ -1926,7 +2568,13 @@ export async function refreshAgyQuota(
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+    if (tempDir) {
+      try {
+        rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // 清理临时目录失败不覆盖本次刷新结果或中断本轮上传。
+      }
+    }
   }
 }
 
@@ -1944,6 +2592,9 @@ async function maybeRefreshInstanceQuota(
     error: null,
   };
   const profileName = instance.profileName;
+  if (profileName !== null && !hasNonEmptyOAuthTokenFile(instance.appDataDir)) {
+    return skipped;
+  }
   const refreshAtKey = profileName
     ? `agy_quota_refresh_at:${profileName}`
     : "agy_quota_refresh_at";
@@ -2159,10 +2810,11 @@ export async function refreshOmpAgyQuota(
   const ompBin = findExecutable("omp", options.ompBin ?? process.env.OMP_BIN);
   if (!ompBin) return { ...result, error: "找不到 omp 可执行文件" };
   result.attempted = true;
-  const tempDir = mkdtempSync(join(tmpdir(), "meterleaf-omp-usage-"));
-  const outFile = join(tempDir, "usage.json");
+  let tempDir: string | null = null;
   const provider = "--provider=google-antigravity";
   try {
+    tempDir = mkdtempSync(join(tmpdir(), "meterleaf-omp-usage-"));
+    const outFile = join(tempDir, "usage.json");
     const run = { cwd: tempDir, env: probeEnv(), timeoutMs: options.timeoutMs };
     if (options.live)
       // 丢弃缓存失败时仍读一次，最多拿到 omp 缓存里的值。
@@ -2191,7 +2843,13 @@ export async function refreshOmpAgyQuota(
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+    if (tempDir) {
+      try {
+        rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // 清理临时目录失败不覆盖本次刷新结果或中断本轮上传。
+      }
+    }
   }
 }
 

@@ -4,9 +4,11 @@ import {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   agyAccountsForLabel,
+  agyInstanceAccounts,
   agyQuotaSnapshot,
   decodeAgyGenMetadata,
   decodeAgyStepMetadata,
@@ -795,6 +798,7 @@ test("readAgy ingests quota and SQLite conversations idempotently and attributes
         quotas: 4,
         quotaIgnoredLines: 0,
         activeAccount: "alice",
+        missingQuotaProfiles: 0,
         quotaRefreshed: false,
         quotaRefreshError: null,
       });
@@ -1619,12 +1623,12 @@ test("readAgy and maybeRefreshAgyQuota discover extra antigravity-cli-<name> pro
       start: "2026-09-20T00:00:00.000Z",
     };
     const first = readAgy(state, sources, new Date("2026-10-30T15:00:00.000Z"));
-    // alice 与 bob 各入账 1 条；未登录的 empty 实例跳过且绝不串号到默认账户 alice。
+    // alice 与 bob 各入账 1 条；缺少 antigravity-oauth-token 的未登录额外目录直接忽略，不扫描也不串号到默认账户 alice。
     expect(first).toMatchObject({
-      read: 3,
+      read: 2,
       recorded: 2,
-      skipped: { "(缺失账户)": 1 },
-      filesRead: 3,
+      skipped: {},
+      filesRead: 2,
       activeAccount: "alice",
     });
     const usages = state
@@ -1645,7 +1649,7 @@ test("readAgy and maybeRefreshAgyQuota discover extra antigravity-cli-<name> pro
       sources,
       new Date("2026-10-30T15:01:00.000Z"),
     );
-    expect(second.filesRead).toBe(1); // 只有缺少账户的 conv-empty.db 重试读取
+    expect(second.filesRead).toBe(0);
     expect(second.recorded).toBe(0);
 
     // 验证额外实例按需刷新：默认实例的 quota-alice.tsv 刚刷新过，只对 work 实例触发带 --app_data_dir 与 WSL_INTEROP=1 的探测。
@@ -1824,5 +1828,959 @@ test("readAgyQuotaFile, refreshAgyQuota, and maybeRefreshOmpAgyQuota preserve un
   } finally {
     state.close();
     rmSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("shared symlinked conversations deduplicate DB scans, attribute cross-account turns via acp logs, skip unauthenticated backup dirs, and clear SSH_CONNECTION on refresh", async () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-shared-"));
+  const geminiDir = join(root, ".gemini");
+  const defaultAppDir = join(geminiDir, "antigravity-cli");
+  const defaultConvDir = join(defaultAppDir, "conversations");
+  const defaultLogDir = join(defaultAppDir, "log");
+  const acct2AppDir = join(geminiDir, "antigravity-cli-acct2");
+  const acct2LogDir = join(acct2AppDir, "log");
+  const backupAppDir = join(geminiDir, "antigravity-cli-backup-20261123");
+  const backupConvDir = join(backupAppDir, "conversations");
+  const statusDir = join(root, "statusline");
+
+  mkdirSync(defaultConvDir, { recursive: true });
+  mkdirSync(defaultLogDir, { recursive: true });
+  mkdirSync(acct2LogDir, { recursive: true });
+  mkdirSync(backupConvDir, { recursive: true });
+  mkdirSync(statusDir, { recursive: true });
+  symlinkSync(defaultConvDir, join(acct2AppDir, "conversations"));
+
+  writeFileSync(join(statusDir, "current-account"), "alice\n");
+  writeFileSync(
+    join(acct2AppDir, "antigravity-oauth-token"),
+    JSON.stringify({
+      auth_method: "oauth",
+      id_token_email: "Bob@example.com",
+      token: "secret",
+    }),
+  );
+
+  const convId = "c1818814-2a2b-4254-b8e8-20e5a18674b7";
+  // 构造两个相邻轮次（本地时间 2026-11-23 00:13:35 与 00:13:46），分别由 alice 与 bob 发起。
+  const turn1Local = new Date(2026, 10, 23, 0, 13, 35, 0);
+  const turn2Local = new Date(2026, 10, 23, 0, 13, 46, 0);
+  const turn1Sec = Math.floor(turn1Local.getTime() / 1000);
+  const turn2Sec = Math.floor(turn2Local.getTime() / 1000);
+
+  const convPath = join(defaultConvDir, `${convId}.db`);
+  const db = new Database(convPath);
+  db.exec(
+    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+      "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+  );
+  const insertTurn = (
+    idx: number,
+    sec: number,
+    execId: string,
+    msgId: string,
+    inputTokens: number,
+  ) => {
+    db.query(
+      "INSERT INTO steps (idx, type, status, metadata) VALUES (?1, ?2, ?3, ?4)",
+    ).run(
+      idx,
+      "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+      "DONE",
+      buildStepMetadataFixture({
+        createdAtSeconds: sec - 2,
+        finishedAtSeconds: sec - 1,
+        completedAtSeconds: sec,
+        executionId: execId,
+      }),
+    );
+    db.query(
+      "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (?1, ?2, ?3)",
+    ).run(
+      idx,
+      execId,
+      buildGenMetadataFixture({
+        modelEnum: 1532,
+        responseModel: "gemini-4-neon",
+        modelDisplayName: "Gemini 4 Neon (High)",
+        inputTokens,
+        outputTokens: 200,
+        cacheReadTokens: 1_000,
+        cacheWriteTokens: 0,
+        thinkingOutputTokens: 50,
+        responseOutputTokens: 150,
+        messageId: msgId,
+        executionId: execId,
+        stepIndices: [idx],
+      }),
+    );
+  };
+  insertTurn(1, turn1Sec, "exec-turn-1", "msg-turn-1", 4_000);
+  insertTurn(2, turn2Sec, "exec-turn-2", "msg-turn-2", 9_000);
+  db.close();
+  utimesSync(convPath, turn2Local, turn2Local);
+
+  // 备份目录里放一个同名库，确认不会触发扫描或缺失账户计数。
+  const backupDb = new Database(join(backupConvDir, "old-backup.db"));
+  backupDb.exec(
+    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+      "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+  );
+  backupDb.close();
+
+  const aliceLog = join(defaultLogDir, "acp-server-20261123_001330-100.log");
+  writeFileSync(
+    aliceLog,
+    [
+      "I1123 00:13:30.100000 1 server_oauth.go:226] OAuth: authenticated successfully as alice@example.com",
+      `I1123 00:13:31.200000 1 server.go:1269] Created conversation ${convId} (backend=BACKEND_TYPE_UNSPECIFIED)`,
+      `I1123 00:13:31.500000 1 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  utimesSync(aliceLog, turn1Local, turn1Local);
+
+  const bobLog = join(acct2LogDir, "acp-server-20261123_001338-200.log");
+  writeFileSync(
+    bobLog,
+    [
+      "I1123 00:13:38.776000 1 server_oauth.go:226] OAuth: authenticated successfully as bob@example.com",
+      `I1123 00:13:40.854000 1 session_handlers.go:461] Loading/Resuming session: ${convId}, cwd: /tmp`,
+      `I1123 00:13:40.963000 1 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  utimesSync(bobLog, turn2Local, turn2Local);
+
+  const state = new CollectorState(":memory:");
+  const prevSsh = process.env.SSH_CONNECTION;
+  const prevWsl = process.env.WSL_INTEROP;
+  try {
+    const sources = {
+      conversationsDir: defaultConvDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+    };
+
+    // backup 目录不出现在实例列表中。
+    expect(agyInstanceAccounts(sources).map((i) => i.profile)).toEqual([
+      null,
+      "acct2",
+    ]);
+
+    const report = readAgy(state, sources, turn2Local);
+    // 软链共享目录只扫一次（filesRead = 1），两轮分别归给 alice 与 bob，且未建缓存的 acct2 计入 missingQuotaProfiles。
+    expect(report).toMatchObject({
+      filesRead: 1,
+      read: 2,
+      recorded: 2,
+      skipped: {},
+      missingQuotaProfiles: 1,
+    });
+    const usages = state
+      .pending<IngestUsage>("usage", 10)
+      .map((item) => [
+        item.payload.accountExternalId,
+        item.payload.tokens.input,
+      ])
+      .sort(([a], [b]) => String(a).localeCompare(String(b)));
+    expect(usages).toEqual([
+      ["agy-alice", 4_000],
+      ["agy-bob", 9_000],
+    ]);
+    const dirty = JSON.parse(state.getMeta("agy_dirty_profiles") ?? "[]") as (
+      string | null
+    )[];
+    expect(dirty).toContain(null);
+    expect(dirty).toContain("acct2");
+
+    // 即使父进程环境带 SSH_CONNECTION=paseo 与 WSL_INTEROP=1，refreshAgyQuota 也会按实例类型精确清理。
+    process.env.SSH_CONNECTION = "paseo";
+    process.env.WSL_INTEROP = "1";
+    const envLog = join(root, "probe-env.txt");
+    const fakeBin = join(root, "fake-agy-env");
+    const outJson = join(root, "usage.json");
+    writeFileSync(outJson, usageJson({ "gemini-5h": 0.9 }));
+    writeFileSync(
+      fakeBin,
+      `#!/bin/sh
+printf 'SSH=%s WSL=%s args=%s\\n' "\${SSH_CONNECTION:-}" "\${WSL_INTEROP:-}" "$*" >> '${envLog}'
+while [ $# -gt 0 ]; do
+  [ "$1" = "--log-file" ] && log="$2"
+  shift
+done
+echo "I OAuth: authenticated successfully as bob@example.com" > "$log"
+cat '${outJson}'
+exit 0
+`,
+      { mode: 0o755 },
+    );
+
+    const defRes = await refreshAgyQuota(sources, { agyBin: fakeBin });
+    expect(defRes.refreshed).toBe(true);
+    const extRes = await refreshAgyQuota(sources, {
+      agyBin: fakeBin,
+      profileName: "acct2",
+      geminiDir,
+      appDataDir: acct2AppDir,
+    });
+    expect(extRes.refreshed).toBe(true);
+    const lines = readFileSync(envLog, "utf8").trim().split("\n");
+    expect(lines[0]).toStartWith("SSH= WSL= ");
+    expect(lines[1]).toStartWith("SSH= WSL=1 ");
+    expect(lines[1]).toContain("--app_data_dir antigravity-cli-acct2");
+  } finally {
+    if (prevSsh === undefined) delete process.env.SSH_CONNECTION;
+    else process.env.SSH_CONNECTION = prevSsh;
+    if (prevWsl === undefined) delete process.env.WSL_INTEROP;
+    else process.env.WSL_INTEROP = prevWsl;
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unauthenticated extra profile (e.g. antigravity-cli-acct5 without non-empty antigravity-oauth-token) never invokes agy", async () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-no-token-"));
+  const geminiDir = join(root, ".gemini");
+  const defaultConvDir = join(geminiDir, "antigravity-cli", "conversations");
+  const acct5AppDir = join(geminiDir, "antigravity-cli-acct5");
+  const acct6EmptyTokenDir = join(geminiDir, "antigravity-cli-acct6");
+  const statusDir = join(root, "statusline");
+  mkdirSync(defaultConvDir, { recursive: true });
+  mkdirSync(join(acct5AppDir, "conversations"), { recursive: true });
+  mkdirSync(join(acct6EmptyTokenDir, "conversations"), { recursive: true });
+  mkdirSync(statusDir, { recursive: true });
+  writeFileSync(join(statusDir, "current-account"), "alice\n");
+  // acct6 存在 0 字节空文件，同样不能视为有效登录令牌。
+  writeFileSync(join(acct6EmptyTokenDir, "antigravity-oauth-token"), "");
+
+  const callMarker = join(root, "agy-called.txt");
+  const fakeAgyBin = join(root, "fake-agy-never-call");
+  writeFileSync(
+    fakeAgyBin,
+    `#!/bin/sh
+echo "CALLED $*" >> '${callMarker}'
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const state = new CollectorState(":memory:");
+  try {
+    const sources = {
+      conversationsDir: defaultConvDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+    };
+
+    // 第一道防线：discoverAgyInstances 忽略 acct5（无令牌）和 acct6（空令牌）。
+    expect(agyInstanceAccounts(sources).map((i) => i.profile)).toEqual([null]);
+
+    const now = new Date("2026-11-23T01:00:00.000Z");
+    const maybeRes = await maybeRefreshAgyQuota(state, sources, now, {
+      agyBin: fakeAgyBin,
+      profiles: ["acct5", "acct6"],
+    });
+    expect(maybeRes).toMatchObject({
+      attempted: false,
+      refreshed: false,
+      error: null,
+    });
+
+    // 第二道防线：即使直接调用 refreshAgyQuota，缺少非空普通文件 antigravity-oauth-token 时也严禁拉起 agy。
+    const directMissing = await refreshAgyQuota(sources, {
+      agyBin: fakeAgyBin,
+      profileName: "acct5",
+      geminiDir,
+      appDataDir: acct5AppDir,
+    });
+    expect(directMissing.attempted).toBe(false);
+    expect(directMissing.refreshed).toBe(false);
+    expect(directMissing.error).toContain("antigravity-oauth-token");
+
+    const directEmpty = await refreshAgyQuota(sources, {
+      agyBin: fakeAgyBin,
+      profileName: "acct6",
+      geminiDir,
+      appDataDir: acct6EmptyTokenDir,
+    });
+    expect(directEmpty.attempted).toBe(false);
+    expect(directEmpty.refreshed).toBe(false);
+    expect(directEmpty.error).toContain("antigravity-oauth-token");
+
+    // 符号链接令牌、目录型令牌与带有效令牌的 backup 命名目录都必须被拒绝。
+    const acctSymlinkDir = join(geminiDir, "antigravity-cli-acct7");
+    const acctDirTokenDir = join(geminiDir, "antigravity-cli-acct8");
+    const acctBackupValidDir = join(geminiDir, "antigravity-cli-backup-2026");
+    const externalToken = join(root, "real-token.json");
+    writeFileSync(
+      externalToken,
+      JSON.stringify({ id_token_email: "symlinked@example.com" }),
+    );
+    mkdirSync(join(acctSymlinkDir, "conversations"), { recursive: true });
+    symlinkSync(externalToken, join(acctSymlinkDir, "antigravity-oauth-token"));
+    mkdirSync(join(acctDirTokenDir, "conversations"), { recursive: true });
+    mkdirSync(join(acctDirTokenDir, "antigravity-oauth-token"), {
+      recursive: true,
+    });
+    mkdirSync(join(acctBackupValidDir, "conversations"), { recursive: true });
+    writeFileSync(
+      join(acctBackupValidDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "backup@example.com" }),
+    );
+
+    expect(agyInstanceAccounts(sources).map((i) => i.profile)).toEqual([null]);
+    for (const [profileName, appDataDir] of [
+      ["acct7", acctSymlinkDir],
+      ["acct8", acctDirTokenDir],
+    ] as const) {
+      const res = await refreshAgyQuota(sources, {
+        agyBin: fakeAgyBin,
+        profileName,
+        geminiDir,
+        appDataDir,
+      });
+      expect(res.attempted).toBe(false);
+      expect(res.refreshed).toBe(false);
+      expect(res.error).toContain("antigravity-oauth-token");
+    }
+
+    // 参数错配（appDataDir 指向有令牌的目录，而 geminiDir + profileName 指向缺失令牌的目录）必须拒绝。
+    const acctValidDir = join(geminiDir, "antigravity-cli-acct9");
+    mkdirSync(join(acctValidDir, "conversations"), { recursive: true });
+    writeFileSync(
+      join(acctValidDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "valid9@example.com" }),
+    );
+    const mismatchRes = await refreshAgyQuota(sources, {
+      agyBin: fakeAgyBin,
+      profileName: "acct5",
+      geminiDir,
+      appDataDir: acctValidDir,
+    });
+    expect(mismatchRes.attempted).toBe(false);
+    expect(mismatchRes.refreshed).toBe(false);
+    expect(mismatchRes.error).toContain("不一致");
+
+    // 确认 fake agy 一次也没有被执行。
+    expect(() => readFileSync(callMarker, "utf8")).toThrow();
+
+    // 传入相对路径时，令牌校验与子进程 --gemini_dir 均必须归一化为同一绝对路径（不受子进程 cwd 切换影响）。
+    const { relative } = await import("node:path");
+    const relGeminiDir = relative(process.cwd(), geminiDir);
+    const relAppDataDir = relative(process.cwd(), acctValidDir);
+    const argvDump = join(root, "rel-argv.txt");
+    const fakeAgyRel = join(root, "fake-agy-rel");
+    writeFileSync(
+      fakeAgyRel,
+      `#!/bin/sh
+printf '%s\n' "$@" > '${argvDump}'
+printf '%s\n' '${usageJson({ "gemini-5h": 0.9 })}'
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    const relRes = await refreshAgyQuota(sources, {
+      agyBin: fakeAgyRel,
+      profileName: "acct9",
+      geminiDir: relGeminiDir,
+      appDataDir: relAppDataDir,
+    });
+    expect(relRes.refreshed).toBe(true);
+    const dumpedArgs = readFileSync(argvDump, "utf8").trim().split("\n");
+    const gIdx = dumpedArgs.indexOf("--gemini_dir");
+    expect(gIdx).toBeGreaterThanOrEqual(0);
+    expect(dumpedArgs[gIdx + 1]).toBe(geminiDir);
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("shared conversation attribution keeps active turn sender over concurrent session open and reads older logs", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-shared-overlap-"));
+  const geminiDir = join(root, ".gemini");
+  const primaryAppDir = join(geminiDir, "antigravity-cli");
+  const acct2AppDir = join(geminiDir, "antigravity-cli-acct2");
+  const primaryConvDir = join(primaryAppDir, "conversations");
+  const statusDir = join(root, "statusline");
+  mkdirSync(primaryConvDir, { recursive: true });
+  mkdirSync(join(primaryAppDir, "log"), { recursive: true });
+  mkdirSync(join(acct2AppDir, "log"), { recursive: true });
+  mkdirSync(statusDir, { recursive: true });
+  symlinkSync(primaryConvDir, join(acct2AppDir, "conversations"));
+
+  writeFileSync(join(statusDir, "current-account"), "alice\n");
+  writeFileSync(
+    join(acct2AppDir, "antigravity-oauth-token"),
+    JSON.stringify({ id_token_email: "bob@example.com" }),
+  );
+
+  const convId = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
+  const dbPath = join(primaryConvDir, `${convId}.db`);
+  const convDb = new Database(dbPath);
+  convDb.exec(
+    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+      "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+  );
+  const insertTurn = (
+    idx: number,
+    sec: number,
+    execId: string,
+    msgId: string,
+    inputTokens: number,
+  ) => {
+    convDb
+      .query(
+        "INSERT INTO steps (idx, type, status, metadata) VALUES (?1, ?2, ?3, ?4)",
+      )
+      .run(
+        idx,
+        "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+        "DONE",
+        buildStepMetadataFixture({
+          createdAtSeconds: sec - 2,
+          finishedAtSeconds: sec - 1,
+          completedAtSeconds: sec,
+          executionId: execId,
+        }),
+      );
+    convDb
+      .query(
+        "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (?1, ?2, ?3)",
+      )
+      .run(
+        idx,
+        execId,
+        buildGenMetadataFixture({
+          modelEnum: 1532,
+          responseModel: "gemini-4-neon",
+          modelDisplayName: "Gemini 4 Neon (High)",
+          inputTokens,
+          outputTokens: 200,
+          cacheReadTokens: 1_000,
+          cacheWriteTokens: 0,
+          thinkingOutputTokens: 50,
+          responseOutputTokens: 150,
+          messageId: msgId,
+          executionId: execId,
+          stepIndices: [idx],
+        }),
+      );
+  };
+
+  // 轮次 1：3 天前由 bob 发起；轮次 2：今天 10:00:00 由 alice 发起，10:00:02 bob 仅被动打开同一会话，10:00:05 完成。
+  const oldStepDate = new Date(2026, 10, 19, 10, 0, 5, 0);
+  const overlapStepDate = new Date(2026, 10, 22, 10, 0, 5, 0);
+  insertTurn(
+    1,
+    Math.floor(oldStepDate.getTime() / 1000),
+    "exec-old-bob",
+    "msg-old-bob",
+    3_000,
+  );
+  insertTurn(
+    2,
+    Math.floor(overlapStepDate.getTime() / 1000),
+    "exec-overlap-alice",
+    "msg-overlap-alice",
+    7_000,
+  );
+  convDb.close();
+  utimesSync(dbPath, overlapStepDate, overlapStepDate);
+
+  const oldLogPath = join(
+    acct2AppDir,
+    "log",
+    "acp-server-20261119_095900-100.log",
+  );
+  writeFileSync(
+    oldLogPath,
+    [
+      "I1119 09:59:50.000000 100 server_oauth.go:226] OAuth: authenticated successfully as bob@example.com",
+      `I1119 10:00:00.000000 100 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  const oldLogDate = new Date(2026, 10, 19, 10, 1, 0);
+  utimesSync(oldLogPath, oldLogDate, oldLogDate);
+
+  const aliceLogPath = join(
+    primaryAppDir,
+    "log",
+    "acp-server-20261122_095900-101.log",
+  );
+  writeFileSync(
+    aliceLogPath,
+    [
+      "I1122 09:59:50.000000 101 server_oauth.go:226] OAuth: authenticated successfully as alice@example.com",
+      `I1122 10:00:00.000000 101 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  utimesSync(aliceLogPath, overlapStepDate, overlapStepDate);
+
+  const bobOpenLogPath = join(
+    acct2AppDir,
+    "log",
+    "acp-server-20261122_100001-102.log",
+  );
+  writeFileSync(
+    bobOpenLogPath,
+    [
+      "I1122 10:00:01.000000 102 server_oauth.go:226] OAuth: authenticated successfully as bob@example.com",
+      `I1122 10:00:02.000000 102 session_handlers.go:461] Loading/Resuming session: ${convId}, cwd: /tmp`,
+      // buildStepMetadataFixture 固定写入 .900s 纳秒（10:00:05.900），模拟同毫秒内稍晚（10:00:05.900900）
+      // 及结束后 200ms（10:00:06.100）bob 发起下一轮，均不得抢占 alice 的上一轮归属。
+      `I1122 10:00:05.900900 102 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+      `I1122 10:00:06.100000 102 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  utimesSync(bobOpenLogPath, overlapStepDate, overlapStepDate);
+
+  const state = new CollectorState(":memory:");
+  try {
+    const report = readAgy(state, {
+      conversationsDir: primaryConvDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+    });
+    expect(report.filesRead).toBe(1);
+    expect(report.recorded).toBe(2);
+    const items = state.pending<IngestUsage>("usage", 10);
+    const byInput = new Map(
+      items.map((item) => [
+        item.payload.tokens.input,
+        item.payload.accountExternalId,
+      ]),
+    );
+    expect(byInput.get(3_000)).toBe("agy-bob");
+    expect(byInput.get(7_000)).toBe("agy-alice");
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readAgy 在夏令时回拨重复小时不会让回拨后发送覆盖先前轮次，并能凭文件单调性收窄跨回拨日志", () => {
+  const prevTz = process.env.TZ;
+  process.env.TZ = "America/New_York";
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-dst-fallback-"));
+  const geminiRoot = join(root, ".gemini");
+  const primaryAppDir = join(geminiRoot, "antigravity-cli");
+  const primaryConvDir = join(primaryAppDir, "conversations");
+  const acct2AppDir = join(geminiRoot, "antigravity-cli-work");
+  const statusDir = join(root, "statusline");
+  mkdirSync(primaryConvDir, { recursive: true });
+  mkdirSync(join(primaryAppDir, "log"), { recursive: true });
+  mkdirSync(join(acct2AppDir, "log"), { recursive: true });
+  mkdirSync(statusDir, { recursive: true });
+  symlinkSync(primaryConvDir, join(acct2AppDir, "conversations"));
+
+  const jwtFor = (email: string): string => {
+    const header = Buffer.from('{"alg":"RS256"}').toString("base64url");
+    const payload = Buffer.from(JSON.stringify({ email })).toString(
+      "base64url",
+    );
+    return `${header}.${payload}.sig`;
+  };
+  writeFileSync(
+    join(primaryAppDir, "antigravity-oauth-token"),
+    JSON.stringify({ id_token: jwtFor("alice@example.com") }),
+  );
+  writeFileSync(
+    join(acct2AppDir, "antigravity-oauth-token"),
+    JSON.stringify({ id_token: jwtFor("bob@example.com") }),
+  );
+
+  const convId = "33333333-4444-5555-6666-777777777777";
+  const dbPath = join(primaryConvDir, `${convId}.db`);
+  const convDb = new Database(dbPath);
+  convDb.exec(
+    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+      "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+  );
+  const insertTurn = (
+    idx: number,
+    completedSec: number,
+    execId: string,
+    msgId: string,
+    inputTokens: number,
+  ): void => {
+    convDb
+      .query(
+        "INSERT INTO steps (idx, type, status, metadata) VALUES (?1, ?2, ?3, ?4)",
+      )
+      .run(
+        idx,
+        "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+        "DONE",
+        buildStepMetadataFixture({
+          createdAtSeconds: completedSec - 2,
+          finishedAtSeconds: completedSec - 1,
+          completedAtSeconds: completedSec,
+          executionId: execId,
+        }),
+      );
+    convDb
+      .query(
+        "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (?1, ?2, ?3)",
+      )
+      .run(
+        idx,
+        execId,
+        buildGenMetadataFixture({
+          modelEnum: 1532,
+          responseModel: "gemini-4-neon",
+          modelDisplayName: "Gemini 4 Neon (High)",
+          inputTokens,
+          outputTokens: 200,
+          cacheReadTokens: 1_000,
+          cacheWriteTokens: 0,
+          thinkingOutputTokens: 50,
+          responseOutputTokens: 150,
+          messageId: msgId,
+          executionId: execId,
+          stepIndices: [idx],
+        }),
+      );
+  };
+
+  // America/New_York 2026-11-01 夏令时回拨：01:00 EDT = 05:00Z，01:00 EST = 06:00Z。
+  // 每轮交替切换 alice/bob，确保任意一处收窄失效或回退都会让断言直接失败：
+  // 轮次 1（04:50:05.900Z）：alice 在回拨前 00:50:00 EDT（非重复小时）发起；
+  // 轮次 2（05:00:01.900Z）：bob 在首个 01:00:00 EDT 发起，单轮文件在 05:00:05Z 关闭（仅凭读后 mtime 上界收窄，且不得被 alice 回拨后 01:00:00.900 EST 抢占）；
+  // 轮次 3（05:05:01.900Z）：alice 在首个 01:05:00 EDT 发起，单轮文件在 05:05:05Z 关闭；
+  // 轮次 4（05:10:01.900Z）：bob 在首个 01:10:00 EDT 发起，其日志跨回拨持续到 01:05:05 EST（凭文件内前后行单调性收窄）；
+  // 轮次 5（06:00:02.900Z）：alice 在回拨后第二个 01:00:00.900 EST 发起（晚近 1 小时，赢得轮次 5 但不抢占轮次 2）；
+  // 轮次 6（06:05:10.900Z）：bob 在同一跨回拨日志中于回拨后 01:05:05 EST 发起。
+  insertTurn(
+    1,
+    Math.floor(Date.UTC(2026, 10, 1, 4, 50, 5) / 1000),
+    "exec-dst-1-alice",
+    "msg-dst-1-alice",
+    3_000,
+  );
+  insertTurn(
+    2,
+    Math.floor(Date.UTC(2026, 10, 1, 5, 0, 1) / 1000),
+    "exec-dst-2-bob-mtime",
+    "msg-dst-2-bob-mtime",
+    4_000,
+  );
+  insertTurn(
+    3,
+    Math.floor(Date.UTC(2026, 10, 1, 5, 5, 1) / 1000),
+    "exec-dst-3-alice-mtime",
+    "msg-dst-3-alice-mtime",
+    5_000,
+  );
+  insertTurn(
+    4,
+    Math.floor(Date.UTC(2026, 10, 1, 5, 10, 1) / 1000),
+    "exec-dst-4-bob-mono",
+    "msg-dst-4-bob-mono",
+    6_000,
+  );
+  insertTurn(
+    5,
+    Math.floor(Date.UTC(2026, 10, 1, 6, 0, 2) / 1000),
+    "exec-dst-5-alice-est",
+    "msg-dst-5-alice-est",
+    8_000,
+  );
+  insertTurn(
+    6,
+    Math.floor(Date.UTC(2026, 10, 1, 6, 5, 10) / 1000),
+    "exec-dst-6-bob-est",
+    "msg-dst-6-bob-est",
+    9_000,
+  );
+  convDb.close();
+  const dbMtime = new Date("2026-11-01T06:05:11.000Z");
+  utimesSync(dbPath, dbMtime, dbMtime);
+
+  const alicePrePath = join(
+    primaryAppDir,
+    "log",
+    "acp-server-20261101_005000-200.log",
+  );
+  writeFileSync(
+    alicePrePath,
+    [
+      "I1101 00:49:55.000000 200 server_oauth.go:226] OAuth: authenticated successfully as alice@example.com",
+      `I1101 00:50:00.000000 200 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  const alicePreMtime = new Date("2026-11-01T04:50:10.000Z");
+  utimesSync(alicePrePath, alicePreMtime, alicePreMtime);
+
+  const bobFirstHourOnlyPath = join(
+    acct2AppDir,
+    "log",
+    "acp-server-20261101_010000-201.log",
+  );
+  writeFileSync(
+    bobFirstHourOnlyPath,
+    [
+      "I1101 01:00:00.000000 201 server_oauth.go:226] OAuth: authenticated successfully as bob@example.com",
+      `I1101 01:00:00.000000 201 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  const bobFirstHourMtime = new Date("2026-11-01T05:00:05.000Z");
+  utimesSync(bobFirstHourOnlyPath, bobFirstHourMtime, bobFirstHourMtime);
+
+  const aliceFirstHourOnlyPath = join(
+    primaryAppDir,
+    "log",
+    "acp-server-20261101_010500-202.log",
+  );
+  writeFileSync(
+    aliceFirstHourOnlyPath,
+    [
+      "I1101 01:05:00.000000 202 server_oauth.go:226] OAuth: authenticated successfully as alice@example.com",
+      `I1101 01:05:00.000000 202 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  const aliceFirstHourMtime = new Date("2026-11-01T05:05:05.000Z");
+  utimesSync(aliceFirstHourOnlyPath, aliceFirstHourMtime, aliceFirstHourMtime);
+
+  const bobCrossRollbackPath = join(
+    acct2AppDir,
+    "log",
+    "acp-server-20261101_011000-203.log",
+  );
+  writeFileSync(
+    bobCrossRollbackPath,
+    [
+      "I1101 01:10:00.000000 203 server_oauth.go:226] OAuth: authenticated successfully as bob@example.com",
+      `I1101 01:10:00.000000 203 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+      "I1101 01:55:00.000000 203 server.go:189] heartbeat before fallback",
+      `I1101 01:05:05.000000 203 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  const bobCrossMtime = new Date("2026-11-01T06:05:06.000Z");
+  utimesSync(bobCrossRollbackPath, bobCrossMtime, bobCrossMtime);
+
+  const aliceSecondHourPath = join(
+    primaryAppDir,
+    "log",
+    "acp-server-20261101_010000-204.log",
+  );
+  // 模拟读取竞态：枚举与打开文件时 mtime 仍停在回拨前的 05:55:00Z，
+  // 在 readFileSync 读取正文瞬间才并发追加回拨后的 01:00:00.900 EST 发送行并将 mtime 推到 06:00:05Z。
+  // 若生产代码错用读前 mtime（05:55Z），会误删 06:00:00.900Z 候选，导致轮次 2 被 alice 抢占而断言失败。
+  writeFileSync(
+    aliceSecondHourPath,
+    "I1101 01:00:00.800000 204 server_oauth.go:226] OAuth: authenticated successfully as alice@example.com\n",
+  );
+  const alicePreAppendMtime = new Date("2026-11-01T05:55:00.000Z");
+  const alicePostAppendMtime = new Date("2026-11-01T06:00:05.000Z");
+  utimesSync(aliceSecondHourPath, alicePreAppendMtime, alicePreAppendMtime);
+
+  let targetFd: number | null = null;
+  let appendedDuringRead = false;
+  const state = new CollectorState(":memory:");
+  try {
+    const report = readAgy(
+      state,
+      {
+        conversationsDir: primaryConvDir,
+        statuslineDir: statusDir,
+        start: "2026-09-20T00:00:00.000Z",
+      },
+      new Date(),
+      {
+        openSync(path, flags) {
+          const fd = openSync(path, flags);
+          if (path === aliceSecondHourPath) targetFd = fd;
+          return fd;
+        },
+        readFileSync(fd, encoding) {
+          if (fd === targetFd && !appendedDuringRead) {
+            appendedDuringRead = true;
+            appendFileSync(
+              aliceSecondHourPath,
+              `I1101 01:00:00.900000 204 server.go:1883] Sending user message to conversation ${convId} (items=1, media=0)\n`,
+            );
+            utimesSync(
+              aliceSecondHourPath,
+              alicePostAppendMtime,
+              alicePostAppendMtime,
+            );
+          }
+          return readFileSync(fd, encoding);
+        },
+      },
+    );
+    expect(appendedDuringRead).toBe(true);
+    expect(report.filesRead).toBe(1);
+    expect(report.recorded).toBe(6);
+    const items = state.pending<IngestUsage>("usage", 10);
+    const byInput = new Map(
+      items.map((item) => [
+        item.payload.tokens.input,
+        item.payload.accountExternalId,
+      ]),
+    );
+    expect(byInput.get(3_000)).toBe("agy-alice");
+    expect(byInput.get(4_000)).toBe("agy-bob");
+    expect(byInput.get(5_000)).toBe("agy-alice");
+    expect(byInput.get(6_000)).toBe("agy-bob");
+    expect(byInput.get(8_000)).toBe("agy-alice");
+    expect(byInput.get(9_000)).toBe("agy-bob");
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+    if (prevTz === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = prevTz;
+    }
+  }
+});
+
+test("shared conversation log cache skips unchanged logs across rounds, saves watermark when primary is unauthenticated, and normalizes relative conversationsDir", async () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-log-cache-"));
+  const geminiDir = join(root, ".gemini");
+  const primaryAppDir = join(geminiDir, "antigravity-cli");
+  const primaryConvDir = join(primaryAppDir, "conversations");
+  const acct2AppDir = join(geminiDir, "antigravity-cli-acct2");
+  const statusDir = join(root, "statusline");
+  mkdirSync(primaryConvDir, { recursive: true });
+  mkdirSync(join(primaryAppDir, "log"), { recursive: true });
+  mkdirSync(join(acct2AppDir, "log"), { recursive: true });
+  mkdirSync(statusDir, { recursive: true });
+  symlinkSync(primaryConvDir, join(acct2AppDir, "conversations"));
+
+  // 默认实例故意不写 current-account/token（模拟默认账号未登录，仅副账号 acct2 登录）。
+  writeFileSync(
+    join(acct2AppDir, "antigravity-oauth-token"),
+    JSON.stringify({ id_token_email: "bob@example.com" }),
+  );
+
+  const conv1 = "11111111-2222-4333-8444-555555555551";
+  const conv2 = "11111111-2222-4333-8444-555555555552";
+  const t1 = new Date(2026, 10, 22, 12, 0, 10, 0);
+  const t2 = new Date(2026, 10, 22, 12, 5, 10, 0);
+
+  const writeConvDb = (
+    convId: string,
+    when: Date,
+    execId: string,
+    inputTokens: number,
+  ) => {
+    const dbPath = join(primaryConvDir, `${convId}.db`);
+    const db = new Database(dbPath);
+    db.exec(
+      "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+        "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+    );
+    const sec = Math.floor(when.getTime() / 1000);
+    db.query(
+      "INSERT INTO steps (idx, type, status, metadata) VALUES (1, 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', 'DONE', ?1)",
+    ).run(
+      buildStepMetadataFixture({
+        createdAtSeconds: sec - 2,
+        finishedAtSeconds: sec - 1,
+        completedAtSeconds: sec,
+        executionId: execId,
+      }),
+    );
+    db.query(
+      "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (1, ?1, ?2)",
+    ).run(
+      execId,
+      buildGenMetadataFixture({
+        modelEnum: 1532,
+        responseModel: "gemini-4-neon",
+        modelDisplayName: "Gemini 4 Neon (High)",
+        inputTokens,
+        outputTokens: 100,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        thinkingOutputTokens: 0,
+        responseOutputTokens: 100,
+        messageId: `msg-${execId}`,
+        executionId: execId,
+        stepIndices: [1],
+      }),
+    );
+    db.close();
+    utimesSync(dbPath, when, when);
+  };
+
+  writeConvDb(conv1, t1, "exec-1", 4_200);
+  const oldLog = join(acct2AppDir, "log", "acp-server-20261122_120000-300.log");
+  writeFileSync(
+    oldLog,
+    [
+      "I1122 12:00:01.000000 300 server_oauth.go:226] OAuth: authenticated successfully as bob@example.com",
+      `I1122 12:00:05.000000 300 server.go:1883] Sending user message to conversation ${conv1} (items=1, media=0)`,
+    ].join("\n") + "\n",
+  );
+  utimesSync(oldLog, t1, t1);
+
+  const openedLogs: string[] = [];
+  const trackingOps = {
+    openSync(path: string, flags: string) {
+      openedLogs.push(path);
+      return openSync(path, flags);
+    },
+  };
+
+  const state = new CollectorState(":memory:");
+  try {
+    const { relative } = await import("node:path");
+    const relConvDir = relative(process.cwd(), primaryConvDir);
+    // 相对路径经 discoverAgyInstances 归一化后也能发现额外实例。
+    expect(
+      agyInstanceAccounts({
+        conversationsDir: relConvDir,
+        statuslineDir: statusDir,
+      }).map((item) => item.profile),
+    ).toEqual([null, "acct2"]);
+
+    const sources = {
+      conversationsDir: relConvDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+    };
+
+    const first = readAgy(state, sources, t1, trackingOps);
+    expect(first.filesRead).toBe(1);
+    expect(first.recorded).toBe(1);
+    expect(first.skipped).toEqual({});
+    expect(openedLogs).toEqual([oldLog]);
+
+    // 默认实例虽未登录，但所有记录已通过共享日志归属，水位应已保存，第二轮不再重扫 conv1.db。
+    openedLogs.length = 0;
+    const second = readAgy(state, sources, t1, trackingOps);
+    expect(second.filesRead).toBe(0);
+    expect(second.recorded).toBe(0);
+    expect(openedLogs).toEqual([]);
+
+    // 新增会话 conv2 与新日志 newLog；旧日志 oldLog 未变动，不得再次打开读取。
+    writeConvDb(conv2, t2, "exec-2", 6_300);
+    const newLog = join(
+      acct2AppDir,
+      "log",
+      "acp-server-20261122_120500-301.log",
+    );
+    writeFileSync(
+      newLog,
+      [
+        "I1122 12:05:01.000000 301 server_oauth.go:226] OAuth: authenticated successfully as bob@example.com",
+        `I1122 12:05:05.000000 301 server.go:1883] Sending user message to conversation ${conv2} (items=1, media=0)`,
+      ].join("\n") + "\n",
+    );
+    utimesSync(newLog, t2, t2);
+
+    const third = readAgy(state, sources, t2, trackingOps);
+    expect(third.filesRead).toBe(1);
+    expect(third.recorded).toBe(1);
+    expect(openedLogs).toEqual([newLog]);
+    const accounts = state
+      .pending<IngestUsage>("usage", 10)
+      .map((item) => item.payload.accountExternalId);
+    expect(accounts).toEqual(["agy-bob", "agy-bob"]);
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
   }
 });
