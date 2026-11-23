@@ -94,6 +94,7 @@ const envSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/)
     .default("sub2api"),
   METERLEAF_PRICE_BOOK: z.string().optional(),
+  METERLEAF_MODEL_ALIASES: optionalText,
   METERLEAF_USD_BASIS: z.enum(["subscription", "api"]).default("subscription"),
   // Compose 对未填写的变量传入空字符串，按未配置处理。
   SUB2API_DATABASE_URL: z.preprocess(
