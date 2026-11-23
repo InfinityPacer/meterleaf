@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "meterleaf",
   "supersedes": ["meterleaf-openai"],
-  "version": "2026-11-19.1",
+  "version": "2026-11-23.1",
   "unit": "per_million_tokens",
-  "publishedAt": "2026-11-19T00:00:00Z",
+  "publishedAt": "2026-11-23T00:00:00Z",
   "sources": [
     "https://developers.openai.com/api/docs/pricing",
     "https://developers.openai.com/api/docs/models/codex-auto-review",
@@ -32,6 +32,7 @@
     "Claude fast mode maps to the priority tier for Fable 5.2, Opus 5.5, Opus 5 and Opus 4.8 with 2x rates and stacked cache multipliers. US-only inference (1.1x) and web search fees are not applied.",
     "OpenCode Go DeepSeek V4.1 Flash uses Go's published Beijing weekday peak (09:00-18:00, UTC+8) and off-peak rates. GLM-5.3 and GLM-5.3-Flash match Go and Zhipu published rates with no cache-write rate.",
     "Gemini 4 Neon ($3.00/$0.15/$15.00 Standard, $1.50/$0.075/$7.50 Flex), Gemini 4 Hydrogen ($1.50/$0.075/$7.50 Standard, $0.75/$0.0375/$3.75 Flex) and Gemini 3.5 Flash-Lite ($0.30/$0.03/$2.50 Standard) use permanent list rates; Gemini 3.5 Flash-Lite Flex is omitted due to upstream cached-input rounding differences ($0.02 vs $0.015). Promotional pricing applies through 2026-11-30 for Gemini 4 Carbon and Argon and through 2026-12-31 for Gemini 3.8 Flash.",
+    "GPT-6.2 Sol ($2.00/$0.10/$2.50/$10.00) and GPT-6.2 Astra ($8.00/$0.40/$10.00/$40.00) cover Standard and Priority (2x) tiers with >272K long-context rates on the API USD basis; neither model publishes a Flex tier.",
     "GPT-OSS 120B uses Google Cloud Vertex AI Model Garden partner pricing ($0.09 input, $0.36 output) with null cache read/write rates."
   ],
   "rules": [
@@ -1062,6 +1063,146 @@
           "cacheRead": "0.05",
           "cacheWrite": "1.25",
           "output": "3.75"
+        }
+      }
+    },
+    {
+      "model": "gpt-6.2-sol",
+      "tier": "standard",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "rates": {
+        "input": "2",
+        "cacheRead": "0.1",
+        "cacheWrite": "2.5",
+        "output": "10"
+      }
+    },
+    {
+      "model": "gpt-6.2-sol",
+      "tier": "standard",
+      "currency": "usd",
+      "usdBasis": "api",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "rates": {
+        "input": "2",
+        "cacheRead": "0.1",
+        "cacheWrite": "2.5",
+        "output": "10"
+      },
+      "longContext": {
+        "threshold": 272000,
+        "rates": {
+          "input": "4",
+          "cacheRead": "0.2",
+          "cacheWrite": "5",
+          "output": "15"
+        }
+      }
+    },
+    {
+      "model": "gpt-6.2-sol",
+      "tier": "priority",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "rates": {
+        "input": "4",
+        "cacheRead": "0.2",
+        "cacheWrite": "5",
+        "output": "20"
+      }
+    },
+    {
+      "model": "gpt-6.2-sol",
+      "tier": "priority",
+      "currency": "usd",
+      "usdBasis": "api",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "rates": {
+        "input": "4",
+        "cacheRead": "0.2",
+        "cacheWrite": "5",
+        "output": "20"
+      },
+      "longContext": {
+        "threshold": 272000,
+        "rates": {
+          "input": "8",
+          "cacheRead": "0.4",
+          "cacheWrite": "10",
+          "output": "30"
+        }
+      }
+    },
+    {
+      "model": "gpt-6.2-astra",
+      "tier": "standard",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "rates": {
+        "input": "8",
+        "cacheRead": "0.4",
+        "cacheWrite": "10",
+        "output": "40"
+      }
+    },
+    {
+      "model": "gpt-6.2-astra",
+      "tier": "standard",
+      "currency": "usd",
+      "usdBasis": "api",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "rates": {
+        "input": "8",
+        "cacheRead": "0.4",
+        "cacheWrite": "10",
+        "output": "40"
+      },
+      "longContext": {
+        "threshold": 272000,
+        "rates": {
+          "input": "16",
+          "cacheRead": "0.8",
+          "cacheWrite": "20",
+          "output": "60"
+        }
+      }
+    },
+    {
+      "model": "gpt-6.2-astra",
+      "tier": "priority",
+      "currency": "usd",
+      "usdBasis": "subscription",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "rates": {
+        "input": "16",
+        "cacheRead": "0.8",
+        "cacheWrite": "20",
+        "output": "80"
+      }
+    },
+    {
+      "model": "gpt-6.2-astra",
+      "tier": "priority",
+      "currency": "usd",
+      "usdBasis": "api",
+      "effectiveFrom": "1970-01-01T00:00:00Z",
+      "rates": {
+        "input": "16",
+        "cacheRead": "0.8",
+        "cacheWrite": "20",
+        "output": "80"
+      },
+      "longContext": {
+        "threshold": 272000,
+        "rates": {
+          "input": "32",
+          "cacheRead": "1.6",
+          "cacheWrite": "40",
+          "output": "120"
         }
       }
     },

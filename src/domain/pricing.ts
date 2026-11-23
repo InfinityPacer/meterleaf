@@ -60,6 +60,8 @@ export const priceBookSchema = z
     notes: z.array(z.string()).optional(),
     /** 显式模型别名表，只做单跳精确映射到已有费率规则的模型，不覆盖已有规则。 */
     modelAliases: z.record(z.string().min(1), z.string().min(1)).optional(),
+    /** 不参与路由前缀末段兜底的前缀列表（按 `/` 分段匹配，忽略大小写）。 */
+    excludeRoutePrefixes: z.array(z.string().min(1)).optional(),
     rules: z.array(
       z
         .object({
@@ -163,12 +165,32 @@ export const priceBookSchema = z
         }
       }
     }
+    if (book.excludeRoutePrefixes) {
+      book.excludeRoutePrefixes.forEach((prefix, index) => {
+        if (!normalizeRoutePrefix(prefix)) {
+          context.addIssue({
+            code: "custom",
+            path: ["excludeRoutePrefixes", index],
+            message: "Route prefix must contain a non-empty path segment",
+          });
+        }
+      });
+    }
   });
 export type PriceBook = z.infer<typeof priceBookSchema>;
 
+const routePrefixSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) => normalizeRoutePrefix(value) !== null,
+    "Route prefix must contain a non-empty path segment",
+  );
+
 export const modelAliasesFileSchema = z
   .object({
-    aliases: z.record(z.string().min(1), z.string().min(1)),
+    aliases: z.record(z.string().min(1), z.string().min(1)).optional(),
+    excludePrefixes: z.array(routePrefixSchema).optional(),
     notes: z.array(z.string().min(1)).optional(),
   })
   .strict();
@@ -178,6 +200,25 @@ function compareCodeUnits(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** 路由排除前缀统一转为小写并以单个 `/` 结尾，按段边界忽略大小写匹配。 */
+function normalizeRoutePrefix(raw: string): string | null {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return null;
+  return `${trimmed.toLowerCase()}/`;
+}
+
+function normalizeRoutePrefixes(
+  prefixes: readonly string[] | undefined,
+): string[] {
+  if (!prefixes || prefixes.length === 0) return [];
+  const unique = new Set<string>();
+  for (const raw of prefixes) {
+    const normalized = normalizeRoutePrefix(raw);
+    if (normalized) unique.add(normalized);
+  }
+  return [...unique].sort(compareCodeUnits);
+}
+
 /** 把本机私有别名表叠加到当前价格表，并将规范化内容摘要并入版本键以触发自动重估。 */
 export function applyModelAliases(
   book: PriceBook,
@@ -185,30 +226,44 @@ export function applyModelAliases(
 ): PriceBook {
   if (book.version.includes("@"))
     throw new Error("Base price book version must not contain '@'");
-  const sortedOverlayEntries = Object.entries(overlay.aliases).sort(
+  const sortedOverlayEntries = Object.entries(overlay.aliases ?? {}).sort(
     ([a], [b]) => compareCodeUnits(a, b),
   );
+  const overlayExcludes = normalizeRoutePrefixes(overlay.excludePrefixes);
   const overlayNotes = overlay.notes ?? [];
-  if (sortedOverlayEntries.length === 0 && overlayNotes.length === 0)
+  if (
+    sortedOverlayEntries.length === 0 &&
+    overlayExcludes.length === 0 &&
+    overlayNotes.length === 0
+  )
     return book;
   // 按已排序的 [key, target] 数组序列化，避免普通对象枚举重排纯数字字符串键。
   const canonicalOverlay = {
     aliases: sortedOverlayEntries,
+    ...(overlayExcludes.length > 0 ? { excludePrefixes: overlayExcludes } : {}),
     notes: overlayNotes,
   };
   const digest = createHash("sha256")
     .update(JSON.stringify(canonicalOverlay))
-    .digest("hex");
+    .digest("hex")
+    .slice(0, 16);
   const mergedEntries = Object.entries({
     ...(book.modelAliases ?? {}),
     ...Object.fromEntries(sortedOverlayEntries),
   }).sort(([a], [b]) => compareCodeUnits(a, b));
+  const mergedExcludes = normalizeRoutePrefixes([
+    ...(book.excludeRoutePrefixes ?? []),
+    ...overlayExcludes,
+  ]);
   const mergedNotes = [...(book.notes ?? []), ...overlayNotes];
   return priceBookSchema.parse({
     ...book,
     version: `${book.version}+aliases-${digest}`,
     ...(mergedEntries.length > 0
       ? { modelAliases: Object.fromEntries(mergedEntries) }
+      : {}),
+    ...(mergedExcludes.length > 0
+      ? { excludeRoutePrefixes: mergedExcludes }
       : {}),
     ...(mergedNotes.length > 0 ? { notes: mergedNotes } : {}),
   });
@@ -239,6 +294,7 @@ export interface Valuation {
 }
 
 const ruleModelIndex = new WeakMap<PriceBook, Set<string>>();
+const excludePrefixIndex = new WeakMap<PriceBook, readonly string[]>();
 
 function getRuleModels(book: PriceBook): Set<string> {
   let models = ruleModelIndex.get(book);
@@ -249,10 +305,19 @@ function getRuleModels(book: PriceBook): Set<string> {
   return models;
 }
 
+function getExcludePrefixes(book: PriceBook): readonly string[] {
+  let prefixes = excludePrefixIndex.get(book);
+  if (!prefixes) {
+    prefixes = normalizeRoutePrefixes(book.excludeRoutePrefixes);
+    excludePrefixIndex.set(book, prefixes);
+  }
+  return prefixes;
+}
+
 /**
- * 解析计价模型：1) 原始模型名精确匹配；2) 显式别名表精确匹配；3) 非 `group/` 前缀且含 `/` 时
+ * 解析计价模型：1) 原始模型名精确匹配；2) 显式别名表精确匹配；3) 未命中排除前缀且含 `/` 时
  * 剥离路由前缀取末段精确匹配。三步均不做模糊或链式推导；原名已存在规则时不回退到末段，
- * `group/*` 私有路由分组必须通过显式别名映射，绝不自动套用末段公开费率。
+ * 命中 `excludeRoutePrefixes` 的私有分组只能通过显式别名映射，不自动套用末段公开费率。
  */
 function resolvePricingModel(
   model: string,
@@ -263,7 +328,9 @@ function resolvePricingModel(
   const aliased = book.modelAliases?.[model];
   if (aliased && models.has(aliased))
     return { pricingModel: aliased, hasRules: true };
-  if (!model.startsWith("group/")) {
+  const excluded = getExcludePrefixes(book);
+  const lower = excluded.length > 0 ? model.toLowerCase() : "";
+  if (!excluded.some((prefix) => lower.startsWith(prefix))) {
     const slash = model.lastIndexOf("/");
     if (slash >= 0 && slash < model.length - 1) {
       const suffix = model.slice(slash + 1);

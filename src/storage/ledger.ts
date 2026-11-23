@@ -491,7 +491,7 @@ export class LedgerStore {
 
   /**
    * 升级到支持路由前缀兜底后，同价格表版本下可能残留旧版写入的 missing-rate 估值；
-   * 对当前版本中非 `group/` 的带斜杠模型做一次性就地重估，由更新触发器同步驱动报表增量刷新。
+   * 对当前版本中的带斜杠模型做一次性就地重估，由更新触发器同步驱动报表增量刷新。
    */
   private revalueRoutedMissingRates(book: PriceBook) {
     const version = priceBookKey(book);
@@ -520,8 +520,7 @@ export class LedgerStore {
               json_extract(v.payload, '$.subscriptionUsd.reason') = 'missing-rate'
               OR json_extract(v.payload, '$.apiUsd.reason') = 'missing-rate'
             )
-            AND instr(json_extract(u.payload, '$.model'), '/') > 0
-            AND substr(json_extract(u.payload, '$.model'), 1, 6) <> 'group/'`,
+            AND instr(json_extract(u.payload, '$.model'), '/') > 0`,
       )
       .all(version);
     const updates: {

@@ -49,7 +49,7 @@ test("bundled JSON matches catalog generator and retires built-in credits", () =
   expect(subscription.credits.amount).toBeNull();
   expect(api.credits.amount).toBeNull();
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-11-19.1");
+  expect(subscription.version).toBe("meterleaf@2026-11-23.1");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
@@ -260,15 +260,15 @@ function ruleAccepted(rule: unknown) {
 test("bundled book values DeepSeek V4.1 Flash at Go's weekday peak and off-peak prices", () => {
   // Go 的峰时是 UTC 周一至周五 01:00-04:00 与 06:00-10:00，起点包含、终点不包含。
   for (const [occurredAt, amount] of [
-    ["2026-11-20T00:59:00Z", "0.753"],
-    ["2026-11-20T01:00:00Z", "1.506"],
-    ["2026-11-20T03:59:00Z", "1.506"],
-    ["2026-11-20T04:00:00Z", "0.753"],
-    ["2026-11-20T06:00:00Z", "1.506"],
-    ["2026-11-20T09:59:00Z", "1.506"],
-    ["2026-11-20T10:00:00Z", "0.753"],
-    ["2026-11-21T02:00:00Z", "0.753"],
-    ["2026-11-22T07:00:00Z", "0.753"],
+    ["2026-11-27T00:59:00Z", "0.753"],
+    ["2026-11-27T01:00:00Z", "1.506"],
+    ["2026-11-27T03:59:00Z", "1.506"],
+    ["2026-11-27T04:00:00Z", "0.753"],
+    ["2026-11-27T06:00:00Z", "1.506"],
+    ["2026-11-27T09:59:00Z", "1.506"],
+    ["2026-11-27T10:00:00Z", "0.753"],
+    ["2026-11-28T02:00:00Z", "0.753"],
+    ["2026-11-29T07:00:00Z", "0.753"],
   ] as const) {
     const fact = deepseekFact(occurredAt);
     const subscription = valueUsage(fact, defaultPriceBook);
@@ -749,6 +749,68 @@ test("Antigravity models use their published Google, Anthropic and Model Garden 
   }
 });
 
+test("GPT-6.2 Sol and Astra cover standard and priority tiers without guessing flex", () => {
+  for (const [model, inputRate, cacheRate, writeRate, outputRate] of [
+    ["gpt-6.2-sol", "2", "0.1", "2.5", "10"],
+    ["gpt-6.2-astra", "8", "0.4", "10", "40"],
+  ] as const) {
+    const fact: UsageFact = {
+      ...usage,
+      occurredAt: "2026-11-23T00:00:00Z",
+      model,
+      tier: "standard",
+      tokens: {
+        input: 50_000,
+        cacheRead: 50_000,
+        cacheWrite: 50_000,
+        output: 50_000,
+        cacheWrite5m: null,
+        cacheWrite1h: null,
+        reasoning: null,
+      },
+    };
+    const rateSum =
+      Number(inputRate) +
+      Number(cacheRate) +
+      Number(writeRate) +
+      Number(outputRate);
+    const standard = valueUsage(fact, defaultPriceBook);
+    const api = valueUsage(fact, defaultPriceBook, "api");
+    expect(standard.usd.amount).toBe((rateSum / 20).toString());
+    expect(api.usd.amount).toBe(standard.usd.amount);
+    expect(standard.usd.reason).toBeNull();
+    expect(
+      valueUsage(
+        { ...fact, occurredAt: "2026-11-22T23:59:59Z" },
+        defaultPriceBook,
+      ).usd.reason,
+    ).toBe("current-rate-applied-to-history");
+
+    const priority = valueUsage({ ...fact, tier: "fast" }, defaultPriceBook);
+    expect(Number(priority.usd.amount)).toBeCloseTo(
+      Number(standard.usd.amount) * 2,
+      9,
+    );
+
+    const flex = valueUsage({ ...fact, tier: "flex" }, defaultPriceBook);
+    expect(flex.usd.amount).toBeNull();
+    expect(flex.usd.reason).toBe("missing-rate");
+  }
+
+  // >272K 长上下文仅在标准 API USD 分支加价，订阅等价 USD 保持基础价。
+  const longFact: UsageFact = {
+    ...usage,
+    occurredAt: "2026-11-23T00:00:00Z",
+    model: "gpt-6.2-sol",
+    tier: "standard",
+    tokens: { ...usage.tokens, input: 273_000, cacheRead: 0, output: 1_000 },
+  };
+  expect(valueUsage(longFact, defaultPriceBook).usd.amount).toBe("0.556");
+  expect(valueUsage(longFact, defaultPriceBook, "api").usd.amount).toBe(
+    "1.107",
+  );
+});
+
 test("route-prefix fallback matches trailing official model ID without fuzzy aliasing", () => {
   const routedCases = [
     ["auto/gpt-6.1-sol", "gpt-6.1-sol"],
@@ -756,12 +818,13 @@ test("route-prefix fallback matches trailing official model ID without fuzzy ali
     ["google-vertex/gemini-4-hydrogen", "gemini-4-hydrogen"],
     ["agy-cli/claude-opus-5-5", "claude-opus-5-5"],
     ["commandcode/deepseek/deepseek-v4.1-flash", "deepseek-v4.1-flash"],
+    ["group/gpt-6.1-sol", "gpt-6.1-sol"],
   ] as const;
 
   for (const [routedModel, canonicalModel] of routedCases) {
     const baseFact: UsageFact = {
       ...usage,
-      occurredAt: "2026-11-20T00:00:00Z",
+      occurredAt: "2026-11-23T00:00:00Z",
       model: canonicalModel,
       tier: "standard",
       tokens: {
@@ -784,16 +847,12 @@ test("route-prefix fallback matches trailing official model ID without fuzzy ali
     expect(routed.pricingModel).toBe(canonicalModel);
   }
 
-  // 私有分组（即使末段与公开模型同名）未配置显式别名时保持未计价；尾部斜杠同样未计价。
-  for (const unmapped of [
-    "group/auto-gemini-4-carbon",
-    "group/gpt-6.1-sol",
-    "codex/",
-  ]) {
+  // 未配置显式别名的自定义末段及尾部斜杠保持未计价。
+  for (const unmapped of ["group/auto-gemini-4-carbon", "codex/"]) {
     const result = valueUsage(
       {
         ...usage,
-        occurredAt: "2026-11-20T00:00:00Z",
+        occurredAt: "2026-11-23T00:00:00Z",
         model: unmapped,
         tier: "standard",
       },
@@ -807,7 +866,7 @@ test("route-prefix fallback matches trailing official model ID without fuzzy ali
   // 精确规则优先于剥离前缀；原名存在规则时缺失档位不回退到末段规则。
   const customBook = priceBookSchema.parse({
     ...defaultPriceBook,
-    version: "2026-11-19.1-custom",
+    version: "2026-11-23.1-custom",
     rules: [
       ...defaultPriceBook.rules,
       {
@@ -831,7 +890,7 @@ test("route-prefix fallback matches trailing official model ID without fuzzy ali
   const exactHit = valueUsage(
     {
       ...usage,
-      occurredAt: "2026-11-20T00:00:00Z",
+      occurredAt: "2026-11-23T00:00:00Z",
       model: "codex/gpt-6.1-sol",
       tier: "standard",
       tokens: { ...usage.tokens, input: 1_000_000, output: 0 },
@@ -844,7 +903,7 @@ test("route-prefix fallback matches trailing official model ID without fuzzy ali
   const missingTier = valueUsage(
     {
       ...usage,
-      occurredAt: "2026-11-20T00:00:00Z",
+      occurredAt: "2026-11-23T00:00:00Z",
       model: "codex/gpt-6.1-sol",
       tier: "priority",
     },
@@ -854,7 +913,7 @@ test("route-prefix fallback matches trailing official model ID without fuzzy ali
   expect(missingTier.subscriptionUsd.reason).toBe("missing-rate");
 });
 
-test("model aliases overlay prices private groups, folds notes into version digest, and validates strictly", async () => {
+test("model aliases overlay prices private groups, applies excludePrefixes, folds notes into 16-char digest, and validates strictly", async () => {
   const dir = await mkdtemp(join(tmpdir(), "meterleaf-aliases-"));
   try {
     const aliasPath = join(dir, "model-aliases.json");
@@ -866,16 +925,19 @@ test("model aliases overlay prices private groups, folds notes into version dige
           "group/auto-gemini-4-carbon": "gemini-4-carbon",
           "group/auto-gemini-4-hydrogen": "gemini-4-hydrogen",
         },
+        excludePrefixes: ["group", "Pool/"],
         notes: ["Initial note"],
       }),
     );
     const loaded1 = await loadPriceBook(undefined, aliasPath);
-    expect(loaded1.version).toMatch(/^2026-11-19\.1\+aliases-[0-9a-f]{64}$/);
+    expect(loaded1.version).toMatch(/^2026-11-23\.1\+aliases-[0-9a-f]{16}$/);
+    expect(loaded1.excludeRoutePrefixes).toEqual(["group/", "pool/"]);
     expect(priceBookKey(loaded1).split("@")).toHaveLength(2);
 
+    // 显式别名优先级高于 excludePrefixes。
     const groupFact: UsageFact = {
       ...usage,
-      occurredAt: "2026-11-20T00:00:00Z",
+      occurredAt: "2026-11-23T00:00:00Z",
       model: "group/auto-gemini-4-carbon",
       tier: "standard",
       tokens: {
@@ -897,6 +959,43 @@ test("model aliases overlay prices private groups, folds notes into version dige
     expect(priced.apiUsd.amount).toBe(direct.apiUsd.amount);
     expect(priced.pricingModel).toBe("gemini-4-carbon");
 
+    // 命中 excludePrefixes 时忽略大小写阻止自动前缀剥离，但不误伤不同首段前缀。
+    for (const blocked of [
+      "group/gpt-6.1-sol",
+      "GROUP/gpt-6.1-sol",
+      "pool/gpt-6.1-sol",
+      "POOL/nested/gpt-6.1-sol",
+    ]) {
+      const blockedResult = valueUsage(
+        { ...groupFact, model: blocked },
+        loaded1,
+      );
+      expect(blockedResult.usd.amount).toBeNull();
+      expect(blockedResult.usd.reason).toBe("missing-rate");
+      expect(blockedResult.pricingModel).toBeUndefined();
+    }
+    const siblingPrefix = valueUsage(
+      { ...groupFact, model: "group-alt/gpt-6.1-sol" },
+      loaded1,
+    );
+    expect(siblingPrefix.pricingModel).toBe("gpt-6.1-sol");
+    expect(siblingPrefix.subscriptionUsd.amount).not.toBeNull();
+
+    // 仅配置 excludePrefixes（省略 aliases）同样派生新版本键并生效。
+    const excludeOnlyPath = join(dir, "exclude-only.json");
+    await Bun.write(
+      excludeOnlyPath,
+      JSON.stringify({ excludePrefixes: ["group/"] }),
+    );
+    const excludeOnly = await loadPriceBook(undefined, excludeOnlyPath);
+    expect(excludeOnly.version).toMatch(
+      /^2026-11-23\.1\+aliases-[0-9a-f]{16}$/,
+    );
+    expect(
+      valueUsage({ ...groupFact, model: "GROUP/gpt-6.1-sol" }, excludeOnly).usd
+        .reason,
+    ).toBe("missing-rate");
+
     // 仅修改 notes 时摘要与版本键必须同步变化，账本重新打开不会报内容冲突。
     const store1 = new LedgerStore(dbPath, loaded1);
     store1.close();
@@ -907,6 +1006,7 @@ test("model aliases overlay prices private groups, folds notes into version dige
           "group/auto-gemini-4-hydrogen": "gemini-4-hydrogen",
           "group/auto-gemini-4-carbon": "gemini-4-carbon",
         },
+        excludePrefixes: ["pool/", "GROUP"],
         notes: ["Updated note"],
       }),
     );
@@ -915,7 +1015,7 @@ test("model aliases overlay prices private groups, folds notes into version dige
     const store2 = new LedgerStore(dbPath, loaded2);
     store2.close();
 
-    // 仅交换键顺序（含 Unicode 规范等价键及纯数字键）时，摘要按严格码元序序列化并保持一致。
+    // 仅交换键顺序（含 Unicode 规范等价键、纯数字键及 excludePrefixes 顺序与大小写）时，摘要保持一致。
     const reorderedPath = join(dir, "reordered-aliases.json");
     await Bun.write(
       aliasPath,
@@ -926,6 +1026,7 @@ test("model aliases overlay prices private groups, folds notes into version dige
           "group/\u00e9": "gemini-4-carbon",
           "group/e\u0301": "gemini-4-hydrogen",
         },
+        excludePrefixes: ["Pool", "group/"],
         notes: ["Canonical order"],
       }),
     );
@@ -938,6 +1039,7 @@ test("model aliases overlay prices private groups, folds notes into version dige
           "10": "gemini-4-carbon",
           "group/\u00e9": "gemini-4-carbon",
         },
+        excludePrefixes: ["GROUP", "pool///"],
         notes: ["Canonical order"],
       }),
     );
@@ -954,10 +1056,12 @@ test("model aliases overlay prices private groups, folds notes into version dige
             ["group/e\u0301", "gemini-4-hydrogen"],
             ["group/\u00e9", "gemini-4-carbon"],
           ],
+          excludePrefixes: ["group/", "pool/"],
           notes: ["Canonical order"],
         }),
       )
-      .digest("hex");
+      .digest("hex")
+      .slice(0, 16);
     expect(canon1.version).toBe(
       `${defaultPriceBook.version}+aliases-${expectedCanonDigest}`,
     );
@@ -972,7 +1076,12 @@ test("model aliases overlay prices private groups, folds notes into version dige
       /must not contain '@'/,
     );
 
-    // 拒绝覆盖已有规则的别名、未知目标与缺失文件。
+    // 拒绝非法 excludePrefixes、覆盖已有规则的别名、未知目标与缺失文件。
+    await Bun.write(aliasPath, JSON.stringify({ excludePrefixes: ["/"] }));
+    await expect(loadPriceBook(undefined, aliasPath)).rejects.toThrow(
+      /Invalid model aliases fields/,
+    );
+
     await Bun.write(
       aliasPath,
       JSON.stringify({ aliases: { "gpt-6.1-sol": "gpt-6.1-terra" } }),
@@ -1003,7 +1112,7 @@ test("LedgerStore upgrades stale same-version missing-rate valuations for routed
   try {
     const fact: UsageFact = {
       ...usage,
-      occurredAt: "2026-11-20T00:00:00.000Z",
+      occurredAt: "2026-11-23T00:00:00.000Z",
       model: "codex/gpt-6.1-sol",
       tier: "standard",
       tokens: {
@@ -1017,16 +1126,16 @@ test("LedgerStore upgrades stale same-version missing-rate valuations for routed
       },
     };
     const store1 = new LedgerStore(dbPath, defaultPriceBook);
-    const mixedCaseFact: UsageFact = {
+    const groupFact: UsageFact = {
       ...fact,
       externalId: "2",
-      model: "GROUP/gpt-6.1-sol",
+      model: "group/gpt-6.1-sol",
     };
     store1.savePage(
       "test",
       "incremental",
-      { records: [fact, mixedCaseFact], nextCursor: "2", hasMore: false },
-      "2026-11-20T00:01:00.000Z",
+      { records: [fact, groupFact], nextCursor: "2", hasMore: false },
+      "2026-11-23T00:01:00.000Z",
     );
     store1.close();
 

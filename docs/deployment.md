@@ -52,22 +52,22 @@ docker compose up -d --no-build --pull never
 
 完整模板见 [`.env.example`](../.env.example)。本地 Bun 启动读取 `.env`；Compose 仅传递 [compose.yaml](../compose.yaml) 中声明的变量，不会自动注入模板中的全部键。
 
-| 变量                                   | 默认值         | 说明                                       |
-| -------------------------------------- | -------------- | ------------------------------------------ |
-| `SUB2API_DATABASE_URL`                 | 未启用         | 单实例 PostgreSQL 只读连接地址             |
-| `METERLEAF_SOURCE_ID`                  | `sub2api`      | 稳定来源标识；已有账本不要改名             |
-| `METERLEAF_BIND_ADDRESS`               | `127.0.0.1`    | Compose 对外绑定地址                       |
-| `METERLEAF_PUBLISHED_PORT`             | `4318`         | Compose 对外端口                           |
-| `METERLEAF_SYNC_VISIBLE_INTERVAL_MS`   | `15000`        | 页面可见时的自动同步间隔，5 秒至 1 小时    |
-| `METERLEAF_SYNC_HIDDEN_INTERVAL_MS`    | `900000`       | 页面不可见时的自动同步间隔，5 秒至 1 小时  |
-| `METERLEAF_REPORT_REFRESH_INTERVAL_MS` | `86400000`     | 报表后台兜底刷新间隔，30 秒至 24 小时      |
-| `METERLEAF_USD_BASIS`                  | `subscription` | 默认 USD 口径，也可选 `api`                |
-| `METERLEAF_PRICE_BOOK`                 | 内置价格表     | 自定义完整价格 JSON 路径                   |
-| `METERLEAF_MODEL_ALIASES`              | 未启用         | 本机私有模型别名 JSON 路径（叠加到价格表） |
-| `METERLEAF_LOG_LEVEL`                  | `info`         | `debug`、`info`、`warn`、`error`、`silent` |
-| `METERLEAF_INGEST_KEYS`                | 未启用         | 本机采集器写入密钥，见下文                 |
-| `METERLEAF_GITHUB_CLIENT_ID` 等        | 未启用         | GitHub 登录，见下文                        |
-| `METERLEAF_OPENCODE_GO_KEY` 等         | 未启用         | OpenCode Go 额度，见下文                   |
+| 变量                                   | 默认值         | 说明                                                 |
+| -------------------------------------- | -------------- | ---------------------------------------------------- |
+| `SUB2API_DATABASE_URL`                 | 未启用         | 单实例 PostgreSQL 只读连接地址                       |
+| `METERLEAF_SOURCE_ID`                  | `sub2api`      | 稳定来源标识；已有账本不要改名                       |
+| `METERLEAF_BIND_ADDRESS`               | `127.0.0.1`    | Compose 对外绑定地址                                 |
+| `METERLEAF_PUBLISHED_PORT`             | `4318`         | Compose 对外端口                                     |
+| `METERLEAF_SYNC_VISIBLE_INTERVAL_MS`   | `15000`        | 页面可见时的自动同步间隔，5 秒至 1 小时              |
+| `METERLEAF_SYNC_HIDDEN_INTERVAL_MS`    | `900000`       | 页面不可见时的自动同步间隔，5 秒至 1 小时            |
+| `METERLEAF_REPORT_REFRESH_INTERVAL_MS` | `86400000`     | 报表后台兜底刷新间隔，30 秒至 24 小时                |
+| `METERLEAF_USD_BASIS`                  | `subscription` | 默认 USD 口径，也可选 `api`                          |
+| `METERLEAF_PRICE_BOOK`                 | 内置价格表     | 自定义完整价格 JSON 路径                             |
+| `METERLEAF_MODEL_ALIASES`              | 未启用         | 本机私有模型别名与排除前缀 JSON 路径（叠加到价格表） |
+| `METERLEAF_LOG_LEVEL`                  | `info`         | `debug`、`info`、`warn`、`error`、`silent`           |
+| `METERLEAF_INGEST_KEYS`                | 未启用         | 本机采集器写入密钥，见下文                           |
+| `METERLEAF_GITHUB_CLIENT_ID` 等        | 未启用         | GitHub 登录，见下文                                  |
+| `METERLEAF_OPENCODE_GO_KEY` 等         | 未启用         | OpenCode Go 额度，见下文                             |
 
 `SUB2API_DATABASE_URL` 与 `METERLEAF_INGEST_KEYS` 至少填写一项，未填写的来源不启用。
 
