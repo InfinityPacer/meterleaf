@@ -49,7 +49,7 @@ test("bundled JSON matches catalog generator and retires built-in credits", () =
   expect(subscription.credits.amount).toBeNull();
   expect(api.credits.amount).toBeNull();
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-11-19.1");
+  expect(subscription.version).toBe("meterleaf@2026-11-23.1");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
@@ -260,15 +260,15 @@ function ruleAccepted(rule: unknown) {
 test("bundled book values DeepSeek V4.1 Flash at Go's weekday peak and off-peak prices", () => {
   // Go 的峰时是 UTC 周一至周五 01:00-04:00 与 06:00-10:00，起点包含、终点不包含。
   for (const [occurredAt, amount] of [
-    ["2026-11-20T00:59:00Z", "0.753"],
-    ["2026-11-20T01:00:00Z", "1.506"],
-    ["2026-11-20T03:59:00Z", "1.506"],
-    ["2026-11-20T04:00:00Z", "0.753"],
-    ["2026-11-20T06:00:00Z", "1.506"],
-    ["2026-11-20T09:59:00Z", "1.506"],
-    ["2026-11-20T10:00:00Z", "0.753"],
-    ["2026-11-21T02:00:00Z", "0.753"],
-    ["2026-11-22T07:00:00Z", "0.753"],
+    ["2026-11-27T00:59:00Z", "0.753"],
+    ["2026-11-27T01:00:00Z", "1.506"],
+    ["2026-11-27T03:59:00Z", "1.506"],
+    ["2026-11-27T04:00:00Z", "0.753"],
+    ["2026-11-27T06:00:00Z", "1.506"],
+    ["2026-11-27T09:59:00Z", "1.506"],
+    ["2026-11-27T10:00:00Z", "0.753"],
+    ["2026-11-28T02:00:00Z", "0.753"],
+    ["2026-11-29T07:00:00Z", "0.753"],
   ] as const) {
     const fact = deepseekFact(occurredAt);
     const subscription = valueUsage(fact, defaultPriceBook);
@@ -747,4 +747,66 @@ test("Antigravity models use their published Google, Anthropic and Model Garden 
     expect(priced.apiUsd.amount).toBe("0.2185");
     expect(priced.credits.amount).toBeNull();
   }
+});
+
+test("GPT-6.2 Sol and Astra cover standard and priority tiers without guessing flex", () => {
+  for (const [model, inputRate, cacheRate, writeRate, outputRate] of [
+    ["gpt-6.2-sol", "2", "0.1", "2.5", "10"],
+    ["gpt-6.2-astra", "8", "0.4", "10", "40"],
+  ] as const) {
+    const fact: UsageFact = {
+      ...usage,
+      occurredAt: "2026-11-23T00:00:00Z",
+      model,
+      tier: "standard",
+      tokens: {
+        input: 50_000,
+        cacheRead: 50_000,
+        cacheWrite: 50_000,
+        output: 50_000,
+        cacheWrite5m: null,
+        cacheWrite1h: null,
+        reasoning: null,
+      },
+    };
+    const rateSum =
+      Number(inputRate) +
+      Number(cacheRate) +
+      Number(writeRate) +
+      Number(outputRate);
+    const standard = valueUsage(fact, defaultPriceBook);
+    const api = valueUsage(fact, defaultPriceBook, "api");
+    expect(standard.usd.amount).toBe((rateSum / 20).toString());
+    expect(api.usd.amount).toBe(standard.usd.amount);
+    expect(standard.usd.reason).toBeNull();
+    expect(
+      valueUsage(
+        { ...fact, occurredAt: "2026-11-22T23:59:59Z" },
+        defaultPriceBook,
+      ).usd.reason,
+    ).toBe("current-rate-applied-to-history");
+
+    const priority = valueUsage({ ...fact, tier: "fast" }, defaultPriceBook);
+    expect(Number(priority.usd.amount)).toBeCloseTo(
+      Number(standard.usd.amount) * 2,
+      9,
+    );
+
+    const flex = valueUsage({ ...fact, tier: "flex" }, defaultPriceBook);
+    expect(flex.usd.amount).toBeNull();
+    expect(flex.usd.reason).toBe("missing-rate");
+  }
+
+  // >272K 长上下文仅在标准 API USD 分支加价，订阅等价 USD 保持基础价。
+  const longFact: UsageFact = {
+    ...usage,
+    occurredAt: "2026-11-23T00:00:00Z",
+    model: "gpt-6.2-sol",
+    tier: "standard",
+    tokens: { ...usage.tokens, input: 273_000, cacheRead: 0, output: 1_000 },
+  };
+  expect(valueUsage(longFact, defaultPriceBook).usd.amount).toBe("0.556");
+  expect(valueUsage(longFact, defaultPriceBook, "api").usd.amount).toBe(
+    "1.107",
+  );
 });
