@@ -486,6 +486,73 @@ export class LedgerStore {
     this.db
       .query("INSERT OR IGNORE INTO price_books VALUES (?, ?)")
       .run(priceBookKey(book), payload);
+    this.revalueRoutedMissingRates(book);
+  }
+
+  /**
+   * 升级到支持路由前缀兜底后，同价格表版本下可能残留旧版写入的 missing-rate 估值；
+   * 对当前版本中的带斜杠模型做一次性就地重估，由更新触发器同步驱动报表增量刷新。
+   */
+  private revalueRoutedMissingRates(book: PriceBook) {
+    const version = priceBookKey(book);
+    const doneKey = `valuation:route-prefix-v1:${version}`;
+    if (this.getState<boolean>(doneKey)) return;
+    const candidates = this.db
+      .query<
+        {
+          source_id: string;
+          external_id: string;
+          fact_payload: string;
+          valuation_payload: string;
+        },
+        [string]
+      >(
+        `SELECT v.source_id,
+                v.external_id,
+                u.payload AS fact_payload,
+                v.payload AS valuation_payload
+           FROM valuations v
+           JOIN usage_facts u
+             ON u.source_id = v.source_id
+            AND u.external_id = v.external_id
+          WHERE v.version = ?
+            AND (
+              json_extract(v.payload, '$.subscriptionUsd.reason') = 'missing-rate'
+              OR json_extract(v.payload, '$.apiUsd.reason') = 'missing-rate'
+            )
+            AND instr(json_extract(u.payload, '$.model'), '/') > 0`,
+      )
+      .all(version);
+    const updates: {
+      sourceId: string;
+      externalId: string;
+      payload: string;
+    }[] = [];
+    for (const row of candidates) {
+      const fact = JSON.parse(row.fact_payload) as UsageFact;
+      const next = JSON.stringify(
+        valueUsage(withSub2ApiImageUsage(fact), book),
+      );
+      if (next !== row.valuation_payload) {
+        updates.push({
+          sourceId: row.source_id,
+          externalId: row.external_id,
+          payload: next,
+        });
+      }
+    }
+    this.db.transaction(() => {
+      if (updates.length > 0) {
+        this.bumpRevision();
+        const stmt = this.db.query(
+          "UPDATE valuations SET payload=? WHERE source_id=? AND external_id=? AND version=?",
+        );
+        for (const item of updates) {
+          stmt.run(item.payload, item.sourceId, item.externalId, version);
+        }
+      }
+      this.setState(doneKey, true);
+    })();
   }
 
   /** 账本记录过的价格表原文；只用于标注旧结果，不参与重新计价。 */

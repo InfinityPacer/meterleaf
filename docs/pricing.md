@@ -3,7 +3,7 @@
 [返回首页](../README.md)
 
 Meterleaf 将费率保存在独立 JSON 文件中，内置表由声明式源表 `prices/catalog.ts` 通过 `bun run prices:build` 生成到 `prices/meterleaf.json`，并可通过 `bun run prices:check` 与上游公开目录对账。内置范围覆盖 OpenAI、Anthropic Claude、Google Gemini 与 Vertex AI 模型，以及通过 OpenCode Go 接入的 DeepSeek 与 GLM 模型。使用自定义价格表时，设置
-`METERLEAF_PRICE_BOOK=/path/to/prices.json` 并重启服务。自定义文件完整替换内置表，不进行隐式合并。
+`METERLEAF_PRICE_BOOK=/path/to/prices.json` 并重启服务。自定义文件完整替换内置表，不进行隐式合并。若只需为本机私有路由分组补充显式模型映射（不覆盖内置表），可设置 `METERLEAF_MODEL_ALIASES=/path/to/model-aliases.json` 并重启服务。
 
 ## 版本元数据
 
@@ -65,7 +65,9 @@ GPT-6.1 Sol 与 Terra、GPT-6.2 Sol 与 Astra 按各自模型页公布的输入�
 
 Antigravity 使用的模型同样按官方公开的每百万 token 费率估值，不是 Google AI Ultra 订阅账单。`gemini-4-neon`、`gemini-4-hydrogen`、`gemini-4-carbon`、`gemini-4-argon` 与 `gemini-3.8-flash` 采用 Google Gemini API 与 Vertex AI 公布的标准档与 Flex 档价格，其中 `gemini-4-neon` 与 `gemini-4-hydrogen` 无促销分段，其余三款按有效日期分段记录促销期与促销结束后的标准费率。`gemini-3.5-flash-lite` 采用官方标准档价格，因其 Flex 档缓存读取价在两处文档存在舍入差异而暂不推断 Flex 档。各款 Gemini 模型均无输入长度分档，当前生效的按 token 缓存写入单价未公布，保留未计价。`claude-opus-5-5` 与 `claude-sonnet-5-5` 使用 Anthropic 官方模型价格，采集器把带思考档位后缀（含 `xhigh`）的响应模型名归一到基础模型 ID。`gpt-oss-120b` 采用 Google Cloud Vertex AI Model Garden 公布的 `openai/gpt-oss-120b-maas` 托管价格，该模型未公布缓存读写折扣，含非零缓存读写的记录保留未计价。历史会话中出现的 `claude-opus-4-6-thinking` 是开启思考的 Opus 4.6，思考 token 按输出计价，归一到 `claude-opus-4-6` 并使用其官方费率。
 
-未配置的模型不会自动别名到其他模型。网关参考价不是已核实的官方报价。图像与实时模型需要相应媒体 Token 分桶，不能用文本四桶冒充完整费用。
+计价模型按三步依次解析：先精确匹配原始模型名；未命中时查显式 `modelAliases` 映射；仍未命中且模型名含 `/` 路由前缀（如 `codex/gpt-6.1-sol`、`google-vertex/gemini-4-hydrogen`、`agy-cli/claude-opus-5-5`）、同时未命中 `excludeRoutePrefixes` 排除名单时，剥离路由前缀并按末段模型 ID 精确匹配已有官方规则，在估值中保留 `pricingModel` 以便审计。原名已有规则时不回退到末段，不做跨模型模糊别名；命中排除名单的私有分组（如配置了 `group/`）在没有原名精确规则且未配置显式别名时保持未计价。网关参考价不是已核实的官方报价。图像与实时模型需要相应媒体 Token 分桶，不能用文本四桶冒充完整费用。
+
+`METERLEAF_MODEL_ALIASES` 指向的 JSON 文件支持可选的 `aliases`（单跳精确映射表，原名不可覆盖已有规则，目标必须存在于当前价格表规则中）、`excludePrefixes`（不参与路由前缀兜底的前缀列表，按 `/` 分段忽略大小写匹配，例如 `["group/"]`）与 `notes`。叠加到当前价格表时，规范化内容的 16 位 SHA-256 摘要会拼入估值版本键以自动触发重估，并将快照随价格表入库；若文件缺失或格式无效，服务直接报错退出。别名不设生效时间段；修改或移除映射与排除前缀后，历史记录会随新版本键重新估值。
 
 排查缺失金额时，依次核对计价模型、服务档位、币种、USD 口径、有效日期和实际使用的 Token 桶。来源缺价时的零费用不是免费的证据；Meterleaf 保留未知值。
 
