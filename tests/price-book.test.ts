@@ -49,7 +49,7 @@ test("bundled JSON matches catalog generator and retires built-in credits", () =
   expect(subscription.credits.amount).toBeNull();
   expect(api.credits.amount).toBeNull();
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-11-19.1");
+  expect(subscription.version).toBe("meterleaf@2026-11-23.1");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
@@ -260,15 +260,15 @@ function ruleAccepted(rule: unknown) {
 test("bundled book values DeepSeek V4.1 Flash at Go's weekday peak and off-peak prices", () => {
   // Go 的峰时是 UTC 周一至周五 01:00-04:00 与 06:00-10:00，起点包含、终点不包含。
   for (const [occurredAt, amount] of [
-    ["2026-11-20T00:59:00Z", "0.753"],
-    ["2026-11-20T01:00:00Z", "1.506"],
-    ["2026-11-20T03:59:00Z", "1.506"],
-    ["2026-11-20T04:00:00Z", "0.753"],
-    ["2026-11-20T06:00:00Z", "1.506"],
-    ["2026-11-20T09:59:00Z", "1.506"],
-    ["2026-11-20T10:00:00Z", "0.753"],
-    ["2026-11-21T02:00:00Z", "0.753"],
-    ["2026-11-22T07:00:00Z", "0.753"],
+    ["2026-11-27T00:59:00Z", "0.753"],
+    ["2026-11-27T01:00:00Z", "1.506"],
+    ["2026-11-27T03:59:00Z", "1.506"],
+    ["2026-11-27T04:00:00Z", "0.753"],
+    ["2026-11-27T06:00:00Z", "1.506"],
+    ["2026-11-27T09:59:00Z", "1.506"],
+    ["2026-11-27T10:00:00Z", "0.753"],
+    ["2026-11-28T02:00:00Z", "0.753"],
+    ["2026-11-29T07:00:00Z", "0.753"],
   ] as const) {
     const fact = deepseekFact(occurredAt);
     const subscription = valueUsage(fact, defaultPriceBook);
@@ -746,5 +746,457 @@ test("Antigravity models use their published Google, Anthropic and Model Garden 
     expect(priced.subscriptionUsd.amount).toBe("0.2185");
     expect(priced.apiUsd.amount).toBe("0.2185");
     expect(priced.credits.amount).toBeNull();
+  }
+});
+
+test("GPT-6.2 Sol and Astra cover standard and priority tiers without guessing flex", () => {
+  for (const [model, inputRate, cacheRate, writeRate, outputRate] of [
+    ["gpt-6.2-sol", "2", "0.1", "2.5", "10"],
+    ["gpt-6.2-astra", "8", "0.4", "10", "40"],
+  ] as const) {
+    const fact: UsageFact = {
+      ...usage,
+      occurredAt: "2026-11-23T00:00:00Z",
+      model,
+      tier: "standard",
+      tokens: {
+        input: 50_000,
+        cacheRead: 50_000,
+        cacheWrite: 50_000,
+        output: 50_000,
+        cacheWrite5m: null,
+        cacheWrite1h: null,
+        reasoning: null,
+      },
+    };
+    const rateSum =
+      Number(inputRate) +
+      Number(cacheRate) +
+      Number(writeRate) +
+      Number(outputRate);
+    const standard = valueUsage(fact, defaultPriceBook);
+    const api = valueUsage(fact, defaultPriceBook, "api");
+    expect(standard.usd.amount).toBe((rateSum / 20).toString());
+    expect(api.usd.amount).toBe(standard.usd.amount);
+    expect(standard.usd.reason).toBeNull();
+    expect(
+      valueUsage(
+        { ...fact, occurredAt: "2026-11-22T23:59:59Z" },
+        defaultPriceBook,
+      ).usd.reason,
+    ).toBe("current-rate-applied-to-history");
+
+    const priority = valueUsage({ ...fact, tier: "fast" }, defaultPriceBook);
+    expect(Number(priority.usd.amount)).toBeCloseTo(
+      Number(standard.usd.amount) * 2,
+      9,
+    );
+
+    const flex = valueUsage({ ...fact, tier: "flex" }, defaultPriceBook);
+    expect(flex.usd.amount).toBeNull();
+    expect(flex.usd.reason).toBe("missing-rate");
+  }
+
+  // >272K 长上下文仅在标准 API USD 分支加价，订阅等价 USD 保持基础价。
+  const longFact: UsageFact = {
+    ...usage,
+    occurredAt: "2026-11-23T00:00:00Z",
+    model: "gpt-6.2-sol",
+    tier: "standard",
+    tokens: { ...usage.tokens, input: 273_000, cacheRead: 0, output: 1_000 },
+  };
+  expect(valueUsage(longFact, defaultPriceBook).usd.amount).toBe("0.556");
+  expect(valueUsage(longFact, defaultPriceBook, "api").usd.amount).toBe(
+    "1.107",
+  );
+});
+
+test("route-prefix fallback matches trailing official model ID without fuzzy aliasing", () => {
+  const routedCases = [
+    ["auto/gpt-6.1-sol", "gpt-6.1-sol"],
+    ["codex/gpt-6.1-sol", "gpt-6.1-sol"],
+    ["google-vertex/gemini-4-hydrogen", "gemini-4-hydrogen"],
+    ["agy-cli/claude-opus-5-5", "claude-opus-5-5"],
+    ["commandcode/deepseek/deepseek-v4.1-flash", "deepseek-v4.1-flash"],
+    ["group/gpt-6.1-sol", "gpt-6.1-sol"],
+  ] as const;
+
+  for (const [routedModel, canonicalModel] of routedCases) {
+    const baseFact: UsageFact = {
+      ...usage,
+      occurredAt: "2026-11-23T00:00:00Z",
+      model: canonicalModel,
+      tier: "standard",
+      tokens: {
+        input: 100_000,
+        cacheRead: 20_000,
+        cacheWrite: 0,
+        output: 10_000,
+        cacheWrite5m: null,
+        cacheWrite1h: null,
+        reasoning: null,
+      },
+    };
+    const direct = valueUsage(baseFact, defaultPriceBook);
+    const routed = valueUsage(
+      { ...baseFact, model: routedModel },
+      defaultPriceBook,
+    );
+    expect(routed.subscriptionUsd.amount).toBe(direct.subscriptionUsd.amount);
+    expect(routed.apiUsd.amount).toBe(direct.apiUsd.amount);
+    expect(routed.pricingModel).toBe(canonicalModel);
+  }
+
+  // 未配置显式别名的自定义末段及尾部斜杠保持未计价。
+  for (const unmapped of ["group/auto-gemini-4-carbon", "codex/"]) {
+    const result = valueUsage(
+      {
+        ...usage,
+        occurredAt: "2026-11-23T00:00:00Z",
+        model: unmapped,
+        tier: "standard",
+      },
+      defaultPriceBook,
+    );
+    expect(result.usd.amount).toBeNull();
+    expect(result.usd.reason).toBe("missing-rate");
+    expect(result.pricingModel).toBeUndefined();
+  }
+
+  // 精确规则优先于剥离前缀；原名存在规则时缺失档位不回退到末段规则。
+  const customBook = priceBookSchema.parse({
+    ...defaultPriceBook,
+    version: "2026-11-23.1-custom",
+    rules: [
+      ...defaultPriceBook.rules,
+      {
+        model: "codex/gpt-6.1-sol",
+        tier: "standard",
+        currency: "usd",
+        usdBasis: "subscription",
+        effectiveFrom: "1970-01-01T00:00:00Z",
+        rates: { input: "9", cacheRead: "0", cacheWrite: "0", output: "9" },
+      },
+      {
+        model: "codex/gpt-6.1-sol",
+        tier: "standard",
+        currency: "usd",
+        usdBasis: "api",
+        effectiveFrom: "1970-01-01T00:00:00Z",
+        rates: { input: "9", cacheRead: "0", cacheWrite: "0", output: "9" },
+      },
+    ],
+  });
+  const exactHit = valueUsage(
+    {
+      ...usage,
+      occurredAt: "2026-11-23T00:00:00Z",
+      model: "codex/gpt-6.1-sol",
+      tier: "standard",
+      tokens: { ...usage.tokens, input: 1_000_000, output: 0 },
+    },
+    customBook,
+  );
+  expect(exactHit.subscriptionUsd.amount).toBe("9");
+  expect(exactHit.pricingModel).toBeUndefined();
+
+  const missingTier = valueUsage(
+    {
+      ...usage,
+      occurredAt: "2026-11-23T00:00:00Z",
+      model: "codex/gpt-6.1-sol",
+      tier: "priority",
+    },
+    customBook,
+  );
+  expect(missingTier.subscriptionUsd.amount).toBeNull();
+  expect(missingTier.subscriptionUsd.reason).toBe("missing-rate");
+});
+
+test("model aliases overlay prices private groups, applies excludePrefixes, folds notes into 16-char digest, and validates strictly", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-aliases-"));
+  try {
+    const aliasPath = join(dir, "model-aliases.json");
+    const dbPath = join(dir, "ledger.sqlite");
+    await Bun.write(
+      aliasPath,
+      JSON.stringify({
+        aliases: {
+          "group/auto-gemini-4-carbon": "gemini-4-carbon",
+          "group/auto-gemini-4-hydrogen": "gemini-4-hydrogen",
+        },
+        excludePrefixes: ["group", "Pool/"],
+        notes: ["Initial note"],
+      }),
+    );
+    const loaded1 = await loadPriceBook(undefined, aliasPath);
+    expect(loaded1.version).toMatch(/^2026-11-23\.1\+aliases-[0-9a-f]{16}$/);
+    expect(loaded1.excludeRoutePrefixes).toEqual(["group/", "pool/"]);
+    expect(priceBookKey(loaded1).split("@")).toHaveLength(2);
+
+    // 显式别名优先级高于 excludePrefixes。
+    const groupFact: UsageFact = {
+      ...usage,
+      occurredAt: "2026-11-23T00:00:00Z",
+      model: "group/auto-gemini-4-carbon",
+      tier: "standard",
+      tokens: {
+        input: 1_000_000,
+        cacheRead: 1_000_000,
+        cacheWrite: 0,
+        output: 1_000_000,
+        cacheWrite5m: null,
+        cacheWrite1h: null,
+        reasoning: null,
+      },
+    };
+    const priced = valueUsage(groupFact, loaded1);
+    const direct = valueUsage(
+      { ...groupFact, model: "gemini-4-carbon" },
+      defaultPriceBook,
+    );
+    expect(priced.subscriptionUsd.amount).toBe(direct.subscriptionUsd.amount);
+    expect(priced.apiUsd.amount).toBe(direct.apiUsd.amount);
+    expect(priced.pricingModel).toBe("gemini-4-carbon");
+
+    // 命中 excludePrefixes 时忽略大小写阻止自动前缀剥离，但不误伤不同首段前缀。
+    for (const blocked of [
+      "group/gpt-6.1-sol",
+      "GROUP/gpt-6.1-sol",
+      "pool/gpt-6.1-sol",
+      "POOL/nested/gpt-6.1-sol",
+    ]) {
+      const blockedResult = valueUsage(
+        { ...groupFact, model: blocked },
+        loaded1,
+      );
+      expect(blockedResult.usd.amount).toBeNull();
+      expect(blockedResult.usd.reason).toBe("missing-rate");
+      expect(blockedResult.pricingModel).toBeUndefined();
+    }
+    const siblingPrefix = valueUsage(
+      { ...groupFact, model: "group-alt/gpt-6.1-sol" },
+      loaded1,
+    );
+    expect(siblingPrefix.pricingModel).toBe("gpt-6.1-sol");
+    expect(siblingPrefix.subscriptionUsd.amount).not.toBeNull();
+
+    // 仅配置 excludePrefixes（省略 aliases）同样派生新版本键并生效。
+    const excludeOnlyPath = join(dir, "exclude-only.json");
+    await Bun.write(
+      excludeOnlyPath,
+      JSON.stringify({ excludePrefixes: ["group/"] }),
+    );
+    const excludeOnly = await loadPriceBook(undefined, excludeOnlyPath);
+    expect(excludeOnly.version).toMatch(
+      /^2026-11-23\.1\+aliases-[0-9a-f]{16}$/,
+    );
+    expect(
+      valueUsage({ ...groupFact, model: "GROUP/gpt-6.1-sol" }, excludeOnly).usd
+        .reason,
+    ).toBe("missing-rate");
+
+    // 仅修改 notes 时摘要与版本键必须同步变化，账本重新打开不会报内容冲突。
+    const store1 = new LedgerStore(dbPath, loaded1);
+    store1.close();
+    await Bun.write(
+      aliasPath,
+      JSON.stringify({
+        aliases: {
+          "group/auto-gemini-4-hydrogen": "gemini-4-hydrogen",
+          "group/auto-gemini-4-carbon": "gemini-4-carbon",
+        },
+        excludePrefixes: ["pool/", "GROUP"],
+        notes: ["Updated note"],
+      }),
+    );
+    const loaded2 = await loadPriceBook(undefined, aliasPath);
+    expect(loaded2.version).not.toBe(loaded1.version);
+    const store2 = new LedgerStore(dbPath, loaded2);
+    store2.close();
+
+    // 仅交换键顺序（含 Unicode 规范等价键、纯数字键及 excludePrefixes 顺序与大小写）时，摘要保持一致。
+    const reorderedPath = join(dir, "reordered-aliases.json");
+    await Bun.write(
+      aliasPath,
+      JSON.stringify({
+        aliases: {
+          "10": "gemini-4-carbon",
+          "2": "gemini-4-hydrogen",
+          "group/\u00e9": "gemini-4-carbon",
+          "group/e\u0301": "gemini-4-hydrogen",
+        },
+        excludePrefixes: ["Pool", "group/"],
+        notes: ["Canonical order"],
+      }),
+    );
+    await Bun.write(
+      reorderedPath,
+      JSON.stringify({
+        aliases: {
+          "2": "gemini-4-hydrogen",
+          "group/e\u0301": "gemini-4-hydrogen",
+          "10": "gemini-4-carbon",
+          "group/\u00e9": "gemini-4-carbon",
+        },
+        excludePrefixes: ["GROUP", "pool///"],
+        notes: ["Canonical order"],
+      }),
+    );
+    const canon1 = await loadPriceBook(undefined, aliasPath);
+    const canon2 = await loadPriceBook(undefined, reorderedPath);
+    expect(canon1.version).toBe(canon2.version);
+    const { createHash } = await import("node:crypto");
+    const expectedCanonDigest = createHash("sha256")
+      .update(
+        JSON.stringify({
+          aliases: [
+            ["10", "gemini-4-carbon"],
+            ["2", "gemini-4-hydrogen"],
+            ["group/e\u0301", "gemini-4-hydrogen"],
+            ["group/\u00e9", "gemini-4-carbon"],
+          ],
+          excludePrefixes: ["group/", "pool/"],
+          notes: ["Canonical order"],
+        }),
+      )
+      .digest("hex")
+      .slice(0, 16);
+    expect(canon1.version).toBe(
+      `${defaultPriceBook.version}+aliases-${expectedCanonDigest}`,
+    );
+
+    // 基础价格表版本含 `@` 时拒绝生成非法派生版本键。
+    const badBasePath = join(dir, "bad-base-book.json");
+    await Bun.write(
+      badBasePath,
+      JSON.stringify({ ...defaultPriceBook, version: "2026@local" }),
+    );
+    await expect(loadPriceBook(badBasePath, aliasPath)).rejects.toThrow(
+      /must not contain '@'/,
+    );
+
+    // 拒绝非法 excludePrefixes、覆盖已有规则的别名、未知目标与缺失文件。
+    await Bun.write(aliasPath, JSON.stringify({ excludePrefixes: ["/"] }));
+    await expect(loadPriceBook(undefined, aliasPath)).rejects.toThrow(
+      /Invalid model aliases fields/,
+    );
+
+    await Bun.write(
+      aliasPath,
+      JSON.stringify({ aliases: { "gpt-6.1-sol": "gpt-6.1-terra" } }),
+    );
+    await expect(loadPriceBook(undefined, aliasPath)).rejects.toThrow(
+      /shadow an existing priced model/,
+    );
+
+    await Bun.write(
+      aliasPath,
+      JSON.stringify({ aliases: { "group/unknown": "nonexistent-model" } }),
+    );
+    await expect(loadPriceBook(undefined, aliasPath)).rejects.toThrow(
+      /must match a priced model/,
+    );
+
+    await expect(
+      loadPriceBook(undefined, join(dir, "missing.json")),
+    ).rejects.toThrow(/Cannot read or parse METERLEAF_MODEL_ALIASES JSON/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LedgerStore upgrades stale same-version missing-rate valuations for routed models on reopen", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "meterleaf-routed-upgrade-"));
+  const dbPath = join(dir, "ledger.sqlite");
+  try {
+    const fact: UsageFact = {
+      ...usage,
+      occurredAt: "2026-11-23T00:00:00.000Z",
+      model: "codex/gpt-6.1-sol",
+      tier: "standard",
+      tokens: {
+        input: 100_000,
+        cacheRead: 20_000,
+        cacheWrite: 0,
+        output: 10_000,
+        cacheWrite5m: null,
+        cacheWrite1h: null,
+        reasoning: null,
+      },
+    };
+    const store1 = new LedgerStore(dbPath, defaultPriceBook);
+    const groupFact: UsageFact = {
+      ...fact,
+      externalId: "2",
+      model: "group/gpt-6.1-sol",
+    };
+    store1.savePage(
+      "test",
+      "incremental",
+      { records: [fact, groupFact], nextCursor: "2", hasMore: false },
+      "2026-11-23T00:01:00.000Z",
+    );
+    store1.close();
+
+    // 模拟升级前同一版本键下已落盘的旧 missing-rate 估值，并清除迁移完成标记。
+    const { Database } = await import("bun:sqlite");
+    const rawDb = new Database(dbPath);
+    const version = priceBookKey(defaultPriceBook);
+    const staleMissing = JSON.stringify({
+      version,
+      usdBasis: "subscription",
+      usd: {
+        amount: null,
+        basis: "unpriced",
+        reason: "missing-rate",
+        assumedStandard: false,
+      },
+      apiUsd: {
+        amount: null,
+        basis: "unpriced",
+        reason: "missing-rate",
+        assumedStandard: false,
+      },
+      subscriptionUsd: {
+        amount: null,
+        basis: "unpriced",
+        reason: "missing-rate",
+        assumedStandard: false,
+      },
+      credits: {
+        amount: null,
+        basis: "unpriced",
+        reason: "missing-rate",
+        assumedStandard: false,
+      },
+    });
+    rawDb
+      .query(
+        "UPDATE valuations SET payload=? WHERE source_id='test' AND external_id IN ('1', '2') AND version=?",
+      )
+      .run(staleMissing, version);
+    rawDb
+      .query("DELETE FROM sync_state WHERE key=?")
+      .run(`valuation:route-prefix-v1:${version}`);
+    rawDb.close();
+
+    const store2 = new LedgerStore(dbPath, defaultPriceBook);
+    const rows = store2.usage();
+    const expected = valueUsage(
+      { ...fact, model: "gpt-6.1-sol" },
+      defaultPriceBook,
+    );
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.valuation.subscriptionUsd.amount).toBe(
+        expected.subscriptionUsd.amount,
+      );
+      expect(row.valuation.apiUsd.amount).toBe(expected.apiUsd.amount);
+      expect(row.valuation.pricingModel).toBe("gpt-6.1-sol");
+    }
+    store2.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

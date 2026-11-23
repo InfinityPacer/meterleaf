@@ -30,10 +30,11 @@ function scaleRates(
 
 interface OpenAiTieredOptions {
   apiLongContext?: number;
+  flex?: boolean;
   promotion?: { description: string; confirmedThrough: string };
 }
 
-/** OpenAI 旗舰与编码模型：展开 Standard / Priority (2x) / Flex (0.5x)、1.25x 缓存写入及 API 长上下文档。 */
+/** OpenAI 旗舰与编码模型：展开 Standard / Priority (2x) / 可选 Flex (0.5x)、1.25x 缓存写入及 API 长上下文档。 */
 function openaiTiered(
   model: string,
   base: { input: string; cacheRead: string; output: string },
@@ -45,11 +46,17 @@ function openaiTiered(
     cacheWrite: mul(base.input, "1.25")!,
     output: base.output,
   };
-  const tiers: Array<[PriceRule["tier"], string]> = [
-    ["standard", "1"],
-    ["priority", "2"],
-    ["flex", "0.5"],
-  ];
+  const tiers: Array<[PriceRule["tier"], string]> =
+    options.flex === false
+      ? [
+          ["standard", "1"],
+          ["priority", "2"],
+        ]
+      : [
+          ["standard", "1"],
+          ["priority", "2"],
+          ["flex", "0.5"],
+        ];
   return tiers.flatMap(([tier, factor]) => {
     const rates = scaleRates(fullBase, factor);
     return USD_BASES.map((usdBasis): PriceRule => ({
@@ -258,8 +265,8 @@ export function buildPriceBook(): PriceBook {
     schemaVersion: 1,
     id: "meterleaf",
     supersedes: ["meterleaf-openai"],
-    version: "2026-11-19.1",
-    publishedAt: "2026-11-19T00:00:00Z",
+    version: "2026-11-23.1",
+    publishedAt: "2026-11-23T00:00:00Z",
     unit: "per_million_tokens",
     sources: [
       "https://developers.openai.com/api/docs/pricing",
@@ -288,6 +295,7 @@ export function buildPriceBook(): PriceBook {
       "Claude fast mode maps to the priority tier for Fable 5.2, Opus 5.5, Opus 5 and Opus 4.8 with 2x rates and stacked cache multipliers. US-only inference (1.1x) and web search fees are not applied.",
       "OpenCode Go DeepSeek V4.1 Flash uses Go's published Beijing weekday peak (09:00-18:00, UTC+8) and off-peak rates. GLM-5.3 and GLM-5.3-Flash match Go and Zhipu published rates with no cache-write rate.",
       "Gemini 4 Neon ($3.00/$0.15/$15.00 Standard, $1.50/$0.075/$7.50 Flex), Gemini 4 Hydrogen ($1.50/$0.075/$7.50 Standard, $0.75/$0.0375/$3.75 Flex) and Gemini 3.5 Flash-Lite ($0.30/$0.03/$2.50 Standard) use permanent list rates; Gemini 3.5 Flash-Lite Flex is omitted due to upstream cached-input rounding differences ($0.02 vs $0.015). Promotional pricing applies through 2026-11-30 for Gemini 4 Carbon and Argon and through 2026-12-31 for Gemini 3.8 Flash.",
+      "GPT-6.2 Sol ($2.00/$0.10/$2.50/$10.00) and GPT-6.2 Astra ($8.00/$0.40/$10.00/$40.00) cover Standard and Priority (2x) tiers with >272K long-context rates on the API USD basis; neither model publishes a Flex tier.",
       "GPT-OSS 120B uses Google Cloud Vertex AI Model Garden partner pricing ($0.09 input, $0.36 output) with null cache read/write rates.",
     ],
     rules: [
@@ -353,6 +361,16 @@ export function buildPriceBook(): PriceBook {
         "gpt-6.1-terra",
         { input: "1", cacheRead: "0.05", output: "5" },
         { apiLongContext: 272000 },
+      ),
+      ...openaiTiered(
+        "gpt-6.2-sol",
+        { input: "2", cacheRead: "0.1", output: "10" },
+        { apiLongContext: 272000, flex: false },
+      ),
+      ...openaiTiered(
+        "gpt-6.2-astra",
+        { input: "8", cacheRead: "0.4", output: "40" },
+        { apiLongContext: 272000, flex: false },
       ),
 
       // OpenAI 图像系列
