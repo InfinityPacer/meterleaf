@@ -396,6 +396,58 @@ describe("quota-warmup task script", () => {
     expect(runCount).toBe(2);
   });
 
+  test("parseUsageBuckets treats a reset a full window ahead of the query as unopened", () => {
+    const nowSec = 2_000_000_000;
+    const iso = (sec: number) => new Date(sec * 1000).toISOString();
+    const parsed = parseUsageBuckets(
+      JSON.stringify({
+        status: "SUCCESS",
+        command: {
+          data: {
+            groups: [
+              {
+                buckets: [
+                  // 上游重置后无人使用：重置时间正好是查询时刻加整个窗口，且没有用量
+                  {
+                    id: "gemini-5h",
+                    remaining_fraction: 1,
+                    reset_time: iso(nowSec + 5 * 3600),
+                  },
+                  {
+                    id: "gemini-weekly",
+                    remaining_fraction: 1,
+                    reset_time: iso(nowSec + 7 * 86400),
+                  },
+                  // 已开窗 40 分钟、用量四舍五入后仍为 0：重置时间不再顺延，照实保留
+                  {
+                    id: "3p-weekly",
+                    remaining_fraction: 1,
+                    reset_time: iso(nowSec + 7 * 86400 - 2400),
+                  },
+                  // 已有用量的窗口即使刚开窗也照实保留
+                  {
+                    id: "3p-5h",
+                    remaining_fraction: 0.99,
+                    reset_time: iso(nowSec + 5 * 3600),
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+      nowSec,
+    );
+    expect(parsed).toBeInstanceOf(Map);
+    const rows = parsed as Map<string, string>;
+    expect(rows.get("gemini_5h")).toBe("gemini_5h\t0\t0");
+    expect(rows.get("gemini_weekly")).toBe("gemini_weekly\t0\t0");
+    expect(rows.get("3p_weekly")).toBe(
+      `3p_weekly\t0\t${nowSec + 7 * 86400 - 2400}`,
+    );
+    expect(rows.get("3p_5h")).toBe(`3p_5h\t1\t${nowSec + 5 * 3600}`);
+  });
+
   test("parseUsageBuckets and readAgyQuotaTsv preserve unopened 0/0 windows while rejecting invalid rows", () => {
     const sb = createSandbox();
     const futureIso = "2027-01-20T00:00:00.000Z";
@@ -859,6 +911,102 @@ describe("quota-warmup task script", () => {
     });
     expect(atJitter.refreshedAgyAccounts).toEqual(["bob"]);
     expect(calls).toHaveLength(callsAfterFirst + 1);
+  });
+
+  test("warms up a window the read-only /usage reports as a full window from the query time", async () => {
+    const sb = createSandbox();
+    const nowSec = 1_800_000_000;
+    const staleMtime = new Date(
+      (nowSec - DEFAULT_USAGE_REFRESH_MAX_MINUTES * 60 - 60) * 1000,
+    );
+    const newWeekSec = nowSec + 604_800;
+    const aliceQuota = join(sb.statuslineDir, "quota-alice.tsv");
+    writeFileSync(
+      aliceQuota,
+      `gemini_weekly\t40\t${nowSec + 259_200}\n3p_weekly\t30\t${nowSec + 259_200}\n`,
+    );
+    utimesSync(aliceQuota, staleMtime, staleMtime);
+    const bobQuota = join(sb.statuslineDir, "quota-bob.tsv");
+    writeFileSync(bobQuota, `gemini_weekly\t20\t${nowSec + 259_200}\n`);
+    const freshMtime = new Date((nowSec - 60) * 1000);
+    utimesSync(bobQuota, freshMtime, freshMtime);
+
+    let warmed = false;
+    const runner: CommandRunner = async (argv) => {
+      if (!argv.includes("/usage")) {
+        warmed = true;
+        return { exitCode: 0, stdout: "ok\n", logText: "" };
+      }
+      // 上游提前重置后无人使用：巡检时重置时间是「查询时刻 + 7 天」；预热后是新周期的真实重置时间。
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          status: "SUCCESS",
+          command: {
+            data: {
+              groups: [
+                {
+                  buckets: [
+                    {
+                      id: "gemini-weekly",
+                      remaining_fraction: 1,
+                      reset_time: new Date(newWeekSec * 1000).toISOString(),
+                    },
+                    {
+                      id: "3p-weekly",
+                      remaining_fraction: 0.7,
+                      reset_time: new Date(
+                        (nowSec + 259_200) * 1000,
+                      ).toISOString(),
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        }),
+        logText: "",
+      };
+    };
+
+    const report = await runWarmup(sb.env, {
+      now: () => new Date(nowSec * 1000),
+      random: () => 0,
+      runner,
+    });
+    expect(warmed).toBe(true);
+    expect(report.actions).toHaveLength(1);
+    expect(report.actions[0]).toMatchObject({
+      key: "agy:alice:gemini",
+      windows: ["gemini_weekly"],
+      resetEpoch: 0,
+      succeeded: true,
+      refreshedQuota: true,
+    });
+    expect(readFileSync(aliceQuota, "utf8")).toContain(
+      `gemini_weekly\t0\t${newWeekSec}`,
+    );
+
+    // 预热开窗后重置时间固定下来，下一次巡检（60 分钟后）不再判为未开窗，也不再预热。
+    warmed = false;
+    const laterSec = nowSec + 60 * 60;
+    const laterStale = new Date(
+      (laterSec - DEFAULT_USAGE_REFRESH_MAX_MINUTES * 60 - 60) * 1000,
+    );
+    utimesSync(aliceQuota, laterStale, laterStale);
+    utimesSync(
+      bobQuota,
+      new Date((laterSec - 60) * 1000),
+      new Date((laterSec - 60) * 1000),
+    );
+    const later = await runWarmup(sb.env, {
+      now: () => new Date(laterSec * 1000),
+      random: () => 0,
+      runner,
+    });
+    expect(later.refreshedAgyAccounts).toEqual(["bob"]);
+    expect(later.actions).toHaveLength(0);
+    expect(warmed).toBe(false);
   });
 
   test("backs off failed /usage refresh with custom jitter range and migrates legacy usageRefreshAt state", async () => {
