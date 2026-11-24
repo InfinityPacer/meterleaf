@@ -96,7 +96,11 @@ function taskEnvironment(
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   env.METERLEAF_TASK_NAME = task.name;
   env.METERLEAF_TASK_STATE_DIR = stateDir;
-  env.METERLEAF_CLAUDE_CONFIG_DIRS = claudeConfigDirs.join("\n");
+  // 无损 JSON 数组可精确传递含换行符等特殊字符的路径；旧按行分隔变量过滤掉含换行路径，防止被拆成其他目录。
+  env.METERLEAF_CLAUDE_CONFIG_DIRS_JSON = JSON.stringify(claudeConfigDirs);
+  env.METERLEAF_CLAUDE_CONFIG_DIRS = claudeConfigDirs
+    .filter((dir) => !/[\r\n]/.test(dir))
+    .join("\n");
   return env;
 }
 

@@ -13,7 +13,11 @@ import {
 } from "./claude-code/account";
 import type { QuotaSnapshot } from "./claude-code/quota";
 import type { UsageFact } from "./claude-code/usage";
-import { routeModel, type ModelAccountRule } from "./model-accounts";
+import {
+  modelAccountsDigest,
+  routeModel,
+  type ModelAccountRule,
+} from "./model-accounts";
 import type { SourceName } from "./sources";
 
 /**
@@ -61,6 +65,7 @@ interface EventRow {
   total: number;
   account: string;
   observation: string;
+  attribution: string | null;
 }
 
 const schema = `
@@ -77,7 +82,8 @@ CREATE TABLE IF NOT EXISTS events (
   occurred_at TEXT NOT NULL,
   total INTEGER NOT NULL,
   account TEXT NOT NULL,
-  observation TEXT NOT NULL
+  observation TEXT NOT NULL,
+  attribution TEXT
 );
 CREATE INDEX IF NOT EXISTS events_occurred_at ON events (occurred_at);
 CREATE TABLE IF NOT EXISTS timeline (
@@ -186,6 +192,22 @@ export class CollectorState {
       this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
     }
     this.db.exec(schema);
+    this.ensureEventsAttributionColumn();
+  }
+
+  /** 兼容旧版 state.sqlite：若 events 表缺少 attribution 列，在写事务内二次确认后幂等补列，避免多进程并发打开旧库竞争 DDL。 */
+  private ensureEventsAttributionColumn() {
+    const hasColumn = () =>
+      this.db
+        .query<{ name: string }, []>("PRAGMA table_info(events)")
+        .all()
+        .some((col) => col.name === "attribution");
+    if (hasColumn()) return;
+    this.write(() => {
+      if (!hasColumn()) {
+        this.db.exec("ALTER TABLE events ADD COLUMN attribution TEXT;");
+      }
+    });
   }
 
   close() {
@@ -246,6 +268,10 @@ export class CollectorState {
         "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
       )
       .run(key, value);
+  }
+
+  deleteMeta(key: string) {
+    this.db.query("DELETE FROM meta WHERE key = ?").run(key);
   }
 
   metaByPrefix(prefix: string): { key: string; value: string }[] {
@@ -706,7 +732,7 @@ export class CollectorState {
   private mergeObservation(observation: FileObservation): boolean {
     const existing = this.db
       .query<EventRow, [string]>(
-        "SELECT key, occurred_at, total, account, observation FROM events WHERE key = ?",
+        "SELECT key, occurred_at, total, account, observation, attribution FROM events WHERE key = ?",
       )
       .get(observation.key);
     const serialized = JSON.stringify(observation.fact);
@@ -717,7 +743,7 @@ export class CollectorState {
       );
       this.db
         .query(
-          "INSERT INTO events (key, occurred_at, total, account, observation) VALUES (?, ?, ?, ?, ?)",
+          "INSERT INTO events (key, occurred_at, total, account, observation, attribution) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .run(
           observation.key,
@@ -725,6 +751,7 @@ export class CollectorState {
           observation.total,
           account,
           serialized,
+          attribution,
         );
       if (observation.total > 0) {
         this.enqueueUsage(
@@ -1201,33 +1228,181 @@ export class CollectorState {
     this.bindingCache = binding;
   }
 
-  /** 按当前时间线重新计算归属；归属变化的非零事件重新进入待发送。since 为 null 时处理全部事件。 */
-  reattribute(since: string | null): number {
+  /**
+   * 清理默认目录的登录时间线、登录线索与历史绑定；切换到仅采集指定账号目录时使用。
+   * 清理前一次性将旧版库中尚未评估（attribution IS NULL）的既有事件归类到闭集 {'model', 'timeline', 'unknown'}：
+   * 1. 尚存待发送队列（outbox）时，载荷的 metadata.attribution（且账户匹配）为决定性依据；
+   * 2. 非 claude- 模型必属模型归属；未归属事件记为 timeline；
+   * 3. 当时时间线/绑定/登录线索无法解释当前账户时，必属模型归属；
+   * 4. v1/v2 旧库无自定义模型规则，或 v3 旧库的模型规则集与当前一致时，可决定性区分；
+   * 5. 其余已推送且缺乏决定性来源的旧行标为 'unknown'（与未评估 NULL 区分，也不伪造 'timeline'），
+   *    避免后续轮次基于已清空的时间线重复推断并误判为 'model'。
+   */
+  clearDefaultTimeline() {
+    this.write(() => {
+      const segments = this.segments();
+      const binding = this.binding();
+      const hints = this.loginHints();
+      const legacyRows = this.db
+        .query<
+          {
+            key: string;
+            occurred_at: string;
+            account: string;
+            observation: string;
+          },
+          []
+        >(
+          "SELECT key, occurred_at, account, observation FROM events WHERE attribution IS NULL",
+        )
+        .all();
+      if (legacyRows.length > 0) {
+        const pendingAttribution = new Map<
+          string,
+          { account: string; attribution: "model" | "timeline" }
+        >();
+        for (const row of this.db
+          .query<{ item_id: string; payload: string }, []>(
+            "SELECT item_id, payload FROM outbox WHERE kind = 'usage'",
+          )
+          .all()) {
+          try {
+            const parsed = JSON.parse(row.payload) as {
+              accountExternalId?: unknown;
+              metadata?: { attribution?: unknown };
+            };
+            const attr = parsed?.metadata?.attribution;
+            if (
+              typeof parsed?.accountExternalId === "string" &&
+              (attr === "model" || attr === "timeline")
+            ) {
+              pendingAttribution.set(row.item_id, {
+                account: parsed.accountExternalId,
+                attribution: attr,
+              });
+            }
+          } catch {
+            // 忽略格式异常的待发送载荷。
+          }
+        }
+        const rulesMeta = this.getMeta("attribution_rules");
+        const legacyWithoutModelRules = rulesMeta === "1" || rulesMeta === "2";
+        const rulesUnchanged =
+          rulesMeta === `3:${modelAccountsDigest(this.modelAccounts)}`;
+        const mark = this.db.query(
+          "UPDATE events SET attribution = ? WHERE key = ?",
+        );
+        for (const row of legacyRows) {
+          const fact = JSON.parse(row.observation) as UsageFact;
+          const fromOutbox = pendingAttribution.get(fact.externalId);
+          if (fromOutbox && fromOutbox.account === row.account) {
+            mark.run(fromOutbox.attribution, row.key);
+            continue;
+          }
+          if (!fact.model.startsWith("claude-")) {
+            mark.run("model", row.key);
+            continue;
+          }
+          if (row.account === UNATTRIBUTED_ACCOUNT_ID) {
+            mark.run("timeline", row.key);
+            continue;
+          }
+          const byTimeline = attribute(
+            row.occurred_at,
+            segments,
+            binding,
+            hints,
+          );
+          if (byTimeline !== row.account) {
+            mark.run("model", row.key);
+            continue;
+          }
+          if (legacyWithoutModelRules) {
+            mark.run("timeline", row.key);
+            continue;
+          }
+          if (rulesUnchanged) {
+            const routed = routeModel(fact.model, this.modelAccounts);
+            if (routed?.externalId === row.account) {
+              mark.run("model", row.key);
+              continue;
+            }
+            if (routed === null) {
+              mark.run("timeline", row.key);
+              continue;
+            }
+          }
+          mark.run("unknown", row.key);
+        }
+      }
+      this.db.query("DELETE FROM timeline").run();
+      this.db.query("DELETE FROM login_hints").run();
+      this.deleteMeta("history_binding");
+    });
+    this.segmentCache = null;
+    this.hintCache = null;
+    this.bindingCache = null;
+  }
+
+  /**
+   * 按当前时间线与模型映射重新计算归属；归属变化的非零事件重新进入待发送。since 为 null 时处理全部事件。
+   * preserveTimelineAttribution 为 true 时（仅采集多账户目录、已清空默认时间线）：
+   * - 命中当前模型规则的事件归属新规则（attribution = 'model'）；
+   * - 已确认为模型归属（attribution = 'model'）且规则已移除的事件回退到 unattributed 并替换待发送项；
+   * - 确认为时间线归属（attribution = 'timeline'）以及已评估但缺乏决定性来源的旧行
+   *   （attribution = 'unknown'，持续保持 'unknown' 不伪造 'timeline' 也不误标 'model'）维持原有历史账户归属。
+   */
+  reattribute(
+    since: string | null,
+    options: { preserveTimelineAttribution?: boolean } = {},
+  ): number {
     const rows =
       since === null
         ? this.db
             .query<EventRow, []>(
-              "SELECT key, occurred_at, total, account, observation FROM events",
+              "SELECT key, occurred_at, total, account, observation, attribution FROM events",
             )
             .all()
         : this.db
             .query<EventRow, [string]>(
-              "SELECT key, occurred_at, total, account, observation FROM events WHERE occurred_at >= ?",
+              "SELECT key, occurred_at, total, account, observation, attribution FROM events WHERE occurred_at >= ?",
             )
             .all(since);
     let changed = 0;
     this.write(() => {
       for (const row of rows) {
         const fact = JSON.parse(row.observation) as UsageFact;
-        const { account, attribution } = this.accountFor(
-          fact.model,
-          row.occurred_at,
-        );
-        if (account === row.account) continue;
+        const routed = routeModel(fact.model, this.modelAccounts);
+        let account: string;
+        let attribution: "model" | "timeline";
+        if (routed) {
+          this.upsertAccount(routed);
+          account = routed.externalId;
+          attribution = "model";
+        } else if (options.preserveTimelineAttribution) {
+          if (
+            row.account !== UNATTRIBUTED_ACCOUNT_ID &&
+            row.attribution !== "model"
+          ) {
+            continue;
+          }
+          account = UNATTRIBUTED_ACCOUNT_ID;
+          attribution = "timeline";
+        } else {
+          account = attribute(
+            row.occurred_at,
+            this.segments(),
+            this.binding(),
+            this.loginHints(),
+          );
+          attribution = "timeline";
+        }
+        if (account === row.account && row.attribution === attribution)
+          continue;
         this.db
-          .query("UPDATE events SET account = ? WHERE key = ?")
-          .run(account, row.key);
-        if (row.total > 0) {
+          .query("UPDATE events SET account = ?, attribution = ? WHERE key = ?")
+          .run(account, attribution, row.key);
+        if (account !== row.account && row.total > 0) {
           this.enqueueUsage(fact, row.occurred_at, account, attribution);
           changed += 1;
         }

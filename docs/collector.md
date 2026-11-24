@@ -162,6 +162,19 @@ meterleaf-collector claude-profiles \
 
 额外账户的 `projects` 通常是指回 `~/.claude/projects` 的软链接，采集器仍然只扫描默认目录。会话被拆到独立的 `projects` 目录时，这部分会话目前不会被采集。
 
+如果所有 Claude 订阅账户都统一放在同一个目录下（例如 `~/.claude-config/<账号目录>`），而不再使用默认 `~/.claude` 账户，可以在采集器 `config.json` 中配置 `claude.profilesDir` 与可选的 `claude.statuslineCacheDir`：
+
+```json
+{
+  "claude": {
+    "profilesDir": "/Users/you/.claude-config",
+    "statuslineCacheDir": "/Users/you/.cache/claude-statusline"
+  }
+}
+```
+
+配置后，采集器只动态扫描 `profilesDir` 下非软链接且含普通文件 `.claude.json` 的直接子目录（忽略隐藏项与含 `bak` / `backup` 的备份目录），按子目录名自动匹配 `<statuslineCacheDir>/<目录名>.tsv` 状态栏缓存，并扫描这些目录各自的 `projects`（软链接到同一目录时按真实路径去重）。默认 `~/.claude` / `~/.claude.json` 及目录外的其他账户不再采集，目录成功完整枚举后会自动清理已移出目录的遗留状态，目录暂时不可读时保留既有状态避免误删。
+
 ### 开启 OTEL 导出
 
 推荐让 Claude Code 把日志发给这台电脑上的采集器中转。`install-launchd` 会同时启动一个只监听 `127.0.0.1:4319` 的常驻进程，它把日志写进采集器的本机待发送队列，每分钟的同步再把这些记录和用量一起推送到 Meterleaf。服务端或网络暂时不可用时记录留在本机，恢复后自动补发。队列最多保留最近 5 万条，长期连不上时更早的记录会被丢弃，这些请求退回按登录时间线归属，日志里会有提示。
