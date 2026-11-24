@@ -366,6 +366,50 @@ describe("shared ledger view", () => {
         query({ sort: "cacheRate", desc: false, pageSize: 4 }),
       ).records.map((row) => row.id),
     ).toEqual(["rate-null", "rate-zero-input", "rate-low", "rate-high"]);
+
+    const timingDetails = (
+      durationMs: number | null,
+      firstTokenMs: number | null = null,
+    ) => ({
+      requestedModel: "model-a",
+      sentModel: "model-a",
+      responseModel: null,
+      responseModelMismatch: null,
+      requestedReasoningEffort: null,
+      reasoningEffort: null,
+      durationMs,
+      firstTokenMs,
+    });
+    const durationSource = snapshot([
+      record("dur-fast", { details: timingDetails(850, 200) }),
+      record("dur-slow", { details: timingDetails(12_346, 6_727) }),
+      record("dur-zero", { details: timingDetails(0, 0) }),
+      record("dur-null", { details: timingDetails(null, null) }),
+    ]);
+    expect(
+      createLedgerView(
+        durationSource,
+        query({ sort: "durationMs", desc: true, pageSize: 4 }),
+      ).records.map((row) => row.id),
+    ).toEqual(["dur-slow", "dur-fast", "dur-zero", "dur-null"]);
+    expect(
+      createLedgerView(
+        durationSource,
+        query({ sort: "durationMs", desc: false, pageSize: 4 }),
+      ).records.map((row) => row.id),
+    ).toEqual(["dur-null", "dur-zero", "dur-fast", "dur-slow"]);
+    expect(
+      createLedgerView(
+        durationSource,
+        query({ sort: "firstTokenMs", desc: true, pageSize: 4 }),
+      ).records.map((row) => row.id),
+    ).toEqual(["dur-slow", "dur-fast", "dur-zero", "dur-null"]);
+    expect(
+      createLedgerView(
+        durationSource,
+        query({ sort: "firstTokenMs", desc: false, pageSize: 4 }),
+      ).records.map((row) => row.id),
+    ).toEqual(["dur-null", "dur-zero", "dur-fast", "dur-slow"]);
   });
 
   test("aggregates current account usage independently of pages and keeps known empty accounts", () => {

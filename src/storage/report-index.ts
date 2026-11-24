@@ -31,6 +31,8 @@ const SORT_KEYS = new Set([
   "cacheRead",
   "cacheRate",
   "output",
+  "firstTokenMs",
+  "durationMs",
   "usd",
 ]);
 
@@ -813,6 +815,10 @@ const RECORD_INDEXES = `
     ON report_records (cache_rate ASC, id ASC, occurred_ms);
   CREATE INDEX IF NOT EXISTS report_records_page_output
     ON report_records (output ASC, id ASC, occurred_ms);
+  CREATE INDEX IF NOT EXISTS report_records_page_first_token
+    ON report_records (first_token_ms ASC, id ASC, occurred_ms);
+  CREATE INDEX IF NOT EXISTS report_records_page_duration
+    ON report_records (duration_ms ASC, id ASC, occurred_ms);
   CREATE INDEX IF NOT EXISTS report_records_page_subscription_usd
     ON report_records (subscription_sort ASC, id ASC, occurred_ms);
   CREATE INDEX IF NOT EXISTS report_records_page_api_usd
@@ -952,6 +958,10 @@ export class ReportIndex {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS report_records_page_cache_rate
         ON report_records (cache_rate ASC, id ASC, occurred_ms);
+      CREATE INDEX IF NOT EXISTS report_records_page_first_token
+        ON report_records (first_token_ms ASC, id ASC, occurred_ms);
+      CREATE INDEX IF NOT EXISTS report_records_page_duration
+        ON report_records (duration_ms ASC, id ASC, occurred_ms);
     `);
     addMissing("report_hours", [
       ["duration_sum", "REAL NOT NULL DEFAULT 0"],
@@ -1784,15 +1794,25 @@ export class ReportIndex {
                         column: "r.output",
                         index: "report_records_page_output",
                       }
-                    : basis === "api"
+                    : requestedSort === "firstTokenMs"
                       ? {
-                          column: "r.api_sort",
-                          index: "report_records_page_api_usd",
+                          column: "r.first_token_ms",
+                          index: "report_records_page_first_token",
                         }
-                      : {
-                          column: "r.subscription_sort",
-                          index: "report_records_page_subscription_usd",
-                        };
+                      : requestedSort === "durationMs"
+                        ? {
+                            column: "r.duration_ms",
+                            index: "report_records_page_duration",
+                          }
+                        : basis === "api"
+                          ? {
+                              column: "r.api_sort",
+                              index: "report_records_page_api_usd",
+                            }
+                          : {
+                              column: "r.subscription_sort",
+                              index: "report_records_page_subscription_usd",
+                            };
     // 同值记录按 id 与排序方向一致排列，降序正好是升序索引的倒序扫描。
     const direction = descending ? "DESC" : "ASC";
     const rows = this.db

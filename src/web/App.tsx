@@ -85,7 +85,10 @@ import {
   readPreference,
   usePreference,
   useScopedPreference,
+  type LedgerColumnOverrides,
+  type LedgerPageSize,
 } from "./lib/preferences";
+import { emptyLedgerColumnOverrides } from "./lib/ledger-columns";
 import { accountFilterOptions } from "./lib/account-filter";
 import {
   isEmptyAccount,
@@ -105,6 +108,7 @@ import {
   amount,
   cacheHitRate,
   compact,
+  formatLatencyMs,
   formatPercent,
   formatTps,
   localTime,
@@ -770,6 +774,17 @@ export function App() {
     if (mobile) setMobileOpen(false);
   }, [mobile]);
   const [recordPage, setRecordPage] = useState(0);
+  const [recordPageSize, setRecordPageSize] = usePreference<LedgerPageSize>(
+    "ledger-page-size",
+    prefs.ledgerPageSize,
+    12,
+  );
+  const [ledgerColumnOverrides, setLedgerColumnOverrides] =
+    usePreference<LedgerColumnOverrides>(
+      "ledger-column-overrides",
+      prefs.ledgerColumnOverrides,
+      emptyLedgerColumnOverrides,
+    );
   const [recordSort, setRecordSort] = useScopedPreference<{
     id: string;
     desc: boolean;
@@ -803,7 +818,7 @@ export function App() {
     // 总览只需要分组合计来求 Tokens 构成，按模型分组的行数最少。
     dimension: page === "overview" ? "model" : reportDimension,
     page: page === "overview" ? 0 : recordPage,
-    pageSize: page === "overview" ? 1 : 12,
+    pageSize: page === "overview" ? 1 : recordPageSize,
     sort: recordSort.id,
     desc: recordSort.desc,
   };
@@ -1923,12 +1938,27 @@ export function App() {
                   records={records}
                   total={view?.count ?? 0}
                   pageIndex={view?.page ?? 0}
+                  pageSize={recordPageSize}
                   onPage={changeRecordPage}
+                  onPageSize={(next) => {
+                    setRecordPage(0);
+                    setRecordPageSize(next);
+                  }}
                   sorting={recordSort}
                   onSorting={(next) => {
                     setRecordPage(0);
                     setRecordSort(next);
                   }}
+                  columnOverrides={ledgerColumnOverrides}
+                  onColumnOverrides={setLedgerColumnOverrides}
+                  hasActiveFilters={
+                    filter.account !== "all" ||
+                    filter.model !== "all" ||
+                    Boolean(filter.search) ||
+                    Boolean(filter.dateRange) ||
+                    Boolean(filter.all)
+                  }
+                  onResetFilters={() => setFilter(initialFilter)}
                   accounts={snapshot.accounts}
                   compactView={false}
                   search={filter.search}
@@ -2147,16 +2177,14 @@ export function App() {
                       <>
                         <dt>首 Token 延迟</dt>
                         <dd>
-                          {selected.details.firstTokenMs.toLocaleString()} ms
+                          {formatLatencyMs(selected.details.firstTokenMs)}
                         </dd>
                       </>
                     )}
                     {selected.details.durationMs !== null && (
                       <>
                         <dt>总耗时</dt>
-                        <dd>
-                          {selected.details.durationMs.toLocaleString()} ms
-                        </dd>
+                        <dd>{formatLatencyMs(selected.details.durationMs)}</dd>
                       </>
                     )}
                     {(() => {
