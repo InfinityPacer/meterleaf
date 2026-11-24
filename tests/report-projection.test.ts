@@ -500,3 +500,49 @@ test("an index file from the previous format rebuilds once without its descendin
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a format-3 index file rebuilds once to populate cache_rate sorting", () => {
+  const { dir, path, cache, store, save } = setup();
+  let projection = new ReportProjection(store, path, cache);
+  try {
+    save([
+      {
+        ...fact("low", 90),
+        tokens: { ...fact("low", 90).tokens, input: 90, cacheRead: 10 },
+      },
+      {
+        ...fact("high", 10),
+        tokens: { ...fact("high", 10).tokens, input: 10, cacheRead: 90 },
+      },
+    ]);
+    projection.ensure();
+    // 模拟格式 3 索引：清空 cache_rate 并降级检查点版本。
+    projection.index.db.exec("UPDATE report_records SET cache_rate = NULL");
+    const row = projection.index.db
+      .query<{ payload: string }, []>(
+        "SELECT payload FROM projection_checkpoint WHERE id=1",
+      )
+      .get()!;
+    projection.index.db
+      .query("UPDATE projection_checkpoint SET payload=? WHERE id=1")
+      .run(JSON.stringify({ ...JSON.parse(row.payload), format: 3 }));
+    projection.close();
+
+    projection = new ReportProjection(store, path, cache);
+    expect(projection.rebuildNeeded()).toEqual({
+      kind: "same-source",
+      reason: "format",
+    });
+    expect(projection.ensure()).toBe(true);
+    expect(
+      projection.index
+        .read(meta, { ...query, sort: "cacheRate", desc: true })
+        .records.map((record) => record.id),
+    ).toEqual(["test:high", "test:low"]);
+    expect(projection.rebuildNeeded().kind).toBe("none");
+  } finally {
+    projection.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

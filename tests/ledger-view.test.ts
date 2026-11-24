@@ -347,13 +347,56 @@ describe("shared ledger view", () => {
       "unknown-input",
       "high-input",
     ]);
+
+    const cacheRateSource = snapshot([
+      record("rate-low", { input: 90, cacheRead: 10, cacheWrite: 0 }),
+      record("rate-high", { input: 10, cacheRead: 90, cacheWrite: 0 }),
+      record("rate-zero-input", { input: 0, cacheRead: 0, cacheWrite: 0 }),
+      record("rate-null", { input: 10, cacheRead: 90, cacheWrite: null }),
+    ]);
+    expect(
+      createLedgerView(
+        cacheRateSource,
+        query({ sort: "cacheRate", desc: true, pageSize: 4 }),
+      ).records.map((row) => row.id),
+    ).toEqual(["rate-high", "rate-low", "rate-zero-input", "rate-null"]);
+    expect(
+      createLedgerView(
+        cacheRateSource,
+        query({ sort: "cacheRate", desc: false, pageSize: 4 }),
+      ).records.map((row) => row.id),
+    ).toEqual(["rate-null", "rate-zero-input", "rate-low", "rate-high"]);
   });
 
   test("aggregates current account usage independently of pages and keeps known empty accounts", () => {
     const accounts = [
-      { id: "account-a", name: "A", plan: "", kind: "unknown" as const, sampledAt: null, fiveHour: null, sevenDay: null },
-      { id: "account-b", name: "B", plan: "", kind: "unknown" as const, sampledAt: null, fiveHour: null, sevenDay: null },
-      { id: "account-c", name: "C", plan: "", kind: "unknown" as const, sampledAt: null, fiveHour: null, sevenDay: null },
+      {
+        id: "account-a",
+        name: "A",
+        plan: "",
+        kind: "unknown" as const,
+        sampledAt: null,
+        fiveHour: null,
+        sevenDay: null,
+      },
+      {
+        id: "account-b",
+        name: "B",
+        plan: "",
+        kind: "unknown" as const,
+        sampledAt: null,
+        fiveHour: null,
+        sevenDay: null,
+      },
+      {
+        id: "account-c",
+        name: "C",
+        plan: "",
+        kind: "unknown" as const,
+        sampledAt: null,
+        fiveHour: null,
+        sevenDay: null,
+      },
     ];
     const source = snapshot(
       [

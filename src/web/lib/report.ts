@@ -150,6 +150,26 @@ export function isKnownNumber(value: number | null): value is number {
   return value !== null && Number.isFinite(value);
 }
 
+/** 命中率 = 缓存读取 ÷ 输入侧三个桶；任一桶未知或输入总量为 0 时返回 null。 */
+export function cacheHitRate(
+  row: Pick<LedgerRecord, "input" | "cacheRead" | "cacheWrite">,
+): number | null {
+  if (
+    !isKnownNumber(row.input) ||
+    !isKnownNumber(row.cacheRead) ||
+    !isKnownNumber(row.cacheWrite)
+  )
+    return null;
+  const total = row.input + row.cacheRead + row.cacheWrite;
+  return total > 0 ? (row.cacheRead / total) * 100 : null;
+}
+
+export function formatPercent(value: number | null): string {
+  return value === null || !Number.isFinite(value)
+    ? "N/A"
+    : `${value.toFixed(1)}%`;
+}
+
 /** 颜色按模型名称稳定分配，未知模型也必须有可见的图例颜色。 */
 export function modelColor(model: string) {
   const known = modelColors[model];
