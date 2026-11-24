@@ -1173,12 +1173,46 @@
   }
 
   .app-shell .request-section .request-table-scroll table {
-    min-width: 1020px;
+    width: 100%;
+  }
+
+  .app-shell
+    .request-section[data-width-tier="xl"]
+    .request-table-scroll
+    :is(th, td):not([data-column-id="open"]) {
+    padding-inline: 9px;
+  }
+  .app-shell
+    .request-section[data-width-tier="l"]
+    .request-table-scroll
+    :is(th, td):not([data-column-id="open"]) {
+    padding-inline: 6px;
+  }
+  .app-shell
+    .request-section:is(
+      [data-width-tier="m"],
+      [data-width-tier="s"],
+      [data-width-tier="sm"],
+      [data-width-tier="xs"]
+    )
+    .request-table-scroll
+    :is(th, td):not([data-column-id="open"]) {
+    padding-inline: 5px;
+  }
+  .app-shell
+    .request-section
+    .request-table-scroll
+    :is(th, td)[data-column-id="open"] {
+    width: 36px;
+    min-width: 36px;
+    max-width: 36px;
+    padding-inline: 4px;
   }
 
   .app-shell .request-section .request-table-scroll td {
     height: 52px;
     font-size: 14px;
+    white-space: nowrap;
   }
   .app-shell .request-section .model-label {
     font-size: 14px;
@@ -1186,6 +1220,7 @@
   .app-shell .request-section .request-table-scroll th {
     height: 36px;
     font-size: 12px;
+    white-space: nowrap;
   }
 
   .app-shell .request-section .time-cell {
@@ -1210,12 +1245,29 @@
   .app-shell .ledger-page-total {
     display: inline;
   }
-  .app-shell .pagination > div > button {
+  .app-shell .pagination > div:not(.ledger-page-meta) > button {
     width: 36px;
     height: 36px;
     min-width: 36px;
     min-height: 36px;
     border-radius: var(--radius-sm);
+  }
+  .app-shell .ledger-page-size .filter-select-trigger {
+    border-color: var(--desktop-line);
+    background: var(--desktop-panel);
+    color: var(--desktop-ink);
+  }
+  .app-shell .ledger-columns-trigger {
+    min-height: var(--control-height);
+    height: var(--control-height);
+    border-color: var(--desktop-line);
+    background: var(--desktop-panel);
+    color: var(--desktop-ink);
+  }
+  .ledger-columns-menu [role="menuitemcheckbox"],
+  .ledger-columns-menu [role="menuitem"] {
+    min-height: 34px;
+    padding-block: 5px;
   }
   .app-shell .ledger-page-numbers {
     display: flex;
@@ -1257,6 +1309,65 @@
   }
 }
 
+/* 桌面端请求明细锁定在单一视口工作区：外层零垂直滚动，表格区成为唯一滚动容器，表头与分页常驻可见。 */
+@media (min-width: 901px) and (min-height: 620px) {
+  .app-shell[data-page="ledger"] {
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .app-shell[data-page="ledger"] .main-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
+  }
+  .app-shell[data-page="ledger"] .topbar {
+    flex: none;
+  }
+  .app-shell[data-page="ledger"] main {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: 20px;
+  }
+  .app-shell[data-page="ledger"] main > :not(.request-section) {
+    flex: none;
+  }
+  .app-shell[data-page="ledger"] .request-section {
+    flex: 0 1 auto;
+    min-height: 0;
+    margin-bottom: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .app-shell[data-page="ledger"] .request-section > .section-heading,
+  .app-shell[data-page="ledger"] .request-section > .pagination {
+    flex: none;
+  }
+  .app-shell[data-page="ledger"] .request-table-scroll {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow: auto;
+    scroll-padding-top: 40px;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--desktop-muted) 42%, transparent)
+      transparent;
+  }
+  .app-shell[data-page="ledger"] .request-table-scroll thead {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  .app-shell[data-page="ledger"]
+    .request-table-scroll[data-overflow="true"]
+    thead
+    :is(th:first-child, th[data-column-id="usd"], th[data-column-id="open"]) {
+    background: color-mix(in srgb, var(--soft) 45%, var(--desktop-panel));
+  }
+}
+
 /* 总览将同一时段的筛选、指标和趋势排在左侧，模型占比跨行保持完整。 */
 @media (min-width: 1350px) {
   .app-shell[data-page="ledger"] main {
@@ -1275,16 +1386,6 @@
   .app-shell[data-page="ledger"] .request-section .search-control input {
     min-width: 0;
     width: 100%;
-  }
-  .app-shell[data-page="ledger"] .request-table-scroll {
-    max-height: max(360px, calc(100dvh - 400px));
-    overflow-y: auto;
-    scroll-padding-top: 54px;
-  }
-  .app-shell[data-page="ledger"] .request-table-scroll thead {
-    position: sticky;
-    top: 0;
-    z-index: 1;
   }
   /* 圆环旁直接放明细表；图例与表格的模型、占比完全重复，宽屏不再单列。 */
   .app-shell .model-distribution-layout {
