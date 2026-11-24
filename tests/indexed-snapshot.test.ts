@@ -371,7 +371,8 @@ test("same-cycle estimates isolate the latest source, account, window and durati
 });
 
 test("a new cycle or percent rollback estimates only its current monotonic segment", () => {
-  const history = quotaHistory().map((sample, index) => ({
+  // 本周期用到 12% 后完全按本周期估算，提前重置的上一周期即使可借也不影响结果。
+  const history = quotaHistory("seven-day", 6).map((sample, index) => ({
     ...sample,
     fact: {
       ...sample.fact,
@@ -389,7 +390,8 @@ test("a new cycle or percent rollback estimates only its current monotonic segme
       resetsAt: "2026-09-14T00:00:00.000Z",
     }),
   );
-  expect(fullWeekEstimate(baseline)).toBe("5");
+  // 每 6% 花 0.25，整周期为 0.25 / 6 × 100。
+  expect(fullWeekEstimate(baseline)).toBe("4.166666666667");
   const beforeRollback = priorCycle.map((sample, index) => ({
     ...sample,
     fact: {
@@ -477,7 +479,7 @@ test("real indexed and row snapshots agree on multi-point weekly and Fable estim
   }
 });
 
-test("previous weekly estimate stabilizes early usage and yields gradually to the current period", () => {
+test("previous weekly estimate covers the first 2% and yields linearly to the current period by 12%", () => {
   const previous = [0, 10, 20].map((percent, index) =>
     quota("seven-day", percent, {
       sampledAt: `2026-09-01T0${index}:00:00.000Z`,
@@ -499,10 +501,11 @@ test("previous weekly estimate stabilizes early usage and yields gradually to th
       credits: String(percent! * factor * 10),
     };
   };
+  // 上一周期每 1% 为 1，本周期为 2；2% 以后每个百分点本周期权重加 10%，粗估同样参与。
   for (const [count, expected, method] of [
     [1, "100", "previous-period"],
-    [2, "100", "previous-period"],
-    [3, "125", "blended"],
+    [2, "140", "blended"],
+    [3, "190", "blended"],
     [4, "200", "segments"],
   ] as const) {
     const result = quotaView(
@@ -538,7 +541,8 @@ test("historical fallback never crosses sources or reuses a distant or too-small
     { accountExternalId: "other" },
     { window: "seven-day-fable" as const },
     { windowMinutes: 9000 },
-    { percent: 9 },
+    // 上一周期至少用到 5% 才可参考。
+    { percent: 4 },
     {
       sampledAt: "2026-08-24T12:00:00.000Z",
       resetsAt: "2026-08-31T00:00:00.000Z",
@@ -624,14 +628,15 @@ test("row and indexed snapshots read the previous cycle outside the selected rep
   }
 });
 
-test("historical reference is not pulled toward noisy rough usage before multi-segment evidence", () => {
+test("rough current usage stays out within 2% and takes over by 12% without multi-segment evidence", () => {
   const previous = [0, 10, 20].map((percent, index) =>
     quota("seven-day", percent, {
       sampledAt: `2026-09-01T0${index}:00:00.000Z`,
       resetsAt: "2026-09-08T00:00:00.000Z",
     }),
   );
-  const current = [1, 6, 11].map((percent, index) =>
+  // 稀疏读数只有两个跨度至少 5% 的点对，凑不出多段估算，本周期只能粗估。
+  const current = [1, 5, 12].map((percent, index) =>
     quota("seven-day", percent, {
       sampledAt: `2026-09-08T0${index}:00:00.000Z`,
     }),
@@ -640,17 +645,91 @@ test("historical reference is not pulled toward noisy rough usage before multi-s
   const read: QuotaChargeReader = (start, end) => {
     const percent =
       samples.find((sample) => sample.fact.sampledAt === end)?.fact.percent ??
-      11;
+      12;
     return {
-      usd: String(percent! * 10 + (start.startsWith("2026-09-08") ? 500 : 0)),
+      usd: String(percent! * (start.startsWith("2026-09-08") ? 20 : 10)),
       credits: null,
     };
   };
-  for (let count = 1; count <= 3; count++) {
-    expect(
-      fullWeekEstimate(
-        quotaView([...previous, ...current.slice(0, count)], read, now)!,
-      ),
-    ).toBe("1000");
+  for (const [count, expected, method] of [
+    [1, "1000", "previous-period"],
+    [2, "1300", "blended"],
+    [3, "2000", "rough"],
+  ] as const) {
+    const result = quotaView(
+      [...previous, ...current.slice(0, count)],
+      read,
+      now,
+    )!;
+    expect(fullWeekEstimate(result)).toBe(expected);
+    expect(result.estimate.methods?.usd).toBe(method);
   }
+});
+
+test("an early-reset previous cycle is borrowed only up to the current start, skipping unstarted 0% windows", () => {
+  // Google 与 Codex 提前重置后从重置时刻重新起算整窗：上一周期原定 09-08 12:00 重置，
+  // 实际在 09-08 00:00 被重置，本周期因此在 09-15 00:00 才重置。
+  const truncated = [0, 10, 20].map((percent, index) =>
+    quota("seven-day", percent, {
+      sampledAt: `2026-09-01T1${2 + index}:00:00.000Z`,
+      resetsAt: "2026-09-08T12:00:00.000Z",
+    }),
+  );
+  // 重置后仍有终端写入旧周期的迟到读数，它晚于本周期起点，不能计入上一周期。
+  const late = quota("seven-day", 25, {
+    sampledAt: "2026-09-08T05:00:00.000Z",
+    resetsAt: "2026-09-08T12:00:00.000Z",
+  });
+  // Google 在 0% 未使用时不开始计时，每次读数的重置时间都是采样后 7 天。
+  const unstarted = [20, 21, 22].map((hour) =>
+    quota("seven-day", 0, {
+      sampledAt: `2026-09-07T${hour}:00:00.000Z`,
+      resetsAt: `2026-09-14T${hour}:00:00.000Z`,
+    }),
+  );
+  // 更早自然到期的周期每 1% 价值不同，紧邻周期可用时不能借它。
+  const older = [10, 20, 30].map((percent, index) =>
+    quota("seven-day", percent, {
+      sampledAt: `2026-08-29T0${index}:00:00.000Z`,
+      resetsAt: "2026-09-05T00:00:00.000Z",
+    }),
+  );
+  const current = quota("seven-day", 1);
+  const samples = [...older, ...truncated, late, ...unstarted, current];
+  const read: QuotaChargeReader = (start, end) => {
+    if (start === "2026-09-08T00:00:00.000Z")
+      return { usd: "2", credits: null };
+    if (end === late.fact.sampledAt) return { usd: "10000", credits: null };
+    const percent = samples.find((sample) => sample.fact.sampledAt === end)!
+      .fact.percent!;
+    return {
+      usd: String(percent * (start === "2026-09-01T12:00:00.000Z" ? 10 : 50)),
+      credits: null,
+    };
+  };
+  const result = quotaView(samples, read, now)!;
+  expect(result.estimate.methods?.usd).toBe("previous-period");
+  expect(fullWeekEstimate(result)).toBe("1000");
+});
+
+test("an immediate previous cycle too small to estimate is not skipped for an older one", () => {
+  const older = [10, 20, 30].map((percent, index) =>
+    quota("seven-day", percent, {
+      sampledAt: `2026-09-01T0${index}:00:00.000Z`,
+      resetsAt: "2026-09-08T00:00:00.000Z",
+    }),
+  );
+  // 紧邻周期刚用到 4% 就被提前重置，不足以估算；更早周期的模型组合或套餐可能已不同。
+  const immediate = quota("seven-day", 4, {
+    sampledAt: "2026-09-07T12:00:00.000Z",
+    resetsAt: "2026-09-14T00:00:00.000Z",
+  });
+  const current = quota("seven-day", 1);
+  const read: QuotaChargeReader = (start) =>
+    start === "2026-09-08T00:00:00.000Z"
+      ? { usd: "2", credits: null }
+      : { usd: "10", credits: null };
+  const result = quotaView([...older, immediate, current], read, now)!;
+  expect(result.estimate.methods?.usd).toBe("rough");
+  expect(fullWeekEstimate(result)).toBe("200");
 });
