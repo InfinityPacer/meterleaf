@@ -173,3 +173,60 @@ test.each([
     expect(html).toContain("推理强度");
   },
 );
+
+test("ledger table and mobile list render per-request cache hit rate and keep unknowns as N/A", () => {
+  const base = createDemoLedger("api").records[0]!;
+  const html = renderToStaticMarkup(
+    <LedgerTable
+      records={[
+        {
+          ...base,
+          id: "req-hit",
+          input: 100,
+          cacheRead: 300,
+          cacheWrite: 0,
+        },
+        {
+          ...base,
+          id: "req-zero",
+          input: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+        },
+        {
+          ...base,
+          id: "req-unknown",
+          input: 100,
+          cacheRead: 200,
+          cacheWrite: null,
+        },
+      ]}
+      total={3}
+      pageIndex={0}
+      onPage={() => {}}
+      sorting={{ id: "cacheRate", desc: true }}
+      onSorting={() => {}}
+      accounts={[]}
+      onSelect={() => {}}
+      search=""
+      onSearch={() => {}}
+    />,
+  );
+  const tableRows = html.match(/<tbody>[\s\S]*?<\/tbody>/)?.[0] ?? "";
+  const mobileItems = [
+    ...html.matchAll(
+      /<button[^>]*class="mobile-request-item"[\s\S]*?<\/button>/g,
+    ),
+  ].map((match) => match[0]);
+
+  expect(html).toContain("缓存命中率");
+  expect(tableRows).toContain("75.0%");
+  expect(mobileItems).toHaveLength(3);
+  expect(mobileItems[0]).toContain(
+    'aria-label="缓存命中率：75.0%">命中 75.0%</span>',
+  );
+  expect(mobileItems[1]).not.toContain('class="mobile-request-cache"');
+  expect(mobileItems[1]).not.toContain("N/A");
+  expect(mobileItems[2]).not.toContain('class="mobile-request-cache"');
+  expect(mobileItems[2]).not.toContain("N/A");
+});

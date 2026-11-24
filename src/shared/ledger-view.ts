@@ -10,6 +10,7 @@ import type {
 import {
   aggregateReport,
   bucketTime,
+  cacheHitRate,
   filterRecords,
   isKnownNumber,
   numericAmount,
@@ -166,6 +167,7 @@ type SortKey =
   | "accountId"
   | "input"
   | "cacheRead"
+  | "cacheRate"
   | "output"
   | "usd";
 type SortValue = number | string | null;
@@ -176,6 +178,7 @@ const sortKeys = new Set<SortKey>([
   "accountId",
   "input",
   "cacheRead",
+  "cacheRate",
   "output",
   "usd",
 ]);
@@ -199,6 +202,8 @@ function sortValue(row: LedgerRecord, key: SortKey): SortValue {
     case "cacheRead":
     case "output":
       return row[key];
+    case "cacheRate":
+      return cacheHitRate(row);
     case "usd":
       return numericAmount(row.usd);
   }

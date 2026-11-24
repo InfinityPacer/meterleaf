@@ -24,20 +24,40 @@ test("account lifetime uses cached hour aggregates and invalidates revisions, mo
     const a = row("a", "2026-08-01T00:00:00Z");
     const b = row("b", "2026-09-01T00:00:00Z", { accountId: "account-b" });
     index.replace([a, b]);
-    expect(index.accountLifetime("account-a", "subscription")).toMatchObject({ count: 1, tokens: 100, usd: "0.1" });
+    expect(index.accountLifetime("account-a", "subscription")).toMatchObject({
+      count: 1,
+      tokens: 100,
+      usd: "0.1",
+    });
     expect(index.accountLifetime("account-b", "api").usd).toBe("0.2");
     const queries = spyOn(index.db, "query");
     index.accountLifetime("account-a", "api");
-    expect(queries.mock.calls.some(([sql]) => sql.includes("FROM report_hours") || sql.includes("FROM report_records"))).toBe(false);
+    expect(
+      queries.mock.calls.some(
+        ([sql]) =>
+          sql.includes("FROM report_hours") ||
+          sql.includes("FROM report_records"),
+      ),
+    ).toBe(false);
     queries.mockRestore();
     index.apply([{ ...a, accountId: "account-b", input: 110 }], []);
-    expect(index.accountLifetime("account-a", "subscription")).toMatchObject({ count: 0, tokens: 0, usd: "0" });
-    expect(index.accountLifetime("account-b", "subscription")).toMatchObject({ count: 2, tokens: 300, usd: "0.2" });
+    expect(index.accountLifetime("account-a", "subscription")).toMatchObject({
+      count: 0,
+      tokens: 0,
+      usd: "0",
+    });
+    expect(index.accountLifetime("account-b", "subscription")).toMatchObject({
+      count: 2,
+      tokens: 300,
+      usd: "0.2",
+    });
     index.apply([], ["b"]);
     expect(index.accountLifetime("account-b", "subscription").count).toBe(1);
     index.replace([]);
     expect(index.accountLifetime("account-b", "subscription").count).toBe(0);
-  } finally { index.close(); }
+  } finally {
+    index.close();
+  }
 });
 
 test("full replacement restores every secondary index and rolls back on failure", () => {
@@ -51,7 +71,10 @@ test("full replacement restores every secondary index and rolls back on failure"
   try {
     const before = indexes();
     expect(before.length).toBeGreaterThan(10);
-    index.replace([row("a", "2026-08-01T00:00:00Z"), row("b", "2026-09-01T00:00:00Z")]);
+    index.replace([
+      row("a", "2026-08-01T00:00:00Z"),
+      row("b", "2026-09-01T00:00:00Z"),
+    ]);
     expect(indexes()).toEqual(before);
     expect(index.accountLifetime("account-a", "subscription").count).toBe(2);
     expect(() =>
@@ -64,7 +87,9 @@ test("full replacement restores every secondary index and rolls back on failure"
     ).toThrow("source read failed");
     expect(indexes()).toEqual(before);
     expect(index.accountLifetime("account-a", "subscription").count).toBe(2);
-  } finally { index.close(); }
+  } finally {
+    index.close();
+  }
 });
 
 test("detail pages sort both directions from one ascending index without a temporary sort", () => {
@@ -94,9 +119,22 @@ test("detail pages sort both directions from one ascending index without a tempo
         { ...emptyFilter, model: "model-b" },
         { ...emptyFilter, search: "fixture" },
       ])
-        for (const sort of ["", "occurredAt", "model", "accountId", "input", "cacheRead", "output", "usd"])
+        for (const sort of [
+          "",
+          "occurredAt",
+          "model",
+          "accountId",
+          "input",
+          "cacheRead",
+          "cacheRate",
+          "output",
+          "usd",
+        ])
           for (const desc of [false, true])
-            index.read(metadata(basis), query({ filter, sort, desc, pageSize: 2 }));
+            index.read(
+              metadata(basis),
+              query({ filter, sort, desc, pageSize: 2 }),
+            );
     const pages = [
       ...new Set(
         queries.mock.calls
@@ -115,18 +153,34 @@ test("detail pages sort both directions from one ascending index without a tempo
       expect(plan).toContain("USING INDEX report_records_");
       expect(plan).not.toContain("TEMP B-TREE");
     }
-  } finally { index.close(); }
+  } finally {
+    index.close();
+  }
 });
 
 test("account lifetime preserves unknown token and price boundaries", () => {
   const index = new ReportIndex(":memory:");
   try {
-    index.replace([row("unknown", "2026-09-01T00:00:00Z", {
-      input: null, cacheRead: null, cacheWrite: null, output: null,
-      usd: null, valuation: undefined,
-    })]);
-    expect(index.accountLifetime("account-a", "subscription")).toMatchObject({ count: 1, tokens: null, usd: null, incompleteTokens: 1, incompleteUsd: 1 });
-  } finally { index.close(); }
+    index.replace([
+      row("unknown", "2026-09-01T00:00:00Z", {
+        input: null,
+        cacheRead: null,
+        cacheWrite: null,
+        output: null,
+        usd: null,
+        valuation: undefined,
+      }),
+    ]);
+    expect(index.accountLifetime("account-a", "subscription")).toMatchObject({
+      count: 1,
+      tokens: null,
+      usd: null,
+      incompleteTokens: 1,
+      incompleteUsd: 1,
+    });
+  } finally {
+    index.close();
+  }
 });
 
 test("quota boundaries seek hours instead of scanning the account period", () => {
@@ -258,19 +312,39 @@ test("search aggregates use a covering filter index with unchanged results", () 
     const reads = spyOn(index.db, "query");
     try {
       for (const search of ["MATCHING", "not-present", "matching%"]) {
-        const current = query({ filter: { ...emptyFilter, search, account: "account-a" } });
+        const current = query({
+          filter: { ...emptyFilter, search, account: "account-a" },
+        });
         for (const basis of ["subscription", "api"] as const) {
           const actual = index.read(metadata(basis), current);
-          const expected = createLedgerView({ ...metadata(basis), records: records.map(record => basisRecord(record, basis)) }, current);
+          const expected = createLedgerView(
+            {
+              ...metadata(basis),
+              records: records.map((record) => basisRecord(record, basis)),
+            },
+            current,
+          );
           expect(actual.view).toEqual(expected.view);
-          expect(actual.records.map(record => record.id)).toEqual(expected.records.map(record => record.id));
+          expect(actual.records.map((record) => record.id)).toEqual(
+            expected.records.map((record) => record.id),
+          );
         }
       }
-      const scans = reads.mock.calls.map(([sql]) => sql).filter(sql => sql.includes("instr(r.search_text" ) && !sql.includes("r.payload"));
+      const scans = reads.mock.calls
+        .map(([sql]) => sql)
+        .filter(
+          (sql) =>
+            sql.includes("instr(r.search_text") && !sql.includes("r.payload"),
+        );
       expect(scans.length).toBeGreaterThan(0);
-      for (const sql of scans) expect(sql).toContain("INDEXED BY report_records_search_time");
-    } finally { reads.mockRestore(); }
-  } finally { index.close(); }
+      for (const sql of scans)
+        expect(sql).toContain("INDEXED BY report_records_search_time");
+    } finally {
+      reads.mockRestore();
+    }
+  } finally {
+    index.close();
+  }
 });
 
 test("empty searches and pages do not scan the detail sort index", () => {
@@ -556,9 +630,33 @@ describe("ReportIndex", () => {
   test("account usage follows date filters, ignores pagination, and keeps USD variants", () => {
     const index = new ReportIndex(":memory:");
     const accounts = [
-      { id: "account-a", name: "A", plan: "", kind: "unknown" as const, sampledAt: null, fiveHour: null, sevenDay: null },
-      { id: "account-b", name: "B", plan: "", kind: "unknown" as const, sampledAt: null, fiveHour: null, sevenDay: null },
-      { id: "account-c", name: "C", plan: "", kind: "unknown" as const, sampledAt: null, fiveHour: null, sevenDay: null },
+      {
+        id: "account-a",
+        name: "A",
+        plan: "",
+        kind: "unknown" as const,
+        sampledAt: null,
+        fiveHour: null,
+        sevenDay: null,
+      },
+      {
+        id: "account-b",
+        name: "B",
+        plan: "",
+        kind: "unknown" as const,
+        sampledAt: null,
+        fiveHour: null,
+        sevenDay: null,
+      },
+      {
+        id: "account-c",
+        name: "C",
+        plan: "",
+        kind: "unknown" as const,
+        sampledAt: null,
+        fiveHour: null,
+        sevenDay: null,
+      },
     ];
     const records = [
       row("current-a-1", "2026-09-08T00:00:00.000Z", {
@@ -789,6 +887,7 @@ describe("ReportIndex", () => {
                   "accountId",
                   "input",
                   "cacheRead",
+                  "cacheRate",
                   "output",
                   "usd",
                 ]) {
