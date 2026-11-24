@@ -262,6 +262,8 @@ export function createApp({
             "cacheRead",
             "cacheRate",
             "output",
+            "firstTokenMs",
+            "durationMs",
             "usd",
           ])
           .default("occurredAt"),

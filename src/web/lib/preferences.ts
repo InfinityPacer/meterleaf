@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
 import { z } from "zod";
+import {
+  ledgerColumnIds,
+  type LedgerColumnId,
+  type LedgerColumnOverrides,
+} from "./ledger-columns";
+
+export { ledgerColumnIds, type LedgerColumnId, type LedgerColumnOverrides };
 
 /** 偏好只接受当前合同；旧格式、损坏数据和存储异常均回到默认值。 */
 export function readStoredPreference<T>(
@@ -77,6 +84,9 @@ export function useScopedPreference<T>(
   return [value, update] as const;
 }
 
+export const ledgerPageSizes = [12, 25, 50, 100] as const;
+export type LedgerPageSize = (typeof ledgerPageSizes)[number];
+
 export const preferenceSchemas = {
   /** 账本首条记录时间，用于首屏立即换算历史至今，响应返回后按最新值校正。 */
   ledgerStart: z.string().min(10).max(40).nullable(),
@@ -101,10 +111,22 @@ export const preferenceSchemas = {
       "cacheRead",
       "cacheRate",
       "output",
+      "firstTokenMs",
+      "durationMs",
       "usd",
     ]),
     desc: z.boolean(),
   }),
+  ledgerColumnOverrides: z.object({
+    show: z.array(z.enum(ledgerColumnIds)).max(ledgerColumnIds.length),
+    hide: z.array(z.enum(ledgerColumnIds)).max(ledgerColumnIds.length),
+  }),
+  ledgerPageSize: z.union([
+    z.literal(12),
+    z.literal(25),
+    z.literal(50),
+    z.literal(100),
+  ]),
   reportMode: z.enum(["usage", "performance"]),
   reportSort: z
     .array(

@@ -120,6 +120,12 @@ export function performanceTps(
     : null;
 }
 
+const durationSecondsFormat = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+
+/** 毫秒时长统一按秒展示，最多保留两位小数并省略末尾零；未知或负值返回 N/A。 */
 export function formatLatencyMs(value: number | null | undefined): string {
   if (
     value === null ||
@@ -128,9 +134,40 @@ export function formatLatencyMs(value: number | null | undefined): string {
     value < 0
   )
     return "N/A";
-  if (value < 1000) return `${Math.round(value).toLocaleString()} ms`;
+  if (value === 0) return "0 s";
   const seconds = value / 1000;
-  return `${seconds >= 10 ? seconds.toFixed(1) : seconds.toFixed(2)} s`;
+  if (seconds < 0.005) return "<0.01 s";
+  return `${durationSecondsFormat.format(seconds)} s`;
+}
+
+/** 请求首 Token 延迟按非负毫秒保留，未知或负值返回 null。 */
+export function requestFirstTokenMs(
+  record: Pick<LedgerRecord, "details">,
+): number | null {
+  const value = record.details?.firstTokenMs ?? null;
+  return isKnownNumber(value) && value >= 0 ? value : null;
+}
+
+/** 请求总耗时按正毫秒保留，未知或非正值返回 null。 */
+export function requestDurationMs(
+  record: Pick<LedgerRecord, "details">,
+): number | null {
+  const value = record.details?.durationMs ?? null;
+  return isKnownNumber(value) && value > 0 ? value : null;
+}
+
+/** 总耗时统一以秒展示，最多保留两位小数并省略末尾零；未知或非正值返回 N/A。 */
+export function formatDurationSeconds(
+  value: number | null | undefined,
+): string {
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(value) ||
+    value <= 0
+  )
+    return "N/A";
+  return formatLatencyMs(value);
 }
 
 export function formatTps(value: number | null | undefined): string {

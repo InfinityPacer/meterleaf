@@ -738,7 +738,7 @@ try {
     page.getByRole("dialog").getByText("xhigh", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("dialog").getByText("0 ms", { exact: true }),
+    page.getByRole("dialog").getByText("0 s", { exact: true }),
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);

@@ -128,6 +128,8 @@ test("detail pages sort both directions from one ascending index without a tempo
           "cacheRead",
           "cacheRate",
           "output",
+          "firstTokenMs",
+          "durationMs",
           "usd",
         ])
           for (const desc of [false, true])
@@ -889,6 +891,8 @@ describe("ReportIndex", () => {
                   "cacheRead",
                   "cacheRate",
                   "output",
+                  "firstTokenMs",
+                  "durationMs",
                   "usd",
                 ]) {
                   for (const desc of [false, true]) {

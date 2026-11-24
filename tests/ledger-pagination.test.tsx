@@ -5,6 +5,15 @@ import {
   LedgerTable,
   type LedgerPageItem,
 } from "../src/web/components/LedgerTable";
+import {
+  applyLedgerColumnPreset,
+  defaultColumnsForTier,
+  emptyLedgerColumnOverrides,
+  ledgerColumnPresets,
+  ledgerWidthTier,
+  resolveVisibleLedgerColumns,
+  toggleLedgerColumnOverride,
+} from "../src/web/lib/ledger-columns";
 import { createDemoLedger } from "../src/web/demo/ledger";
 
 function pageIndexes(items: LedgerPageItem[]) {
@@ -229,4 +238,235 @@ test("ledger table and mobile list render per-request cache hit rate and keep un
   expect(mobileItems[1]).not.toContain("N/A");
   expect(mobileItems[2]).not.toContain('class="mobile-request-cache"');
   expect(mobileItems[2]).not.toContain("N/A");
+});
+
+test("ledger table renders first token latency and duration in seconds, supports column visibility and stepped page size", () => {
+  const base = createDemoLedger("api").records[0]!;
+  const html = renderToStaticMarkup(
+    <LedgerTable
+      records={[
+        {
+          ...base,
+          id: "req-sec-1",
+          details: {
+            requestedModel: base.model,
+            sentModel: base.model,
+            responseModel: null,
+            responseModelMismatch: null,
+            requestedReasoningEffort: null,
+            reasoningEffort: null,
+            durationMs: 12346,
+            firstTokenMs: 6727,
+          },
+        },
+        {
+          ...base,
+          id: "req-sec-2",
+          details: {
+            requestedModel: base.model,
+            sentModel: base.model,
+            responseModel: null,
+            responseModelMismatch: null,
+            requestedReasoningEffort: null,
+            reasoningEffort: null,
+            durationMs: 1200,
+            firstTokenMs: 0,
+          },
+        },
+        {
+          ...base,
+          id: "req-sec-tiny",
+          details: {
+            requestedModel: base.model,
+            sentModel: base.model,
+            responseModel: null,
+            responseModelMismatch: null,
+            requestedReasoningEffort: null,
+            reasoningEffort: null,
+            durationMs: 3,
+            firstTokenMs: 850,
+          },
+        },
+        {
+          ...base,
+          id: "req-sec-null",
+          details: {
+            requestedModel: base.model,
+            sentModel: base.model,
+            responseModel: null,
+            responseModelMismatch: null,
+            requestedReasoningEffort: null,
+            reasoningEffort: null,
+            durationMs: null,
+            firstTokenMs: null,
+          },
+        },
+      ]}
+      total={240}
+      pageIndex={0}
+      pageSize={50}
+      onPage={() => {}}
+      onPageSize={() => {}}
+      sorting={{ id: "durationMs", desc: true }}
+      onSorting={() => {}}
+      hiddenColumns={["reasoningEffort", "cacheRead"]}
+      onHiddenColumns={() => {}}
+      accounts={[]}
+      onSelect={() => {}}
+      search=""
+      onSearch={() => {}}
+    />,
+  );
+  const thead = html.match(/<thead>[\s\S]*?<\/thead>/)?.[0] ?? "";
+  const tbody = html.match(/<tbody>[\s\S]*?<\/tbody>/)?.[0] ?? "";
+
+  expect(thead).toContain("首字延迟");
+  expect(thead).toContain('title="首 Token 延迟（TTFT）"');
+  expect(thead).toContain("总耗时");
+  expect(thead).not.toContain('data-column-id="reasoningEffort"');
+  expect(thead).not.toContain('data-column-id="cacheRead"');
+  expect(tbody).toContain("6.73 s");
+  expect(tbody).toContain("0 s");
+  expect(tbody).toContain("0.85 s");
+  expect(tbody).toContain("12.35 s");
+  expect(tbody).toContain("1.2 s");
+  expect(tbody).toContain("&lt;0.01 s");
+  expect(tbody).toContain("N/A");
+  expect(html).toContain("显示列 (9/11)");
+  expect(html).toContain('aria-label="每页行数"');
+  expect(html).toContain("每页 50 条");
+  expect(html).toContain("第 1 / 5 页");
+  expect(html).toContain("共 240 条记录");
+});
+
+test("ledger width tiers and incremental column overrides stay responsive without cross-tier pollution", () => {
+  expect(ledgerWidthTier(1240)).toBe("xl");
+  expect(ledgerWidthTier(1048)).toBe("l");
+  expect(ledgerWidthTier(903)).toBe("m");
+  expect(ledgerWidthTier(780)).toBe("s");
+  expect(ledgerWidthTier(600)).toBe("sm");
+  expect(ledgerWidthTier(393)).toBe("xs");
+  expect(ledgerWidthTier(0)).toBe("l");
+
+  expect(defaultColumnsForTier("xl")).toHaveLength(11);
+  expect(defaultColumnsForTier("l")).toHaveLength(11);
+  expect(defaultColumnsForTier("m")).toHaveLength(9);
+  expect(defaultColumnsForTier("m")).not.toContain("reasoningEffort");
+  expect(defaultColumnsForTier("m")).not.toContain("cacheRead");
+  expect(defaultColumnsForTier("s")).toHaveLength(7);
+  expect(defaultColumnsForTier("sm")).toEqual([
+    "occurredAt",
+    "model",
+    "input",
+    "cacheRate",
+    "usd",
+  ]);
+  expect(defaultColumnsForTier("xs")).toEqual(["occurredAt", "model", "usd"]);
+
+  // 在 m 档开启缓存读取只记录 show 增量，不影响其他列在不同档位的自适应默认。
+  const showedCacheRead = toggleLedgerColumnOverride(
+    "m",
+    emptyLedgerColumnOverrides,
+    "cacheRead",
+    true,
+  );
+  expect(showedCacheRead).toEqual({ show: ["cacheRead"], hide: [] });
+  expect(resolveVisibleLedgerColumns("m", showedCacheRead)).toContain(
+    "cacheRead",
+  );
+  expect(resolveVisibleLedgerColumns("s", showedCacheRead)).toContain(
+    "cacheRead",
+  );
+  expect(resolveVisibleLedgerColumns("s", showedCacheRead)).not.toContain(
+    "durationMs",
+  );
+
+  // 不能隐藏最后一个可见列。
+  const onlyUsd = toggleLedgerColumnOverride(
+    "xs",
+    { show: [], hide: ["occurredAt", "model"] },
+    "usd",
+    false,
+  );
+  expect(resolveVisibleLedgerColumns("xs", onlyUsd)).toEqual(["usd"]);
+
+  // 预设应用准确映射到目标列集合。
+  const perfPreset = ledgerColumnPresets.find((p) => p.id === "performance")!;
+  const perfOverrides = applyLedgerColumnPreset("l", perfPreset.columns);
+  expect(resolveVisibleLedgerColumns("l", perfOverrides)).toEqual([
+    ...perfPreset.columns,
+  ]);
+});
+
+test("narrow width tiers fold reasoning effort inline, shorten headers, and show mobile sort feedback", () => {
+  const base = createDemoLedger("api").records[0]!;
+  const record = {
+    ...base,
+    id: "req-inline-effort",
+    details: {
+      requestedModel: base.model,
+      sentModel: base.model,
+      responseModel: null,
+      responseModelMismatch: null,
+      requestedReasoningEffort: "high",
+      reasoningEffort: "xhigh",
+      durationMs: 14250,
+      firstTokenMs: 1850,
+    },
+  };
+
+  const sHtml = renderToStaticMarkup(
+    <LedgerTable
+      records={[record]}
+      total={1}
+      pageIndex={0}
+      onPage={() => {}}
+      sorting={{ id: "durationMs", desc: true }}
+      onSorting={() => {}}
+      widthTier="s"
+      columnOverrides={emptyLedgerColumnOverrides}
+      onColumnOverrides={() => {}}
+      accounts={[]}
+      onSelect={() => {}}
+      search=""
+      onSearch={() => {}}
+    />,
+  );
+  const sThead = sHtml.match(/<thead>[\s\S]*?<\/thead>/)?.[0] ?? "";
+  const sTbody = sHtml.match(/<tbody>[\s\S]*?<\/tbody>/)?.[0] ?? "";
+  const mobileItem =
+    sHtml.match(
+      /<button[^>]*class="mobile-request-item"[\s\S]*?<\/button>/,
+    )?.[0] ?? "";
+
+  expect(sHtml).toContain('data-width-tier="s"');
+  expect(sThead).toContain("命中率");
+  expect(sThead).not.toContain('data-column-id="reasoningEffort"');
+  expect(sTbody).toContain('class="model-cell-inline"');
+  expect(sTbody).toContain(
+    '<span class="effort-badge" title="推理强度">xhigh</span>',
+  );
+  expect(sHtml).toContain("显示列 (7/11)");
+  expect(sHtml).toContain('class="mobile-sort-pill"');
+  expect(sHtml).toContain("耗时 ↓");
+  expect(mobileItem).toContain("mobile-request-sort-metric");
+  expect(mobileItem).toContain("耗时 14.25 s");
+
+  const emptyFilteredHtml = renderToStaticMarkup(
+    <LedgerTable
+      records={[]}
+      total={0}
+      pageIndex={0}
+      onPage={() => {}}
+      sorting={{ id: "occurredAt", desc: true }}
+      onSorting={() => {}}
+      hasActiveFilters={true}
+      onResetFilters={() => {}}
+      accounts={[]}
+      onSelect={() => {}}
+      search=""
+      onSearch={() => {}}
+    />,
+  );
+  expect(emptyFilteredHtml).toContain("清除筛选");
 });

@@ -489,9 +489,11 @@ test("ReportIndex and createLedgerView aggregate weighted TPS and latency identi
     expect(performanceTps(perf)).toBe(100);
     expect(recordTps(1000, 10_000)).toBe(100);
     expect(recordTps(0, 10_000)).toBeNull();
-    expect(formatLatencyMs(850)).toBe("850 ms");
+    expect(formatLatencyMs(0)).toBe("0 s");
+    expect(formatLatencyMs(3)).toBe("<0.01 s");
+    expect(formatLatencyMs(850)).toBe("0.85 s");
     expect(formatLatencyMs(1850)).toBe("1.85 s");
-    expect(formatLatencyMs(12_340)).toBe("12.3 s");
+    expect(formatLatencyMs(12_340)).toBe("12.34 s");
     expect(formatTps(100)).toBe("100 tok/s");
     expect(formatTps(64.24)).toBe("64.2 tok/s");
     expect(formatTps(4.56)).toBe("4.56 tok/s");
