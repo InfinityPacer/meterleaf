@@ -31,17 +31,17 @@ test("logins use the same account ids as the summary members and skip unknown lo
     localLogins("mac", {
       claude: [
         { configDir: "/h/.claude", accountUuid: "uuid-1" },
-        { configDir: "/h/.claude-profiles/ara", accountUuid: null },
+        { configDir: "/h/.claude-profiles/work", accountUuid: null },
       ],
       agy: [
         {
           appDataDir: "/h/.gemini/antigravity-cli",
           profile: null,
-          account: "agy-owl",
+          account: "agy-alice",
         },
         {
-          appDataDir: "/h/.gemini/antigravity-cli-tide",
-          profile: "tide",
+          appDataDir: "/h/.gemini/antigravity-cli-work",
+          profile: "work",
           account: null,
         },
       ],
@@ -53,7 +53,7 @@ test("logins use the same account ids as the summary members and skip unknown lo
       {
         appDataDir: "/h/.gemini/antigravity-cli",
         profile: null,
-        account: "mac:agy-owl",
+        account: "mac:agy-alice",
       },
     ],
     codex: [{ channel: "openai", account: "mac:codex" }],

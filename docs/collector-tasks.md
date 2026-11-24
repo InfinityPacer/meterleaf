@@ -108,9 +108,9 @@ Antigravity（各实例的 Gemini 与 Claude/GPT 池）和 Codex 的 7 天周窗
   "defaults": { "enabled": true, "5h": false, "7d": true },
   "accounts": {
     "codex": { "enabled": true, "5h": true, "7d": true },
-    "agy:tern": { "enabled": true, "5h": true, "7d": true },
-    "agy:tide": { "enabled": true, "5h": false, "7d": true },
-    "agy:owl": {
+    "agy:alice": { "enabled": true, "5h": true, "7d": true },
+    "agy:bob": { "enabled": true, "5h": false, "7d": true },
+    "agy:carol": {
       "enabled": true,
       "gemini": { "5h": true, "7d": true },
       "3p": { "5h": false, "7d": true }

@@ -1550,23 +1550,23 @@ test("readAgy and maybeRefreshAgyQuota discover extra antigravity-cli-<name> pro
   const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-multi-"));
   const geminiDir = join(root, ".gemini");
   const defaultConvDir = join(geminiDir, "antigravity-cli", "conversations");
-  const tideAppDir = join(geminiDir, "antigravity-cli-tide");
-  const tideConvDir = join(tideAppDir, "conversations");
+  const workAppDir = join(geminiDir, "antigravity-cli-work");
+  const workConvDir = join(workAppDir, "conversations");
   const emptyAppDir = join(geminiDir, "antigravity-cli-unauthenticated");
   const emptyConvDir = join(emptyAppDir, "conversations");
   const statusDir = join(root, "statusline");
   mkdirSync(defaultConvDir, { recursive: true });
-  mkdirSync(tideConvDir, { recursive: true });
+  mkdirSync(workConvDir, { recursive: true });
   mkdirSync(emptyConvDir, { recursive: true });
   mkdirSync(statusDir, { recursive: true });
 
-  // 默认实例通过 current-account 识别为 alice；tide 实例通过 antigravity-oauth-token 的 id_token_email 识别为 tidewren。
+  // 默认实例通过 current-account 识别为 alice；work 实例通过 antigravity-oauth-token 的 id_token_email 识别为 bob。
   writeFileSync(join(statusDir, "current-account"), "alice\n");
   writeFileSync(
-    join(tideAppDir, "antigravity-oauth-token"),
+    join(workAppDir, "antigravity-oauth-token"),
     JSON.stringify({
       auth_method: "oauth",
-      id_token_email: "Tidewren@gmail.com",
+      id_token_email: "Bob@example.com",
       token: "secret",
     }),
   );
@@ -1612,7 +1612,7 @@ test("readAgy and maybeRefreshAgyQuota discover extra antigravity-cli-<name> pro
   }
 
   writeConvDb(join(defaultConvDir, "conv-alice.db"), "exec-a", "msg-a", 3_000);
-  writeConvDb(join(tideConvDir, "conv-tide.db"), "exec-t", "msg-t", 7_000);
+  writeConvDb(join(workConvDir, "conv-work.db"), "exec-t", "msg-t", 7_000);
   writeConvDb(join(emptyConvDir, "conv-empty.db"), "exec-e", "msg-e", 1_000);
 
   const state = new CollectorState(":memory:");
@@ -1623,7 +1623,7 @@ test("readAgy and maybeRefreshAgyQuota discover extra antigravity-cli-<name> pro
       start: "2026-09-20T00:00:00.000Z",
     };
     const first = readAgy(state, sources, new Date("2026-10-30T15:00:00.000Z"));
-    // alice 与 tidewren 各入账 1 条；缺少 antigravity-oauth-token 的未登录额外目录直接忽略，不扫描也不串号到默认账户 alice。
+    // alice 与 bob 各入账 1 条；缺少 antigravity-oauth-token 的未登录额外目录直接忽略，不扫描也不串号到默认账户 alice。
     expect(first).toMatchObject({
       read: 2,
       recorded: 2,
@@ -1640,10 +1640,10 @@ test("readAgy and maybeRefreshAgyQuota discover extra antigravity-cli-<name> pro
         .sort(([a], [b]) => String(a).localeCompare(String(b))),
     ).toEqual([
       ["agy-alice", 3_000],
-      ["agy-tidewren", 7_000],
+      ["agy-bob", 7_000],
     ]);
 
-    // 第二轮再读：已归账的 alice 与 tidewren 的 agy_files 均保留，不会互相清空重读。
+    // 第二轮再读：已归账的 alice 与 bob 的 agy_files 均保留，不会互相清空重读。
     const second = readAgy(
       state,
       sources,
@@ -1652,7 +1652,7 @@ test("readAgy and maybeRefreshAgyQuota discover extra antigravity-cli-<name> pro
     expect(second.filesRead).toBe(0);
     expect(second.recorded).toBe(0);
 
-    // 验证额外实例按需刷新：默认实例的 quota-alice.tsv 刚刷新过，只对 tide 实例触发带 --app_data_dir 与 WSL_INTEROP=1 的探测。
+    // 验证额外实例按需刷新：默认实例的 quota-alice.tsv 刚刷新过，只对 work 实例触发带 --app_data_dir 与 WSL_INTEROP=1 的探测。
     const now = new Date("2026-10-30T15:02:00.000Z");
     const aliceQuota = join(statusDir, "quota-alice.tsv");
     writeFileSync(aliceQuota, staleQuota + "\n");
@@ -1670,7 +1670,7 @@ while [ $# -gt 0 ]; do
   [ "$1" = "--log-file" ] && log="$2"
   shift
 done
-echo "I OAuth: authenticated successfully as tidewren@gmail.com" > "$log"
+echo "I OAuth: authenticated successfully as bob@example.com" > "$log"
 cat '${outJson}'
 exit 0
 `,
@@ -1679,25 +1679,25 @@ exit 0
 
     const refreshRes = await maybeRefreshAgyQuota(state, sources, now, {
       agyBin: agyScript,
-      profiles: [null, "tide"],
+      profiles: [null, "work"],
     });
     expect(refreshRes).toMatchObject({
       attempted: true,
       refreshed: true,
-      label: "tidewren",
+      label: "bob",
       error: null,
     });
     const invocations = readFileSync(callArgsFile, "utf8").trim().split("\n");
     expect(invocations).toHaveLength(1);
     expect(invocations[0]).toContain("WSL=1");
-    expect(invocations[0]).toContain("--app_data_dir antigravity-cli-tide");
+    expect(invocations[0]).toContain("--app_data_dir antigravity-cli-work");
     expect(readFileSync(join(statusDir, "current-account"), "utf8")).toBe(
       "alice\n",
     );
-    expect(readFileSync(join(statusDir, "current-account-tide"), "utf8")).toBe(
-      "tidewren\n",
+    expect(readFileSync(join(statusDir, "current-account-work"), "utf8")).toBe(
+      "bob\n",
     );
-    expect(readFileSync(join(statusDir, "quota-tidewren.tsv"), "utf8")).toBe(
+    expect(readFileSync(join(statusDir, "quota-bob.tsv"), "utf8")).toBe(
       "gemini_5h\t40\t4102444800\n3p_weekly\t20\t4102444800\n",
     );
   } finally {
