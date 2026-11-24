@@ -446,6 +446,38 @@ describe("quota-warmup task script", () => {
       `3p_weekly\t0\t${nowSec + 7 * 86400 - 2400}`,
     );
     expect(rows.get("3p_5h")).toBe(`3p_5h\t1\t${nowSec + 5 * 3600}`);
+
+    // 重置时间比「查询时刻 + 整周」早 4 分钟仍在 5 分钟误差内，按未开窗处理；早 6 分钟则照实保留。
+    const nearBoundary = parseUsageBuckets(
+      JSON.stringify({
+        status: "SUCCESS",
+        command: {
+          data: {
+            groups: [
+              {
+                buckets: [
+                  {
+                    id: "gemini-weekly",
+                    remaining_fraction: 1,
+                    reset_time: iso(nowSec + 7 * 86400 - 240),
+                  },
+                  {
+                    id: "3p-weekly",
+                    remaining_fraction: 1,
+                    reset_time: iso(nowSec + 7 * 86400 - 360),
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+      nowSec,
+    ) as Map<string, string>;
+    expect(nearBoundary.get("gemini_weekly")).toBe("gemini_weekly\t0\t0");
+    expect(nearBoundary.get("3p_weekly")).toBe(
+      `3p_weekly\t0\t${nowSec + 7 * 86400 - 360}`,
+    );
   });
 
   test("parseUsageBuckets and readAgyQuotaTsv preserve unopened 0/0 windows while rejecting invalid rows", () => {
