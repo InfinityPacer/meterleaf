@@ -103,7 +103,9 @@ import { planBadge } from "./lib/plan";
 import { Segmented } from "./components/Segmented";
 import {
   amount,
+  cacheHitRate,
   compact,
+  formatPercent,
   formatTps,
   localTime,
   modelColor,
@@ -2246,6 +2248,8 @@ export function App() {
                       : "N/A"}
                   </strong>
                 </dd>
+                <dt>缓存命中率</dt>
+                <dd>{formatPercent(cacheHitRate(selected))}</dd>
               </dl>
               {snapshot?.mode === "demo" && (
                 <span className="detail-footnote">

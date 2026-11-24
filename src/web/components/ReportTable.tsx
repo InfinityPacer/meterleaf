@@ -27,8 +27,10 @@ import type { LedgerAccount } from "../../shared/report";
 import {
   aggregateReport,
   amount,
+  cacheHitRate,
   compact,
   formatLatencyMs,
+  formatPercent,
   formatTps,
   localTime,
   modelLabel,
@@ -40,6 +42,8 @@ import {
   type ReportDimension,
   type ReportPerformance,
 } from "../lib/report";
+
+export { cacheHitRate };
 import { Button } from "./ui/button";
 import { Segmented } from "./Segmented";
 import "./mobile-data.css";
@@ -111,20 +115,6 @@ function performanceSamplesText(perf: ReportPerformance, requests: number) {
   return perf.durationKnown < requests
     ? `${perf.durationKnown.toLocaleString()} / ${requests.toLocaleString()}`
     : perf.durationKnown.toLocaleString();
-}
-
-/** 命中率 = 缓存读取 ÷ 输入侧三个桶，均按分组内已知值求和；任一桶未知时不给比例。 */
-export function cacheHitRate(
-  row: Pick<Row, "input" | "cacheRead" | "cacheWrite">,
-) {
-  if (row.input === null || row.cacheRead === null || row.cacheWrite === null)
-    return null;
-  const total = row.input + row.cacheRead + row.cacheWrite;
-  return total > 0 ? (row.cacheRead / total) * 100 : null;
-}
-
-function percent(value: number | null) {
-  return value === null ? "N/A" : `${value.toFixed(1)}%`;
 }
 
 /** 合计沿用各列的未知语义：整列都未知才显示 N/A，金额保留已知部分，性能按总样本加权。 */
@@ -243,7 +233,7 @@ export function ReportTable({
       id: "cacheRate",
       accessorFn: (row) => cacheHitRate(row),
       header: "缓存命中率",
-      cell: (info) => percent(info.getValue<number | null>()),
+      cell: (info) => formatPercent(info.getValue<number | null>()),
     },
     {
       accessorKey: "requests",
@@ -525,7 +515,7 @@ export function ReportTable({
                     cacheRead: compact(totals.cacheRead),
                     cacheWrite: compact(totals.cacheWrite),
                     output: compact(totals.output),
-                    cacheRate: percent(cacheHitRate(totals)),
+                    cacheRate: formatPercent(cacheHitRate(totals)),
                     requests: totals.requests.toLocaleString(),
                     usd: amount(totals.usd, "usd"),
                     perfSamples: performanceSamplesText(
@@ -700,7 +690,7 @@ export function ReportTable({
                     </div>
                     <div>
                       <dt>缓存命中率</dt>
-                      <dd>{percent(cacheHitRate(item))}</dd>
+                      <dd>{formatPercent(cacheHitRate(item))}</dd>
                     </div>
                     <div>
                       <dt>请求数</dt>

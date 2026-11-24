@@ -23,7 +23,9 @@ import {
 import type { LedgerAccount, LedgerRecord } from "../../shared/report";
 import {
   amount,
+  cacheHitRate,
   compact,
+  formatPercent,
   isKnownNumber,
   localTime,
   modelColor,
@@ -59,9 +61,18 @@ const ledgerSortOptions = [
   { value: "accountId", label: "账户" },
   { value: "input", label: "输入 Tokens" },
   { value: "cacheRead", label: "缓存读取" },
+  { value: "cacheRate", label: "缓存命中率" },
   { value: "output", label: "输出 Tokens" },
   { value: "usd", label: "费用" },
 ] as const;
+
+const numericColumns = new Set([
+  "input",
+  "cacheRead",
+  "cacheRate",
+  "output",
+  "usd",
+]);
 
 /** 输入展示包含三个输入桶；缺少任一桶时保留未知，不用部分值冒充总输入。 */
 function requestInputTokens(record: LedgerRecord) {
@@ -207,6 +218,12 @@ export function LedgerTable({
       ),
     },
     {
+      id: "cacheRate",
+      accessorFn: (row) => cacheHitRate(row),
+      header: "缓存命中率",
+      cell: (info) => formatPercent(info.getValue<number | null>()),
+    },
+    {
       accessorKey: "output",
       header: "输出",
       cell: (info) => compact(info.getValue<number | null>()),
@@ -346,13 +363,7 @@ export function LedgerTable({
                           ? "descending"
                           : undefined
                     }
-                    className={
-                      ["input", "output", "cacheRead", "usd"].includes(
-                        header.id,
-                      )
-                        ? "numeric"
-                        : ""
-                    }
+                    className={numericColumns.has(header.id) ? "numeric" : ""}
                   >
                     {header.column.getCanSort() ? (
                       <button onClick={header.column.getToggleSortingHandler()}>
@@ -386,11 +397,7 @@ export function LedgerTable({
                   <td
                     key={cell.id}
                     className={
-                      ["input", "output", "cacheRead", "usd"].includes(
-                        cell.column.id,
-                      )
-                        ? "numeric"
-                        : ""
+                      numericColumns.has(cell.column.id) ? "numeric" : ""
                     }
                   >
                     {/* 行操作保持元素身份，不能随单元格渲染函数重建而丢失焦点。 */}
@@ -424,6 +431,7 @@ export function LedgerTable({
         {table.getRowModel().rows.map((row) => {
           const record = row.original;
           const effort = requestReasoningEffort(record);
+          const rate = cacheHitRate(record);
           const account =
             accounts.find((item) => item.id === record.accountId)?.name ??
             record.accountId;
@@ -466,6 +474,15 @@ export function LedgerTable({
                     hour12: false,
                   })}
                 </time>
+                {rate !== null && (
+                  <span
+                    className="mobile-request-cache"
+                    title="缓存命中率"
+                    aria-label={`缓存命中率：${formatPercent(rate)}`}
+                  >
+                    命中 {formatPercent(rate)}
+                  </span>
+                )}
                 <span
                   className="mobile-request-account"
                   title={account || "N/A"}

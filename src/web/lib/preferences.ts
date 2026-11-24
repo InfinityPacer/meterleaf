@@ -99,6 +99,7 @@ export const preferenceSchemas = {
       "accountId",
       "input",
       "cacheRead",
+      "cacheRate",
       "output",
       "usd",
     ]),

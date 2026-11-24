@@ -29,6 +29,7 @@ const SORT_KEYS = new Set([
   "accountId",
   "input",
   "cacheRead",
+  "cacheRate",
   "output",
   "usd",
 ]);
@@ -56,6 +57,7 @@ interface StoredRecord {
   cacheWrite: number | null;
   output: number | null;
   inputTotal: number | null;
+  cacheRate: number | null;
   apiUsd: string | null;
   subscriptionUsd: string | null;
   credits: string | null;
@@ -280,6 +282,10 @@ function storedRecord(record: LedgerRecord): StoredRecord {
     input !== null && cacheRead !== null && cacheWrite !== null
       ? input + cacheRead + cacheWrite
       : null;
+  const cacheRate =
+    inputTotal !== null && inputTotal > 0
+      ? (cacheRead! / inputTotal) * 100
+      : null;
   const subscriptionUsd = valueForUsd(record, "subscription");
   const apiUsd = valueForUsd(record, "api");
   const credits = valueForCredits(record);
@@ -303,6 +309,7 @@ function storedRecord(record: LedgerRecord): StoredRecord {
     cacheWrite,
     output,
     inputTotal,
+    cacheRate,
     apiUsd,
     subscriptionUsd,
     credits,
@@ -802,6 +809,8 @@ const RECORD_INDEXES = `
     ON report_records (input_total ASC, id ASC, occurred_ms);
   CREATE INDEX IF NOT EXISTS report_records_page_cache_read
     ON report_records (cache_read ASC, id ASC, occurred_ms);
+  CREATE INDEX IF NOT EXISTS report_records_page_cache_rate
+    ON report_records (cache_rate ASC, id ASC, occurred_ms);
   CREATE INDEX IF NOT EXISTS report_records_page_output
     ON report_records (output ASC, id ASC, occurred_ms);
   CREATE INDEX IF NOT EXISTS report_records_page_subscription_usd
@@ -856,6 +865,7 @@ export class ReportIndex {
         cache_write REAL,
         output REAL,
         input_total REAL,
+        cache_rate REAL,
         api_usd TEXT,
         subscription_usd TEXT,
         credits TEXT,
@@ -916,11 +926,11 @@ export class ReportIndex {
         apply: initializeSchema,
       },
     ]);
-    this.ensurePerformanceColumns();
+    this.ensureSchemaColumns();
   }
 
-  /** 为早期格式 2 的派生索引库幂等补齐性能列；随后由 ReportProjection 按格式 3 全量回填。 */
-  private ensurePerformanceColumns(): void {
+  /** 为早期格式的派生索引库幂等补齐新增列与排序索引；随后由 ReportProjection 全量回填。 */
+  private ensureSchemaColumns(): void {
     const addMissing = (table: string, columns: [string, string][]) => {
       const existing = new Set(
         this.db
@@ -935,9 +945,14 @@ export class ReportIndex {
       }
     };
     addMissing("report_records", [
+      ["cache_rate", "REAL"],
       ["duration_ms", "REAL"],
       ["first_token_ms", "REAL"],
     ]);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS report_records_page_cache_rate
+        ON report_records (cache_rate ASC, id ASC, occurred_ms);
+    `);
     addMissing("report_hours", [
       ["duration_sum", "REAL NOT NULL DEFAULT 0"],
       ["duration_known", "INTEGER NOT NULL DEFAULT 0"],
@@ -1472,10 +1487,10 @@ export class ReportIndex {
         `INSERT INTO report_records (
           id, occurred_at, occurred_ms, hour_start, day_start, week_start,
           account_id, model, id_lc, account_lc, model_lc, search_text,
-          input, cache_read, cache_write, output, input_total,
+          input, cache_read, cache_write, output, input_total, cache_rate,
           api_usd, subscription_usd, credits, api_sort, subscription_sort,
           tier, duration_ms, first_token_ms, payload
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           occurred_at=excluded.occurred_at,
           occurred_ms=excluded.occurred_ms,
@@ -1493,6 +1508,7 @@ export class ReportIndex {
           cache_write=excluded.cache_write,
           output=excluded.output,
           input_total=excluded.input_total,
+          cache_rate=excluded.cache_rate,
           api_usd=excluded.api_usd,
           subscription_usd=excluded.subscription_usd,
           credits=excluded.credits,
@@ -1521,6 +1537,7 @@ export class ReportIndex {
         value.cacheWrite,
         value.output,
         value.inputTotal,
+        value.cacheRate,
         value.apiUsd,
         value.subscriptionUsd,
         value.credits,
@@ -1757,17 +1774,25 @@ export class ReportIndex {
                     column: "r.cache_read",
                     index: "report_records_page_cache_read",
                   }
-                : requestedSort === "output"
-                  ? { column: "r.output", index: "report_records_page_output" }
-                  : basis === "api"
+                : requestedSort === "cacheRate"
+                  ? {
+                      column: "r.cache_rate",
+                      index: "report_records_page_cache_rate",
+                    }
+                  : requestedSort === "output"
                     ? {
-                        column: "r.api_sort",
-                        index: "report_records_page_api_usd",
+                        column: "r.output",
+                        index: "report_records_page_output",
                       }
-                    : {
-                        column: "r.subscription_sort",
-                        index: "report_records_page_subscription_usd",
-                      };
+                    : basis === "api"
+                      ? {
+                          column: "r.api_sort",
+                          index: "report_records_page_api_usd",
+                        }
+                      : {
+                          column: "r.subscription_sort",
+                          index: "report_records_page_subscription_usd",
+                        };
     // 同值记录按 id 与排序方向一致排列，降序正好是升序索引的倒序扫描。
     const direction = descending ? "DESC" : "ASC";
     const rows = this.db
