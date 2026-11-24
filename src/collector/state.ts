@@ -218,6 +218,14 @@ export class CollectorState {
       .run(key, value);
   }
 
+  metaByPrefix(prefix: string): { key: string; value: string }[] {
+    return this.db
+      .query<{ key: string; value: string }, [string, string]>(
+        "SELECT key, value FROM meta WHERE key >= ? AND key < ? ORDER BY key",
+      )
+      .all(prefix, `${prefix}\uffff`);
+  }
+
   cursor(path: string): FileCursor | null {
     const row = this.db
       .query<

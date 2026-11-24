@@ -108,6 +108,20 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(len(self.accepted), 2)
         self.assertEqual(b.db.execute("SELECT count(*) FROM rejected").fetchone()[0], 1)
 
+    def test_rescan_clears_rejected_after_successful_delivery(self):
+        with closing(sqlite3.connect(self.source)) as db, db:
+            db.execute("INSERT INTO usage_events VALUES(2,'recoverable','invalid-json')")
+        b = self.bridge()
+        b.cycle()
+        self.assertEqual(b.db.execute("SELECT count(*) FROM rejected").fetchone()[0], 1)
+        with closing(sqlite3.connect(self.source)) as db, db:
+            db.execute("UPDATE usage_events SET payload=? WHERE id=2", (event(),))
+        b.put("rescan", "0")
+        b.db.commit()
+        b.cycle()
+        self.assertEqual(len(self.accepted), 2)
+        self.assertEqual(b.db.execute("SELECT count(*) FROM rejected").fetchone()[0], 0)
+
     def test_scope_change_recovers_filtered_history(self):
         with closing(sqlite3.connect(self.source)) as db, db:
             db.execute("INSERT INTO usage_events VALUES(2,?,?)", ("claude", event("claude-sonnet-5")))

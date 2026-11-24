@@ -19,6 +19,7 @@ import {
   type IngestBatch,
 } from "../src/shared/ingest";
 import { keyDigest } from "../src/collector/config";
+import { CollectorState } from "../src/collector/state";
 import {
   appBundleOf,
   appendLog,
@@ -465,5 +466,33 @@ describe("采集器命令行", () => {
     appendLog(log, "新的一行");
     expect(readFileSync(log, "utf8")).toBe("新的一行\n");
     expect(statSync(`${log}.1`).size).toBe(1024 * 1024 + 1);
+  });
+
+  test("status 展示默认与额外 Antigravity 实例及 omp 额度刷新状态", () => {
+    const { env, dataDir } = setup();
+    const server = fakeServer();
+    expect(run(env, "init", "--server", server.url).code).toBe(0);
+    const state = new CollectorState(join(dataDir, "state.sqlite"));
+    try {
+      state.setMeta("agy_quota_refresh_at", "2026-11-24T05:00:00.000Z");
+      state.setMeta("agy_quota_refresh_status", "ok");
+      state.setMeta("agy_quota_refresh_at:work", "2026-11-24T05:01:00.000Z");
+      state.setMeta("agy_quota_refresh_status:work", "error:timed out");
+      state.setMeta("omp_agy_quota_refresh_at", "2026-11-24T05:02:00.000Z");
+      state.setMeta("omp_agy_quota_refresh_status", "ok");
+    } finally {
+      state.close();
+    }
+    const status = run(env, "status");
+    expect(status.code).toBe(0);
+    expect(status.stdout).toContain(
+      "Antigravity 额度刷新: 最近尝试 2026-11-24T05:00:00.000Z（成功）",
+    );
+    expect(status.stdout).toContain(
+      "Antigravity 额度刷新 (work): 最近尝试 2026-11-24T05:01:00.000Z（失败，timed out）",
+    );
+    expect(status.stdout).toContain(
+      "omp Antigravity 额度刷新: 最近尝试 2026-11-24T05:02:00.000Z（成功）",
+    );
   });
 });
