@@ -179,7 +179,7 @@ describe("quota-warmup task script", () => {
     const runner: CommandRunner = async (argv, opts) => {
       calls.push({ argv, env: opts.env });
       if (argv.includes("/usage")) {
-        const isBob = argv.includes("antigravity-cli-work");
+        const isWork = argv.includes("antigravity-cli-work");
         const nextWeek = new Date((nowSec + 604800) * 1000).toISOString();
         const next5h = new Date((nowSec + 18000) * 1000).toISOString();
         return {
@@ -198,7 +198,7 @@ describe("quota-warmup task script", () => {
                       },
                       {
                         id: "gemini-weekly",
-                        remaining_fraction: isBob ? 1 : 0.85,
+                        remaining_fraction: isWork ? 1 : 0.85,
                         reset_time: nextWeek,
                       },
                       {
@@ -208,7 +208,7 @@ describe("quota-warmup task script", () => {
                       },
                       {
                         id: "3p-weekly",
-                        remaining_fraction: isBob ? 0.5 : 1,
+                        remaining_fraction: isWork ? 0.5 : 1,
                         reset_time: nextWeek,
                       },
                     ],
@@ -802,9 +802,9 @@ describe("quota-warmup task script", () => {
     let aliceWarmed = false;
     const runner: CommandRunner = async (argv) => {
       calls.push(argv);
-      const isBob = argv.includes("antigravity-cli-work");
+      const isWork = argv.includes("antigravity-cli-work");
       if (argv.includes("/usage")) {
-        if (isBob) {
+        if (isWork) {
           return {
             exitCode: 0,
             stdout: JSON.stringify({
@@ -899,7 +899,7 @@ describe("quota-warmup task script", () => {
       random: () => rngValues.shift() ?? 0,
       runner,
     });
-    expect(report.refreshedAgyAccounts).toEqual(["bob", "bob"]);
+    expect(report.refreshedAgyAccounts).toEqual(["alice", "bob"]);
     expect(report.actions).toHaveLength(1);
     expect(report.actions[0]).toMatchObject({
       key: "agy:alice:gemini",
@@ -1036,7 +1036,7 @@ describe("quota-warmup task script", () => {
       random: () => 0,
       runner,
     });
-    expect(later.refreshedAgyAccounts).toEqual(["bob"]);
+    expect(later.refreshedAgyAccounts).toEqual(["alice"]);
     expect(later.actions).toHaveLength(0);
     expect(warmed).toBe(false);
   });
@@ -1079,7 +1079,7 @@ describe("quota-warmup task script", () => {
     const usageTargets: string[] = [];
     const runner: CommandRunner = async (argv) => {
       usageTargets.push(
-        argv.includes("antigravity-cli-work") ? "bob" : "bob",
+        argv.includes("antigravity-cli-work") ? "bob" : "alice",
       );
       return { exitCode: 1, stdout: "", logText: "" };
     };
@@ -1098,7 +1098,7 @@ describe("quota-warmup task script", () => {
       random: () => 0,
       runner,
     });
-    expect(usageTargets).toEqual(["bob", "bob"]);
+    expect(usageTargets).toEqual(["bob", "alice"]);
 
     // 39 分钟后：bob 仍未到 40m；40 分钟后才重试
     await runWarmup(sb.env, {
@@ -1106,19 +1106,14 @@ describe("quota-warmup task script", () => {
       random: () => 0,
       runner,
     });
-    expect(usageTargets).toEqual(["bob", "bob", "bob"]);
+    expect(usageTargets).toEqual(["bob", "alice", "alice"]);
 
     await runWarmup(sb.env, {
       now: () => new Date((nowSec + 40 * 60) * 1000),
       random: () => 0,
       runner,
     });
-    expect(usageTargets).toEqual([
-      "bob",
-      "bob",
-      "bob",
-      "bob",
-    ]);
+    expect(usageTargets).toEqual(["bob", "alice", "alice", "bob"]);
   });
 
   test("applies per-account, per-pool, and per-window config switches with precedence over CLI flags", async () => {
@@ -1127,17 +1122,12 @@ describe("quota-warmup task script", () => {
     const staleMtime = new Date((nowSec - 7200) * 1000);
     const freshMtime = new Date((nowSec - 60) * 1000);
 
-    // 增加第三个实例 @tern（账号标签 tern），用来测试 profile 兜底匹配与 defaults 继承
-    const ternAppData = join(
-      sb.root,
-      "home",
-      ".gemini",
-      "antigravity-cli-extra",
-    );
-    mkdirSync(join(ternAppData, "conversations"), { recursive: true });
+    // 增加第三个实例 @zoe（账号标签 zoe），用来测试 profile 兜底匹配与 defaults 继承
+    const zoeAppData = join(sb.root, "home", ".gemini", "antigravity-cli-zoe");
+    mkdirSync(join(zoeAppData, "conversations"), { recursive: true });
     writeFileSync(
-      join(ternAppData, "antigravity-oauth-token"),
-      JSON.stringify({ id_token_email: "carol@example.com" }),
+      join(zoeAppData, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "zoe@example.com" }),
     );
     // 再增加第四个未在 config.accounts 中列出的实例 @extra，用来验证 defaults 继承
     const extraAppData = join(
@@ -1149,7 +1139,7 @@ describe("quota-warmup task script", () => {
     mkdirSync(join(extraAppData, "conversations"), { recursive: true });
     writeFileSync(
       join(extraAppData, "antigravity-oauth-token"),
-      JSON.stringify({ id_token_email: "dave@example.com" }),
+      JSON.stringify({ id_token_email: "extra@example.com" }),
     );
 
     const writeAllExpired = (file: string, mtime: Date) => {
@@ -1167,10 +1157,10 @@ describe("quota-warmup task script", () => {
 
     // alice: gemini 开 5h+7d，3p 关 5h、开 7d（验证池级覆盖）
     writeAllExpired(join(sb.statuslineDir, "quota-alice.tsv"), freshMtime);
-    // bob (@work): 通过 profile 兜底键 agy:bob 设为 enabled: false，缓存故意设为陈旧验证不触发 /usage
+    // bob (@work): 通过 profile 兜底键 agy:work 设为 enabled: false，缓存故意设为陈旧验证不触发 /usage
     writeAllExpired(join(sb.statuslineDir, "quota-bob.tsv"), staleMtime);
-    // tern (@tern): 通过 agy:@tern 开启 5h、关闭 7d
-    writeAllExpired(join(sb.statuslineDir, "quota-carol.tsv"), freshMtime);
+    // zoe (@zoe): 通过 agy:@zoe 开启 5h、关闭 7d
+    writeAllExpired(join(sb.statuslineDir, "quota-zoe.tsv"), freshMtime);
     // extra (@extra): 未列出，继承 defaults（5h: false, 7d: true）
     writeAllExpired(join(sb.statuslineDir, "quota-extra.tsv"), freshMtime);
 
@@ -1193,8 +1183,8 @@ describe("quota-warmup task script", () => {
             gemini: { "5h": true, "7d": true },
             "3p": { "5h": false, "7d": true },
           },
-          "agy:bob": { enabled: false },
-          "agy:@tern": { enabled: true, "5h": true, "7d": false },
+          "agy:work": { enabled: false },
+          "agy:@zoe": { enabled: true, "5h": true, "7d": false },
         },
       }),
     );
@@ -1216,7 +1206,7 @@ describe("quota-warmup task script", () => {
 
     // bob 被 enabled: false 禁用：既不做陈旧 /usage 巡检，也不进入 checkedAgyAccounts 与 actions
     expect(report.refreshedAgyAccounts).toEqual([]);
-    expect(report.checkedAgyAccounts).toEqual(["bob", "extra", "tern"]);
+    expect(report.checkedAgyAccounts).toEqual(["alice", "extra", "zoe"]);
     expect(calls.some((argv) => argv.includes("antigravity-cli-work"))).toBe(
       false,
     );
@@ -1227,8 +1217,8 @@ describe("quota-warmup task script", () => {
       "gemini_5h",
     ]);
     expect(byKey.get("agy:alice:3p")).toEqual(["3p_weekly"]);
-    expect(byKey.get("agy:alice:gemini")).toEqual(["gemini_5h"]);
-    expect(byKey.get("agy:alice:3p")).toEqual(["3p_5h"]);
+    expect(byKey.get("agy:zoe:gemini")).toEqual(["gemini_5h"]);
+    expect(byKey.get("agy:zoe:3p")).toEqual(["3p_5h"]);
     expect(byKey.get("agy:extra:gemini")).toEqual(["gemini_weekly"]);
     expect(byKey.get("agy:extra:3p")).toEqual(["3p_weekly"]);
     // codex 显式配置 5h: false，覆盖了传入的 includeCodex5h: true
@@ -1246,15 +1236,11 @@ describe("quota-warmup task script", () => {
             gemini: { enabled: false },
             "3p": { "5h": true, "7d": false },
           },
-          "agy:bob": { enabled: false },
+          "agy:work": { enabled: false },
         },
       }),
     );
-    utimesSync(
-      join(sb.statuslineDir, "quota-bob.tsv"),
-      freshMtime,
-      freshMtime,
-    );
+    utimesSync(join(sb.statuslineDir, "quota-bob.tsv"), freshMtime, freshMtime);
     // extra 进入新一轮 5h / 7d 到期，避免命中第 1 轮已记录的 handledEpoch
     writeFileSync(
       join(sb.statuslineDir, "quota-extra.tsv"),
@@ -1282,7 +1268,7 @@ describe("quota-warmup task script", () => {
     );
     expect(second.checkedCodex).toBe(false);
     const secondByKey = new Map(second.actions.map((a) => [a.key, a.windows]));
-    // agy:bob 精确匹配胜过 agy:bob，且 gemini 池被单独关闭、3p 池开启 5h
+    // agy:bob 精确匹配胜过 agy:work，且 gemini 池被单独关闭、3p 池开启 5h
     expect(secondByKey.has("agy:bob:gemini")).toBe(false);
     expect(secondByKey.get("agy:bob:3p")).toEqual(["3p_5h"]);
     // 未列出账号（extra）在 --include-5h 下覆盖 defaults["5h"]: false，启用 5h 但保持 7d: false
@@ -1370,7 +1356,7 @@ describe("quota-warmup task script", () => {
     const calls: string[][] = [];
     const runner: CommandRunner = async (argv) => {
       calls.push(argv);
-      // 模拟在 tide 预热 prompt 执行期间，令牌文件被移除。
+      // 模拟在 work 预热 prompt 执行期间，令牌文件被移除。
       if (argv.includes("antigravity-cli-work") && !argv.includes("/usage")) {
         rmSync(join(sb.workAppData, "antigravity-oauth-token"), {
           force: true,
@@ -1393,16 +1379,14 @@ describe("quota-warmup task script", () => {
           argv.includes("antigravity-cli-dirtoken"),
       ),
     ).toBe(false);
-    // tide 只调用了一次 prompt；由于 prompt 期间令牌被删，紧随其后的 /usage 被拦截未调用。
-    const tideCalls = calls.filter((argv) =>
+    // work 只调用了一次 prompt；由于 prompt 期间令牌被删，紧随其后的 /usage 被拦截未调用。
+    const workCalls = calls.filter((argv) =>
       argv.includes("antigravity-cli-work"),
     );
-    expect(tideCalls).toHaveLength(1);
-    expect(tideCalls[0]!.includes("/usage")).toBe(false);
-    const tideAction = report.actions.find(
-      (a) => a.key === "agy:bob:gemini",
-    );
-    expect(tideAction?.succeeded).toBe(true);
-    expect(tideAction?.refreshedQuota).toBe(false);
+    expect(workCalls).toHaveLength(1);
+    expect(workCalls[0]!.includes("/usage")).toBe(false);
+    const bobAction = report.actions.find((a) => a.key === "agy:bob:gemini");
+    expect(bobAction?.succeeded).toBe(true);
+    expect(bobAction?.refreshedQuota).toBe(false);
   });
 });
