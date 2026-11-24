@@ -121,11 +121,13 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
 
 对 Codex、OpenCode、Antigravity 与 omp 的保证:
   - 只以只读方式打开 ~/.codex（或 CODEX_HOME）下的会话记录、OpenCode 本地数据库
-    ~/.local/share/opencode/opencode.db、Antigravity 会话库 ~/.gemini/antigravity-cli/conversations/*.db
-    以及 omp 会话记录 ~/.omp/agent/sessions。不修改这些原文件。
-  - 唯一的例外在 sync：发现新的 Antigravity 用量时，最多每 5 分钟运行一次本机
-    agy -p /usage 刷新状态栏额度缓存 ~/.cache/agy-statusline（agy 自己联网读取额度）。
-    采集器本身不调用任何接口，scan 绝不触发。
+    ~/.local/share/opencode/opencode.db、Antigravity 默认与额外实例会话库
+    ~/.gemini/antigravity-cli*/conversations/*.db 以及 omp 会话记录
+    ~/.omp/agent/sessions 与账号库 ~/.omp/agent/agent.db。不修改这些原文件。
+  - 唯一的例外在 sync：发现新的 Antigravity 用量、缺少本地额度缓存或 omp 出现 429 时，
+    按冷却间隔按需运行本机 agy -p /usage 或 omp usage --json（429 时先清理 omp 缓存）
+    刷新状态栏额度缓存 ~/.cache/agy-statusline（由 agy/omp 自己联网读取额度）。
+    采集器本身不调用任何上游接口，scan 绝不触发。
   - 只上传计量数字、模型、推理档位、时间与套餐；会话标识、消息内容、路径与
     凭据不读取、不上传。
   - 新来源只上传发生时间不早于 ${SOURCE_START.slice(0, 10)} 的记录，更早的历史在读取时丢弃。
@@ -1396,15 +1398,28 @@ function runStatus(paths: CollectorPaths) {
     }
     const lastSources = state.getMeta("last_sources");
     if (lastSources) console.log(`上轮来源: ${lastSources}`);
+    const formatRefreshStatus = (status: string) =>
+      status.startsWith("error:") ? `失败，${status.slice(6)}` : "成功";
     const refreshAt = state.getMeta("agy_quota_refresh_at");
     if (refreshAt) {
       const refreshStatus = state.getMeta("agy_quota_refresh_status") ?? "";
       console.log(
-        `Antigravity 额度刷新: 最近尝试 ${refreshAt}（${
-          refreshStatus.startsWith("error:")
-            ? `失败，${refreshStatus.slice(6)}`
-            : "成功"
-        }）`,
+        `Antigravity 额度刷新: 最近尝试 ${refreshAt}（${formatRefreshStatus(refreshStatus)}）`,
+      );
+    }
+    for (const row of state.metaByPrefix("agy_quota_refresh_at:")) {
+      const profile = row.key.slice("agy_quota_refresh_at:".length);
+      const refreshStatus =
+        state.getMeta(`agy_quota_refresh_status:${profile}`) ?? "";
+      console.log(
+        `Antigravity 额度刷新 (${profile}): 最近尝试 ${row.value}（${formatRefreshStatus(refreshStatus)}）`,
+      );
+    }
+    const ompRefreshAt = state.getMeta("omp_agy_quota_refresh_at");
+    if (ompRefreshAt) {
+      const refreshStatus = state.getMeta("omp_agy_quota_refresh_status") ?? "";
+      console.log(
+        `omp Antigravity 额度刷新: 最近尝试 ${ompRefreshAt}（${formatRefreshStatus(refreshStatus)}）`,
       );
     }
     for (const segment of state.segments()) {

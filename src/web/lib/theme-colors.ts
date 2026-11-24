@@ -22,12 +22,12 @@ const fallback = {
   accent: "#0e8a55",
   accentRgb: "14 138 85",
   ink: "#18181b",
-  muted: "#5f5f68",
-  faint: "#8e8e97",
-  line: "#e4e4e7",
-  lineSoft: "#ededf0",
+  muted: "#5b5c66",
+  faint: "#8b8d98",
+  line: "#e4e5e9",
+  lineSoft: "#eff0f3",
   surface: "#ffffff",
-  soft: "#f0f0f2",
+  soft: "#f1f2f4",
 };
 
 export const chartFontFamily =

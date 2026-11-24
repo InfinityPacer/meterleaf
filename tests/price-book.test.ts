@@ -49,7 +49,7 @@ test("bundled JSON matches catalog generator and retires built-in credits", () =
   expect(subscription.credits.amount).toBeNull();
   expect(api.credits.amount).toBeNull();
   expect(subscription.apiUsd).toEqual(api.apiUsd);
-  expect(subscription.version).toBe("meterleaf@2026-11-23.1");
+  expect(subscription.version).toBe("meterleaf@2026-11-23.2");
   // 0.2 及更早版本的价格表标识为 meterleaf-openai，接替关系让报表缓存跨升级保留。
   expect(defaultPriceBook.supersedes).toEqual(["meterleaf-openai"]);
 });
@@ -930,7 +930,7 @@ test("model aliases overlay prices private groups, applies excludePrefixes, fold
       }),
     );
     const loaded1 = await loadPriceBook(undefined, aliasPath);
-    expect(loaded1.version).toMatch(/^2026-11-23\.1\+aliases-[0-9a-f]{16}$/);
+    expect(loaded1.version).toMatch(/^2026-11-23\.2\+aliases-[0-9a-f]{16}$/);
     expect(loaded1.excludeRoutePrefixes).toEqual(["group/", "pool/"]);
     expect(priceBookKey(loaded1).split("@")).toHaveLength(2);
 
@@ -989,7 +989,7 @@ test("model aliases overlay prices private groups, applies excludePrefixes, fold
     );
     const excludeOnly = await loadPriceBook(undefined, excludeOnlyPath);
     expect(excludeOnly.version).toMatch(
-      /^2026-11-23\.1\+aliases-[0-9a-f]{16}$/,
+      /^2026-11-23\.2\+aliases-[0-9a-f]{16}$/,
     );
     expect(
       valueUsage({ ...groupFact, model: "GROUP/gpt-6.1-sol" }, excludeOnly).usd
