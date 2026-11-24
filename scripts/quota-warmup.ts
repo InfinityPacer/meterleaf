@@ -89,7 +89,7 @@ const agyWindowSeconds: Record<AgyWindowKey, number> = {
   "3p_weekly": 7 * 24 * 3600,
 };
 /** 查询本身与秒级截断的余量：重置时间离现在不少于「整个窗口长度减去它」即视为尚未开窗。 */
-const UNOPENED_RESET_SLACK_SEC = 120;
+const UNOPENED_RESET_SLACK_SEC = 5 * 60;
 
 export interface AgyInstance {
   profileName: string | null;
