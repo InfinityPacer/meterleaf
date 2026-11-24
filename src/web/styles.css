@@ -2473,6 +2473,81 @@ button[data-size="icon-sm"],
   align-items: center;
   gap: 4px;
 }
+.account-heading-actions button[data-compact="true"] {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+}
+/* 强调色文字叠在弱底上时向正文色收一些，浅深色各配色静止与悬停态文字对比度均不低于 4.5:1。 */
+.account-heading-actions button[data-active="true"] {
+  color: color-mix(in srgb, var(--accent) 72%, var(--ink));
+  background: var(--accent-soft);
+}
+.account-heading-actions button[data-active="true"]:hover {
+  color: color-mix(in srgb, var(--accent) 72%, var(--ink));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.account-groups {
+  display: grid;
+  gap: 16px;
+}
+.account-group {
+  min-width: 0;
+}
+.account-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+.account-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 500;
+  color: var(--muted);
+}
+.account-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-group-count {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.account-group-order-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-block: -6px;
+}
+.account-group-order-actions .account-group-move {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+}
+.account-group-order-actions .account-group-move:disabled {
+  opacity: 0.35;
+}
 .model-sort-control {
   flex: 0 0 auto;
 }

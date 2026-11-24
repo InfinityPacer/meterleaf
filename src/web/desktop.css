@@ -416,6 +416,25 @@
     padding: 0 2px;
   }
 
+  .app-shell .account-group-order-actions {
+    margin-block: -4px;
+  }
+
+  .app-shell .account-group-move {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    min-height: 28px;
+    padding: 0;
+    border-radius: var(--radius-xs);
+    color: var(--desktop-muted);
+  }
+
+  .app-shell .account-group-move:hover:not(:disabled) {
+    color: var(--desktop-ink);
+    background: var(--soft);
+  }
+
   .app-shell .period-heading {
     margin: 0 0 12px;
     padding: 0 2px;

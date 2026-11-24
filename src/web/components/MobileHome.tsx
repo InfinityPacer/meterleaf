@@ -1,6 +1,7 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp } from "lucide-react";
 import type { ReactNode } from "react";
 import { accountInitial } from "../lib/account-aliases";
+import { groupAccountsByPlatform } from "../lib/account-groups";
 import { planBadge } from "../lib/plan";
 import type { LedgerView } from "../../shared/ledger-view";
 import type { AccountLifetime, LedgerAccount } from "../../shared/report";
@@ -45,9 +46,16 @@ export interface MobileHomeProps {
   onRequests: (account: LedgerAccount) => void;
   /** 当前列出的是已归档账户。 */
   showArchived?: boolean;
+  /** 按账号平台分组展示活跃账户。 */
+  grouped?: boolean;
   /** 当前正在调整账户顺序。 */
   editingOrder?: boolean;
-  onReorderAccount?: (activeId: string, overId: string) => void;
+  onReorderAccount?: (
+    activeId: string,
+    overId: string,
+    groupAccountIds?: ReadonlySet<string>,
+  ) => void;
+  onMoveGroup?: (groupKey: string, direction: "up" | "down") => void;
   /** 账户区标题右侧的归档与排序切换。 */
   accountHeadingActions?: ReactNode;
   /** 每张账户卡片的拖拽手柄与管理菜单，与卡片按钮平级，不能嵌套在按钮里。 */
@@ -204,8 +212,10 @@ export function MobileHome({
   onAccount,
   onRequests,
   showArchived = false,
+  grouped = false,
   editingOrder = false,
   onReorderAccount,
+  onMoveGroup,
   accountHeadingActions,
   renderAccountActions,
   summary,
@@ -213,6 +223,84 @@ export function MobileHome({
   summaryUpdating = false,
 }: MobileHomeProps) {
   const sorting = editingOrder && !showArchived;
+  const groups =
+    !showArchived && grouped ? groupAccountsByPlatform(accounts) : [];
+  const groupingActive = !showArchived && grouped && groups.length > 1;
+  const movableGroups = groups.filter((group) => !group.isOther);
+  const canMoveGroups = sorting && groupingActive && movableGroups.length > 1;
+
+  const renderAccountItem = (account: LedgerAccount, itemSorting: boolean) => {
+    const quotas = showArchived ? [] : accountQuotaWindows(account, asOf);
+    const hasQuota =
+      !showArchived &&
+      Boolean(
+        account.fiveHour ||
+        account.sevenDay ||
+        account.monthly ||
+        hasThirdPartyPool(account),
+      );
+    const plan = planBadge(account);
+    const open = () => (hasQuota ? onAccount(account) : onRequests(account));
+    return (
+      <SortableAccountItem
+        as="li"
+        key={account.id}
+        id={account.id}
+        enabled={itemSorting}
+        manageable={Boolean(renderAccountActions)}
+      >
+        <button
+          type="button"
+          className="mobile-home-account-card"
+          data-quota-count={quotas.length}
+          onClick={open}
+          aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
+        >
+          <span className="mobile-home-account-head">
+            <span
+              className="mobile-home-account-avatar"
+              data-kind={account.kind}
+              aria-hidden="true"
+            >
+              {accountInitial(account.name)}
+            </span>
+            <span className="mobile-home-account-name">
+              <strong title={account.name}>{account.name}</strong>
+              {plan && (
+                <span className="plan-chip" data-tier={plan.tier ?? undefined}>
+                  {plan.label}
+                </span>
+              )}
+            </span>
+            <ChevronRight
+              className="mobile-home-account-chevron"
+              size={18}
+              aria-hidden="true"
+            />
+          </span>
+          {quotas.length ? (
+            <span className="quota-window-list" data-count={quotas.length}>
+              {quotas.map((quota) => (
+                <QuotaWindow key={quota.key} selection={quota} asOf={asOf} />
+              ))}
+            </span>
+          ) : hasQuota ? (
+            <div className="mobile-home-quota-unavailable">
+              {quotaUnavailableNote(account)}
+            </div>
+          ) : (
+            <UsageSummary
+              account={account}
+              lifetime={account.lifetime}
+              current={snapshot.view.accountUsage?.[account.id]}
+            />
+          )}
+        </button>
+        {renderAccountActions?.(account)}
+      </SortableAccountItem>
+    );
+  };
+
   return (
     <div className="mobile-home">
       <header className="mobile-home-header">
@@ -239,106 +327,108 @@ export function MobileHome({
           </h2>
           {accountHeadingActions}
         </div>
-        <ul
-          className="mobile-home-account-list"
-          aria-label={showArchived ? "已归档账户列表" : "账户额度摘要"}
-        >
-          <SortableAccountList
-            accounts={accounts}
-            enabled={sorting}
-            onReorder={onReorderAccount}
+        {groupingActive ? (
+          <div
+            className="mobile-home-account-groups"
+            aria-label="按平台分组的账户额度"
           >
-            {accounts.map((account) => {
-              const quotas = showArchived
-                ? []
-                : accountQuotaWindows(account, asOf);
-              const hasQuota =
-                !showArchived &&
-                Boolean(
-                  account.fiveHour ||
-                  account.sevenDay ||
-                  account.monthly ||
-                  hasThirdPartyPool(account),
-                );
-              const plan = planBadge(account);
-              const open = () =>
-                hasQuota ? onAccount(account) : onRequests(account);
+            {groups.map((group, index) => {
+              const headingId = `mobile-home-account-group-${index}-title`;
+              const groupSorting = sorting && group.accounts.length > 1;
+              const groupIdSet = new Set(
+                group.accounts.map((account) => account.id),
+              );
+              const movableIndex = group.isOther
+                ? -1
+                : movableGroups.findIndex((item) => item.key === group.key);
               return (
-                <SortableAccountItem
-                  as="li"
-                  key={account.id}
-                  id={account.id}
-                  enabled={sorting}
-                  manageable={Boolean(renderAccountActions)}
+                <section
+                  className="mobile-home-account-group"
+                  key={group.key}
+                  aria-labelledby={headingId}
                 >
-                  <button
-                    type="button"
-                    className="mobile-home-account-card"
-                    data-quota-count={quotas.length}
-                    onClick={open}
-                    aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
-                  >
-                    <span className="mobile-home-account-head">
+                  <div className="mobile-home-account-group-heading">
+                    <h3
+                      id={headingId}
+                      className="mobile-home-account-group-title"
+                    >
                       <span
-                        className="mobile-home-account-avatar"
-                        data-kind={account.kind}
-                        aria-hidden="true"
+                        className="mobile-home-account-group-name"
+                        title={group.label}
                       >
-                        {accountInitial(account.name)}
+                        {group.label}
                       </span>
-                      <span className="mobile-home-account-name">
-                        <strong title={account.name}>{account.name}</strong>
-                        {plan && (
-                          <span
-                            className="plan-chip"
-                            data-tier={plan.tier ?? undefined}
-                          >
-                            {plan.label}
-                          </span>
-                        )}
+                      <span className="mobile-home-account-group-count">
+                        {group.accounts.length}
                       </span>
-                      <ChevronRight
-                        className="mobile-home-account-chevron"
-                        size={18}
-                        aria-hidden="true"
-                      />
-                    </span>
-                    {quotas.length ? (
-                      <span
-                        className="quota-window-list"
-                        data-count={quotas.length}
-                      >
-                        {quotas.map((quota) => (
-                          <QuotaWindow
-                            key={quota.key}
-                            selection={quota}
-                            asOf={asOf}
-                          />
-                        ))}
-                      </span>
-                    ) : hasQuota ? (
-                      <div className="mobile-home-quota-unavailable">
-                        {quotaUnavailableNote(account)}
+                    </h3>
+                    {canMoveGroups && !group.isOther && (
+                      <div className="mobile-home-account-group-actions">
+                        <button
+                          type="button"
+                          className="mobile-home-account-group-move"
+                          disabled={movableIndex <= 0}
+                          aria-label={`上移 ${group.label} 分组`}
+                          title={`上移 ${group.label} 分组`}
+                          onClick={() => onMoveGroup?.(group.key, "up")}
+                        >
+                          <ChevronUp size={16} aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          className="mobile-home-account-group-move"
+                          disabled={
+                            movableIndex < 0 ||
+                            movableIndex >= movableGroups.length - 1
+                          }
+                          aria-label={`下移 ${group.label} 分组`}
+                          title={`下移 ${group.label} 分组`}
+                          onClick={() => onMoveGroup?.(group.key, "down")}
+                        >
+                          <ChevronDown size={16} aria-hidden="true" />
+                        </button>
                       </div>
-                    ) : (
-                      <UsageSummary
-                        account={account}
-                        lifetime={account.lifetime}
-                        current={snapshot.view.accountUsage?.[account.id]}
-                      />
                     )}
-                  </button>
-                  {renderAccountActions?.(account)}
-                </SortableAccountItem>
+                  </div>
+                  <ul
+                    className="mobile-home-account-list"
+                    aria-label={`${group.label} 账户`}
+                  >
+                    <SortableAccountList
+                      accounts={group.accounts}
+                      enabled={groupSorting}
+                      onReorder={(activeId, overId) =>
+                        onReorderAccount?.(activeId, overId, groupIdSet)
+                      }
+                    >
+                      {group.accounts.map((account) =>
+                        renderAccountItem(account, groupSorting),
+                      )}
+                    </SortableAccountList>
+                  </ul>
+                </section>
               );
             })}
-          </SortableAccountList>
-          {!accounts.length && (
-            <li className="mobile-home-empty">
-              {showArchived ? "暂无归档账户" : "暂无账户"}
-            </li>
-          )}
-        </ul>
+          </div>
+        ) : (
+          <ul
+            className="mobile-home-account-list"
+            aria-label={showArchived ? "已归档账户列表" : "账户额度摘要"}
+          >
+            <SortableAccountList
+              accounts={accounts}
+              enabled={sorting}
+              onReorder={onReorderAccount}
+            >
+              {accounts.map((account) => renderAccountItem(account, sorting))}
+            </SortableAccountList>
+            {!accounts.length && (
+              <li className="mobile-home-empty">
+                {showArchived ? "暂无归档账户" : "暂无账户"}
+              </li>
+            )}
+          </ul>
+        )}
       </section>
     </div>
   );
