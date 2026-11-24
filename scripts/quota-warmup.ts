@@ -82,6 +82,14 @@ const quotaBuckets: Record<string, AgyWindowKey> = {
   "3p-weekly": "3p_weekly",
 };
 const tsvOrder = [...Object.values(quotaBuckets), "plan"];
+const agyWindowSeconds: Record<AgyWindowKey, number> = {
+  gemini_5h: 5 * 3600,
+  gemini_weekly: 7 * 24 * 3600,
+  "3p_5h": 5 * 3600,
+  "3p_weekly": 7 * 24 * 3600,
+};
+/** 查询本身与秒级截断的余量：重置时间离现在不少于「整个窗口长度减去它」即视为尚未开窗。 */
+const UNOPENED_RESET_SLACK_SEC = 120;
 
 export interface AgyInstance {
   profileName: string | null;
@@ -806,6 +814,7 @@ function parseAgyUsageResetEpoch(
 
 export function parseUsageBuckets(
   output: string,
+  unopenedCheckAtSec?: number,
 ): Map<string, string> | string {
   let parsed: unknown;
   try {
@@ -833,8 +842,20 @@ export function parseUsageBuckets(
         remaining > 1
       )
         continue;
-      const resetEpoch = parseAgyUsageResetEpoch(bucket?.reset_time, remaining);
+      let resetEpoch = parseAgyUsageResetEpoch(bucket?.reset_time, remaining);
       if (resetEpoch === null) continue;
+      // 上游重置后还没有请求的窗口，agy 也可能报一个「从查询时刻起算整个窗口」的重置时间，
+      // 每次查询都往后顺延；只读巡检时按未开窗记为 0，否则预热永远等不到它到期。
+      // 预热刚发出请求后的查询不做这项判断，那时窗口确实刚开、重置时间照实记录。
+      if (
+        unopenedCheckAtSec !== undefined &&
+        remaining === 1 &&
+        resetEpoch > 0 &&
+        resetEpoch - unopenedCheckAtSec >=
+          agyWindowSeconds[key] - UNOPENED_RESET_SLACK_SEC
+      ) {
+        resetEpoch = 0;
+      }
       rows.set(key, `${key}\t${usedPercent(remaining)}\t${resetEpoch}`);
     }
   }
@@ -1100,6 +1121,7 @@ export async function runWarmup(
           statusDir,
           env,
           runner,
+          nowSec,
         );
         if (refreshed) {
           report.refreshedAgyAccounts.push(label);
@@ -1310,6 +1332,7 @@ async function runAgyUsageRefresh(
   tempDir: string,
   statusDir: string,
   runner: CommandRunner,
+  unopenedCheckAtSec?: number,
 ): Promise<boolean> {
   const usageLog = join(tempDir, "usage.log");
   const usageArgv = [
@@ -1329,7 +1352,7 @@ async function runAgyUsageRefresh(
     logFile: usageLog,
   });
   if (usageRes.exitCode !== 0) return false;
-  const buckets = parseUsageBuckets(usageRes.stdout);
+  const buckets = parseUsageBuckets(usageRes.stdout, unopenedCheckAtSec);
   if (typeof buckets === "string") return false;
   mkdirSync(statusDir, { recursive: true, mode: 0o700 });
   mergeQuotaFile(join(statusDir, `quota-${label}.tsv`), buckets);
@@ -1342,6 +1365,7 @@ async function refreshStaleAgyQuota(
   statusDir: string,
   env: Env,
   runner: CommandRunner,
+  nowSec: number,
 ): Promise<boolean> {
   if (
     instance.profileName !== null &&
@@ -1362,6 +1386,7 @@ async function refreshStaleAgyQuota(
       tempDir,
       statusDir,
       runner,
+      nowSec,
     );
   } catch {
     return false;
