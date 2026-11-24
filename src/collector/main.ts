@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   maybeRefreshAgyQuota,
@@ -17,7 +17,12 @@ import {
   readCredentialVersion,
 } from "./claude-code/credential";
 import { readStatuslineCache } from "./claude-code/statusline-cache";
-import { collect, type CollectReport, type ProfileReport } from "./collect";
+import {
+  collect,
+  discoverClaudeProfiles,
+  type CollectReport,
+  type ProfileReport,
+} from "./collect";
 import { effectiveChannelAccounts } from "./channel-accounts";
 import { readCodex, type CodexReaderSources } from "./codex";
 import {
@@ -55,6 +60,9 @@ import {
   QUOTA_SUMMARY_FILE,
   fetchQuotaSummary,
   localLogins,
+  readExistingClaudeQuotaSummaryLogins,
+  refreshClaudeQuotaSummaryLogins,
+  resolveExclusiveClaudeLogins,
   writeQuotaSummary,
 } from "./quota-summary";
 import type { SourceReaderReport } from "./sources";
@@ -536,7 +544,7 @@ function collectSources(
   paths: CollectorPaths,
   config: Pick<
     CollectorConfig,
-    "statuslineCache" | "modelAccounts" | "claudeProfiles"
+    "statuslineCache" | "modelAccounts" | "claudeProfiles" | "claude"
   > | null,
 ) {
   return {
@@ -544,6 +552,8 @@ function collectSources(
     statuslineCache: config?.statuslineCache ?? null,
     modelAccounts: config?.modelAccounts ?? [],
     claudeProfiles: config?.claudeProfiles ?? [],
+    claudeProfilesDir: config?.claude?.profilesDir ?? null,
+    claudeStatuslineCacheDir: config?.claude?.statuslineCacheDir ?? null,
     credential: {
       location: {
         claudeRoot: paths.claudeRoot,
@@ -743,14 +753,10 @@ export function sourceReportText(
 }
 
 async function runScan(paths: CollectorPaths, json: boolean) {
+  // 配置文件不存在时返回 null（未初始化允许本地 scan）；已存在但损坏或格式无效时直接报错，避免静默回退到默认目录。
+  const config = loadConfig(paths.configFile);
   const state = new CollectorState(":memory:");
   try {
-    let config: CollectorConfig | null = null;
-    try {
-      config = loadConfig(paths.configFile);
-    } catch {
-      config = null;
-    }
     const report = collect(
       state,
       collectSources(paths, config),
@@ -788,13 +794,19 @@ async function runScan(paths: CollectorPaths, json: boolean) {
       return;
     }
     printReport(report);
-    console.log(
-      report.accountUuid
-        ? `当前账户: ${shortId(report.accountUuid)}`
-        : report.claudeJsonRead
-          ? "当前账户: 未登录订阅账户"
-          : "当前账户: 未能读取 .claude.json",
-    );
+    if (config?.claude?.profilesDir) {
+      console.log(
+        `当前账户: 仅采集 ${config.claude.profilesDir}（已跳过默认目录）`,
+      );
+    } else {
+      console.log(
+        report.accountUuid
+          ? `当前账户: ${shortId(report.accountUuid)}`
+          : report.claudeJsonRead
+            ? "当前账户: 未登录订阅账户"
+            : "当前账户: 未能读取 .claude.json",
+      );
+    }
     if (report.accountUuid) {
       // scan 只跑一轮，凭据套餐总是待确认；显示换算结果，同步时连续两轮一致才上报。
       const plan =
@@ -833,8 +845,11 @@ async function runScan(paths: CollectorPaths, json: boolean) {
     }
     const quotaIssue = quotaIssueText(report);
     if (quotaIssue) console.log(quotaIssue);
+    const profileLabel = config?.claude?.profilesDir
+      ? "Claude 账户"
+      : "额外账户";
     for (const profile of report.profiles)
-      console.log(`额外账户 ${profileSummary(profile)}`);
+      console.log(`${profileLabel} ${profileSummary(profile)}`);
     console.log("");
     printTotals(totals);
     console.log("");
@@ -884,6 +899,8 @@ async function runSync(paths: CollectorPaths): Promise<number> {
     if (result.error) {
       state.setMeta("last_failure_at", now);
       state.setMeta("last_failure", result.error.message);
+      // 推送失败或离线时，独占目录模式仍须同步本地额度摘要里的 Claude 登录映射，防止旧目录滞留。
+      syncExclusiveClaudeSummaryLogins(paths, config, report);
       console.error(
         `${now} 推送失败（${result.error.kind}）: ${result.error.message}`,
       );
@@ -942,6 +959,40 @@ async function runSync(paths: CollectorPaths): Promise<number> {
 }
 
 /**
+ * 独占 Claude 目录模式下，推送失败或额度接口暂不可用时仅同步已有 quota-summary.json 的
+ * `logins.claude`，保留原服务端摘要、取回时间及非 Claude 登录映射；本地读写错误返回原因供日志记录。
+ */
+function syncExclusiveClaudeSummaryLogins(
+  paths: CollectorPaths,
+  config: CollectorConfig,
+  report: CollectReport,
+): string | null {
+  const profilesDir = config.claude?.profilesDir;
+  if (!profilesDir) return null;
+  const summaryPath = join(paths.dataDir, QUOTA_SUMMARY_FILE);
+  const computedClaude = localLogins(config.sourceId, {
+    claude: report.profiles,
+    agy: [],
+    codexChannels: [],
+  }).claude;
+  try {
+    refreshClaudeQuotaSummaryLogins(summaryPath, (existingClaude) =>
+      resolveExclusiveClaudeLogins(
+        profilesDir,
+        computedClaude,
+        existingClaude,
+        report,
+      ),
+    );
+    return null;
+  } catch (error) {
+    const reason = `额度摘要 Claude 登录映射更新失败: ${error instanceof Error ? error.message : String(error)}`;
+    console.error(`${new Date().toISOString()} ${reason}`);
+    return reason;
+  }
+}
+
+/**
  * 推送成功后取回服务端的订阅额度摘要，写给本机会话判断该用哪个账户。取不到时保留上一份，
  * 原因只在变化时记一行，与额度来源问题的记法一致。
  */
@@ -951,41 +1002,74 @@ async function refreshQuotaSummary(
   state: CollectorState,
   report: CollectReport,
 ) {
+  const summaryPath = join(paths.dataDir, QUOTA_SUMMARY_FILE);
   const result = await fetchQuotaSummary(config);
   let issue = "";
   if ("summary" in result) {
     const agy = agyReaderConfig(config);
+    const computed = localLogins(config.sourceId, {
+      claude: [
+        ...(config.claude?.profilesDir
+          ? []
+          : [
+              {
+                configDir: paths.claudeRoot,
+                accountUuid: report.accountUuid,
+              },
+            ]),
+        ...report.profiles,
+      ],
+      agy: agy ? agyInstanceAccounts(agy) : [],
+      codexChannels: effectiveChannelAccounts(config).filter(
+        (rule) => rule.source === "codex",
+      ),
+    });
     try {
-      writeQuotaSummary(join(paths.dataDir, QUOTA_SUMMARY_FILE), {
+      // 独占目录枚举不完整时（如临时 EACCES 或账户文件不可读），仅保留当前 profilesDir 范围内无法确认的既有映射，
+      // 同时剔除默认目录或其他明确排除的路径；若既有摘要本身存在但不可读，则抛出并保留原文件不覆盖。
+      const logins =
+        config.claude?.profilesDir && !report.profilesDiscoveryComplete
+          ? {
+              ...computed,
+              claude: resolveExclusiveClaudeLogins(
+                config.claude.profilesDir,
+                computed.claude,
+                readExistingClaudeQuotaSummaryLogins(summaryPath),
+                report,
+              ),
+            }
+          : computed;
+      writeQuotaSummary(summaryPath, {
         schemaVersion: 1,
         fetchedAt: new Date().toISOString(),
-        logins: localLogins(config.sourceId, {
-          claude: [
-            { configDir: paths.claudeRoot, accountUuid: report.accountUuid },
-            ...report.profiles,
-          ],
-          agy: agy ? agyInstanceAccounts(agy) : [],
-          codexChannels: effectiveChannelAccounts(config).filter(
-            (rule) => rule.source === "codex",
-          ),
-        }),
+        logins,
         summary: result.summary,
       });
     } catch (error) {
       issue = `额度摘要写入失败: ${error instanceof Error ? error.message : String(error)}`;
     }
-  } else issue = result.issue;
+  } else {
+    issue = result.issue;
+    const localError = syncExclusiveClaudeSummaryLogins(paths, config, report);
+    if (localError) issue = `${issue}；${localError}`;
+  }
   if (issue !== (state.getMeta("last_quota_summary_issue") ?? "")) {
     state.setMeta("last_quota_summary_issue", issue);
     console.log(`${new Date().toISOString()} ${issue || "额度摘要已恢复"}`);
   }
 }
 
-/** 传给额外任务的 Claude 配置目录：默认目录在前，随后是登记的额外账户。 */
+/** 传给额外任务的 Claude 配置目录：配置了 profilesDir 时只传该目录下的账号，否则默认目录在前。 */
 function claudeConfigDirs(
   paths: CollectorPaths,
-  config: Pick<CollectorConfig, "claudeProfiles">,
+  config: Pick<CollectorConfig, "claude" | "claudeProfiles">,
 ): string[] {
+  if (config.claude?.profilesDir) {
+    return discoverClaudeProfiles(
+      config.claude.profilesDir,
+      config.claude.statuslineCacheDir ?? null,
+    ).map((profile) => profile.configDir);
+  }
   return [
     paths.claudeRoot,
     ...(config.claudeProfiles ?? []).map((profile) => profile.configDir),
@@ -1161,6 +1245,13 @@ async function runTasks(
 }
 
 function runBindHistory(paths: CollectorPaths): number {
+  const config = loadConfig(paths.configFile);
+  if (config?.claude?.profilesDir) {
+    console.error(
+      `当前配置仅采集 ${config.claude.profilesDir} 中的 Claude 账号目录，不读取默认 .claude.json，无需执行 bind-history。`,
+    );
+    return 1;
+  }
   const snapshot = readClaudeJson(paths.claudeJson);
   if (!snapshot?.account) {
     console.error("未能从 .claude.json 读取当前登录账户，无法绑定历史。");
@@ -1306,6 +1397,12 @@ function runStatus(paths: CollectorPaths) {
   } else {
     console.log("配置: 尚未初始化");
   }
+  const discoveredProfiles = config?.claude?.profilesDir
+    ? discoverClaudeProfiles(
+        config.claude.profilesDir,
+        config.claude.statuslineCacheDir ?? null,
+      )
+    : null;
   if (config) {
     console.log(`状态栏额度缓存: ${config.statuslineCache ?? "未启用"}`);
     const rules = config.modelAccounts ?? [];
@@ -1342,21 +1439,35 @@ function runStatus(paths: CollectorPaths) {
           : "Antigravity 已停用"
       }，${omp ? `omp（${omp.sessionsDir}）` : "omp 已停用"}`,
     );
-    const profiles = config.claudeProfiles ?? [];
-    console.log(
-      `额外 Claude 账户: ${
-        profiles.length
-          ? profiles
-              .map(
-                (profile) =>
-                  `${profile.configDir}${
-                    profile.statuslineCache ? `=${profile.statuslineCache}` : ""
-                  }`,
-              )
-              .join("，")
-          : "未配置"
-      }`,
-    );
+    if (config.claude?.profilesDir && discoveredProfiles) {
+      const names = discoveredProfiles
+        .map((profile) => basename(profile.configDir))
+        .join("、");
+      const cacheDesc = config.claude.statuslineCacheDir
+        ? `，状态栏额度目录 ${config.claude.statuslineCacheDir}`
+        : "";
+      console.log(
+        `Claude 目录: 仅采集 ${config.claude.profilesDir}（${discoveredProfiles.length} 个账户${names ? `：${names}` : ""}${cacheDesc}）`,
+      );
+    } else {
+      const profiles = config.claudeProfiles ?? [];
+      console.log(
+        `额外 Claude 账户: ${
+          profiles.length
+            ? profiles
+                .map(
+                  (profile) =>
+                    `${profile.configDir}${
+                      profile.statuslineCache
+                        ? `=${profile.statuslineCache}`
+                        : ""
+                    }`,
+                )
+                .join("，")
+            : "未配置"
+        }`,
+      );
+    }
   }
   if (config) {
     const tasks = config.tasks ?? [];
@@ -1438,9 +1549,17 @@ function runStatus(paths: CollectorPaths) {
     }
     const lastProfiles = state.getMeta("last_profiles");
     if (lastProfiles) {
+      const profileLabel = config?.claude?.profilesDir
+        ? "Claude 账户"
+        : "额外账户";
+      const allowedDirs = discoveredProfiles
+        ? new Set(discoveredProfiles.map((profile) => profile.configDir))
+        : null;
       try {
-        for (const profile of JSON.parse(lastProfiles) as ProfileReport[])
-          console.log(`额外账户 ${profileSummary(profile)}`);
+        for (const profile of JSON.parse(lastProfiles) as ProfileReport[]) {
+          if (allowedDirs && !allowedDirs.has(profile.configDir)) continue;
+          console.log(`${profileLabel} ${profileSummary(profile)}`);
+        }
       } catch {
         // 旧版本或损坏的记录不影响其他状态输出。
       }

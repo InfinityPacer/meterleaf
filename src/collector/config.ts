@@ -20,6 +20,15 @@ export const claudeProfileSchema = z
 
 export type ClaudeProfile = z.infer<typeof claudeProfileSchema>;
 
+const claudeSourceSchema = z
+  .object({
+    /** 动态扫描该目录下的直接子目录作为受管的 Claude 账号配置目录；配置后不再读取默认 ~/.claude / ~/.claude.json 及目录外账户。 */
+    profilesDir: z.string().startsWith("/").optional(),
+    /** 可选：与 profilesDir 配合使用，按子目录名匹配 `<statuslineCacheDir>/<name>.tsv` 作为状态栏额度缓存。 */
+    statuslineCacheDir: z.string().startsWith("/").optional(),
+  })
+  .strict();
+
 /** 新来源在读取器打开路径之前判断，路径缺失只让该来源本轮为空。 */
 const codexSourceSchema = z
   .object({
@@ -80,6 +89,8 @@ const configSchema = z
     channelAccounts: z.array(channelAccountRuleSchema).max(50).optional(),
     /** 可选：同一台电脑上通过 CLAUDE_CONFIG_DIR 登录的其他 Claude 账户。 */
     claudeProfiles: z.array(claudeProfileSchema).max(20).optional(),
+    /** 可选：Claude Code 来源配置；设置 profilesDir 后只采集该目录下的账号目录，不再读取默认 ~/.claude / ~/.claude.json。 */
+    claude: claudeSourceSchema.optional(),
     /** 可选：Codex 本地记录读取器；目录不存在时该来源本轮为空。 */
     codex: codexSourceSchema.optional(),
     /** 可选：OpenCode 本地数据库读取器；数据库不存在时该来源本轮为空。 */
@@ -174,8 +185,9 @@ export function loadConfig(path: string): CollectorConfig | null {
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === "ENOENT") return null;
+    throw new Error(`无法读取配置文件: ${path}`);
   }
   const parsed = configSchema.safeParse(JSON.parse(raw));
   if (!parsed.success) {

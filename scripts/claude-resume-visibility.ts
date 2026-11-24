@@ -71,11 +71,23 @@ interface CheckedEntry {
 }
 
 function configDirs(env: Env): string[] {
-  const listed = (env.METERLEAF_CLAUDE_CONFIG_DIRS ?? "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (listed.length) return listed;
+  // 优先读取采集器传入的无损 JSON 列表，防止目录名含换行符时被按行拆成其他目录。
+  if (env.METERLEAF_CLAUDE_CONFIG_DIRS_JSON !== undefined) {
+    const parsed: unknown = JSON.parse(env.METERLEAF_CLAUDE_CONFIG_DIRS_JSON);
+    if (
+      !Array.isArray(parsed) ||
+      !parsed.every((item): item is string => typeof item === "string")
+    ) {
+      throw new Error("METERLEAF_CLAUDE_CONFIG_DIRS_JSON 格式无效");
+    }
+    return parsed.filter((item) => item.length > 0);
+  }
+  // 兼容仅传入按行变量的场景：传入该变量（哪怕为空串）即表示显式限定目录集合，保留路径原字节不裁剪，不再回退到默认目录。
+  if (env.METERLEAF_CLAUDE_CONFIG_DIRS !== undefined) {
+    return env.METERLEAF_CLAUDE_CONFIG_DIRS.split("\n").filter(
+      (line) => line.length > 0,
+    );
+  }
   // 单独运行时当前 shell 可能指向某个额外账户，默认目录的会话记录也要算上。
   const fallback = join(env.HOME || homedir(), ".claude");
   return [...new Set([env.CLAUDE_CONFIG_DIR || fallback, fallback])];

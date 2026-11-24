@@ -41,29 +41,49 @@ function text(value: unknown): string | null {
     : null;
 }
 
+export type ClaudeJsonReadResult =
+  | { kind: "ok"; snapshot: ClaudeJsonSnapshot }
+  | { kind: "absent" }
+  | { kind: "unreadable" };
+
 /**
- * 只读一次 ~/.claude.json。Claude Code 会频繁整体重写该文件，读到半截或无效 JSON
- * 时返回 null，本轮跳过账户与额度，下一轮再读；绝不写入、加锁或改权限。
+ * 只读一次 ~/.claude.json，区分正常解析、文件缺失（ENOENT/ENOTDIR）与读取/解析失败
+ * （如 EACCES、IO 错误或 Claude Code 重写中途读到半截 JSON）。绝不写入、加锁或改权限。
  */
-export function readClaudeJson(path: string): ClaudeJsonSnapshot | null {
+export function readClaudeJsonResult(path: string): ClaudeJsonReadResult {
   let raw: string;
   try {
     raw = readFileSync(path, { encoding: "utf8", flag: "r" });
-  } catch {
-    return null;
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
+    return code === "ENOENT" || code === "ENOTDIR"
+      ? { kind: "absent" }
+      : { kind: "unreadable" };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return null;
+    return { kind: "unreadable" };
   }
   const root = object(parsed);
-  if (!root) return null;
+  if (!root) return { kind: "unreadable" };
   return {
-    account: accountFrom(root.oauthAccount),
-    utilization: utilizationFrom(root.cachedUsageUtilization),
+    kind: "ok",
+    snapshot: {
+      account: accountFrom(root.oauthAccount),
+      utilization: utilizationFrom(root.cachedUsageUtilization),
+    },
   };
+}
+
+/**
+ * 只读一次 ~/.claude.json。Claude Code 会频繁整体重写该文件，读到半截或无效 JSON
+ * 时返回 null，本轮跳过账户与额度，下一轮再读；绝不写入、加锁或改权限。
+ */
+export function readClaudeJson(path: string): ClaudeJsonSnapshot | null {
+  const result = readClaudeJsonResult(path);
+  return result.kind === "ok" ? result.snapshot : null;
 }
 
 function accountFrom(value: unknown): ClaudeAccount | null {
