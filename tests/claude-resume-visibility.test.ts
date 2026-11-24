@@ -254,4 +254,76 @@ describe("让 Paseo 会话出现在 resume 列表", () => {
     ]);
     for (const item of found) expect(item.to.length).toBe(item.from.length);
   });
+
+  test("采集器传入空 METERLEAF_CLAUDE_CONFIG_DIRS 时不回退扫描默认 ~/.claude，且保留非空路径尾随空格", () => {
+    const { env, files, original } = setup();
+    const defaultClaude = join(env.HOME, ".claude", "projects", "-work");
+    mkdirSync(defaultClaude, { recursive: true });
+    const defaultFile = join(defaultClaude, `${ids.main}.jsonl`);
+    writeFileSync(defaultFile, original.main);
+
+    const emptyReport = reveal({ ...env, METERLEAF_CLAUDE_CONFIG_DIRS: "" });
+    expect(emptyReport.revealed).toEqual([]);
+    expect(emptyReport.changes).toEqual([]);
+    expect(readFileSync(defaultFile).equals(original.main)).toBe(true);
+    expect(readFileSync(files.main).equals(original.main)).toBe(true);
+
+    // 路径带尾随空格时不得 trim 成同名兄弟目录。
+    const spacedBase = join(env.HOME, "profiles");
+    const siblingDir = join(spacedBase, "claude-a");
+    const spacedDir = join(spacedBase, "claude-a ");
+    mkdirSync(join(siblingDir, "projects", "-work"), { recursive: true });
+    mkdirSync(join(spacedDir, "projects", "-work"), { recursive: true });
+    const siblingFile = join(
+      siblingDir,
+      "projects",
+      "-work",
+      `${ids.main}.jsonl`,
+    );
+    const spacedFile = join(
+      spacedDir,
+      "projects",
+      "-work",
+      `${ids.live}.jsonl`,
+    );
+    writeFileSync(siblingFile, original.main);
+    writeFileSync(spacedFile, original.live);
+
+    const spacedReport = reveal({
+      ...env,
+      METERLEAF_CLAUDE_CONFIG_DIRS: spacedDir,
+    });
+    expect(spacedReport.revealed).toEqual([ids.live]);
+    expect(listedEntrypoint(spacedFile)).toBe("cli");
+    expect(readFileSync(siblingFile).equals(original.main)).toBe(true);
+
+    // 路径含换行符时优先使用 METERLEAF_CLAUDE_CONFIG_DIRS_JSON 无损解析，不得拆成同名无换行兄弟目录。
+    const newlineSibling = join(spacedBase, "team");
+    const newlineDir = join(spacedBase, "team\nsuffix");
+    mkdirSync(join(newlineSibling, "projects", "-work"), { recursive: true });
+    mkdirSync(join(newlineDir, "projects", "-work"), { recursive: true });
+    const newlineSiblingFile = join(
+      newlineSibling,
+      "projects",
+      "-work",
+      `${ids.main}.jsonl`,
+    );
+    const newlineFile = join(
+      newlineDir,
+      "projects",
+      "-work",
+      `${ids.live}.jsonl`,
+    );
+    writeFileSync(newlineSiblingFile, original.main);
+    writeFileSync(newlineFile, original.live);
+
+    const newlineReport = reveal({
+      ...env,
+      METERLEAF_CLAUDE_CONFIG_DIRS_JSON: JSON.stringify([newlineDir]),
+      METERLEAF_CLAUDE_CONFIG_DIRS: "",
+    });
+    expect(newlineReport.revealed).toEqual([ids.live]);
+    expect(listedEntrypoint(newlineFile)).toBe("cli");
+    expect(readFileSync(newlineSiblingFile).equals(original.main)).toBe(true);
+  });
 });

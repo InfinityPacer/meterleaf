@@ -11,8 +11,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolvePaths } from "../src/collector/paths";
 import {
   isTaskDue,
+  runTask,
   taskSchema,
   type CollectorTask,
 } from "../src/collector/tasks";
@@ -327,5 +329,35 @@ printf '%s' "$METERLEAF_CLAUDE_CONFIG_DIRS" > "${out}.dirs"`,
     const help = await run(env, "help");
     expect(help.stdout).toContain("tasks add <name>");
     expect(help.stdout).toContain("以上保证只针对采集器本身");
+  });
+
+  test("任务环境用 JSON 无损传递含换行路径，并从旧按行变量过滤含换行项防误拆", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meterleaf-tasks-newline-"));
+    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const paths = resolvePaths({
+      HOME: root,
+      METERLEAF_COLLECTOR_HOME: join(root, "data"),
+    });
+    const out = join(root, "env.out");
+    const dumpScript = script(
+      root,
+      "dump.sh",
+      `printf '%s\\0%s' "$METERLEAF_CLAUDE_CONFIG_DIRS_JSON" "$METERLEAF_CLAUDE_CONFIG_DIRS" > ${JSON.stringify(out)}`,
+    );
+    const dirs = ["/tmp/profiles/normal", "/tmp/profiles/team\nsuffix"];
+    const result = await runTask(
+      paths,
+      {
+        name: "dump",
+        command: [dumpScript],
+        everyMinutes: 10,
+        timeoutSeconds: 10,
+      },
+      dirs,
+    );
+    expect(result.exitCode).toBe(0);
+    const [jsonRaw, legacyRaw] = readFileSync(out, "utf8").split("\0");
+    expect(JSON.parse(jsonRaw!)).toEqual(dirs);
+    expect(legacyRaw).toBe("/tmp/profiles/normal");
   });
 });

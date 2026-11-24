@@ -1,6 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +30,8 @@ export interface CredentialLocation {
    * 摘要后缀，摘要按原值计算，不是解析后的路径。
    */
   configDir: string | null;
+  /** 可选：仅允许读取目录内普通文件 `.credentials.json`，拒绝跟随软链接越出目录范围。 */
+  rejectSymlinkFile?: boolean;
 }
 
 /** 读出凭据原文；读不到返回 null。测试可替换，生产实现见 readCredentialText。 */
@@ -81,8 +91,23 @@ export const readCredentialText: CredentialTextReader = (location) => {
     );
     if (result.status === 0 && result.stdout) return result.stdout;
   }
+  const file = join(location.claudeRoot, ".credentials.json");
+  if (location.rejectSymlinkFile) {
+    let fd: number | null = null;
+    try {
+      const noFollow = constants.O_NOFOLLOW ?? 0;
+      if (noFollow === 0 && !lstatSync(file).isFile()) return null;
+      fd = openSync(file, constants.O_RDONLY | noFollow);
+      if (!fstatSync(fd).isFile()) return null;
+      return readFileSync(fd, { encoding: "utf8" });
+    } catch {
+      return null;
+    } finally {
+      if (fd !== null) closeSync(fd);
+    }
+  }
   try {
-    return readFileSync(join(location.claudeRoot, ".credentials.json"), {
+    return readFileSync(file, {
       encoding: "utf8",
       flag: "r",
     });
@@ -115,8 +140,10 @@ export const readCredentialVersion: CredentialVersionReader = (location) => {
       return modified ? `keychain:${modified}` : null;
     }
   }
+  const file = join(location.claudeRoot, ".credentials.json");
   try {
-    const stat = statSync(join(location.claudeRoot, ".credentials.json"));
+    const stat = location.rejectSymlinkFile ? lstatSync(file) : statSync(file);
+    if (!stat.isFile()) return null;
     return `file:${stat.mtimeMs}:${stat.size}`;
   } catch {
     return null;
