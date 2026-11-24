@@ -20,7 +20,12 @@ import {
   DATABASE_REQUEST_ACCOUNTS_REVISION,
   DATABASE_SCHEMA_REVISION,
 } from "../src/storage/schema";
-import { OTEL_BODY_LIMIT_BYTES, OTEL_LOGS_PATH } from "../src/shared/otel";
+import {
+  OTEL_BODY_LIMIT_BYTES,
+  OTEL_LOGS_PATH,
+  parseCodexOtelEvents,
+} from "../src/shared/otel";
+import { CollectorState } from "../src/collector/state";
 import { LedgerStore } from "../src/storage/ledger";
 
 const key = "mlk_test-key-for-otel-only";
@@ -249,6 +254,8 @@ test("only the request identity fields are stored, never prompts or other attrib
       model: "claude-opus-5-5",
       occurred_at: "2026-10-23T10:59:00.000Z",
       received_at: expect.any(String),
+      duration_ms: null,
+      first_token_ms: null,
     });
     expect(JSON.stringify(row)).not.toContain("SECRET");
     // 表结构本身也不接受其他属性，避免提示词随字段扩展落库。
@@ -266,6 +273,8 @@ test("only the request identity fields are stored, never prompts or other attrib
       "model",
       "occurred_at",
       "received_at",
+      "duration_ms",
+      "first_token_ms",
     ]);
   } finally {
     await store.close();
@@ -655,5 +664,213 @@ test("an existing ledger upgrades in place and keeps its facts", () => {
     ]);
   } finally {
     upgraded.close();
+  }
+});
+
+test("claude_code.api_request OTEL duration_ms and ttft_ms enrich facts in either arrival order", async () => {
+  const { store, post, app } = setup();
+  try {
+    // 1) OTEL 先到（含数值型 duration_ms 与 ttft_ms），用量后到
+    const otelFirst = await post({
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                {
+                  body: { stringValue: "claude_code.api_request" },
+                  attributes: [
+                    { key: "request_id", value: { stringValue: "req_first" } },
+                    {
+                      key: "user.account_uuid",
+                      value: { stringValue: "acct-otel" },
+                    },
+                    { key: "duration_ms", value: { intValue: 1842 } },
+                    { key: "ttft_ms", value: { intValue: 615 } },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(otelFirst.statusCode).toBe(200);
+
+    const ingest1 = await app.inject({
+      method: "POST",
+      url: INGEST_BATCHES_PATH,
+      headers: {
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+      },
+      payload: batch({
+        usage: [
+          usage({
+            externalId: "req_first:msg_1",
+            occurredAt: "2026-10-23T11:00:00.000Z",
+            metadata: { origin: "claude_code_local" },
+          }),
+          usage({
+            externalId: "req_second:msg_2",
+            occurredAt: "2026-10-23T11:01:00.000Z",
+            metadata: { origin: "claude_code_local", duration_ms: 2100 },
+          }),
+        ],
+      }),
+    });
+    expect(ingest1.statusCode).toBe(200);
+
+    // 2) 用量先到，OTEL 后到：保留已有 duration_ms，补齐缺失的 first_token_ms
+    const otelSecond = await post(
+      otlp([
+        record({
+          request_id: "req_second",
+          "user.account_uuid": "acct-otel",
+          duration_ms: "2095",
+          ttft_ms: "740",
+        }),
+      ]),
+    );
+    expect(otelSecond.statusCode).toBe(200);
+
+    const facts = new Map(
+      store.usage().map((item) => [item.fact.externalId, item.fact.metadata]),
+    );
+    expect(facts.get("req_first:msg_1")?.duration_ms).toBe(1842);
+    expect(facts.get("req_first:msg_1")?.first_token_ms).toBe(615);
+    expect(facts.get("req_second:msg_2")?.duration_ms).toBe(2100);
+    expect(facts.get("req_second:msg_2")?.first_token_ms).toBe(740);
+  } finally {
+    store.close();
+  }
+});
+
+test("Codex official OTLP websocket_request + sse_event correlate ttft_ms and duration_ms in both orders", () => {
+  const payload = {
+    resourceLogs: [
+      {
+        scopeLogs: [
+          {
+            logRecords: [
+              {
+                attributes: [
+                  {
+                    key: "event.name",
+                    value: { stringValue: "codex.websocket_request" },
+                  },
+                  { key: "success", value: { stringValue: "true" } },
+                  { key: "duration_ms", value: { stringValue: "0" } },
+                  {
+                    key: "event.timestamp",
+                    value: { stringValue: "2026-11-24T12:40:40.066Z" },
+                  },
+                  {
+                    key: "conversation.id",
+                    value: { stringValue: "sess-codex-1" },
+                  },
+                ],
+              },
+              {
+                attributes: [
+                  {
+                    key: "event.name",
+                    value: { stringValue: "codex.sse_event" },
+                  },
+                  {
+                    key: "event.kind",
+                    value: { stringValue: "response.completed" },
+                  },
+                  { key: "input_token_count", value: { stringValue: "19155" } },
+                  {
+                    key: "cached_token_count",
+                    value: { stringValue: "14976" },
+                  },
+                  {
+                    key: "cache_write_token_count",
+                    value: { stringValue: "0" },
+                  },
+                  { key: "output_token_count", value: { stringValue: "5" } },
+                  { key: "ttft_ms", value: { stringValue: "1489" } },
+                  {
+                    key: "event.timestamp",
+                    value: { stringValue: "2026-11-24T12:40:41.706Z" },
+                  },
+                  {
+                    key: "conversation.id",
+                    value: { stringValue: "sess-codex-1" },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  const events = parseCodexOtelEvents(payload);
+  expect(events).toHaveLength(2);
+
+  // 场景 A：OTEL 先到，rollout 后读
+  const stateA = new CollectorState(":memory:");
+  try {
+    const rec = stateA.recordCodexOtelEvents(
+      events!,
+      Date.parse("2026-11-24T12:40:42.000Z"),
+    );
+    expect(rec).toEqual({ stored: 1, backfilled: 0 });
+    const timing = stateA.consumeCodexOtelTiming(
+      "sess-codex-1",
+      Date.parse("2026-11-24T12:40:41.707Z"),
+      19155,
+      14976,
+      5,
+    );
+    expect(timing).toEqual({ firstTokenMs: 1489, durationMs: 1640 });
+  } finally {
+    stateA.close();
+  }
+
+  // 场景 B：rollout 先读并暂存，OTEL 后到自动补推更新
+  const stateB = new CollectorState(":memory:");
+  try {
+    const baseUsage: IngestUsage = {
+      externalId: "codex-late-1",
+      occurredAt: "2026-11-24T12:40:41.707Z",
+      accountExternalId: "codex",
+      model: "gpt-6.2-sol",
+      tier: null,
+      tokens: {
+        input: 4179,
+        output: 5,
+        cacheRead: 14976,
+        cacheWrite: 0,
+        cacheWrite5m: null,
+        cacheWrite1h: null,
+        reasoning: 0,
+      },
+      metadata: { origin: "codex_local", reasoning_effort: "low" },
+    };
+    stateB.savePendingCodexTimingUsage(
+      "sess-codex-1",
+      Date.parse(baseUsage.occurredAt),
+      19155,
+      14976,
+      5,
+      baseUsage,
+      Date.parse("2026-11-24T12:40:42.000Z"),
+    );
+    const rec = stateB.recordCodexOtelEvents(
+      events!,
+      Date.parse("2026-11-24T12:40:43.000Z"),
+    );
+    expect(rec).toEqual({ stored: 0, backfilled: 1 });
+    const queued = stateB.pending<IngestUsage>("usage", 10);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.payload.metadata.first_token_ms).toBe(1489);
+    expect(queued[0]!.payload.metadata.duration_ms).toBe(1640);
+  } finally {
+    stateB.close();
   }
 });

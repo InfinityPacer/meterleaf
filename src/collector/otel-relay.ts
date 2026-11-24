@@ -1,6 +1,7 @@
 import { gunzipSync } from "node:zlib";
 import {
   OTEL_BODY_LIMIT_BYTES,
+  parseCodexOtelEvents,
   parseOtelRequestAccounts,
 } from "../shared/otel";
 import type { CollectorState } from "./state";
@@ -97,7 +98,8 @@ export function startOtelRelay(
         return invalid("invalid otlp payload", 400);
       }
       const records = parseOtelRequestAccounts(payload);
-      if (!records) return invalid("invalid otlp payload", 400);
+      const codexEvents = parseCodexOtelEvents(payload);
+      if (!records || !codexEvents) return invalid("invalid otlp payload", 400);
 
       try {
         const { dropped } = state.enqueueOtel(records);
@@ -105,6 +107,9 @@ export function startOtelRelay(
           log(
             `${now().toISOString()} 本机 OTEL 待发送已达上限，丢弃最早的 ${dropped} 条；请检查同步能否连上服务端`,
           );
+        if (codexEvents.length > 0) {
+          state.recordCodexOtelEvents(codexEvents, now().getTime());
+        }
       } catch {
         // 数据库暂时不可写时让 Claude Code 按导出器的重试策略再发一次。
         log(`${now().toISOString()} 本机 OTEL 中转写库失败，返回 503 等待重试`);
