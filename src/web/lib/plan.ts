@@ -2,8 +2,8 @@ import type { LedgerAccount } from "../../shared/report";
 
 /**
  * 订阅档位按使用倍数对齐，不按套餐名称：Claude Pro、ChatGPT Plus 与 Google AI Pro 为 1 档，
- * Claude Max（原 Max 5x）、ChatGPT Pro 5x 与 Google AI Ultra 5x 为 2 档，Claude Ultra
- * （原 Max 20x）、ChatGPT Pro 20x 与 Google AI Ultra 20x 为 3 档。同名的 Pro 在各家上游处于
+ * Claude Max（原 Max 5x）、ChatGPT Pro 10x 与 Google AI Ultra 5x 为 2 档，Claude Ultra
+ * （原 Max 20x）、ChatGPT Pro 20x / Pro 50x 与 Google AI Ultra 20x 为 3 档。同名的 Pro 在各家上游处于
  * 不同档位，因此必须结合平台判断。
  */
 export type PlanTier = 1 | 2 | 3;

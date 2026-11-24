@@ -163,6 +163,7 @@ class Bridge:
                                    batchId=str(uuid.uuid4()), collector=dict(name="meterleaf-cpa-bridge", version=VERSION),
                                    accounts=[accounts[key] for key in sorted(ids)], usage=part, quotas=[]))
                 self.db.executemany("INSERT OR IGNORE INTO delivered VALUES (?)", delivered)
+                self.db.executemany("DELETE FROM rejected WHERE identity=?", delivered)
             if rows:
                 self.put("cursor", rows[-1][0])
                 self.put("anchor", rows[-1][1] or digest(rows[-1][2]))
