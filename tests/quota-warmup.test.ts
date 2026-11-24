@@ -986,6 +986,27 @@ describe("quota-warmup task script", () => {
     expect(readFileSync(phronaraQuota, "utf8")).toContain(
       `gemini_weekly\t0\t${newWeekSec}`,
     );
+
+    // 预热开窗后重置时间固定下来，下一次巡检（60 分钟后）不再判为未开窗，也不再预热。
+    warmed = false;
+    const laterSec = nowSec + 60 * 60;
+    const laterStale = new Date(
+      (laterSec - DEFAULT_USAGE_REFRESH_MAX_MINUTES * 60 - 60) * 1000,
+    );
+    utimesSync(phronaraQuota, laterStale, laterStale);
+    utimesSync(
+      tideQuota,
+      new Date((laterSec - 60) * 1000),
+      new Date((laterSec - 60) * 1000),
+    );
+    const later = await runWarmup(sb.env, {
+      now: () => new Date(laterSec * 1000),
+      random: () => 0,
+      runner,
+    });
+    expect(later.refreshedAgyAccounts).toEqual(["phronara"]);
+    expect(later.actions).toHaveLength(0);
+    expect(warmed).toBe(false);
   });
 
   test("backs off failed /usage refresh with custom jitter range and migrates legacy usageRefreshAt state", async () => {
