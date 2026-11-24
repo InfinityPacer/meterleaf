@@ -69,6 +69,7 @@ flowchart LR
 
 - **Sub2API 拉取**（`src/server/sync.ts`）：受 `SyncPresence` 在线租约控制。任一页面可见时按可见间隔同步（默认 15 秒），无页面可见时退回低频间隔（默认 15 分钟），减少 NAS 磁盘写入。
 - **macOS 本机采集器**（`src/collector/`）：由单个 `Meterleaf.app` 通过 `SMAppService` 托管两个后台任务——每分钟一次的低优先级同步任务和常驻的本机 OTEL 中继（`127.0.0.1:4319`）。单轮同步在排他锁 `sync.lock` 下依次读取 Claude Code、Codex、OpenCode、Antigravity CLI 与 omp，写入本地 SQLite 待发送队列（`state.sqlite`），统一推送到 `/api/otel/v1/logs` 与 `/api/ingest/v1/batches`，推送成功后拉取 `/api/collector/v1/quota-summary` 原子写出 `quota-summary.json`，最后在 `finally` 中顺序运行到期的用户额外任务。
+- **Claude Code 账户归属**（`src/storage/ledger.ts`）：采集器给每条用量标上来源（模型映射 `model` 或登录时间线 `timeline`），会话记录里有有效会话 ID 时一并带上；服务端按优先级 `model` > `otel` > `session` > 时间线或未归属确定账户。`otel` 来自 `claude_code.api_request` 与 `claude_code.api_error` 的同一请求 ID；`session` 只在采集器报为未归属、带有效会话 ID 且没有精确 OTEL 时推断：同一会话里前后最近两条带账户的 OTEL 请求属于同一账户，两侧间隔都不超过 30 分钟，且任一侧最近时刻没有并列的其他账户。两种结论都写进用量事实，请求归属记录过期或采集器重发时不回退；精确 OTEL 晚到时把 `session` 升级为 `otel`，邻居请求晚于用量到达时也会补做推断。
 - **CPA 伴随容器**（`collectors/cpa/bridge.py`）：复用 `METERLEAF_INGEST_KEYS` 向 `/api/ingest/v1/batches` 推送幂等批次，游标、已送达与拒收记录保存在独立的 `cpa_data/state.sqlite`。
 - **OpenCode Go 额度**（`src/server/opencode-go.ts`）：仅在配置了密钥且有页面在线时轮询，最多每 2 分钟请求一次，读数无变化时最多每 4 分钟写一次盘。
 

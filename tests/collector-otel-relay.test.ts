@@ -237,14 +237,14 @@ describe("本机 OTEL 中转", () => {
     expect(ignored2.status).toBe(200);
     expect(state.pendingCounts().otel).toBe(1);
 
-    // 同一 requestId 后到版本覆盖先到版本。
+    // 同一 requestId 只保留一项，字段按服务端口径先到非空值优先。
     await post(relay, otlp([record({ request_id: "req_dup", model: "old" })]));
     await post(relay, otlp([record({ request_id: "req_dup", model: "new" })]));
     const duplicate = state
       .pending<OtelRequestAccount>("otel", 10)
       .filter((item) => item.payload.requestId === "req_dup");
     expect(duplicate).toHaveLength(1);
-    expect(duplicate[0]!.payload.model).toBe("new");
+    expect(duplicate[0]!.payload.model).toBe("old");
   });
 
   test("写库失败返回 503，让 Claude Code 重试", async () => {
@@ -407,6 +407,56 @@ describe("推送 OTEL 请求归属", () => {
       server.otel.map((payload) => parseOtelRequestAccounts(payload)?.length),
     ).toEqual([OTEL_MAX_PUSH_RECORDS, 5]);
     expect(state.pendingCounts().otel).toBe(0);
+  });
+
+  test("同一请求的成功与失败事件在队列中合并，先到非空值优先且不丢耗时", () => {
+    const success = otelRecord({ durationMs: 4200, firstTokenMs: 900 });
+    const failure = otelRecord({
+      accountUuid: null,
+      organizationUuid: "org-late",
+      sessionId: null,
+      model: null,
+    });
+    const pendingFor = (records: OtelRequestAccount[][]) => {
+      const state = new CollectorState(":memory:");
+      try {
+        for (const batch of records) state.enqueueOtel(batch);
+        return state
+          .pending<OtelRequestAccount>("otel", 10)
+          .map((item) => item.payload);
+      } finally {
+        state.close();
+      }
+    };
+    // 先成功后失败：失败事件不会冲掉成功耗时与账户。
+    expect(pendingFor([[success], [failure]])).toEqual([success]);
+    // 同一批内先后到达同样合并。
+    expect(pendingFor([[success, failure]])).toEqual([success]);
+    // 先失败后成功：保留失败事件先到的组织，账户与耗时由成功事件补齐。
+    const failureFirst = otelRecord({
+      accountUuid: null,
+      organizationUuid: "org-error",
+      sessionId: "session-error",
+      model: null,
+      occurredAt: null,
+    });
+    expect(pendingFor([[failureFirst], [success]])).toEqual([
+      {
+        requestId: "req_1",
+        accountUuid: "account-1",
+        organizationUuid: "org-error",
+        sessionId: "session-error",
+        model: "claude-opus-5-5",
+        occurredAt: "2026-10-23T11:00:00.000Z",
+        durationMs: 4200,
+        firstTokenMs: 900,
+      },
+    ]);
+    // 两条都没有耗时时不写出耗时字段。
+    const [merged] = pendingFor([[failure], [otelRecord()]]);
+    expect("durationMs" in merged!).toBe(false);
+    expect("firstTokenMs" in merged!).toBe(false);
+    expect(merged!.accountUuid).toBe("account-1");
   });
 
   test("待发送队列超过上限时丢弃最早的记录", () => {
