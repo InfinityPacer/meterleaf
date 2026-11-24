@@ -424,3 +424,130 @@ test("rounded correction keeps segment estimates continuous with early rough est
   expect(result.usd).toBe("1000");
   expect(result.credits).toBe("25000");
 });
+
+test("rounded rough estimates enforce the plateau upper-percent lower bound when early crossings contradict later spend", () => {
+  const samples = observations([0, 1, 1]);
+  const charges: QuotaEstimateAmounts[] = [
+    { usd: "0.20", credits: "20" },
+    { usd: "1.04", credits: "104" },
+    { usd: "19.32", credits: "1932" },
+  ];
+  const byTime = new Map(
+    samples.map((sample, index) => [sample.sampledAt, charges[index]!]),
+  );
+  // 1% 的真实百分比不超过 1.5%，累计花费 19.32 证明整周期额度至少为 19.32 / 1.5% = 1288。
+  expect(roughQuotaEstimate(samples, (at) => byTime.get(at)!, 0, true)).toEqual(
+    {
+      usd: "1288",
+      credits: "128800",
+    },
+  );
+});
+
+test("rounded rough estimates stay pinned on a consistent plateau without drifting on later samples", () => {
+  const samples = observations([0, 1, 1, 1]);
+  const charges: QuotaEstimateAmounts[] = [
+    { usd: "0", credits: "0" },
+    { usd: "10", credits: "1000" },
+    { usd: "18", credits: "1800" },
+    { usd: "28", credits: "2800" },
+  ];
+  const byTime = new Map(
+    samples.map((sample, index) => [sample.sampledAt, charges[index]!]),
+  );
+  // 真实额度 2000：0.5% 首点为 10，后续 18 与 28 的下界分别为 1200 与 1866.67，均不触发抬升。
+  expect(
+    roughQuotaEstimate(samples.slice(0, 3), (at) => byTime.get(at)!, 0, true),
+  ).toEqual({ usd: "2000", credits: "200000" });
+  expect(roughQuotaEstimate(samples, (at) => byTime.get(at)!, 0, true)).toEqual(
+    { usd: "2000", credits: "200000" },
+  );
+});
+
+test("rounded rough lower-bound check respects the 32-read memo cap and rejects decreasing plateau totals", () => {
+  const percents = [...Array.from({ length: 40 }, (_, index) => index), 39];
+  const samples = observations(percents);
+  const byTime = new Map(
+    samples.map((sample) => [sample.sampledAt, sample.percent]),
+  );
+  const memo = new Map<string, QuotaEstimateAmounts>();
+  const read = (sampledAt: string) => {
+    if (!memo.has(sampledAt)) {
+      const percent = byTime.get(sampledAt)!;
+      const crossed = Math.max(0, percent - 0.5);
+      memo.set(sampledAt, {
+        usd: String(crossed * 10),
+        credits: String(crossed * 250),
+      });
+    }
+    return memo.get(sampledAt)!;
+  };
+  expect(roughQuotaEstimate(samples, read, 0, true).usd).toBe("1000");
+  expect(estimateQuotaSegments(samples, read, true).usd).toBe("1000");
+  expect(memo.size).toBeLessThanOrEqual(32);
+
+  const nonMonotonic = observations([0, 1, 1]);
+  const badCharges: QuotaEstimateAmounts[] = [
+    { usd: "0", credits: "0" },
+    { usd: "10", credits: "100" },
+    { usd: "9", credits: "200" },
+  ];
+  const badMap = new Map(
+    nonMonotonic.map((sample, index) => [sample.sampledAt, badCharges[index]!]),
+  );
+  expect(
+    roughQuotaEstimate(nonMonotonic, (at) => badMap.get(at)!, 0, true),
+  ).toEqual({ usd: null, credits: "20000" });
+});
+
+test("zero-cost plateau fallback stays within the 32-read memo cap at the 31 and 32 point boundary", () => {
+  // 31 个代表点 + 1 个末点共 32 次读取，仍可完成零费用兜底。
+  const thirtyOne = observations([
+    ...Array.from({ length: 31 }, (_, index) => index + 1),
+    31,
+  ]);
+  const last31 = thirtyOne.at(-1)!.sampledAt;
+  const memo31 = new Map<string, QuotaEstimateAmounts>();
+  const read31 = (sampledAt: string) => {
+    if (!memo31.has(sampledAt)) {
+      memo31.set(
+        sampledAt,
+        sampledAt === last31
+          ? { usd: "310", credits: "3100" }
+          : { usd: "0", credits: "0" },
+      );
+    }
+    return memo31.get(sampledAt)!;
+  };
+  expect(estimateQuotaSegments(thirtyOne, read31, true).usd).toBeNull();
+  expect(roughQuotaEstimate(thirtyOne, read31, 0, true)).toEqual({
+    usd: "1000",
+    credits: "10000",
+  });
+  expect(memo31.size).toBe(32);
+
+  // 32 个代表点已占满上限，不再追加第 33 次未缓存的平台末点读取。
+  const thirtyTwo = observations([
+    ...Array.from({ length: 32 }, (_, index) => index + 1),
+    32,
+  ]);
+  const last32 = thirtyTwo.at(-1)!.sampledAt;
+  const memo32 = new Map<string, QuotaEstimateAmounts>();
+  const read32 = (sampledAt: string) => {
+    if (!memo32.has(sampledAt)) {
+      memo32.set(
+        sampledAt,
+        sampledAt === last32
+          ? { usd: "320", credits: "3200" }
+          : { usd: "0", credits: "0" },
+      );
+    }
+    return memo32.get(sampledAt)!;
+  };
+  expect(estimateQuotaSegments(thirtyTwo, read32, true).usd).toBeNull();
+  expect(roughQuotaEstimate(thirtyTwo, read32, 0, true)).toEqual({
+    usd: null,
+    credits: null,
+  });
+  expect(memo32.size).toBe(32);
+});

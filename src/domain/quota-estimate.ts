@@ -32,21 +32,32 @@ const maxObservations = 32;
 const minDeltaPercent = 5;
 const minPositivePairs = 3;
 
-function currentSegment(observations: readonly QuotaEstimateObservation[]) {
+function currentSegmentWithLatest(
+  observations: readonly QuotaEstimateObservation[],
+) {
   let previousPercent: number | null = null;
   let segment: QuotaEstimateObservation[] = [];
+  let latest: QuotaEstimateObservation | null = null;
   for (const observation of observations) {
     const { percent } = observation;
     if (!Number.isFinite(percent) || percent < 0) continue;
-    if (previousPercent !== null && percent < previousPercent) segment = [];
+    if (previousPercent !== null && percent < previousPercent) {
+      segment = [];
+      latest = null;
+    }
     previousPercent = percent;
     // 饱和点不能外推，但从饱和值下降仍是单调段的边界。
     if (percent >= 100) continue;
+    latest = observation;
     // 平台期只保留首次到达时刻，避免采样频率改变点对权重。
     if (segment.at(-1)?.percent === percent) continue;
     segment.push(observation);
   }
-  return segment;
+  return { segment, latest };
+}
+
+function currentSegment(observations: readonly QuotaEstimateObservation[]) {
+  return currentSegmentWithLatest(observations).segment;
 }
 
 function representativePoints(
@@ -174,49 +185,89 @@ export function roughQuotaEstimate(
   minimumObservedPercent = 0,
   roundedPercent = false,
 ): QuotaEstimateAmounts {
-  const segment = currentSegment(observations);
+  const { segment, latest } = currentSegmentWithLatest(observations);
   const selected = representativePoints(
     roundedPercent ? roundedArrivals(segment) : segment,
   ).filter((observation) => observation.percent > 0);
   const charges = selected.map((observation) =>
     readCumulativeCharges(observation.sampledAt),
   );
+  const canReadLatest =
+    latest !== null &&
+    latest.percent > 0 &&
+    latest.percent < 100 &&
+    (latest.sampledAt === selected.at(-1)?.sampledAt ||
+      segment.length < maxObservations);
+  const hasLaterPlateauSample =
+    canReadLatest && latest.sampledAt !== selected.at(-1)?.sampledAt;
+  let latestCharges: QuotaEstimateAmounts | undefined;
+  const readLatestCharges = () => {
+    if (latestCharges === undefined) {
+      latestCharges =
+        latest!.sampledAt === selected.at(-1)?.sampledAt
+          ? charges.at(-1)!
+          : readCumulativeCharges(latest!.sampledAt);
+    }
+    return latestCharges;
+  };
   const roughUnit = (unit: "usd" | "credits") => {
     const amounts = monotonicAmounts(charges.map((charge) => charge[unit]));
     if (amounts === null) return null;
     let numerator = new Decimal(0);
     let denominator = new Decimal(0);
     let enoughObservedPercent = false;
+    let lastKnownAmount: Decimal | null = null;
     for (let index = 0; index < selected.length; index++) {
       const amount = amounts[index]!;
       if (amount === null) continue;
+      lastKnownAmount = amount;
       if (amount.gt(0) && selected[index]!.percent >= minimumObservedPercent)
         enoughObservedPercent = true;
       const percent = new Decimal(selected[index]!.percent);
       numerator = numerator.add(percent.mul(amount));
       denominator = denominator.add(percent.mul(percent));
     }
-    // 首次平台观测可能早于本地费用到达，仅无正值时用最新平台费用补上粗估。
+    // 首次平台观测可能早于本地费用到达，仅无正值时在 32 次读取预算内用最新平台费用补上粗估。
     // 正常已有估值的平台仍固定首次点，避免每次推送都改变估值。
     if (!numerator.gt(0)) {
-      const latest = observations.at(-1);
-      if (
-        latest &&
-        latest.percent > 0 &&
-        latest.percent < 100 &&
-        latest.percent >= minimumObservedPercent
-      ) {
-        const latestAmount = readCumulativeCharges(latest.sampledAt)[unit];
+      if (canReadLatest && latest.percent >= minimumObservedPercent) {
+        const latestAmount = readLatestCharges()[unit];
         if (latestAmount !== null) {
           const value = new Decimal(latestAmount);
           if (value.isFinite() && value.gt(0))
             return value.mul(100).div(latest.percent).toString();
         }
       }
+      return null;
     }
-    return enoughObservedPercent && numerator.gt(0) && denominator.gt(0)
-      ? numerator.mul(100).div(denominator).toString()
-      : null;
+    if (!enoughObservedPercent || !denominator.gt(0)) return null;
+    let estimate = numerator.mul(100).div(denominator);
+    // 四舍五入整数读数 k 的真实百分比不超过 k + 0.5%；同平台后续累计花费增长后，
+    // 其给出的整周期下界不可违背，若早期瞬时首点导致粗估低于该下界，提升至下界以保持自洽。
+    if (
+      roundedPercent &&
+      hasLaterPlateauSample &&
+      Number.isInteger(latest!.percent)
+    ) {
+      const latestAmount = readLatestCharges()[unit];
+      if (latestAmount !== null) {
+        const value = new Decimal(latestAmount);
+        if (value.isFinite()) {
+          if (lastKnownAmount !== null && value.lt(lastKnownAmount)) {
+            return null;
+          }
+          if (
+            value.gt(0) &&
+            (lastKnownAmount === null || value.gt(lastKnownAmount))
+          ) {
+            const upperPercent = Math.min(100, latest!.percent + 0.5);
+            const lowerBound = value.mul(100).div(upperPercent);
+            if (estimate.lt(lowerBound)) estimate = lowerBound;
+          }
+        }
+      }
+    }
+    return estimate.toString();
   };
   return { usd: roughUnit("usd"), credits: roughUnit("credits") };
 }

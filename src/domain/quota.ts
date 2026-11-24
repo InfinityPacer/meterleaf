@@ -121,6 +121,11 @@ export function quotaHistoryStart(latest: QuotaFact, now: string): number {
   return Math.min(sampled, reset - 3 * duration - 3_600_000);
 }
 
+/** 至少回落 5 个百分点且不高于此前峰值一半，才视为上游重新计数。 */
+function isRebaseDrop(peak: number, percent: number) {
+  return peak - percent >= 5 && percent <= peak / 2;
+}
+
 /**
  * 同一周期、同一套餐内已用百分比只增不减。多个 Claude Code 会话会轮流写入各自较早看到的额度，
  * 小幅回落是过时读数，忽略后保留此前最高值；至少回落 5 个百分点且不高于此前最高值一半时，
@@ -132,12 +137,53 @@ function stableReadings<T extends { percent: number }>(readings: readonly T[]) {
   for (const reading of readings) {
     const highest = kept.at(-1)?.percent;
     if (highest !== undefined && reading.percent < highest) {
-      if (highest - reading.percent < 5 || reading.percent > highest / 2)
-        continue;
+      if (!isRebaseDrop(highest, reading.percent)) continue;
       kept = [];
       rebased = true;
     }
     kept.push(reading);
+  }
+  return { readings: kept, rebased };
+}
+
+/**
+ * 估算使用的单调读数：与展示层共用同一重新计数边界，但低档位回落至少一半（如 1%→0%→1%、
+ * 2%→1%→2% 的上游瞬时预扣回弹）会撤销被回落推翻的更高档位首点，改用后续稳定重跨时刻，
+ * 且不视为重新计数（费用仍从周期起点累计）；较高档位的小幅回落仍作为过时读数忽略。
+ */
+function estimationReadings<T extends { percent: number }>(
+  readings: readonly T[],
+  anchorFirst = false,
+) {
+  let kept: T[] = [];
+  let peak: number | undefined;
+  let rebased = false;
+  for (const reading of readings) {
+    if (
+      peak !== undefined &&
+      reading.percent < peak &&
+      isRebaseDrop(peak, reading.percent)
+    ) {
+      kept = [reading];
+      peak = reading.percent;
+      rebased = true;
+      continue;
+    }
+    const top = kept.at(-1)?.percent;
+    if (top !== undefined && reading.percent < top) {
+      if (reading.percent > top / 2) continue;
+      const anchored = anchorFirst || rebased;
+      const minKeep = anchored ? 1 : 0;
+      while (kept.length > minKeep && kept.at(-1)!.percent > reading.percent) {
+        kept.pop();
+      }
+      // 低于重新起算锚点的回落不入列，保留锚点作为费用与百分比平移基准，但仍撤销锚点之后被推翻的高档首点。
+      if (anchored && reading.percent < kept[0]!.percent) {
+        continue;
+      }
+    }
+    kept.push(reading);
+    if (peak === undefined || reading.percent > peak) peak = reading.percent;
   }
   return { readings: kept, rebased };
 }
@@ -306,8 +352,10 @@ export function quotaView(
       ({ percent, sampledAt }) => ({ percent, sampledAt }),
     );
     const stable = stableReadings(observations);
+    const estimate = estimationReadings(observations, boundary > cycleStart);
     return {
       observations: stable.readings,
+      estimateObservations: estimate.readings,
       rebased: stable.rebased || boundary > cycleStart,
     };
   };
@@ -356,7 +404,7 @@ export function quotaView(
     const cycleStart = cycleReset - duration;
     const readings = cycleReadings(cycleReset, until);
     const rebased = readings.rebased;
-    const observations = readings.observations.filter(
+    const observations = readings.estimateObservations.filter(
       (entry) => entry.percent < 100,
     );
     const baseline = rebased ? observations[0] : undefined;
