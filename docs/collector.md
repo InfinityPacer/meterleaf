@@ -1,6 +1,6 @@
 # 本机采集器
 
-[返回首页](../README.md)
+[返回首页](../README.md) · [辅助脚本与额外任务](collector-tasks.md)
 
 本地直连的 Claude Code、Codex、OpenCode、Antigravity CLI（`agy`）和 omp 不经过网关，它们的用量只保存在使用它们的电脑上。本机采集器在这台电脑上读取这些工具的本地记录，把用量、账户和额度快照推送到 Meterleaf。Meterleaf 可以部署在 NAS 或另一台主机上，与这台电脑分开。没有 Sub2API 网关时，Meterleaf 也可以只接收采集器的数据。
 
@@ -8,16 +8,16 @@
 
 ## 它读什么、不碰什么
 
-采集器只读取下面三处，不写入任何一处。
+对于 Claude Code，采集器只读取下面四处，不写入任何一处。
 
-- `~/.claude/projects` 下的会话记录，从中读取每次请求的模型与 Token 用量，以及会话里 `/login` 成功的时间。
+- `~/.claude/projects` 下的会话记录，从中读取每次请求的模型、Token 用量与请求耗时，以及会话里 `/login` 成功的时间。
 - `~/.claude.json`，从中读取登录账户的 UUID、组织类型、席位档位，以及 Claude Code 缓存的最近一次额度数据，包括 5 小时、7 天和 Fable 独立周额度。
 - 当前登录账户的套餐字段。新版 Claude Code 只把订阅类型和速率档位保存在登录凭据里，macOS 上是钥匙串中的「Claude Code-credentials」，其他系统是 Claude 配置目录下的 `.credentials.json`。采集器用系统自带的 `security` 命令或直接读文件取出整条凭据，只保留这两个字段，访问令牌和刷新令牌不解析、不保存、不记录、不上传。
 - 如果登记了额外 Claude 账户，还会读取每个目录下的 `.claude.json` 和该目录对应的登录凭据，读取方式与默认账户相同，见[多个 Claude 账户](#多个-claude-账户)。
 
-它不会在 Claude Code 的目录里写入、改名、加锁或改权限，不改设置、hooks 或状态栏，不运行 Claude Code 命令，也不调用任何 Anthropic 接口，读取凭据不会产生网络请求。对 Codex、OpenCode、Antigravity 与 omp 的读取边界见[Codex 与 OpenCode 来源](#codex-与-opencode-来源)、[Antigravity 来源](#antigravity-来源)和[omp 来源](#omp-来源)。上传内容只有计量数字、模型、时间、账户标识和套餐，不包含对话、工具输出、文件路径、工作目录、邮箱、显示名或令牌。
+它不会在 Claude Code 的目录里写入、改名、加锁或改权限，不改设置、hooks 或状态栏，不运行 Claude Code 命令，也不调用任何 Anthropic 接口，读取凭据不会产生网络请求。对 Codex、OpenCode、Antigravity 与 omp 的读取边界见下方各节。上传内容只有计量数字、模型、时间、耗时、账户标识和套餐，不包含对话、工具输出、文件路径、工作目录、邮箱、显示名或令牌。
 
-这些保证只针对采集器本身。你自己登记的[额外任务](#额外任务可选)由采集器按时运行，它们读写什么由任务决定。
+这些保证只针对采集器本身。你自己登记的[额外任务](collector-tasks.md#额外任务可选)由采集器按时运行，它们读写什么由任务决定。
 
 凭据不会每次运行都读。采集器每次运行只看凭据的修改时间，这一步只取钥匙串条目的属性或文件状态，不读令牌。只有凭据被改写过（登录、刷新令牌或套餐变化时 Claude Code 都会改写）、刚登录或切换了账户、`~/.claude.json` 里的账户资料有变化，或者上一次读到的套餐还在等确认时，才读取凭据内容。凭据没有改写，其中的套餐就不会变，所以其余时候沿用已确认的套餐。读不到凭据时，例如钥匙串拒绝访问，等凭据下次改写再试。
 
@@ -50,7 +50,7 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
 }
 ```
 
-- `match` 是模型名，`*` 匹配任意字符。规则按顺序取第一条命中的，所以也能把某个 `claude-` 模型单独分出去。
+- `match` 是区分大小写的模型名匹配模式，`*` 匹配任意字符，最多 50 条。规则按顺序取第一条命中的，所以也能把某个 `claude-` 模型单独分出去。
 - `id` 是账户在这台电脑来源里的标识，只能用字母、数字、`-` 和 `_`。改 `name` 只改显示名；改 `id` 会把历史用量整体移到新账户。
 - `kind` 可填 `subscription`、`api` 或 `unknown`，省略时为 `unknown`。`plan` 可选，省略时不显示套餐；`platform` 为 `opencode-go` 时填 `go` 或 `go-plus`，页面显示为 Go 或 Go Plus。
 
@@ -62,8 +62,8 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
 
 采集器默认读取本机 Codex 与 OpenCode 的用量，两者各自维护读取进度；目录或数据库不存在时该来源本轮为空，不报错。`status` 与同步报告按来源列出读取数、入账数和按通道跳过的数量。
 
-- Codex：只读扫描 `$CODEX_HOME`（默认 `~/.codex`）下 `sessions` 与 `archived_sessions` 的会话记录，包括写完已压缩的 `.jsonl.zst` 文件。读会话开头声明的供应商通道、模型和每次请求的 Token 用量，顺便读记录里自带的套餐与 5 小时、7 天额度。不读 `auth.json`，不改配置、不改会话文件、不调用任何接口。历史较多时每轮最多读取约 64 MiB，先读最近修改的会话，其余顺延到后面的轮次。
-- OpenCode：只读打开本地数据库 `~/.local/share/opencode/opencode.db`（数据库是 WAL 模式，OpenCode 运行中也能读），取已完成的助手消息作为一次请求。消息记录与对话内容存在同一个字段里，解析时会一并读入内存，但只提取模型、通道、完成时间和 Token 用量，不保存也不上传对话内容、会话 ID 和路径。
+- Codex：只读扫描 `$CODEX_HOME`（默认 `~/.codex`）下 `sessions` 与 `archived_sessions` 的会话记录，包括写完已压缩的 `.jsonl.zst` 文件。读会话开头声明的供应商通道、模型和每次请求的 Token 用量，顺便读记录里自带的套餐与 5 小时、7 天额度。不读 `auth.json`，不改配置、不改会话文件、不调用任何接口。历史较多时每轮最多读取约 64 MiB，先读最近修改的会话，其余顺延到后面的轮次。需要停用或修改目录时，在 `config.json` 中配置 `"codex": { "enabled": true, "home": "/绝对路径" }`（路径优先级为 `config.codex.home` > `$CODEX_HOME` > `~/.codex`）。
+- OpenCode：只读打开本地数据库 `~/.local/share/opencode/opencode.db`（数据库是 WAL 模式，OpenCode 运行中也能读），取已完成的助手消息作为一次请求。消息记录与对话内容存在同一个字段里，解析时会一并读入内存，但只提取模型、通道、完成时间和 Token 用量，不保存也不上传对话内容、会话 ID 和路径。需要停用或修改数据库位置时，在 `config.json` 中配置 `"opencode": { "enabled": true, "database": "/绝对路径/opencode.db" }`。
 
 这些来源（含 Antigravity 与 omp）只上传发生时间不早于 `2026-09-20` 的记录，更早的历史在读取时丢弃；这个起点按当前接入的费率与账户推断能力设定，不影响 Claude Code。
 
@@ -78,9 +78,9 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
 | OpenCode | `opencode-go` | `opencode-go`（平台 opencode-go，Go） |
 | omp      | `opencode-go` | `opencode-go`（平台 opencode-go，Go） |
 
-Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并计数，既不入账也不用来更新额度。OpenCode 里免费通道（例如 `opencode`）同样跳过。omp 的 `google-antigravity` 通道不在这张表里，它固定归入当前的 Antigravity 账户，见 [omp 来源](#omp-来源)。
+Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并计数，既不入账也不用来更新额度。OpenCode 里免费通道（例如 `opencode`）同样跳过。omp 的 `google-antigravity` 通道在未配置自定义规则时走 Antigravity 专属归属：先按凭据编号查 `~/.omp/agent/agent.db` 归入对应 Google 账号，查不到时再回退到当前 Antigravity 账户，见 [omp 来源](#omp-来源)。
 
-想自己指定对应关系，在采集器配置文件里加 `channelAccounts`。每条规则形如：
+想自己指定对应关系，在采集器配置文件里加 `channelAccounts`（最多 50 条）。每条规则形如：
 
 ```json
 {
@@ -98,10 +98,10 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 }
 ```
 
-- `source` 是 `codex`、`opencode` 或 `omp`，`channel` 是 Codex 会话的 `model_provider`、OpenCode 消息的 `providerID`，或 omp 助手消息的 `provider`。
+- `source` 是 `codex`、`opencode` 或 `omp`，`channel` 是 Codex 会话的 `model_provider`、OpenCode 消息的 `providerID`，或 omp 助手消息的 `provider`。配置了 `omp` + `google-antigravity` 规则时可覆盖内置 Antigravity 归属。
 - 账户字段与 `modelAccounts` 相同：`id` 是账户在本来源内的标识，其余与[其他供应商的模型](#其他供应商的模型)里的 `name`、`platform`、`kind`、`plan` 用法一致。
 - 配置了 `channelAccounts` 后内置默认规则完全被替代，不合并。没有匹配规则的通道跳过，按「来源加通道」计数。以后 Codex、OpenCode 或 omp 接了新的供应商，只改这一份配置。
-- 同一个账户 `id` 若同时出现在 `modelAccounts` 与 `channelAccounts` 中，`name`、`platform`、`kind`、`plan` 必须一致，不一致时配置无效，采集器启动即报错。
+- 同一个账户 `id` 若出现多条定义（包括在 `modelAccounts` 与 `channelAccounts` 之间），`name`、`platform`、`kind`、`plan` 必须一致，不一致时配置无效，采集器启动即报错。
 
 ### 统计口径
 
@@ -112,27 +112,27 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 
 ## Antigravity 来源
 
-采集器默认读取本机 Antigravity CLI（`agy`）的额度缓存与本地会话数据库，目录不存在时本轮为空，不报错。需要停用或修改目录时，在采集器 `config.json` 中配置 `agy` 的 `enabled`、`conversationsDir` 和 `statuslineDir`。
+采集器默认读取本机 Antigravity CLI（`agy`）的额度缓存与本地会话数据库，目录不存在时本轮为空，不报错。需要停用或修改目录时，在采集器 `config.json` 中配置 `agy` 的 `enabled`、`conversationsDir` 和 `statuslineDir`（默认使用 `$XDG_CACHE_HOME/agy-statusline` 或 `~/.cache/agy-statusline`）。
 
-- 额度缓存来自 `~/.cache/agy-statusline/quota-<label>.tsv`，由交互式状态栏脚本写出，并在采集器发现新的 Antigravity 用量时按需刷新（见下），采样时间取文件修改时间。每行用制表符分隔窗口名、已用百分比整数和重置时间的 Unix 秒（上游在剩余不足 1% 时就会拒绝请求，这时记为 100），窗口名为 `gemini_5h`、`gemini_weekly`、`3p_5h` 或 `3p_weekly`，另可带一行 `plan\t<套餐名>\t-`。`<label>` 是 Google 账号邮箱本地部分转小写并把非 `[a-z0-9_-]` 字符替换为 `-` 后的标签，采集器不读取也不还原完整邮箱。同目录下的 `current-account` 保存默认实例的活跃账号标签，额外实例 `<name>` 使用 `current-account-<name>`。
+- 额度缓存来自 `~/.cache/agy-statusline/quota-<label>.tsv`，由交互式状态栏脚本写出，并在采集器发现新的 Antigravity 用量时按需刷新（见下），采样时间取文件修改时间。每行用制表符分隔窗口名、已用百分比整数和重置时间的 Unix 秒（上游在剩余不足 1% 时就会拒绝请求，这时记为 100；重置时间为 `0` 且百分比为 `0` 表示未开窗），窗口名为 `gemini_5h`、`gemini_weekly`、`3p_5h` 或 `3p_weekly`，另可带一行 `plan\t<套餐名>\t-`。`<label>` 是 Google 账号邮箱本地部分转小写并把非 `[a-z0-9_-]` 字符替换为 `-` 后的标签，采集器不读取也不还原完整邮箱。同目录下的 `current-account` 保存默认实例的活跃账号标签，额外实例 `<name>` 使用 `current-account-<name>`。
 - 每个 Google 账号在 Antigravity 中有两套独立额度池，采集器为每个 `<label>` 建立一个订阅账户 `Antigravity (<label>)`（标识 `agy-<label>`）。`gemini_5h` 与 `gemini_weekly` 上报为 `five-hour` 与 `seven-day` 窗口，`3p_5h` 与 `3p_weekly` 上报为 `five-hour-3p` 与 `seven-day-3p` 窗口，服务端按窗口计算各池的本期花费，Gemini 窗口只计 `gemini-` 开头的模型，另两个窗口只计其他模型。旧版采集器按池分别建立的 `agy-<label>-gemini` 与 `agy-<label>-3p` 两个账户仍随每轮同步上报，并指向新账户，它们名下的历史用量与额度在报表里归入新账户。原来在旧账户上手动设置的套餐不会自动带过来，需要在新账户上再选一次。当某个窗口的重置时间不晚于采样时间或当前时间时，该窗口按已过期处理，旧百分比不会带入新周期。百分比或重置时间为 `-` 时保留未知，不补零。
 - 无界面运行（例如经 Paseo 或 omp 调用）时，状态栏脚本不会执行，额度缓存会一直停在上次交互使用时，所以 `sync` 在同一轮按需刷新，新额度随这一批用量一起上传，不必等下一轮。刷新只合并这次读到的窗口，原有的 `plan` 行和没读到的窗口行原样保留。
-  - `agy` 会话库里有新用量时，按产生用量的实例运行本机的 `agy -p /usage`（额外实例清除 `SSH_CONNECTION` 等变量并携带 `--app_data_dir antigravity-cli-<name>` 与 `WSL_INTEROP=1`；缺失非空普通文件 `antigravity-oauth-token` 的额外目录直接跳过，不拉起 `agy`，避免在 macOS 弹出浏览器登录页）。账号标签取自登录日志或实例令牌文件里邮箱的本地部分，并写回该实例对应的 `current-account`（或 `current-account-<name>`）。
+  - `agy` 会话库里有新用量时，按产生用量的实例运行本机的 `agy -p /usage`（所有实例均清除 `SSH_CONNECTION` 等变量并禁用浏览器弹出与自动更新；额外实例额外传入 `--app_data_dir antigravity-cli-<name>`、`--gemini_dir` 与 `WSL_INTEROP=1`，缺失非空普通文件 `antigravity-oauth-token` 的额外目录直接跳过，避免弹出浏览器登录页）。账号标签取自登录日志或实例令牌文件里邮箱的本地部分，并写回该实例对应的 `current-account`（或 `current-account-<name>`）。
   - omp 里有新入账的 Antigravity 请求时运行一次 `omp usage --json`，一次读回 omp 登录的所有 Google 账号，各自写进自己的 `quota-<label>.tsv`，不改 `current-account`。omp 会把额度缓存几分钟，平时直接用它的缓存。
-  - 额度用完后上游拒绝请求，不再产生用量，只靠新用量触发会让读数停在用满前。所以 omp 记录里出现额度用完（429）的响应时，采集器先让 omp 丢弃缓存，再读一次实时额度。
+  - 额度用完后上游拒绝请求，不再产生用量，只靠新用量触发会让读数停在用满前。所以 omp 记录里出现额度用完（429）的响应时，采集器先执行 `omp usage invalidate` 丢弃缓存，再读一次实时额度。
   - omp 请求找不到账号时（账号库读不到，也还没有 `current-account`），两种刷新都会运行，由 `agy` 确定账号并补记之前暂缓的请求。
-- 按需刷新有几道限制：没有新的 Antigravity 用量、429 且已识别的额外实例均已有本地额度缓存时不运行（首次识别到尚无额度缓存的额外实例时会在 `sync` 中补刷一次）；同一种刷新两次尝试至少相隔 5 分钟，因 429 触发的实时读取至少相隔 1 分钟（失败也计一次，上游故障或未登录时不会每轮重试）；`agy` 的额度缓存在 5 分钟内刚被状态栏写过时跳过。`agy` 与 `omp` 各限时 35 秒，超时会连同它们启动的进程一起终止。刷新失败不影响本轮已读到的用量和已有额度的上传，原因只在与上次不同时写入日志，`status` 显示最近一次尝试的结果。`scan` 只读本地文件，不会触发刷新。联网的是 `agy` 与 `omp` 本身，采集器不直接访问 Google 接口。
-- Token 用量来自 `~/.gemini/antigravity-cli/conversations/*.db` 以及同级 `~/.gemini/antigravity-cli-<name>/conversations/*.db`。额外实例仅在存在非空普通文件 `antigravity-oauth-token` 时自动发现，每个实例优先从自身的令牌或日志识别所属账号。若多实例通过软链接共享同一 `conversations/` 目录，采集器按真实路径去重扫描，并增量缓存各实例日志中的发送记录，将跨账号切换的会话按轮次归属到实际调用账号（以单会话顺序写入为前提，两账号同时向同一会话并发写入时无法仅凭日志拆账）。`agy` 运行中会锁住会话库，采集器对无 WAL 的库以只读不可变模式打开，对存在 `.db-wal` 的库先把 `.db` 与 `.db-wal` 复制到系统临时目录再只读打开，不在 `~/.gemini` 下写入、加锁或创建附属文件。
-- 采集器解码 `gen_metadata` 表中的 `CortexStepGeneratorMetadata` protobuf，提取每次生成的未缓存输入、缓存读取、缓存写入、输出和属于输出子集的思考 Tokens，并关联 `steps` 表中的完成时间。任一基础桶缺失时保留未知，不补零。模型名与思考档位从上游响应模型、显示名和模型枚举归一化得到，同一账号的 Gemini、Claude 与 GPT-OSS 模型都记在这个账号的账户下。早于 `2026-09-20` 的记录在读取时丢弃，已读取记录按会话、步骤与执行标识幂等去重。
+- 按需刷新有几道限制：没有新的 Antigravity 用量、429 且已识别的额外实例均已有本地额度缓存时不运行（首次识别到尚无额度缓存的额外实例时会在 `sync` 中补刷一次）；常规刷新两次尝试至少相隔 5 分钟，因 429 触发的 omp 实时读取至少相隔 1 分钟（失败也计一次，上游故障或未登录时不会每轮重试）；`agy` 的额度缓存在 5 分钟内刚被状态栏写过时跳过。每次 `agy` 或 `omp` 子进程调用限时 35 秒（429 时的失效缓存与读取各限时 35 秒），超时会连同子进程一起终止。刷新失败不影响本轮已读到的用量和已有额度的上传，原因只在与上次不同时写入日志，`status` 会按默认实例、额外实例与 omp 分别显示最近一次尝试结果。`scan` 只读本地文件，不会触发刷新。联网的是 `agy` 与 `omp` 本身，采集器不直接访问 Google 接口。
+- Token 用量来自 `~/.gemini/antigravity-cli/conversations/*.db` 以及同级 `~/.gemini/antigravity-cli-<name>/conversations/*.db`。额外实例仅在默认 `conversationsDir` 下、跳过含 `backup`/`bak` 段名的目录且存在非空普通文件 `antigravity-oauth-token` 时自动发现，每个实例优先从自身的令牌或日志识别所属账号。若多实例通过软链接共享同一 `conversations/` 目录，采集器按真实路径去重扫描，并增量缓存各实例日志中的发送记录，将跨账号切换的会话按轮次归属到实际调用账号（以单会话顺序写入为前提，两账号同时向同一会话并发写入时无法仅凭日志拆账）。`agy` 运行中会锁住会话库，采集器对无 WAL 的库以只读不可变模式打开，对存在 `.db-wal` 的库先把 `.db` 与 `.db-wal` 复制到系统临时目录再只读打开，不在 `~/.gemini` 下写入、加锁或创建附属文件。
+- 采集器解码 `gen_metadata` 表中的 `CortexStepGeneratorMetadata` protobuf，提取每次生成的未缓存输入、缓存读取、缓存写入、输出、属于输出子集的思考 Tokens 以及请求耗时，并关联 `steps` 表中的完成时间。由于 proto3 省略值为 0 的标量字段，输入字段存在时省略的缓存读写按 0 计，输入或输出字段本身缺失时保留未知、不补零。模型名与思考档位从上游响应模型、显示名和模型枚举归一化得到，同一账号的 Gemini、Claude 与 GPT-OSS 模型都记在这个账号的账户下。早于 `2026-09-20` 的记录在读取时丢弃，已读取记录按会话、步骤与执行标识幂等去重。
 
 ## omp 来源
 
 采集器默认读取本机 omp（oh-my-pi）的会话记录，目录不存在时本轮为空，不报错。需要停用或修改目录时，在采集器 `config.json` 中配置 `omp` 的 `enabled` 和 `sessionsDir`，默认目录是 `~/.omp/agent/sessions`。
 
 - 只读扫描该目录下各工作目录子目录里的 `.jsonl` 会话文件（隐藏的锁文件和终端输出不读），先读最近修改的，每轮最多读取约 64 MiB，其余顺延。每个文件只读新增的部分，没写完的最后一行留到下一轮。
-- 每条已完成的助手消息算一次请求，只提取模型、供应商通道、完成时间和 Token 用量，以及会话里设置的思考档位和服务档位。消息正文、会话标题、工作目录和会话 ID 不读取也不上传，早于 `2026-09-20` 的记录读取时丢弃。刚启动即中止、四类 Token 全为 0 的响应不算请求。
+- 每条已完成的助手消息算一次请求，只提取模型、供应商通道、完成时间、Token 用量、耗时以及会话里设置的思考档位和服务档位。消息正文、会话标题、工作目录和会话 ID 不读取也不上传，早于 `2026-09-20` 的记录读取时丢弃。刚启动即中止、四类 Token 全为 0 的响应不算请求。
 - omp 记录里的输入已经扣除缓存，输出已包含推理量，推理量为 0 时记录会省略该字段，采集器保持未知而不补零。omp 自带的 `cost` 不采用，费用由 Meterleaf 按[计价说明](pricing.md)估值。
-- 通过 `opencode-go` 通道发起的请求归入 `opencode-go` 账户，与 OpenCode 的用量一起撑起 Go 的额度估算。通过 `google-antigravity` 通道发起的请求归入它实际使用的 Google 账号 `Antigravity (<label>)`，Gemini 模型计入 Gemini 池，其他模型计入 Claude/GPT 池，额度刷新见 [Antigravity 来源](#antigravity-来源)。omp 每条请求记着所用登录的编号，采集器只读打开 omp 的账号库 `~/.omp/agent/agent.db`（与会话目录同级），只查编号和登录邮箱，不读令牌，用邮箱本地部分得到标签。omp 登录多个 Google 账号并在它们之间分摊请求时，用量因此分别记到各自的账户下。早期没有编号的记录、或账号库里查不到的编号，归入 `~/.cache/agy-statusline/current-account` 记录的账号。其他通道没有规则时跳过并计数。
+- 通过 `opencode-go` 通道发起的请求归入 `opencode-go` 账户，与 OpenCode 的用量一起撑起 Go 的额度估算。通过 `google-antigravity` 通道发起的请求（未在 `channelAccounts` 单独覆写时）归入它实际使用的 Google 账号 `Antigravity (<label>)`，Gemini 模型计入 Gemini 池，其他模型计入 Claude/GPT 池，额度刷新见 [Antigravity 来源](#antigravity-来源)。omp 每条请求记着所用登录的编号，采集器只读打开 omp 的账号库 `~/.omp/agent/agent.db`（与会话目录同级），只查编号和登录邮箱，不读令牌，用邮箱本地部分得到标签。omp 登录多个 Google 账号并在它们之间分摊请求时，用量因此分别记到各自的账户下。早期没有编号的记录、或账号库里查不到的编号，归入 `~/.cache/agy-statusline/current-account` 记录的账号。其他通道没有规则时跳过并计数。
 - 请求按 omp 自己的消息标识、完成时间、通道、模型和 Token 数去重，不看文件路径和会话 ID。会话被移到别的工作目录、从中间分支出新会话而复制了历史消息，都不会重复计入。
 - 文件里有 Antigravity 请求却还没有活跃账号时（首次使用且没有状态栏缓存），这个文件暂不推进读取进度，等账号确定后自动补记。
 
@@ -222,7 +222,7 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
 ## 首次接入
 
-1. 生成写入密钥。`--server` 填这台电脑访问 Meterleaf 的地址。
+1. 生成写入密钥。`--server` 填这台电脑访问 Meterleaf 的地址，可选 `--source-id <来源标识>` 自定义来源名（默认 `claude-code-<主机名>`）。
 
    ```sh
    meterleaf-collector init --server https://meterleaf.example.com
@@ -243,11 +243,11 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 3. 先在本地核对，再推送一次。
 
    ```sh
-   meterleaf-collector scan
+   meterleaf-collector scan       # 支持 --json 输出结构化结果
    meterleaf-collector sync
    ```
 
-   `scan` 只在本地汇总，不联网，可用来与其他统计工具对照。`sync` 成功后，Meterleaf 总览的账户区会出现名为「Claude Code」的账户，套餐显示在徽标中。可以在账户菜单里改成更容易辨认的名称，见[使用与报表](reporting.md#账户管理)。
+   `scan` 只在本地汇总，不联网，可用来与其他统计工具对照。`sync` 成功后，Meterleaf 总览的账户区会出现对应账户，套餐显示在徽标中。可以在账户菜单里改成更容易辨认的名称，见[使用与报表](reporting.md#账户管理)。
 
 4. 安装后台任务。
 
@@ -271,7 +271,7 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
 ## 状态栏额度缓存（可选）
 
-`~/.claude.json` 里的额度缓存只在打开用量面板时刷新，平时很快过期。更新的额度只在 Claude Code 运行时出现：在终端里交给状态栏命令，在无界面模式下写进输出流。采集器不运行 Claude Code，也不调用额度接口，所以它只约定一个额度文件，由你按自己使用 Claude Code 的方式写出这个文件。仓库提供两种写法：终端用户用状态栏脚本，通过 Paseo 使用的见[下一节](#通过-paseo-使用-claude-code)。其他工具可以照文件格式自己实现，只要数据来自 Claude Code 本身给出的额度，不要用登录令牌另行请求额度接口。
+`~/.claude.json` 里的额度缓存只在打开用量面板时刷新，平时很快过期。更新的额度只在 Claude Code 运行时出现：在终端里交给状态栏命令，在无界面模式下写进输出流。采集器不运行 Claude Code，也不调用额度接口，所以它只约定一个额度文件，由你按自己使用 Claude Code 的方式写出这个文件。终端用户使用下方的状态栏脚本；通过 Paseo 无界面使用 Claude Code 的包装脚本，以及额外定时任务（Paseo resume 可见性与额度开窗预热）见[采集器辅助脚本](collector-tasks.md)。
 
 Claude Code 每一轮都会把最新的 5 小时与 7 天额度传给状态栏命令。如果你的状态栏脚本把它写成文件，采集器可以读取这个文件，额度会比 `~/.claude.json` 里的缓存新得多。
 
@@ -302,132 +302,6 @@ meterleaf-collector statusline-cache ~/.cache/claude-statusline/rate-limits.tsv
 
 采集器同样只读这个文件。文件里没有账户和采样时间，采集器把文件修改时间当作采样时间，并按那一刻观察到的登录账户归属；切换账户前后无法判断时跳过这次采样。Meterleaf 对同一账户和窗口使用采样时间最新的一份，两个来源不会相加。格式不对或窗口名不认识的行会被跳过，其余行照常使用，跳过时采集日志会记一行说明。停用时执行 `meterleaf-collector statusline-cache off`。
 
-## 通过 Paseo 使用 Claude Code
-
-Paseo 以无界面模式启动 Claude Code，状态栏命令不会执行，额度缓存因此停在最后一次在终端使用的时候，页面上的 5 小时窗口长期显示「等待更新」。无界面模式下，Claude Code 每次请求后会在输出流里给出同样的 5 小时与 7 天额度，Paseo 收到后并不保存。仓库里的 `scripts/paseo-claude-quota.sh` 包在 Claude Code 外面，参数和输入原样交给它，Paseo 收到的输出不变，脚本只把其中的额度写进上一节的额度文件。
-
-先把脚本复制到不随仓库分支变化的位置，Paseo 每次启动 Claude 代理都要用到它，文件不在时代理无法启动。
-
-```sh
-install -m 755 scripts/paseo-claude-quota.sh ~/.local/bin/meterleaf-paseo-claude
-```
-
-再在 `~/.paseo/config.json` 中把 Claude 的启动命令换成它（需要 `jq`），执行 `paseo reload`。之后新启动的 Claude 代理生效，已在运行的代理要重新开始才会经过脚本。
-
-```json
-{
-  "agents": {
-    "providers": {
-      "claude": {
-        "command": [
-          "/absolute/path/to/meterleaf/scripts/paseo-claude-quota.sh"
-        ],
-        "env": {
-          "METERLEAF_STATUSLINE_CACHE": "/Users/you/.cache/claude-statusline/rate-limits.tsv"
-        }
-      }
-    }
-  }
-}
-```
-
-- `METERLEAF_STATUSLINE_CACHE` 填 `meterleaf-collector statusline-cache` 配置的同一个路径，省略时用采集器数据目录里的默认文件。终端里的状态栏脚本可以同时写这个文件，采集器取修改时间最新的一份。
-- Claude Code 不在 `~/.local/bin/claude` 时，用 `METERLEAF_CLAUDE_BIN` 指定实际位置。
-- 设置了 `ANTHROPIC_BASE_URL`、Bedrock 或 Vertex 的代理（例如经 OpenCode Go 使用其他模型）不属于 Claude 订阅，脚本直接运行 Claude Code，不写额度。
-- 输出流里没有 Fable 周额度，Fable 仍然只来自 `~/.claude.json` 的缓存。
-
-脚本不读取登录凭据，也不发出额外请求。Paseo 自带的用量面板会用 Claude Code 的登录令牌请求 Anthropic 的额度接口，不要把那份结果转给采集器。
-
-## 额外任务（可选）
-
-采集器的后台任务每分钟运行一次。需要在这台电脑上定期跑的小脚本，可以登记为额外任务，由同一个后台任务按间隔运行，不必再单独安装定时任务，`status` 里也能一起看到。
-
-```sh
-meterleaf-collector tasks add <名称> --every 10 --timeout 60 -- /绝对路径/命令 参数...
-meterleaf-collector tasks            # 列出任务和最近一次结果
-meterleaf-collector tasks run <名称> # 立即运行一次并显示输出
-meterleaf-collector tasks remove <名称>
-```
-
-- `--` 之后是要运行的命令，第一项必须是可执行文件的绝对路径，其余原样作为参数，不经过 shell。名称只能用小写字母、数字和 `-`。
-- `--every` 是间隔分钟数，默认 10；`--timeout` 是限时秒数，默认 60，最长 600。任务结束或超时时，它启动的子进程会一起结束；脱离进程组自行运行的进程不受管理，但不会拖住同步。同名任务用 `--force` 覆盖。
-- 任务在每轮同步之后按登记顺序运行，与同步共用一把运行锁，所以不会和自己重叠，也不会与 `tasks run` 同时运行。服务端暂时连不上时任务照常运行。
-- 任务失败或超时只写进 `logs/collector.err.log`，不影响同步和其他任务。成功且没有输出时不写日志。
-- 任务的工作目录是数据目录下的 `tasks/<名称>`，可以在这里保存自己的状态，删除任务时不会一并删除。任务还能从环境变量读到 `METERLEAF_TASK_NAME`、`METERLEAF_TASK_STATE_DIR`，以及 `METERLEAF_CLAUDE_CONFIG_DIRS`，后者每行一个 Claude 配置目录，默认目录在前，随后是[登记的额外账户](#登记额外账户)。
-
-后台任务以低优先级运行，任务也一样。任务做什么由你负责，采集器不检查它读写哪些文件。
-
-### 让 Paseo 会话出现在 resume 列表
-
-Paseo 以无界面模式启动 Claude Code，这样产生的会话不会出现在 `claude --resume` 和 `/resume` 的会话列表里，只能用会话 ID 打开。Claude Code 是按会话记录开头标着的启动来源决定是否列出的，与会话内容无关。
-
-仓库里的 `scripts/claude-resume-visibility.ts` 把你在 Paseo 里开的主会话改成按普通终端会话列出。它只处理同时满足下面两点的会话。
-
-- 属于某个 Paseo 代理，也就是 Paseo 恢复这个代理时用的那个 Claude 会话。
-- 这个代理是你开的，不是其他代理派出的。Paseo 内派出的代理带有父代理标签，第一条消息也是上级代理转来的任务，这样的子代理即使之后你直接和它对话过，也不会被列出。在 Paseo 之外，例如普通终端里的 Claude Code 用 `paseo run` 派出的代理，Paseo 不记录派出者，看起来和你开的一样。派出时加上 `--label dispatched-by=<派出者的会话 ID>` 就会被识别为子代理，在终端的 Claude Code 里可以用 `--label "dispatched-by=$CLAUDE_CODE_SESSION_ID"`。不要用 `paseo.parent-agent-id` 代替，Paseo 会把带这个标签的代理当成那个上级代理的子代理，上级不在 Paseo 里时，不会自动为它打开标签页，工作区的运行状态也不计入它。
-
-在 Paseo 里仍开着的代理也会列出。想在终端里接着用时，先在 Paseo 里归档它。Paseo 那边的进程不知道终端里新增的对话，之后在 Paseo 里再发消息，会从它自己的最后一条接着写，两边的对话就分叉了。
-
-改动只涉及会话记录开头那一段的启动来源字段，在原位置写入同样长度的内容，文件大小不变，对话内容不动。Claude Code 只在文件末尾追加，即使会话正在进行也不会和这里的写入冲突，采集器也不会因此重新读取这些文件。
-
-先复制到不随仓库分支变化的位置，用 `--dry-run` 看看会列出哪些会话，再登记为额外任务。
-
-```sh
-install -m 755 scripts/claude-resume-visibility.ts ~/.local/bin/meterleaf-resume-visibility
-~/.bun/bin/bun ~/.local/bin/meterleaf-resume-visibility --dry-run
-meterleaf-collector tasks add resume-visibility -- "$HOME/.bun/bin/bun" "$HOME/.local/bin/meterleaf-resume-visibility"
-meterleaf-collector tasks run resume-visibility
-```
-
-脚本从 `~/.paseo` 读取代理记录，Paseo 数据目录不在这里时，用 `PASEO_HOME` 指定。每一处改动都记在数据目录的 `tasks/resume-visibility/changes.jsonl`。想恢复原状，先 `tasks remove resume-visibility`，再运行一次 `--revert`，带上 `METERLEAF_TASK_STATE_DIR` 指向这个目录。
-
-```sh
-METERLEAF_TASK_STATE_DIR="$HOME/Library/Application Support/Meterleaf Collector/tasks/resume-visibility" \
-  ~/.bun/bin/bun ~/.local/bin/meterleaf-resume-visibility --revert
-```
-
-这依赖 Claude Code 当前的会话记录格式。以后 Claude Code 换了判断方式，最坏的结果是这些会话重新不在列表里，用会话 ID 仍然可以打开。
-
-### 额度到期与重置自动预热（开窗）
-
-Antigravity（各实例的 Gemini 与 Claude/GPT 池）和 Codex 的 7 天周窗口与 5 小时窗口，都是在上一周期到期或被上游重置后的第一笔请求时才起算新周期。如果窗口在电脑睡眠或闲置期间到期或重置，新周期的重置时间就会往后顺延。
-
-仓库里的 `scripts/quota-warmup.ts` 检查本机已有的 Antigravity 状态栏额度缓存（含默认实例与同级 `antigravity-cli-<name>` 额外实例）和 `~/.codex/sessions` 最新会话的额度通知。已启用的 Antigravity 账号如果本地缓存缺失或较旧，会按带随机抖动的间隔（默认 50–80 分钟）执行一次只读 `agy -p /usage`（不调用模型、不消耗额度）以发现上游中途提前重置；上游重置后还没有请求的窗口，agy 可能报「未开窗」，也可能报一个从查询时刻起算整个窗口长度、没有用量的重置时间，后者每查一次都往后顺延，巡检时同样按未开窗（`0\t0`）记录。一旦发现窗口已到期或处于未开窗状态，就随机挑一条极简问候语（`ok`、`hi` 等），用该池最廉价的模型发一次单轮请求触发新周期开窗：
-
-- **Antigravity Gemini 池**（`gemini_weekly` / `gemini_5h`）：调用 `gemini-3.8-flash-low`，随后执行一次 `agy -p /usage` 把新周期写回状态栏缓存。
-- **Antigravity 第三方池**（`3p_weekly` / `3p_5h`）：优先调用 `gpt-oss-120b-medium`（失败时回退 `claude-sonnet-5-5-low`），随后执行 `agy -p /usage` 刷新缓存。
-- **Codex**（`seven-day` / `five-hour`）：在临时目录下调用 `codex exec --ignore-user-config`（指定 `openai` 通道、`gpt-6-luna`、`low` 推理档位与仅单字回复指令），产生的会话记录由下一轮采集器同步自动读取新周期额度。
-
-默认只预热 7 天周窗口；传入 `--codex-5h`（或 `METERLEAF_WARMUP_CODEX_5H=1`）时一并预热 Codex 的 5 小时窗口，传入 `--include-5h`（或 `METERLEAF_WARMUP_5H=1`）时预热全部来源的 5 小时窗口。每个已成功预热的旧周期在 `tasks/quota-warmup/state.json` 里记录，只触发一次；未开窗状态（`0\t0`）按 30 分钟冷却避免重复刷屏；如果当轮失败，下一轮任务（5 分钟后）会自动重试。
-
-需要按账号、按池子或按窗口（`5h` / `7d`）分别控制开关，或调整只读 `/usage` 刷新的随机间隔时，可在 `tasks/quota-warmup/config.json`（与 `state.json` 同目录，也可用 `METERLEAF_WARMUP_CONFIG` 指定路径）里编写配置：
-
-```json
-{
-  "usageRefreshMinutes": { "min": 50, "max": 80 },
-  "defaults": { "enabled": true, "5h": false, "7d": true },
-  "accounts": {
-    "codex": { "enabled": true, "5h": true, "7d": true },
-    "agy:tern": { "enabled": true, "5h": true, "7d": true },
-    "agy:tide": { "enabled": true, "5h": false, "7d": true },
-    "agy:owl": {
-      "enabled": true,
-      "gemini": { "5h": true, "7d": true },
-      "3p": { "5h": false, "7d": true }
-    }
-  }
-}
-```
-
-`defaults` 适用于未单独列出的账号（含后续新增账号）；`accounts` 支持 `codex` 与 `agy:<账号标签>`（也可按 `agy:@<实例名>` 或 `agy:<实例名>` 兜底匹配，精确标签优先），将某账号设为 `enabled: false` 会同时跳过它的只读 `/usage` 巡检与全部预热。`5h` 开关的优先级为：池级配置 > 账号级配置 > 命令行参数 / 环境变量 > `defaults` > 内置默认（`false`）。
-
-```sh
-install -m 755 scripts/quota-warmup.ts ~/.local/bin/meterleaf-quota-warmup
-~/.bun/bin/bun ~/.local/bin/meterleaf-quota-warmup --dry-run --codex-5h
-meterleaf-collector tasks add quota-warmup --every 5 --timeout 120 -- "$HOME/.bun/bin/bun" "$HOME/.local/bin/meterleaf-quota-warmup" --codex-5h
-meterleaf-collector tasks run quota-warmup
-```
-
 ## 供本机会话读取的额度摘要
 
 每轮推送成功后，采集器向服务端读取一份订阅账户的额度摘要，写到数据目录下的 `quota-summary.json`，只有当前用户可读。本机的 Claude Code 会话或其他脚本读这份文件，就能在开工前看到每个订阅账户还剩多少额度，判断该用哪个账户，不需要登录网页。
@@ -440,13 +314,13 @@ meterleaf-collector tasks run quota-warmup
 
 ## 日常查看与排障
 
-`meterleaf-collector status` 显示同步进度、待发送数量、最近一次成功或失败的原因，以及账户归属情况，不会显示密钥。
+`meterleaf-collector status` 显示同步进度、待发送数量、最近一次成功或失败的原因、各 Antigravity 实例与 omp 的额度刷新状态，以及账户归属情况，不会显示密钥。
 
 - **网络不通或 Meterleaf 暂停**：未送达的数据保存在本机，恢复后自动补发，不会重复计数。OTEL 请求归属也走同一个队列，等待期间 `status` 的 `OTEL` 数量会逐渐增加。
-- **账户归属没有按 OTEL 更新**：先看 `status` 里 OTEL 中继是否显示「已启用」，再确认 `status` 的 `OTEL` 数量在请求后增加。数量长期不变时，检查 `settings.json` 的地址端口与采集器 `config.json` 的 `otelRelay.port` 是否一致，以及该端口是否被其他程序占用。中继只记接收条数，日志在数据目录的 `logs` 下。
+- **账户归属没有按 OTEL 更新**：先看 `status` 里 OTEL 中继是否显示「已启用」，再确认 `status` 的 `OTEL` 数量在请求后增加。数量长期不变时，检查 `settings.json` 的地址端口与采集器 `config.json` 的 `otelRelay.port` 是否一致，以及该端口是否被其他程序占用。中继成功接收时不逐条刷屏写日志，只记录启停、队列超限丢弃和写库异常，推送条数随 `sync` 日志与 `status` 展示。
 - **更换服务地址**：比如从局域网地址改为公网 HTTPS 地址，执行 `meterleaf-collector server https://meterleaf.example.com`。写入密钥不变，服务端不用改。
 - **提示密钥无效**：确认 Meterleaf 的 `METERLEAF_INGEST_KEYS` 包含 `init` 输出的那一行并已重启。换电脑或重新生成密钥时，用 `init --force` 并替换服务端对应的行。
-- **Antigravity 额度没有更新**：无界面运行时靠 `sync` 按需刷新。先看 `status` 的「Antigravity 额度刷新」一行，失败原因也在后台任务日志 `collector.err.log` 里。常见原因是找不到 `agy`（它默认在 `~/.local/bin`，采集器会按固定目录查找）或 `agy` 登录已失效，在终端运行 `agy` 重新登录即可。失败后 5 分钟内不会重试。
+- **Antigravity 额度没有更新**：无界面运行时靠 `sync` 按需刷新。先看 `status` 中各实例和 omp 的额度刷新行，失败原因也在后台任务日志 `collector.err.log` 里。常见原因是找不到 `agy`（默认在 `~/.local/bin`，采集器会按固定目录查找，也可用 `AGY_BIN` / `OMP_BIN` 覆盖）或 `agy` 登录已失效，在终端运行 `agy` 重新登录即可。常规刷新失败后 5 分钟内不会重试，omp 429 触发的实时读取冷却为 1 分钟。
 - **额度显示为过时**：Claude Code 并不在每次请求后刷新 `~/.claude.json` 里的额度缓存，观察到的刷新发生在打开设置中的用量面板时。采集器不会主动请求额度，可以启用上面的状态栏额度缓存获得更新的数据。
 - **Fable 显示「等待更新」**：状态栏只拿得到 5 小时与 7 天额度，Fable 周额度只来自 `~/.claude.json` 的缓存。上一周期结束后，在 Claude Code 里打开一次用量面板，下一轮采集就会带上新周期的 Fable 额度。
 - **切换过登录账户**：用量按登录账户分开记。两次运行之间切换账户时，采集器按切换时刻把这段时间的用量分给前后两个账户。在会话里执行 `/login` 时，以会话记录里登录成功的时间为准；在会话外登录时，以登录凭据的修改时间为准；两者都没有时，这段时间整体算给新账户。切换后其他终端里仍在运行的会话，可能还有几十秒继续使用旧账户，这几十秒的用量会算给新账户。额度读数不做这种推断，切换前后无法判断属于哪个账户的读数直接跳过。

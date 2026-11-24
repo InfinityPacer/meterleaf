@@ -2,13 +2,13 @@
 
 [返回部署指南](deployment.md)
 
-CPA 同步器读取 **usage-report 插件已经保存的 SQLite 账本**，将经过 CPA 的 GPT/Codex 和 Claude 请求作为独立来源推送到 Meterleaf。它不代理请求、不调用模型、不修改 CPA 配置，也不消费 CPA 的用量队列。无需提供 CPA 管理密码或模型 API Key。
+CPA 同步器读取 **usage-report 插件已经保存的 SQLite 账本**，将经过 CPA 的 GPT/Codex/o 系列（`gpt-`、`o1`、`o3`、`o4`、`codex`）和 Claude 请求作为独立来源推送到 Meterleaf。它不代理请求、不调用模型、不修改 CPA 配置，也不消费 CPA 的用量队列。无需提供 CPA 管理密码或模型 API Key。
 
 需要先在 CPA 中启用 [usage-report 插件](https://github.com/andyWang1688/cpa-usage)。已验证插件 v0.3.1 的 `usage_events` 表结构。同步器和 CPA 需要能访问同一份本地数据库目录；当前不支持直接连接没有该插件的 CPA，也不读取本机 Codex 会话。
 
 ## Docker 安装
 
-在 Meterleaf 仓库目录准备独立密钥和同步进度目录（需要 Python 3.10 或更新版本）：
+在 Meterleaf 仓库目录准备独立密钥和同步进度目录（在宿主机生成密钥需要 Python 3；直接运行 `bridge.py` 或回归测试需要 Python 3.11 或更新版本，Compose 容器固定使用 Python 3.12）：
 
 ```sh
 mkdir -p cpa_data
@@ -48,11 +48,11 @@ docker compose -f compose.yaml -f compose.cpa.yaml --profile cpa logs -f cpa-col
 
 ## 统计范围与限制
 
-- `CPA_MODEL_SCOPE=all` 接入账本内可识别的 GPT/Codex 和 Claude 模型；`gpt` 只接入 GPT/Codex。切换范围会重新扫描历史，已有记录按稳定标识去重。缩小范围不会删除已导入的数据。
-- 本机 CC 和 CPA 是两个独立来源。同一 Claude 请求若在两处都留下记录，会分别保存，**跨来源没有自动去重**；合并总览可能重复。需要避免这种情况时，首次启动就使用 `gpt`，或按来源/账户筛选查看。
-- GPT 输入中的缓存命中和缓存写入会从普通输入扣除；Claude 普通输入按其独立计量口径保留。推理 Tokens 是输出的子集，不额外加进总数。
+- `CPA_MODEL_SCOPE=all` 接入账本内可识别的 OpenAI（`gpt-`、`o1`、`o3`、`o4`、`codex`）和 Claude 模型；`gpt` 只接入 OpenAI 模型。切换范围会重新扫描历史，已有记录按稳定标识去重。缩小范围不会删除已导入的数据。
+- 本机采集器和 CPA 是两个独立来源。同一 Claude 请求若在两处都留下记录，会分别保存，**跨来源没有自动去重**；合并总览可能重复。需要避免这种情况时，首次启动就使用 `gpt`，或按来源/账户筛选查看。
+- OpenAI 输入中的缓存命中和缓存写入会从普通输入扣除；Claude 普通输入按其独立计量口径保留。推理 Tokens 是输出的子集，不额外加进总数。
 - 此版本插件没有保存供应商、套餐、额度、服务档位、推理强度或缓存写入 TTL。同步器不会猜测这些信息；费用是 Meterleaf 价格表的估值，不代表订阅账单或 CPA 实际扣费。
-- 不认识的模型或计量异常记录不猜算，保留匿名拒收标识并在日志的 `rejected_total` 中报告，其他记录继续同步。更正适配后会在每日重扫时重试；插件升级改变格式时应先核对兼容性。
+- 不认识的模型或计量异常记录不猜算，保留匿名拒收标识并在日志的 `rejected_total` 中报告，其他记录继续同步。更正适配后会在每日重扫时重试，补发成功后从拒收表移除并回落 `rejected_total`；插件升级改变格式时应先核对兼容性。
 - CPA 已清理、从未记录或在插件启用前发生的请求无法恢复。
 
 ## 数据保留与停用
@@ -69,7 +69,7 @@ docker compose -f compose.yaml -f compose.cpa.yaml --profile cpa stop cpa-collec
 
 停用不会删除 CPA 或 Meterleaf 的数据。排障先检查容器健康状态、只读目录权限和日志；`sync_failed` 表示该轮失败并等待重试，`rejected_total` 非零表示存在未能转换的记录。不要清空原始账本。
 
-开发回归：
+开发回归（需要 Python 3.11+）：
 
 ```sh
 python3 -m unittest discover -s collectors/cpa -p 'test_*.py' -v

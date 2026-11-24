@@ -2,7 +2,7 @@
 
 [返回首页](../README.md)
 
-Meterleaf 单容器提供前端与 API，可以只读访问 Sub2API PostgreSQL，也可以接收采集器推送的 Claude Code、Codex 用量或 CPA 插件账本。至少配置一种来源，使用本地 SQLite 保存账本。不代理模型请求，不修改上游，也不直接请求 OpenAI 或 Anthropic。
+Meterleaf 单容器提供前端与 API，可以只读访问 Sub2API PostgreSQL，也可以接收本机采集器推送的 Claude Code、Codex、OpenCode、Antigravity CLI 与 omp 用量，或 CPA 插件账本，并可选拉取 OpenCode Go 额度。至少配置一种来源，使用本地 SQLite 保存账本。它不代理模型请求、不修改上游，也不直接请求 OpenAI 或 Anthropic。系统内部模块与线程分工见[整体架构](architecture.md)。
 
 CLIProxyAPI（CPA）需要额外启动可选同步容器，读取 usage-report 插件保存的账本。安装、密钥追加、来源筛选和重复统计说明见[接入 CPA](cpa.md)。该方式复用 `METERLEAF_INGEST_KEYS`，不需要 Sub2API 数据库。
 
@@ -34,7 +34,7 @@ docker compose run --rm --no-deps --pull never --user root --entrypoint sh meter
 docker compose up -d --pull never
 ```
 
-已发布镜像：随附 `compose.yaml` 的 `image` 默认指向 `infinitypacer/meterleaf:latest`，源码路径仍使用 `build: .`。需要固定版本时，将 `image` 改为例如 `infinitypacer/meterleaf:0.1.0` 或 `ghcr.io/infinitypacer/meterleaf:0.1.0`，再执行：
+已发布镜像：随附 `compose.yaml` 的 `image` 默认指向 `infinitypacer/meterleaf:latest`，源码路径仍使用 `build: .`。需要固定版本时，将 `image` 改为例如 `infinitypacer/meterleaf:0.18.6` 或 `ghcr.io/infinitypacer/meterleaf:0.18.6`，再执行：
 
 ```sh
 docker compose pull
@@ -44,7 +44,7 @@ docker compose up -d --no-build --pull never
 
 完成后用 `docker compose ps` 检查状态，默认访问 `http://127.0.0.1:4318`。镜像以 Bun 用户运行，挂载目录必须可写；不要让多个 Meterleaf 进程共用同一账本。发布流程见[版本与发布](releasing.md)。
 
-生产构建包含 PWA 清单、图标、静态前端壳缓存和离线兜底页，浏览器可将应用安装为独立窗口，无需额外安装插件。离线脚本禁用浏览器导航预加载，避免移动网络切换时挂死的预加载请求堵住同源连接池，在首次导航连接超时或断网时立即中止旧连接并回退到本地纯静态前端壳（尚未缓存前端壳的首次安装则回退到离线页），网络恢复后自动重读账本，构建还会为文本静态资源生成 Brotli/Gzip 变体并按浏览器能力返回。除本机地址外需要 HTTPS，反向代理须允许访问 `/manifest.webmanifest`、`/sw.js`、`/offline.html` 和 `/icons/*`。离线资源绝不缓存 `/api/*` 或任何账户与账本数据，断网后重新打开不会展示旧账本。
+生产构建包含 PWA 清单、图标、静态前端壳缓存和离线兜底页，浏览器可将应用安装为独立窗口，无需额外安装插件。Service Worker 禁用导航预加载，避免移动网络切换时挂死的预加载请求堵住同源连接池，在首次导航连接超时或断网时立即回退到本地纯静态前端壳（尚未缓存前端壳时回退到离线页），网络恢复后自动重读账本；构建还会为文本静态资源生成 Brotli/Gzip 变体并按浏览器能力返回。除本机地址外需要 HTTPS，反向代理须允许免登录访问 `/favicon.svg`、`/manifest.webmanifest`、`/sw.js`、`/offline.html` 和 `/icons/*`。离线资源绝不缓存 `/api/*` 或任何账户与账本数据，断网后重新打开不会展示旧账本。
 
 随附 Compose 仅绑定宿主机回环地址。如果反向代理在其他容器中，应加入共享 Docker 网络并访问 `meterleaf:4318`，或显式调整宿主机绑定地址。对外开放前按[GitHub 登录](#github-登录)开启登录保护。
 
@@ -52,42 +52,40 @@ docker compose up -d --no-build --pull never
 
 完整模板见 [`.env.example`](../.env.example)。本地 Bun 启动读取 `.env`；Compose 仅传递 [compose.yaml](../compose.yaml) 中声明的变量，不会自动注入模板中的全部键。
 
-| 变量                                   | 默认值         | 说明                                                 |
-| -------------------------------------- | -------------- | ---------------------------------------------------- |
-| `SUB2API_DATABASE_URL`                 | 未启用         | 单实例 PostgreSQL 只读连接地址                       |
-| `METERLEAF_SOURCE_ID`                  | `sub2api`      | 稳定来源标识；已有账本不要改名                       |
-| `METERLEAF_BIND_ADDRESS`               | `127.0.0.1`    | Compose 对外绑定地址                                 |
-| `METERLEAF_PUBLISHED_PORT`             | `4318`         | Compose 对外端口                                     |
-| `METERLEAF_SYNC_VISIBLE_INTERVAL_MS`   | `15000`        | 页面可见时的自动同步间隔，5 秒至 1 小时              |
-| `METERLEAF_SYNC_HIDDEN_INTERVAL_MS`    | `900000`       | 页面不可见时的自动同步间隔，5 秒至 1 小时            |
-| `METERLEAF_REPORT_REFRESH_INTERVAL_MS` | `86400000`     | 报表后台兜底刷新间隔，30 秒至 24 小时                |
-| `METERLEAF_USD_BASIS`                  | `subscription` | 默认 USD 口径，也可选 `api`                          |
-| `METERLEAF_PRICE_BOOK`                 | 内置价格表     | 自定义完整价格 JSON 路径                             |
-| `METERLEAF_MODEL_ALIASES`              | 未启用         | 本机私有模型别名与排除前缀 JSON 路径（叠加到价格表） |
-| `METERLEAF_LOG_LEVEL`                  | `info`         | `debug`、`info`、`warn`、`error`、`silent`           |
-| `METERLEAF_INGEST_KEYS`                | 未启用         | 本机采集器写入密钥，见下文                           |
-| `METERLEAF_GITHUB_CLIENT_ID` 等        | 未启用         | GitHub 登录，见下文                                  |
-| `METERLEAF_OPENCODE_GO_KEY` 等         | 未启用         | OpenCode Go 额度，见下文                             |
+| 变量                                   | 默认值         | 说明                                                           |
+| -------------------------------------- | -------------- | -------------------------------------------------------------- |
+| `SUB2API_DATABASE_URL`                 | 未启用         | 单实例 PostgreSQL 只读连接地址                                 |
+| `METERLEAF_SOURCE_ID`                  | `sub2api`      | 稳定来源标识；已有账本不要改名                                 |
+| `METERLEAF_BIND_ADDRESS`               | `127.0.0.1`    | Compose 对外绑定地址                                           |
+| `METERLEAF_PUBLISHED_PORT`             | `4318`         | Compose 对外端口                                               |
+| `METERLEAF_SYNC_VISIBLE_INTERVAL_MS`   | `15000`        | 页面可见时的自动同步间隔，5 秒至 1 小时                        |
+| `METERLEAF_SYNC_HIDDEN_INTERVAL_MS`    | `900000`       | 页面不可见时的自动同步间隔，5 秒至 1 小时                      |
+| `METERLEAF_REPORT_REFRESH_INTERVAL_MS` | `86400000`     | 报表后台兜底刷新间隔，30 秒至 24 小时                          |
+| `METERLEAF_USD_BASIS`                  | `subscription` | 默认 USD 口径，也可选 `api`                                    |
+| `METERLEAF_PRICE_BOOK`                 | 内置价格表     | 自定义完整价格 JSON 路径                                       |
+| `METERLEAF_MODEL_ALIASES`              | 未启用         | 本机私有模型别名与排除前缀 JSON 路径（叠加到价格表，重启生效） |
+| `METERLEAF_LOG_LEVEL`                  | `info`         | `debug`、`info`、`warn`、`error`、`silent`                     |
+| `METERLEAF_INGEST_KEYS`                | 未启用         | 本机采集器与 CPA 写入密钥，见下文                              |
+| `METERLEAF_GITHUB_CLIENT_ID` 等        | 未启用         | GitHub 登录，见下文                                            |
+| `METERLEAF_OPENCODE_GO_KEY` 等         | 未启用         | OpenCode Go 额度，见下文                                       |
 
 `SUB2API_DATABASE_URL` 与 `METERLEAF_INGEST_KEYS` 至少填写一项，未填写的来源不启用。
 
-打开页面时报表会先显示上次结果并立即在后台刷新，自动同步也按可见间隔运行，因此两个较长的默认间隔只影响无人查看时的后台频率，用来减少 NAS 磁盘写入。采集器推来的新用量每小时写进一次报表索引，没有新推送时不写盘。打开页面或采集器读取额度摘要时，结果已包含刚推来的用量，但这些读取不写索引。
+打开页面时，有缓存的报表会先返回上次结果并立即在后台刷新，自动同步也按可见间隔运行，因此较长的隐藏同步与兜底刷新间隔只影响无人查看时的后台频率，用来减少 NAS 磁盘写入。无论来自 Sub2API 还是采集器的新用量，索引都会每小时定时提交一次；待补变更不超过 2000 条时，查询通过临时回滚事务预览新数据而不写索引，超过阈值则由读取直接提交。采集器读取额度摘要有 5 分钟刷新节流，触发刷新当次仍返回现有缓存，下一次读取看到更新结果。
 
 Compose 将容器内数据目录、监听地址和端口固定为 `/app/app_data`、`0.0.0.0` 和 `4318`；`METERLEAF_DATA_DIR`、`METERLEAF_HOST`、`METERLEAF_PORT`、`METERLEAF_DEMO` 仅用于直接以 Bun 启动时的本地配置。
 
-自定义价格文件可放在挂载的 `prices` 目录，设置 `METERLEAF_PRICE_BOOK=/app/prices/custom.json`。修改后更新费率版本并重启；若只补充本机私有模型分组映射，可将别名文件放在 `app_data` 目录并设置 `METERLEAF_MODEL_ALIASES=/app/app_data/model-aliases.json`，详见[计价说明](pricing.md)。
+自定义价格文件可放在挂载的 `prices` 目录，设置 `METERLEAF_PRICE_BOOK=/app/prices/custom.json`，修改后更新费率版本并重启。若只需补充本机私有模型映射或排除前缀，可将配置文件放在 `app_data` 目录并设置 `METERLEAF_MODEL_ALIASES=/app/app_data/model-aliases.json`，修改后重启服务生效并自动重估，详见[计价说明](pricing.md)。
 
 ## 接入本机采集器
 
-Codex、OpenCode、Antigravity 与 omp 的本地用量由同一个本机采集器读取，安装与配置见[本机采集器](collector.md#codex-与-opencode-来源)。同样通过下面的写入密钥接入，不需要 Sub2API；与 CC 或网关记录不做跨来源去重。同一台电脑只运行一个采集器，用量、账户与额度走同一个写入密钥和待发送队列。
+Claude Code、Codex、OpenCode、Antigravity 与 omp 的本地用量由同一个本机采集器读取，安装与配置见[本机采集器](collector.md)。同一台电脑只运行一个采集器，用量、账户、额度与本机 OTEL 日志共用同一个写入密钥和待发送队列；与 Sub2API 或 CPA 之间不做跨来源去重。
 
-Claude Code 等本地直连的客户端不经过网关，需要在使用它的电脑上运行本机采集器，由采集器把用量、账户和额度快照推送到 Meterleaf。安装和日常使用见[本机采集器](collector.md)。
-
-采集器可以与 Sub2API 同时使用，也可以单独使用。只用采集器时 `SUB2API_DATABASE_URL` 留空，页面不显示「数据同步」，采集器推送后数据自动出现。
+采集器可以与 Sub2API 同时使用，也可以单独使用。只用采集器时 `SUB2API_DATABASE_URL` 留空，右上角「数据同步」只显示推送状态与「暂停页面自动更新」开关，不提供拉取同步按钮，采集器推送后数据自动出现。
 
 ### 写入密钥
 
-每台电脑一个写入密钥。在电脑上执行采集器的 `init` 时生成密钥，并打印一行 `METERLEAF_INGEST_KEYS=来源标识:摘要`。把它加到服务端 `.env`，多台电脑的 `来源标识:摘要` 用英文逗号连接：
+每台电脑一个写入密钥。在电脑上执行采集器的 `init` 时生成密钥，并打印一行 `METERLEAF_INGEST_KEYS=来源标识:摘要`。把它加到服务端 `.env`，多台电脑或 CPA 的 `来源标识:摘要` 用英文逗号连接：
 
 ```dotenv
 METERLEAF_INGEST_KEYS=claude-code-macbook:<64 位十六进制摘要>,claude-code-mini:<摘要>
@@ -100,7 +98,7 @@ docker compose up -d --pull never             # 源码构建
 docker compose up -d --no-build --pull never  # 已发布镜像
 ```
 
-完整密钥只保存在采集器所在电脑上，服务端只保存 SHA-256 摘要，每个密钥只能写入自己绑定的来源，另外能读取全部订阅账户的额度摘要（展示名、套餐和额度窗口），读不到网页报表和其他数据接口，删除对应一行即可吊销。来源标识不能与 `METERLEAF_SOURCE_ID` 相同，已有账本不要改名。未设置该变量时不开放写入接口。
+完整密钥只保存在采集器所在电脑上，服务端只保存 SHA-256 摘要，每个密钥只能写入自己绑定的来源，另外能读取全部在用订阅账户的额度摘要（展示名、套餐和额度窗口），读不到网页报表和其他数据接口，删除对应一行即可吊销。来源标识不能与 `METERLEAF_SOURCE_ID` 相同，已有账本不要改名。未设置该变量时不开放写入接口。
 
 ### 让采集器访问服务
 
@@ -130,19 +128,21 @@ OTEL 日志只在采集器配置了 `claudeProfiles`、用来区分多个 Claude
 
 ## OpenCode Go 额度（可选）
 
-通过 OpenCode Go 使用 DeepSeek 等模型时，用量由本机采集器按模型名归到独立的 Go 账户，见[本机采集器](collector.md#其他供应商的模型)。Go 的 5 小时、每周和每月额度则由服务端用 Go 的 Key 读取，采集器不经手这把 Key。
+通过 OpenCode Go 使用 DeepSeek 或 GLM 等模型时，用量由本机采集器归入独立的 Go 账户：Codex（`go` 通道）、OpenCode（`opencode-go` 通道）与 omp（`opencode-go` 通道）默认按通道规则归入 `opencode-go` 账户，Claude Code 兼容接口则通过 `modelAccounts` 按模型名归入，见[本机采集器](collector.md#其他供应商的模型)。Go 的 5 小时、每周和每月额度则由服务端用 Go 的 Key 读取，采集器不经手这把 Key。
 
 ```dotenv
 METERLEAF_OPENCODE_GO_KEY=<OpenCode Go 的 API Key>
-# 额度显示在哪个账户上：来源标识:账户标识。只有一个推送来源时可省略，默认取该来源的 opencode-go 账户。
+# 额度显示在哪个账户上：来源标识:账户标识。
+# 仅当 METERLEAF_INGEST_KEYS 恰好配置了一个来源时可省略（默认取该来源的 opencode-go 账户）；
+# 配置多个推送来源或未配置推送来源时必须填写，否则服务无法启动。
 # METERLEAF_OPENCODE_GO_ACCOUNT=claude-code-macbook:opencode-go
 ```
 
-账户标识要和采集器 `modelAccounts` 里的 `id` 一致。改完后按[写入密钥](#写入密钥)一节的启动命令重建容器。
+账户标识要和采集器 `channelAccounts` 或 `modelAccounts` 里的 `id` 一致。改完后按[写入密钥](#写入密钥)一节的启动命令重建容器。
 
-服务端只在有页面打开时读取额度，页面在线期间最多每 2 分钟读一次，没人看时不访问 Go。读取失败只在日志里记 `opencode_go.quota_failed` 和状态码，不记录 Key；Key 失效或被拒时页面保留上次读到的额度，直到它的周期结束。页面在周额度之后显示「1m」窗口。
+服务端只在有页面打开时读取额度，页面在线期间最多每 2 分钟读一次，没人看时不访问 Go。读取失败只在日志里记 `opencode_go.quota_failed` 及 HTTP 状态码或异常名（不记录 Key）；Key 失效或被拒时页面保留上次读到的额度，直到它的周期结束。页面在周额度之后显示「1m」窗口。
 
-Go 的额度按美元计，而且每个模型各有月上限，Go Plus 的上限更高，具体见 [OpenCode Go 文档](https://opencode.ai/docs/go/)。5 小时、每周、每月三个窗口分别是月上限的 20%、50% 和 100%，请求按该模型的 Token 单价计费，再折算成所在窗口的百分比。以 DeepSeek V4.1 Flash 在 Go 档为例，月上限 80 美元，每周 40 美元，5 小时 16 美元。5 小时窗口滚动计算，周窗口在每周一 00:00 UTC 重置，月窗口从订阅日起算。在采集器 `modelAccounts` 里设了 `plan`（`go` 或 `go-plus`）时，「7d 预估」和「1m 预估」直接显示套餐上限（按本周期各模型的花费比例折算），不再外推。上限表目前只有 DeepSeek V4.1 Flash。本周期只要有一次请求来自表外的模型（包括没有价格的模型），或者还没有任何请求，或者没设档位，仍按百分比外推，周期初期误差较大。
+Go 的 7 天与月度（1m）额度预估与其他账户一样按当前周期百分比增量外推，不按单一模型上限查表折算，因为同一周期内可能切换或混用不同模型。采集器里配置的 `plan`（`go` 或 `go-plus`）用于显示套餐徽标。
 
 ## GitHub 登录
 
@@ -173,7 +173,7 @@ Meterleaf 可以要求访问者先用 GitHub 账号登录，只有允许名单�
 
 登录保持在浏览器里，经常使用时自动顺延，闲置超过有效天数才需要重新登录。在「关于」页点击「退出登录」即可退出。从 `METERLEAF_GITHUB_USERS` 删除某个账号并重建容器后，该账号已有的登录立即失效；更换 Client Secret 会让所有人重新登录。
 
-开启后，健康检查 `/api/health`、采集器写入与额度摘要地址和图标等安装用的静态文件仍可直接访问，采集器继续用写入密钥推送和读取摘要，不需要登录。写入密钥读不到网页报表和其他数据接口。
+开启后，健康检查 `/api/health`、采集器写入 `/api/ingest/v1/batches`、OTEL 日志 `/api/otel/v1/logs`、额度摘要 `/api/collector/v1/quota-summary` 以及 `/favicon.svg`、`/manifest.webmanifest`、`/sw.js`、`/offline.html`、`/icons/*` 等静态文件仍可直接访问；三个采集器接口继续用写入密钥鉴权，读不到网页报表和其他数据接口。
 
 ## 首次采集与自动同步
 
@@ -185,7 +185,7 @@ Sub2API 账户的额度来自它的缓存字段，新鲜度不能超过上游缓
 
 ## 升级与备份恢复
 
-升级前停止 Meterleaf，备份整个数据目录，并记录当前代码或镜像版本：
+升级前先按[版本与发布](releasing.md)确认数据库结构版本是否有变化。结构版本有变化时必须停止 Meterleaf，备份整个数据目录，并记录当前代码或镜像版本：
 
 ```sh
 docker compose stop meterleaf
@@ -224,7 +224,7 @@ docker compose up -d --no-build --pull never
 
 升级会自动执行数据库迁移；遇到不兼容或无法识别的结构时服务会停止，不要通过清空数据绕过。
 
-本版升级后，服务端会在启动和运行期间自动删除旧价格表版本的估值，以及报表索引和累计索引都已处理的用量变更记录。账本文件会明显变小，已有金额不受影响，价格表本身继续保留。删除腾出的空间由 SQLite 在后续写入中复用，日常不需要额外维护。如果想立即把空间还给磁盘，可以在停服时执行一次：
+服务启动后会异步删除旧价格表版本的估值，运行期间每小时最多清理一次报表索引与累计索引都已消费的用量变更日志（并在后台重建完成后清理），价格表本身继续保留。删除腾出的空间由 SQLite 在后续写入中复用，日常不需要额外维护。如果想立即把空间还给磁盘，可以在停服时执行一次：
 
 ```sh
 docker compose stop meterleaf
@@ -236,11 +236,11 @@ VACUUM 会临时重写整个文件，需要约等于账本文件大小的可用�
 
 ## 数据文件与缓存
 
-备份需包含整个 `app_data`，其中保存了账本、账户状态和额度快照。报表缓存可从账本重建，不需要备份，刷新页面也不需要清空数据。
+`app_data` 中唯一不可替代的事实账本是 `meterleaf.sqlite`（及其运行中的 `-wal`、`-shm` 文件），保存原始用量、账户管理状态、价格表快照和额度快照，备份时应保留完整数据目录。其余三个文件——`meterleaf.sqlite.reports.sqlite`（主报表索引）、`meterleaf.sqlite.reports.sqlite.lifetime`（累计索引）和 `meterleaf.sqlite.reports.sqlite.views`（持久化视图缓存）——都可以从事实账本重建，不需要单独备份，刷新页面也不需要清空数据。
 
-已有报表先返回上次成功结果，再后台更新；更新失败保留旧结果。USD 两种口径及三种单位可在同一结果中切换，无需重采源用量。
+已有报表先返回上次成功结果，再后台更新；更新失败保留旧结果。USD 两种口径及展示单位可在同一结果中切换，无需重采源用量。
 
-升级价格表、新增账户，或升级到改变了报表索引结构的版本后，Meterleaf 需要重新计算全部历史用量，数据量大时在 NAS 上可能要几分钟。计算在后台进行，页面照常打开，显示之前的结果并提示正在重新计算，算完后自动换成新结果。首次部署、从备份恢复或替换账本文件时没有可沿用的结果，页面会显示「报表正在后台计算」和已用时间，完成后自动出现数据，不需要刷新或重启。
+升级价格表、调整账户合并归属、升级报表索引结构或替换账本文件后，Meterleaf 会在后台独立线程重新计算全部历史用量，数据量大时在 NAS 上可能要几分钟（新增独立账户不会触发全量重建）。重建期间页面照常打开，显示之前的结果并提示正在重新计算，算完后自动换成新结果。首次部署、从备份恢复或替换账本文件且没有可沿用的旧索引时，页面会显示「报表正在后台计算」和已用时间，完成后自动出现数据，不需要刷新或重启。
 
 ## 日志与排障
 
@@ -248,7 +248,7 @@ VACUUM 会临时重写整个文件，需要约等于账本文件大小的可用�
 docker compose ps
 docker compose logs --since 10m meterleaf
 curl -fsS http://127.0.0.1:4318/api/health
-curl -fsS http://127.0.0.1:4318/api/sync
+curl -fsS http://127.0.0.1:4318/api/sync   # 开启 GitHub 登录时会返回 401，改在浏览器登录后查看
 ```
 
 健康接口只说明进程可响应；同步是否成功以 `/api/sync` 和日志中的阶段、错误类别为准。源端失败保留已有账本，不回退到演示数据。

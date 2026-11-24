@@ -2,14 +2,13 @@
 
 [返回首页](../README.md)
 
-Meterleaf 将费率保存在独立 JSON 文件中，内置表由声明式源表 `prices/catalog.ts` 通过 `bun run prices:build` 生成到 `prices/meterleaf.json`，并可通过 `bun run prices:check` 与上游公开目录对账。内置范围覆盖 OpenAI、Anthropic Claude、Google Gemini 与 Vertex AI 模型，以及通过 OpenCode Go 接入的 DeepSeek 与 GLM 模型。使用自定义价格表时，设置
-`METERLEAF_PRICE_BOOK=/path/to/prices.json` 并重启服务。自定义文件完整替换内置表，不进行隐式合并。若只需为本机私有路由分组补充显式模型映射（不覆盖内置表），可设置 `METERLEAF_MODEL_ALIASES=/path/to/model-aliases.json` 并重启服务。
+Meterleaf 将费率保存在独立 JSON 文件中，内置表由声明式源表 `prices/catalog.ts` 通过 `bun run prices:build` 生成到 `prices/meterleaf.json`，并可通过 `bun run prices:check` 与上游公开目录对账。内置范围覆盖 OpenAI、Anthropic Claude、Google Gemini 与 Vertex AI 模型，以及通过 OpenCode Go 接入的 DeepSeek 与 GLM 模型。使用自定义价格表时，设置 `METERLEAF_PRICE_BOOK=/path/to/prices.json` 并重启服务；自定义文件完整替换内置表，不进行隐式合并。若只需为本机私有路由分组补充显式模型映射或排除前缀（不覆盖内置表），可设置 `METERLEAF_MODEL_ALIASES=/path/to/model-aliases.json` 并重启服务。
 
 ## 版本元数据
 
 - `schemaVersion`：JSON 格式版本，当前为 `1`。
 - `id` 与 `version`：价格表身份和费率修订版本。
-- `supersedes`（可选）：本价格表接替的旧 `id`。只在给同一套价格改名时使用，升级后页面缓存的旧结果可以继续保留到重新计算完成。
+- `supersedes`（可选字符串数组）：本价格表接替的旧 `id` 列表。只在给同一套价格改名时使用，升级后页面缓存的旧结果可以继续保留到重新计算完成。
 - `publishedAt`：UTC 观测或发布时间。
 - `unit`：计价单位，固定为 `per_million_tokens`，即每百万 token。
 - `sources`：费率依据；`notes` 可记录假设、限制和促销说明。
@@ -18,17 +17,14 @@ Meterleaf 将费率保存在独立 JSON 文件中，内置表由声明式源表 
 
 ## 计价分支
 
-每条规则匹配 `model`、`tier`、`currency` 和左闭右开的有效时间段
-`[effectiveFrom, effectiveUntil)`；`effectiveUntil` 可省略。USD 规则还必须指定 `usdBasis`：
+每条规则匹配 `model`、`tier`、`currency` 和左闭右开的有效时间段 `[effectiveFrom, effectiveUntil)`；`effectiveUntil` 可省略。USD 规则还必须指定 `usdBasis`：
 
 - `subscription`：订阅等价 USD，默认展示口径。内置规则使用已公布的基础美元费率，不应用长上下文加价。
 - `api`：标准 API USD，保留已公布的长上下文档位。
 
-内置价格表与界面已下线 Codex 订阅 Credits 费率，只维护订阅等价 USD 与标准 API USD 两个美元分支，存储层与 JSON 校验继续保留 `credits` 字段以兼容历史账本与自定义价格文件。两个 USD 分支由相同用量事实独立计算，界面切换只影响 USD 估算，不改变 Tokens 或订阅周期。订阅等价 USD 不是订阅账单。
+内置价格表与界面只维护订阅等价 USD 与标准 API USD 两个美元分支，不再收录 Codex 订阅 Credits 费率；存储层与 JSON 校验继续保留 `credits` 字段以兼容历史账本与自定义价格文件。两个 USD 分支由相同用量事实独立计算，界面切换只影响 USD 估算，不改变 Tokens 或订阅周期。订阅等价 USD 不是订阅账单。
 
-来源中的 API 账户只表示接入方式，其真正上游仍可能是订阅账户。
-账户类型不会自动切换 USD 口径。
-额度与周期依赖实际快照，未提供快照时显示未知，不能据此断言上游没有订阅额度。
+来源中的 API 账户只表示接入方式，其真正上游仍可能是订阅账户。账户类型不会自动切换 USD 口径。额度与周期依赖实际快照，未提供快照时显示未知，不能据此断言上游没有订阅额度。
 
 ## Token 与费率
 
@@ -36,43 +32,35 @@ Meterleaf 将费率保存在独立 JSON 文件中，内置表由声明式源表 
 
 可选的 `cacheWrite1h` 是 1 小时缓存写入的费率。配置后，缓存写入中属于 1 小时的部分按它计价，其余按 `cacheWrite` 计价。Claude 的 1 小时写入价是基础输入价的 2 倍，5 分钟写入是 1.25 倍，混用会明显低估费用。记录有缓存写入却没有 1 小时拆分时，已知的 5 分钟部分按 5 分钟价计，其余按 1 小时价计，因为 Claude Code 默认写入 1 小时缓存，且按较高一档不会低估费用；规则没有 `cacheWrite1h` 而记录含 1 小时写入时同样未计价，不按 5 分钟价凑数。
 
-`null` 表示没有可用费率，不是零价。当对应 token 数量为正但费率为 `null` 时，估值保留为未计价。缺少任一基础 token 桶或匹配规则时，也保留为未计价。
-可选的 `longContext` 指定 `threshold` 和替代 `rates`；只有总输入 Tokens 严格超过阈值才使用该档位，总输入包含普通输入、缓存读取和缓存写入。来源未声明档位时按 Standard 估值并标注为假设，不从其他档位或缺失费率推导。
+`null` 表示没有可用费率，不是零价。当对应 token 数量为正但费率为 `null` 时，估值保留为未计价。缺少任一基础 token 桶或匹配规则时，也保留为未计价。可选的 `longContext` 指定 `threshold` 和替代 `rates`；只有总输入 Tokens 严格超过阈值才使用该档位，总输入包含普通输入、缓存读取和缓存写入。来源声明 `default` 或 `auto` 档位时归一到 `standard`，声明 `fast` 时归一到 `priority`；未声明档位时按 `standard` 估值并标注为假设，不从其他档位或缺失费率推导。
 
 可选的 `peak` 表示供应商公布的时段价，包含 `days`、`hoursUtc` 和替代的 `rates`。`days` 使用 ISO 星期编号，周一为 1、周日为 7；`hoursUtc` 的每个时段从 `from` 开始，到 `until` 前结束，写成 `HH:MM` 的 UTC 时间。判断记录是否处于峰时只看 `occurredAt` 换算后的 UTC 星期和时刻，与服务器或采集机器的本地时区无关。峰时费率是完整价格，不按倍率从基础费率推导；峰时与 `longContext`、`imageRates` 不能配置在同一条规则里，避免两套替代费率互相覆盖。
 
-Sol 的已公布促销价已经写入两个 USD 分支，不再额外乘以 `0.8`，`promotion.confirmedThrough` 只表示至少确认到该日期。
-图像规则可指定 `imageRates`，分别配置图像输入、缓存读取和输出的费率。
-图像 Tokens 是现有输入、缓存和输出总量的子集，计价时先拆出，再按各自费率相加，不重复累计 Tokens。
+带 `promotion` 元数据的规则（当前包括 `gpt-5.6-sol` 以及带分段促销价的 `gemini-4-carbon`、`gemini-4-argon` 与 `gemini-3.8-flash`）已将公布的促销价直接写入规则中，不再额外乘以折扣系数，`promotion.confirmedThrough` 只表示至少确认到该日期。
+
+图像规则可指定 `imageRates`，分别配置图像输入、缓存读取和输出的费率。图像 Tokens 是现有输入、缓存和输出总量的子集，计价时先拆出，再按各自费率相加，不重复累计 Tokens。
 
 ### 内置价格与缺失规则
 
 具体金额、模型覆盖和来源链接以 [紧凑目录源表](../prices/catalog.ts) 及生成的 [内置价格 JSON](../prices/meterleaf.json) 为准，文档不另行维护一份费率表。内置表是特定版本的观测快照，不保证与供应商未来价格实时一致。
 
-Claude 规则使用 Anthropic 公布的 API 价格，订阅等价 USD 与标准 API USD 使用相同基础价，它们都是估值，不是 Claude 订阅账单。只收录官方模型页列出的模型 ID 与别名，其他 Claude 模型保留未计价。Fable 5.2、Opus 5.5、Opus 5 与 Opus 4.8 的快速模式记为 `priority` 档，按快速模式基础价再叠加缓存倍率。Haiku 5.5 在标准 API USD 分支中对超过 100K 总输入的请求套用官方高档费率，订阅等价 USD 保持基础费率。仅限美国推理的 1.1 倍加价和网页搜索按次费用不计入。
+Claude 规则使用 Anthropic 公布的 API 价格，订阅等价 USD 与标准 API USD 使用相同基础价，它们都是估值，不是 Claude 订阅账单。只收录官方模型页列出的模型 ID 与别名，其他 Claude 模型保留未计价。Fable 5.2、Opus 5.5、Opus 5、Opus 4.8 与 Opus 4.6 的快速模式记为 `priority` 档，按快速模式基础价再叠加缓存倍率。Haiku 5.5 在标准 API USD 分支中对超过 100K 总输入的请求套用官方高档费率，订阅等价 USD 保持基础费率。仅限美国推理的 1.1 倍加价和网页搜索按次费用不计入。
 
-GPT-5.4 与 Mini 使用各自规则，不相互继承长上下文档位，未配置的 Fast、Flex 或缓存写入费率不会从标准档推导。内置表的促销说明只描述该版本已采用的规则，不能据此假设促销结束后的价格。
+OpenAI 文本与编码模型覆盖 GPT-5.4 与 Mini、GPT-5.6（Sol / Terra / Luna）、GPT-6（Astra / Sol / Luna）、GPT-6.1（Sol / Terra）以及 GPT-6.2（Sol / Astra），各自使用独立规则，不相互继承长上下文档位，未配置的 Priority、Flex 或缓存写入费率不会从标准档推导。其中 GPT-6.2 Sol 与 Astra 仅包含 Standard 与 Priority（2x）档位，未公布 Flex 档；GPT-5.6 Sol 的促销价已直接写入规则，不假设促销结束后的价格。`codex-auto-review` 没有自己的公布价，OpenAI 把 Codex 自动评审路由到 `gpt-6-luna` 执行，因此按 `gpt-6-luna` 的公布费率估值。
 
-内置表覆盖 GPT Image 2、GPT Image 2.5 Sunburst 与 Flare、GPT Image 2.6 Sunburst 与 Flare，以及各自已公布的日期快照。各代图像模型配置相同的 USD Token 单价与图像子桶单价。
+内置图像模型覆盖 GPT Image 2、GPT Image 2.5 Sunburst 与 Flare、GPT Image 2.6 Sunburst 与 Flare 及已公布的日期快照。各代图像模型共用图像子桶与文本输入/缓存单价；其中 GPT Image 2 的文本输出费率为 `null`（出现文本输出时未计价），GPT Image 2.5 与 2.6 的文本输出费率为 `"0"`。
 
-通过 OpenCode Go 接入的 DeepSeek V4.1 Flash 使用 Go 公布的每百万 token 价格，并按 Go 公布的峰时规则区分工作日峰时与非峰时。这是该模型目前唯一可用的按 token 计价依据，两个 USD 分支都按它估值。Go 订阅按月计费，不随 token 用量出账，所以这些金额是估值而不是 Go 账单。该模型未公布缓存写入价，含缓存写入的记录保留未计价。
-
-GLM-5.3 与 GLM-5.3-Flash 同样按 Go 公布的每百万 token 价格估值，这一价格与智谱公布的官方价相同。没有峰时区分，缓存写入价 Go 未公布，保留未计价。
-
-GPT-6.1 Sol 与 Terra、GPT-6.2 Sol 与 Astra 按各自模型页公布的输入、缓存读取、缓存写入与输出价格估值，API 美元分支包含超过 272K 输入后的长上下文档位，订阅等价美元不含；GPT-6.2 Sol 与 Astra 仅包含 Standard 与 Priority（2x）档位，未公布 Flex 档。
-
-`codex-auto-review` 没有自己的公布价。OpenAI 把 Codex 的自动评审请求路由到 `gpt-6-luna` 执行，所以这个模型按 luna 的公布费率估值，价格说明里写明了这一路由事实。它是估值的依据说明，不是独立费率条目。
+通过 OpenCode Go 接入的 DeepSeek V4.1 Flash 使用 Go 公布的每百万 token 价格，并按 Go 公布的峰时规则区分工作日峰时（UTC `01:00-04:00` 与 `06:00-10:00`，对应北京时间 `09:00-12:00` 与 `14:00-18:00`）与非峰时。两个 USD 分支都按它估值，它不是 Go 月费账单；未公布缓存写入价，含缓存写入的记录保留未计价。GLM-5.3 与 GLM-5.3-Flash 同样按 Go 与智谱公布的每百万 token 价格估值，没有峰时区分，缓存写入保留未计价。
 
 Antigravity 使用的模型同样按官方公开的每百万 token 费率估值，不是 Google AI Ultra 订阅账单。`gemini-4-neon`、`gemini-4-hydrogen`、`gemini-4-carbon`、`gemini-4-argon` 与 `gemini-3.8-flash` 采用 Google Gemini API 与 Vertex AI 公布的标准档与 Flex 档价格，其中 `gemini-4-neon` 与 `gemini-4-hydrogen` 无促销分段，其余三款按有效日期分段记录促销期与促销结束后的标准费率。`gemini-3.5-flash-lite` 采用官方标准档价格，因其 Flex 档缓存读取价在两处文档存在舍入差异而暂不推断 Flex 档。各款 Gemini 模型均无输入长度分档，当前生效的按 token 缓存写入单价未公布，保留未计价。`claude-opus-5-5` 与 `claude-sonnet-5-5` 使用 Anthropic 官方模型价格，采集器把带思考档位后缀（含 `xhigh`）的响应模型名归一到基础模型 ID。`gpt-oss-120b` 采用 Google Cloud Vertex AI Model Garden 公布的 `openai/gpt-oss-120b-maas` 托管价格，该模型未公布缓存读写折扣，含非零缓存读写的记录保留未计价。历史会话中出现的 `claude-opus-4-6-thinking` 是开启思考的 Opus 4.6，思考 token 按输出计价，归一到 `claude-opus-4-6` 并使用其官方费率。
 
 计价模型按三步依次解析：先精确匹配原始模型名；未命中时查显式 `modelAliases` 映射；仍未命中且模型名含 `/` 路由前缀（如 `codex/gpt-6.1-sol`、`google-vertex/gemini-4-hydrogen`、`agy-cli/claude-opus-5-5`）、同时未命中 `excludeRoutePrefixes` 排除名单时，剥离路由前缀并按末段模型 ID 精确匹配已有官方规则，在估值中保留 `pricingModel` 以便审计。原名已有规则时不回退到末段，不做跨模型模糊别名；命中排除名单的私有分组（如配置了 `group/`）在没有原名精确规则且未配置显式别名时保持未计价。网关参考价不是已核实的官方报价。图像与实时模型需要相应媒体 Token 分桶，不能用文本四桶冒充完整费用。
 
-`METERLEAF_MODEL_ALIASES` 指向的 JSON 文件支持可选的 `aliases`（单跳精确映射表，原名不可覆盖已有规则，目标必须存在于当前价格表规则中）、`excludePrefixes`（不参与路由前缀兜底的前缀列表，按 `/` 分段忽略大小写匹配，例如 `["group/"]`）与 `notes`。叠加到当前价格表时，规范化内容的 16 位 SHA-256 摘要会拼入估值版本键以自动触发重估，并将快照随价格表入库；若文件缺失或格式无效，服务直接报错退出。别名不设生效时间段；修改或移除映射与排除前缀后，历史记录会随新版本键重新估值。
+`METERLEAF_MODEL_ALIASES` 指向的 JSON 文件支持可选的 `aliases`（单跳精确映射表，原名不可覆盖已有规则，目标必须存在于当前价格表规则中）、`excludePrefixes`（不参与路由前缀兜底的前缀列表，按 `/` 分段忽略大小写匹配，例如 `["group/"]`）与 `notes`。当其中至少一项非空时，规范化内容的 16 位 SHA-256 摘要会拼入估值版本键（`+aliases-<digest>`）以自动触发重估，并将快照随价格表入库；三项均为空时保持原价格表版本不变；若文件缺失或格式无效，服务直接报错退出。别名不设生效时间段；修改或移除映射与排除前缀并重启服务后，历史记录会随新版本键重新估值。
 
 排查缺失金额时，依次核对计价模型、服务档位、币种、USD 口径、有效日期和实际使用的 Token 桶。来源缺价时的零费用不是免费的证据；Meterleaf 保留未知值。
 
-早于价格表观测时间的历史记录会标记为按当前费率重估，不视为历史账单。
-上游直接报告的金额、网关扣费和本地独立估值始终区分保存。
+早于价格表观测时间的历史记录会标记为按当前费率重估，不视为历史账单。上游直接报告的金额、网关扣费和本地独立估值始终区分保存。
 
 Sub2API 的计价模型优先使用 `upstream_model`，缺失时使用源记录的 `model`。`upstream_response_model` 与 `upstream_model_mismatch` 只作为审计元数据；响应模型可能是别名，不自动覆盖计价模型。缺失字段不推断为一致。
 
@@ -104,5 +92,4 @@ Sub2API 的计价模型优先使用 `upstream_model`，缺失时使用源记录�
 }
 ```
 
-此示例只定义一个分支。该模型的标准 API USD 在补充规则前保持未计价。
-缺失规则不会静默回退到另一种 USD 口径。
+此示例只定义一个分支。该模型的标准 API USD 在补充规则前保持未计价。缺失规则不会静默回退到另一种 USD 口径。
