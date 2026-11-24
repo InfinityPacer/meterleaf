@@ -311,14 +311,15 @@ try {
   // 上游百分比四舍五入，2% 与 3% 按首次到达记为 1.5% 与 2.5%，过原点加权粗估为
   // 100 × (1×8 + 1.5×16 + 2.5×24) / (1² + 1.5² + 2.5²) = 18400/19 USD。
   const earlyRough = 18400 / 19;
-  // 当前粗估即使远高于历史，有历史参考时也继续采用 100 USD。
-  await apiStage("previous-period", 100, "rough", earlyRough, 24);
+  // 2% 以后每个百分点本周期权重加 10%，3% 时粗估占 10%，其余仍沿用上一周期的 100 USD。
+  const early = 100 * 0.9 + earlyRough * 0.1;
+  await apiStage("blended", early, "rough", earlyRough, 24);
   await loadPage();
   await tokensCard("2.16M", "9.00K");
   await detail(
     "history",
-    shown(24, 3, 100),
-    /上一周期/,
+    shown(24, 3, early),
+    /综合上一周期与本周期/,
     "desktop-early-history.png",
   );
   await detail("rough", shown(24, 3, earlyRough), /粗估/);
@@ -333,8 +334,8 @@ try {
   await tokensCard("2.16M", "9.00K");
   await detail(
     "history",
-    shown(24, 3, 100),
-    /上一周期/,
+    shown(24, 3, early),
+    /综合上一周期与本周期/,
     "mobile-early-history.png",
   );
   await detail("rough", shown(24, 3, earlyRough), /粗估/, "mobile-rough.png");
@@ -342,26 +343,26 @@ try {
     await ingest(observation(account, 10, 30, 24));
     await ingest(observation(account, 15, 35, 30));
   }
-  // 2% 记为 1.5% 后，七个有效点对的中位数是 1.5% 到 15% 这一对，即 100 × 19 / 13.5 = 3800/27，
-  // 跨度 14% 的本周期权重为 0.49。
-  const blended = 100 * 0.51 + (3800 / 27) * 0.49;
-  await apiStage("blended", blended, "segments", 3800 / 27, 35);
+  // 2% 记为 1.5% 后，七个有效点对的中位数是 1.5% 到 15% 这一对，即 100 × 19 / 13.5 = 3800/27；
+  // 用到 12% 以上后完全按本周期估算，不再混入上一周期。
+  const current = 3800 / 27;
+  await apiStage("segments", current, "segments", current, 35);
   await loadPage();
   await tokensCard("1.92M", "13.00K");
   await detail(
     "history",
-    shown(35, 15, blended),
-    /综合上一周期与本周期/,
-    "mobile-blended.png",
+    shown(35, 15, current),
+    /多段.*中位数/,
+    "mobile-current-period.png",
   );
   await page.setViewportSize({ width: 1440, height: 1000 });
   await loadPage();
   await tokensCard("1.92M", "13.00K");
   await detail(
     "history",
-    shown(35, 15, blended),
-    /综合上一周期与本周期/,
-    "desktop-blended.png",
+    shown(35, 15, current),
+    /多段.*中位数/,
+    "desktop-current-period.png",
   );
   for (const account of ["history", "rough"] as const) {
     cumulative = 35;

@@ -400,27 +400,39 @@ export function quotaView(
     const rough = roughQuotaEstimate(
       estimateObservations,
       estimateRead,
-      cycleReset === reset ? 0 : 10,
+      cycleReset === reset ? 0 : 5,
       roundedPercent,
     );
     return { segments, rough, observations, rebased };
   };
   const current = estimateCycle(reset, sampled);
   // 只借用紧邻的上一周期；缺少上一周期或长时间停用后，不沿用久远额度。
+  // Google 与 Codex 提前重置后从重置时刻重新起算整窗，被截断的上一周期原定重置晚于本周期起点，
+  // 因此按本周期起点前最后一个有用量的周期认定，而不是按原定重置时间。Google 在 0% 未使用时
+  // 不开始计时，每次读数的重置时间都随采样后移，这些只有 0% 的周期不算上一周期。
+  // 紧邻周期用量不足以估算时不再向更早周期借用，旧周期的模型组合和套餐可能已不同。
   const previousReset = sameSource.reduce(
-    (latestReset, { cycle }) =>
-      cycle <= start && cycle > start - duration && cycle > latestReset
+    (latestReset, { sample, at, cycle }) =>
+      cycle > start - duration &&
+      cycle < reset &&
+      cycle > latestReset &&
+      sample.percent !== null &&
+      sample.percent > 0 &&
+      at < start &&
+      at < cycle
         ? cycle
         : latestReset,
     -Infinity,
   );
+  // 上一周期可能被提前重置截断，读数和费用都只取到本周期起点之前，不混入本周期消费。
+  const previousEnd = Math.min(previousReset, start - 1);
   // 只有当前已知套餐区间内的历史才有资格参考，未知和旧版本快照不能证明套餐相同。
   const previous =
     plan?.plan &&
     Number.isFinite(previousReset) &&
-    previousReset > planStart &&
+    previousEnd > planStart &&
     !current.rebased
-      ? estimateCycle(previousReset, previousReset)
+      ? estimateCycle(previousReset, previousEnd)
       : null;
   const methods: NonNullable<QuotaView["estimate"]["methods"]> = {
     usd: null,
@@ -430,16 +442,13 @@ export function quotaView(
     const segments = current.segments[unit];
     const rough = current.rough[unit];
     const currentAmount = segments ?? rough;
-    // 历史单点也可能很粗糙，至少已有 10% 的有效观测才用于下一周期。
+    // 历史单点也可能很粗糙，至少已有 5% 的有效观测才用于下一周期。
     const prior = previous?.segments[unit] ?? previous?.rough[unit];
     if (prior !== null && prior !== undefined) {
-      // 有历史时不混入早期粗估，避免单点偏移在多段算法可用时造成反向跳变。
-      // 多段观测充分后，随本周期跨度增加逐步减少历史权重。
-      const weight =
-        segments !== null
-          ? Math.min(1, Math.max(0, current.segments.deltaPercent ?? 0) / 20) **
-            2
-          : 0;
+      // 本周期每 1% 花费在个位数百分比时噪声很大，2% 以内完全沿用上一周期；
+      // 之后每用 1 个百分点本周期权重增加 10%，用到 12% 起完全按本周期，粗估同样参与混合。
+      // 进度取最新读数而不是首尾跨度，Google 在 0% 时不留读数，首条读数可能已是数个百分点。
+      const weight = Math.min(1, Math.max(0, ((result.percent ?? 0) - 2) / 10));
       result.estimate[unit] =
         currentAmount !== null
           ? new Decimal(prior)
