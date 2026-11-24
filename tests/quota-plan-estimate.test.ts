@@ -255,3 +255,226 @@ test("a reset before the previous plan observation is not the new plan's start",
   // 只有 hour 5 一个新套餐读数，不能借用 hour 1 的清零点外推。
   expect(result.estimate.usd).toBeNull();
 });
+
+test("early zero-rebound spikes use the final stable crossing without lowering displayed percent", () => {
+  // 复现上游 1% 瞬时预扣回弹：0%→1%($1.04)→0%($2.78)→1%($8.80)→0%($11.77)→1%($12.30)→1%($19.32)
+  const trajectory = [
+    [0, 0.19],
+    [1, 1.04],
+    [0, 2.78],
+    [1, 8.8],
+    [0, 11.77],
+    [1, 12.3],
+    [1, 19.32],
+  ] as const;
+  const readings = trajectory.map(([percent], hour) =>
+    sample(8, hour, percent, []),
+  );
+  const spendReader: QuotaChargeReader = (_, end) => {
+    const hour = Math.min(new Date(end).getUTCHours(), trajectory.length - 1);
+    return { usd: String(trajectory[hour]![1]), credits: null };
+  };
+  const result = quotaView(readings, spendReader, iso(8, 6))!;
+  expect(result.percent).toBe(1);
+  expect(result.estimate.methods?.usd).toBe("rough");
+  // 最后一次稳定跨上 1%（约 0.5%）时累计花费 12.30，对应整周 2460，不再被 1.04 锁死在 ~224。
+  expect(fullWeekEstimate(result)).toBe("2460");
+  expect(Number(result.estimate.usd)).toBeGreaterThan(2400);
+  expect(Number(result.estimate.usd)).toBeLessThan(2500);
+
+  // 回落回 0% 且尚未再次跨上 1% 时，展示保持 1%，但不输出被证伪的瞬时尖峰估值。
+  const dipped = quotaView(readings.slice(0, 3), spendReader, iso(8, 2))!;
+  expect(dipped.percent).toBe(1);
+  expect(dipped.estimate.usd).toBeNull();
+  expect(dipped.estimate.reason).toBe("percent-unavailable");
+});
+
+test("plateau lower bound rescues rough estimates even when intermediate zero dips were missed", () => {
+  const trajectory = [
+    [0, 0.2],
+    [1, 1.04],
+    [1, 19.32],
+  ] as const;
+  const readings = trajectory.map(([percent], hour) =>
+    sample(8, hour, percent, []),
+  );
+  const spendReader: QuotaChargeReader = (_, end) => {
+    const hour = Math.min(new Date(end).getUTCHours(), trajectory.length - 1);
+    return { usd: String(trajectory[hour]![1]), credits: null };
+  };
+  const result = quotaView(readings, spendReader, iso(8, 2))!;
+  expect(result.percent).toBe(1);
+  expect(result.estimate.methods?.usd).toBe("rough");
+  // 未采到中间 0% 回落时，下界兜底保证整周估值不低于 19.32 / 1.5% = 1288。
+  expect(fullWeekEstimate(result)).toBe("1288");
+  expect(Number(result.estimate.usd)).toBeGreaterThanOrEqual(1288);
+});
+
+test("rebound before 2% converges smoothly to the true quota across the 2% crossing", () => {
+  const trajectory = [
+    [0, 0.32],
+    [1, 3.89],
+    [0, 4.53],
+    [1, 6.67],
+    [2, 36.34],
+  ] as const;
+  const readings = trajectory.map(([percent], hour) =>
+    sample(8, hour, percent, []),
+  );
+  const spendReader: QuotaChargeReader = (_, end) => {
+    const hour = Math.min(new Date(end).getUTCHours(), trajectory.length - 1);
+    return { usd: String(trajectory[hour]![1]), credits: null };
+  };
+  const result = quotaView(readings, spendReader, iso(8, 4))!;
+  expect(result.percent).toBe(2);
+  expect(result.estimate.methods?.usd).toBe("rough");
+  expect(Number(fullWeekEstimate(result))).toBeCloseTo(2313.8, 1);
+  expect(Number(result.estimate.usd)).toBeGreaterThan(2300);
+  expect(Number(result.estimate.usd)).toBeLessThan(2400);
+});
+
+test("steady non-rebounding growth keeps a stable rough estimate across repeated plateau samples", () => {
+  const trajectory = [
+    [0, 0],
+    [1, 10],
+    [1, 18],
+  ] as const;
+  const readings = trajectory.map(([percent], hour) =>
+    sample(8, hour, percent, []),
+  );
+  const spendReader: QuotaChargeReader = (_, end) => {
+    const hour = Math.min(new Date(end).getUTCHours(), trajectory.length - 1);
+    return { usd: String(trajectory[hour]![1]), credits: null };
+  };
+  const first = quotaView(readings.slice(0, 2), spendReader, iso(8, 1))!;
+  const second = quotaView(readings, spendReader, iso(8, 2))!;
+  expect(fullWeekEstimate(first)).toBe("2000");
+  expect(fullWeekEstimate(second)).toBe("2000");
+});
+
+test("small high-percent stale dips with slight spend growth do not shift crossings or disturb segments", () => {
+  // 多会话缓存回落 30→29→30、40→39 且期间花费略增，仍保持原穿越点与 segments 精度。
+  const trajectory = [
+    [0, 0],
+    [10, 100],
+    [20, 200],
+    [30, 300],
+    [29, 302],
+    [30, 305],
+    [25, 306],
+    [40, 400],
+    [39, 404],
+  ] as const;
+  const readings = trajectory.map(([percent], hour) =>
+    sample(8, hour, percent),
+  );
+  const spendReader: QuotaChargeReader = (_, end) => {
+    const hour = Math.min(new Date(end).getUTCHours(), trajectory.length - 1);
+    return { usd: String(trajectory[hour]![1]), credits: null };
+  };
+  const result = quotaView(readings, spendReader, iso(8, 8))!;
+  expect(result.percent).toBe(40);
+  expect(result.estimate.methods?.usd).toBe("segments");
+  expect(fullWeekEstimate(result)).toBe("1000");
+});
+
+test("low-tier dip after a mid-cycle plan change keeps the plan baseline and missing-price guard", () => {
+  const plans = [
+    ...known,
+    { plan: "max", observedAt: iso(8, 1), changed: true },
+  ];
+  const readings = [
+    sample(8, 1, 1, plans),
+    sample(8, 2, 0, plans),
+    sample(8, 3, 1, plans),
+    sample(8, 4, 2, plans),
+  ];
+  // 切换边界首点（1%）缺价时，后续 1→0 回落不能移动基准绕过缺价保护。
+  const missingBaselineReader: QuotaChargeReader = (_, end) => {
+    const hour = new Date(end).getUTCHours();
+    const amounts: Record<number, string | null> = {
+      1: null,
+      2: "20",
+      3: "25",
+      4: "35",
+    };
+    return { usd: amounts[hour] ?? null, credits: null };
+  };
+  expect(
+    quotaView(readings, missingBaselineReader, iso(8, 4))!.estimate.usd,
+  ).toBeNull();
+
+  // 切换边界首点（1%）有价时，基准固定在切换边界（10），不丢失回落前花费。
+  const pricedBaselineReader: QuotaChargeReader = (_, end) => {
+    const hour = new Date(end).getUTCHours();
+    const amounts: Record<number, string> = {
+      1: "10",
+      2: "20",
+      3: "25",
+      4: "35",
+    };
+    return { usd: amounts[hour] ?? "0", credits: null };
+  };
+  const priced = quotaView(readings, pricedBaselineReader, iso(8, 4))!;
+  expect(priced.percent).toBe(2);
+  expect(priced.estimate.methods?.usd).toBe("rough");
+  expect(fullWeekEstimate(priced)).toBe("2500");
+
+  // 周期内真实清零重置到 0% 后，锚点固定在清零点，后续 0→1→0→1 回弹仍正常去抖。
+  const resetRebound = [
+    sample(8, 0, 90, plans),
+    sample(8, 1, 0, plans),
+    sample(8, 2, 1, plans),
+    sample(8, 3, 0, plans),
+    sample(8, 4, 1, plans),
+  ];
+  const resetReader: QuotaChargeReader = (_, end) => {
+    const hour = new Date(end).getUTCHours();
+    const amounts: Record<number, string> = {
+      0: "900",
+      1: "900",
+      2: "901",
+      3: "902",
+      4: "912",
+    };
+    return { usd: amounts[hour] ?? "900", credits: null };
+  };
+  const rebounded = quotaView(resetRebound, resetReader, iso(8, 4))!;
+  expect(rebounded.percent).toBe(1);
+  expect(fullWeekEstimate(rebounded)).toBe("2400");
+
+  // 非零锚点之后若先到达更高档位（2%）再发生 2→0 低档回落，保留锚点同时撤销被推翻的旧 2% 首点。
+  const postAnchorSpike = [
+    sample(8, 1, 1, plans),
+    sample(8, 2, 2, plans),
+    sample(8, 3, 0, plans),
+    sample(8, 4, 1, plans),
+    sample(8, 5, 2, plans),
+  ];
+  const spikeReader: QuotaChargeReader = (_, end) => {
+    const hour = new Date(end).getUTCHours();
+    const amounts: Record<number, string> = {
+      1: "10",
+      2: "11",
+      3: "12",
+      4: "14",
+      5: "35",
+    };
+    return { usd: amounts[hour] ?? "0", credits: null };
+  };
+  const recovered = quotaView(postAnchorSpike, spikeReader, iso(8, 5))!;
+  expect(recovered.percent).toBe(2);
+  expect(recovered.estimate.methods?.usd).toBe("rough");
+  expect(fullWeekEstimate(recovered)).toBe("2500");
+
+  // 同一轨迹下若锚点缺价，仍保持基准缺价保护，返回 null。
+  const missingSpikeReader: QuotaChargeReader = (_, end) => {
+    const hour = new Date(end).getUTCHours();
+    return hour === 1
+      ? { usd: null, credits: null }
+      : spikeReader(_, end, null);
+  };
+  expect(
+    quotaView(postAnchorSpike, missingSpikeReader, iso(8, 5))!.estimate.usd,
+  ).toBeNull();
+});
