@@ -852,8 +852,9 @@ export class CollectorState {
   }
 
   /**
-   * 本机 OTEL 中继写入待发送队列。一次请求的多条记录在一个事务中提交，
-   * 同一请求 ID 重复到达时只保留最后一条；写库失败会抛出，由中继返回 503。
+   * 本机 OTEL 中继写入待发送队列。一次请求的多条记录在一个事务中提交；写库失败会抛出，
+   * 由中继返回 503。同一请求 ID 尚未送出时与队列中的旧项合并：与服务端一致，每个字段
+   * 先到的非空值优先、空缺由新记录补齐，因此成功请求的耗时不会被随后的失败事件冲掉。
    */
   enqueueOtel(records: readonly OtelRequestAccount[]): {
     queued: number;
@@ -862,7 +863,7 @@ export class CollectorState {
     if (records.length === 0) return { queued: 0, dropped: 0 };
     return this.write(() => {
       for (const record of records)
-        this.enqueueRow("otel", record.requestId, record);
+        this.enqueueRow("otel", record.requestId, this.mergeQueuedOtel(record));
       // 服务端长期收不到时队列不能无限增长：只保留最新的一批，更早的请求
       // 退回按登录时间线归属。上限约合数周的请求量，库内占用十几 MB。
       const dropped = this.db
@@ -874,6 +875,30 @@ export class CollectorState {
         .run(OTEL_QUEUE_LIMIT).changes;
       return { queued: records.length, dropped };
     });
+  }
+
+  private mergeQueuedOtel(record: OtelRequestAccount): OtelRequestAccount {
+    const row = this.db
+      .query<{ payload: string }, [string]>(
+        "SELECT payload FROM outbox WHERE kind = 'otel' AND item_id = ? ORDER BY seq DESC LIMIT 1",
+      )
+      .get(record.requestId);
+    if (!row) return record;
+    const queued = JSON.parse(row.payload) as OtelRequestAccount;
+    const merged: OtelRequestAccount = {
+      requestId: record.requestId,
+      accountUuid: queued.accountUuid ?? record.accountUuid,
+      organizationUuid: queued.organizationUuid ?? record.organizationUuid,
+      sessionId: queued.sessionId ?? record.sessionId,
+      model: queued.model ?? record.model,
+      occurredAt: queued.occurredAt ?? record.occurredAt,
+    };
+    // 耗时字段只在有值时出现，与解析结果的形状保持一致。
+    const durationMs = queued.durationMs ?? record.durationMs ?? null;
+    const firstTokenMs = queued.firstTokenMs ?? record.firstTokenMs ?? null;
+    if (durationMs !== null) merged.durationMs = durationMs;
+    if (firstTokenMs !== null) merged.firstTokenMs = firstTokenMs;
+    return merged;
   }
 
   /**

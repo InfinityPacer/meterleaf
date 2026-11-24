@@ -119,11 +119,76 @@ describe("Claude Code 用量行解析", () => {
       web_search_requests: 1,
       web_fetch_requests: 0,
       client_version: "2.1.0",
+      session_id: "sess-main",
     });
     expect(usage.get("req_E:msg_E")!.metadata.inference_geo).toBe("us");
     for (const event of usage.values()) {
       expect(ingestUsageSchema.safeParse(event).success).toBe(true);
     }
+  });
+
+  test("会话 ID 进入元数据，advisor 迭代同样携带", () => {
+    const result = parseLine(
+      assistantLine({
+        messageId: "msg_S",
+        sessionId: "sess-bracket",
+        timestamp: "2026-09-01T10:00:00.000Z",
+        usage: {
+          input_tokens: 5,
+          output_tokens: 9,
+          iterations: [
+            {
+              type: "advisor_message",
+              model: "claude-opus-5",
+              input_tokens: 2,
+              output_tokens: 3,
+            },
+          ],
+        },
+      }),
+    );
+    if (result.kind !== "usage") throw new Error("expected usage");
+    expect(result.observations).toHaveLength(2);
+    expect(result.observations[0]!.fact.metadata.session_id).toBe(
+      "sess-bracket",
+    );
+    expect(result.observations[1]!.fact.metadata).toMatchObject({
+      is_advisor: true,
+      session_id: "sess-bracket",
+    });
+
+    const tooLong = parseLine(
+      assistantLine({
+        messageId: "msg_L",
+        sessionId: "s".repeat(65),
+        timestamp: "2026-09-01T10:00:00.000Z",
+        input: 1,
+      }),
+    );
+    if (tooLong.kind !== "usage") throw new Error("expected usage");
+    expect(tooLong.observations[0]!.fact.metadata.session_id).toBeUndefined();
+  });
+
+  test("用户中断的流式响应（stop_reason 为 null）照常记账", () => {
+    const line = JSON.parse(
+      assistantLine({
+        messageId: "msg_I",
+        sessionId: "sess-interrupt",
+        timestamp: "2026-09-01T10:05:00.000Z",
+        input: 120,
+        output: 40,
+        cacheRead: 3000,
+      }),
+    ) as { message: Record<string, unknown> };
+    line.message.stop_reason = null;
+    line.message.stop_sequence = null;
+    const result = parseLine(JSON.stringify(line));
+    if (result.kind !== "usage") throw new Error("expected usage");
+    const [observation] = result.observations;
+    expect(observation!.key).toBe("req_msg_I:msg_I");
+    expect(observation!.total).toBe(120 + 40 + 3000);
+    expect(observation!.fact.tokens.output).toBe(40);
+    expect(observation!.fact.metadata.session_id).toBe("sess-interrupt");
   });
 
   test("损坏行跳过并计数", () => {

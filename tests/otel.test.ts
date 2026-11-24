@@ -24,7 +24,9 @@ import {
   OTEL_BODY_LIMIT_BYTES,
   OTEL_LOGS_PATH,
   parseCodexOtelEvents,
+  parseOtelRequestAccounts,
 } from "../src/shared/otel";
+import { serializeOtelRequests } from "../src/collector/push";
 import { CollectorState } from "../src/collector/state";
 import { LedgerStore } from "../src/storage/ledger";
 
@@ -873,4 +875,274 @@ test("Codex official OTLP websocket_request + sse_event correlate ttft_ms and du
   } finally {
     stateB.close();
   }
+});
+
+test("claude_code.api_error 与 api_error 只提取归属字段，不读取失败耗时", () => {
+  const attr = (key: string, value: Record<string, unknown>) => ({
+    key,
+    value,
+  });
+  const common = [
+    attr("user.account_uuid", { stringValue: "acct-error" }),
+    attr("organization.id", { stringValue: "org-error" }),
+    attr("session.id", { stringValue: "sess-error" }),
+    attr("model", { stringValue: "claude-opus-5-5" }),
+    attr("duration_ms", { intValue: "4200" }),
+    attr("ttft_ms", { intValue: "900" }),
+    attr("first_token_ms", { intValue: "901" }),
+    attr("error", { stringValue: "secret error text" }),
+  ];
+  const records = parseOtelRequestAccounts({
+    resourceLogs: [
+      {
+        scopeLogs: [
+          {
+            logRecords: [
+              {
+                body: { stringValue: "claude_code.api_error" },
+                attributes: [
+                  attr("request_id", { stringValue: "req_err_body" }),
+                  attr("event.timestamp", {
+                    stringValue: "2026-10-23T11:00:00.000Z",
+                  }),
+                  ...common,
+                ],
+              },
+              {
+                attributes: [
+                  attr("event.name", { stringValue: "api_error" }),
+                  attr("request_id", { stringValue: "req_err_event" }),
+                  ...common,
+                ],
+                timeUnixNano: "1792753200000000000",
+              },
+              {
+                body: { stringValue: "claude_code.api_error" },
+                attributes: common,
+              },
+              {
+                body: { stringValue: "claude_code.tool_result" },
+                attributes: [
+                  attr("request_id", { stringValue: "req_other" }),
+                  ...common,
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  expect(records).toEqual([
+    {
+      requestId: "req_err_body",
+      accountUuid: "acct-error",
+      organizationUuid: "org-error",
+      sessionId: "sess-error",
+      model: "claude-opus-5-5",
+      occurredAt: "2026-10-23T11:00:00.000Z",
+    },
+    {
+      requestId: "req_err_event",
+      accountUuid: "acct-error",
+      organizationUuid: "org-error",
+      sessionId: "sess-error",
+      model: "claude-opus-5-5",
+      occurredAt: new Date(1792753200000).toISOString(),
+    },
+  ]);
+  for (const record of records!) {
+    expect("durationMs" in record).toBe(false);
+    expect("firstTokenMs" in record).toBe(false);
+  }
+
+  // 本机中继按请求事件重新序列化后，服务端解析出的记录相同，仍不带耗时。
+  expect(parseOtelRequestAccounts(serializeOtelRequests(records!))).toEqual(
+    records,
+  );
+});
+
+test("api_error 账户经服务端落库并精确归属同一请求的用量", () => {
+  const store = new LedgerStore(":memory:", defaultPriceBook);
+  try {
+    const records = parseOtelRequestAccounts({
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                {
+                  body: { stringValue: "claude_code.api_error" },
+                  attributes: [
+                    { key: "request_id", value: { stringValue: "req_err" } },
+                    {
+                      key: "user.account_uuid",
+                      value: { stringValue: "acct-error" },
+                    },
+                    {
+                      key: "duration_ms",
+                      value: { intValue: "4200" },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })!;
+    store.saveRequestAccounts(sourceId, records, now);
+    const row = store.db
+      .query<
+        {
+          account_uuid: string | null;
+          duration_ms: number | null;
+          first_token_ms: number | null;
+        },
+        []
+      >(
+        "SELECT account_uuid, duration_ms, first_token_ms FROM request_accounts WHERE request_id='req_err'",
+      )
+      .get();
+    expect(row).toEqual({
+      account_uuid: "acct-error",
+      duration_ms: null,
+      first_token_ms: null,
+    });
+
+    // 同一请求的用量落库后按 otel 归属，且不带失败事件的耗时。
+    store.saveIngestBatch(
+      sourceId,
+      {
+        batchId: "api-error-usage",
+        collector: { name: "meterleaf-collector", version: "test" },
+        accounts: [],
+        usage: [
+          {
+            sourceId,
+            externalId: "req_err:msg_err",
+            accountExternalId: "unattributed",
+            occurredAt: "2026-10-23T11:00:00.000Z",
+            model: "claude-opus-5-5",
+            upstreamModel: null,
+            tier: "standard",
+            tokens: {
+              input: 10,
+              output: 5,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cacheWrite5m: null,
+              cacheWrite1h: null,
+              reasoning: null,
+            },
+            gatewayCost: null,
+            gatewayBilled: null,
+            upstreamUsd: null,
+            upstreamCredits: null,
+            metadata: { attribution: "timeline", session_id: "sess-error" },
+          },
+        ],
+        quotas: [],
+      },
+      now,
+    );
+    const fact = store.db
+      .query<{ account_id: string; payload: string }, []>(
+        "SELECT account_id, payload FROM usage_facts WHERE external_id='req_err:msg_err'",
+      )
+      .get()!;
+    expect(fact.account_id).toBe("acct-error");
+    const metadata = (
+      JSON.parse(fact.payload) as { metadata: Record<string, unknown> }
+    ).metadata;
+    expect(metadata.attribution).toBe("otel");
+    expect("duration_ms" in metadata).toBe(false);
+    expect("first_token_ms" in metadata).toBe(false);
+  } finally {
+    store.close();
+  }
+});
+
+test("成功与失败标记混在一条记录里时按失败处理，不提取耗时", () => {
+  const timing = [
+    { key: "duration_ms", value: { intValue: "4200" } },
+    { key: "ttft_ms", value: { intValue: "900" } },
+    { key: "first_token_ms", value: { intValue: "901" } },
+  ];
+  const mixed = (body: string, eventName: string) =>
+    parseOtelRequestAccounts({
+      resourceLogs: [
+        {
+          // event.name 从 resource 继承，body 在记录上。
+          resource: {
+            attributes: [
+              { key: "event.name", value: { stringValue: eventName } },
+            ],
+          },
+          scopeLogs: [
+            {
+              logRecords: [
+                {
+                  body: { stringValue: body },
+                  attributes: [
+                    { key: "request_id", value: { stringValue: "req_mix" } },
+                    {
+                      key: "user.account_uuid",
+                      value: { stringValue: "acct-mix" },
+                    },
+                    ...timing,
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })!;
+  for (const records of [
+    mixed("claude_code.api_error", "api_request"),
+    mixed("claude_code.api_request", "api_error"),
+  ]) {
+    expect(records).toHaveLength(1);
+    expect(records[0]!.accountUuid).toBe("acct-mix");
+    expect("durationMs" in records[0]!).toBe(false);
+    expect("firstTokenMs" in records[0]!).toBe(false);
+  }
+});
+
+test("超出四位年份的事件时间视为未知，不输出扩展年份", () => {
+  const parse = (attributes: unknown[], extra: Record<string, unknown> = {}) =>
+    parseOtelRequestAccounts({
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                {
+                  body: { stringValue: "claude_code.api_error" },
+                  attributes: [
+                    { key: "request_id", value: { stringValue: "req_time" } },
+                    ...attributes,
+                  ],
+                  ...extra,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })![0]!.occurredAt;
+  const stamp = (value: string) => [
+    { key: "event.timestamp", value: { stringValue: value } },
+  ];
+  expect(parse(stamp("+010000-01-01T00:00:00.000Z"))).toBeNull();
+  expect(parse(stamp("-000001-12-31T00:00:00.000Z"))).toBeNull();
+  // 纳秒时间远超 9999 年。
+  expect(parse([], { timeUnixNano: "300000000000000000000" })).toBeNull();
+  expect(parse(stamp("9999-12-31T23:59:59.999Z"))).toBe(
+    "9999-12-31T23:59:59.999Z",
+  );
+  expect(parse(stamp("0000-01-01T00:00:00.000Z"))).toBe(
+    "0000-01-01T00:00:00.000Z",
+  );
 });
