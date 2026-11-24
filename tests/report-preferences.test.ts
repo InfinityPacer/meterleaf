@@ -1,8 +1,14 @@
 import { expect, test } from "bun:test";
 import {
+  preferenceSchemas,
+  readStoredPreference,
+  writeStoredPreference,
+} from "../src/web/lib/preferences";
+import {
   readReportPreference,
   saveReportPreference,
 } from "../src/web/lib/report-preferences";
+import { ref } from "../src/domain/account-merge";
 const defaults = { days: 7, model: "all", account: "all" };
 
 test("tab selections are independent and never copy a legacy shared account filter", () => {
@@ -143,4 +149,155 @@ test("home opens on all history and keeps it as a symbolic range", () => {
     }),
   );
   expect(readReportPreference(storage, "reports")).toEqual(defaults);
+});
+
+test("accountGrouping preference persists booleans and falls back to false on invalid storage", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+  };
+  const key = "meterleaf-pref-account-grouping";
+
+  expect(
+    readStoredPreference(
+      key,
+      preferenceSchemas.accountGrouping,
+      false,
+      storage,
+    ),
+  ).toBe(false);
+
+  writeStoredPreference(key, preferenceSchemas.accountGrouping, true, storage);
+  expect(
+    readStoredPreference(
+      key,
+      preferenceSchemas.accountGrouping,
+      false,
+      storage,
+    ),
+  ).toBe(true);
+
+  writeStoredPreference(key, preferenceSchemas.accountGrouping, false, storage);
+  expect(
+    readStoredPreference(
+      key,
+      preferenceSchemas.accountGrouping,
+      false,
+      storage,
+    ),
+  ).toBe(false);
+
+  for (const raw of ["{", "null", '"true"', "1", "{}", "[]"]) {
+    expect(
+      readStoredPreference(key, preferenceSchemas.accountGrouping, false, {
+        getItem: () => raw,
+      }),
+    ).toBe(false);
+  }
+  expect(
+    readStoredPreference(key, preferenceSchemas.accountGrouping, false, {
+      getItem: () => {
+        throw Error("disabled");
+      },
+    }),
+  ).toBe(false);
+});
+
+test("accountOrder persists encoded long UTF-8 account ids and rejects empty or oversized entries", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+  };
+  const key = "meterleaf-pref-account-order";
+  const medium = ref("collector", "汉".repeat(60));
+  const longest = ref("collector", "汉".repeat(256));
+  expect(medium.length).toBeGreaterThan(512);
+  expect(longest.length).toBeGreaterThan(2300);
+  const order = ["a1", medium, "o1", longest, "o2"];
+
+  writeStoredPreference(key, preferenceSchemas.accountOrder, order, storage);
+  expect(
+    readStoredPreference(key, preferenceSchemas.accountOrder, [], storage),
+  ).toEqual(order);
+
+  for (const corrupt of [
+    ["a1", ""],
+    ["a1", "x".repeat(4097)],
+  ]) {
+    values.clear();
+    writeStoredPreference(
+      key,
+      preferenceSchemas.accountOrder,
+      corrupt,
+      storage,
+    );
+    expect(values.has(key)).toBe(false);
+    values.set(key, JSON.stringify(corrupt));
+    expect(
+      readStoredPreference(key, preferenceSchemas.accountOrder, [], storage),
+    ).toEqual([]);
+  }
+});
+
+test("accountOrder stores complete orders at and beyond 10,000 short ids and still rejects corrupt storage", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+  };
+  const key = "meterleaf-pref-account-order";
+
+  for (const size of [10_000, 10_001]) {
+    const order = Array.from({ length: size }, (_, index) => `e${index}`);
+    values.clear();
+    writeStoredPreference(key, preferenceSchemas.accountOrder, order, storage);
+    expect(values.has(key)).toBe(true);
+    const reloaded = readStoredPreference(
+      key,
+      preferenceSchemas.accountOrder,
+      [],
+      storage,
+    );
+    expect(reloaded).toHaveLength(size);
+    expect(reloaded).toEqual(order);
+  }
+
+  const large = Array.from({ length: 10_001 }, (_, index) => `e${index}`);
+  for (const corrupt of [
+    [...large, ""],
+    [...large, "x".repeat(4097)],
+  ]) {
+    values.clear();
+    writeStoredPreference(
+      key,
+      preferenceSchemas.accountOrder,
+      corrupt,
+      storage,
+    );
+    expect(values.has(key)).toBe(false);
+    values.set(key, JSON.stringify(corrupt));
+    expect(
+      readStoredPreference(key, preferenceSchemas.accountOrder, [], storage),
+    ).toEqual([]);
+  }
+
+  for (const raw of [
+    JSON.stringify({ 0: "e0" }),
+    JSON.stringify("e0"),
+    JSON.stringify(null),
+    "{not json",
+  ]) {
+    values.set(key, raw);
+    expect(
+      readStoredPreference(key, preferenceSchemas.accountOrder, [], storage),
+    ).toEqual([]);
+  }
 });
