@@ -71,6 +71,16 @@ export function serializeOtelRequests(
                 ["session.id", record.sessionId],
                 ["model", record.model],
                 ["event.timestamp", record.occurredAt],
+                [
+                  "duration_ms",
+                  record.durationMs != null ? String(record.durationMs) : null,
+                ],
+                [
+                  "ttft_ms",
+                  record.firstTokenMs != null
+                    ? String(record.firstTokenMs)
+                    : null,
+                ],
               ];
               return {
                 body: { stringValue: OTEL_API_REQUEST_BODY },

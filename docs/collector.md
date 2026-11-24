@@ -140,9 +140,9 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 
 一台 Mac 上可以用多个 Claude 订阅账户。默认账户使用 `~/.claude`，其他账户分别设 `CLAUDE_CONFIG_DIR` 登录，例如 `~/.claude-profiles/work`。如果把这些目录的 `projects` 软链接到 `~/.claude/projects`，会话记录集中在一处，方便跨账户恢复，但 JSONL 的每一行都没有账户字段。采集器只能按登录时间线归属，而时间线只代表默认目录当前登录的账户，额外账户的用量会被记到默认账户。
 
-Claude Code 的 OpenTelemetry 日志能补上这个信息。开启导出后，每次 API 请求都会发出一条 `claude_code.api_request` 日志，带 `user.account_uuid`、`organization.id`、`session.id` 和 `request_id`。`request_id` 与会话记录里的 `requestId` 相同，服务端据此把那次请求归到正确的账户。
+Claude Code 的 OpenTelemetry 日志能补上这个信息，同时还能提供单次请求的官方耗时指标。开启导出后，每次 API 请求都会发出一条 `claude_code.api_request` 日志，带 `user.account_uuid`、`organization.id`、`session.id`、`request_id`，以及 `duration_ms`（总耗时）和 `ttft_ms`（首字延迟）。`request_id` 与会话记录里的 `requestId` 相同，服务端据此把那次请求归到正确的账户并补齐耗时字段。
 
-Token 用量仍由采集器读取会话记录，因为 OTEL 没有 1 小时与 5 分钟缓存写入的拆分、推理 Tokens 和 web search 次数等计价需要的字段。OTEL 只回答这次请求属于哪个账户。归属优先级从高到低是采集器的模型映射、OTEL 给出的请求账户、登录时间线。模型映射是用户明确指定的，服务端不会覆盖。
+Token 用量仍由采集器读取会话记录，因为 OTEL 没有 1 小时与 5 分钟缓存写入的拆分、推理 Tokens 和 web search 次数等计价需要的字段。OTEL 用来确定请求账户并补充耗时。归属优先级从高到低是采集器的模型映射、OTEL 给出的请求账户、登录时间线。模型映射是用户明确指定的，服务端不会覆盖；即使请求由模型映射归属，OTEL 携带的 `duration_ms` 与 `ttft_ms` 仍会合并写入。
 
 服务端只保留最近 30 天的请求归属记录。已经被 OTEL 确定的账户会写进用量事实本身，所以采集器之后重发旧用量（元数据升级、模型映射变化或文件重读）不会把账户改回登录时间线。
 
@@ -201,7 +201,20 @@ meterleaf-collector claude-profiles \
 
 `meterleaf-collector otel-headers` 从采集器配置读取写入密钥，向标准输出打印一行 `{"Authorization":"Bearer ..."}`，不输出其他内容。没有初始化时命令报错并以非 0 退出，Claude Code 的日志导出会失败，但用量仍由采集器正常推送，不受影响。直连方式要求服务端先升级到支持该入口的版本，见[部署指南](deployment.md#让采集器访问服务)。
 
-这些日志只发到你自己的 Meterleaf，不发给 Anthropic。Claude Code 默认不导出提示词与回复；采集器的本机中转与 Meterleaf 服务端都只保留请求 ID、账户 UUID、组织 UUID、会话 ID、模型和请求时间，其余属性即使到达也不落库，也不写进日志。
+这些日志只发到你自己的 Meterleaf，不发给 Anthropic。Claude Code 默认不导出提示词与回复；采集器的本机中转与 Meterleaf 服务端都只保留请求 ID、账户 UUID、组织 UUID、会话 ID、模型、请求时间以及总耗时与首字延迟，其余属性即使到达也不落库，也不写进日志。
+
+Codex 也可以复用同一个本机中转补充单次请求的首字延迟与总耗时。在 `~/.codex/config.toml` 中启用官方 OTLP 日志导出（不导出提示词）：
+
+```toml
+[otel]
+log_user_prompt = false
+
+[otel.exporter.otlp-http]
+endpoint = "http://127.0.0.1:4319/v1/logs"
+protocol = "json"
+```
+
+保存后新启动的 Codex 会话会向本机中转发送官方 `codex.websocket_request` / `codex.api_request` 与 `codex.sse_event` 日志。采集器只提取会话 ID、时间戳、Token 计数、首字延迟与耗时，并在本机与对应会话记录合并后再上传，不保存或转发提示词与正文；若修改了 `otelRelay.port`，把上面的端口改成同一个值即可。
 
 服务端比采集器先升级时，旧采集器推送的用量还没有 `attribution` 字段。如果配置过 `modelAccounts`，这段时间里 OTEL 会暂时覆盖模型映射的归属；采集器升级后会重发全部已推送用量，归属随之恢复。所以用过模型映射时，请在升级服务端后尽快升级采集器。
 
