@@ -48,7 +48,7 @@ test("summary lists visible subscription accounts with remaining value per windo
     "2026-11-17T08:01:00.000Z",
     [
       account({
-        id: "mac:owl",
+        id: "mac:alice",
         fiveHour: window({
           percent: 12,
           estimate: {
@@ -74,17 +74,17 @@ test("summary lists visible subscription accounts with remaining value per windo
     {
       archived: ["mac:archived"],
       hidden: ["mac:hidden"],
-      aliases: { "mac:owl": "owl" },
+      aliases: { "mac:alice": "alice" },
     },
-    { "mac:owl": ["mac:owl", "mac:phronara"] },
+    { "mac:alice": ["mac:alice", "mac:bob"] },
   );
   expect(summary.accounts).toEqual([
     {
-      id: "mac:owl",
-      name: "owl",
+      id: "mac:alice",
+      name: "alice",
       plan: "max-20x",
       platform: "anthropic",
-      members: ["mac:owl", "mac:phronara"],
+      members: ["mac:alice", "mac:bob"],
       windows: {
         fiveHour: {
           percent: 12,
@@ -107,7 +107,7 @@ test("summary lists visible subscription accounts with remaining value per windo
 
 test("members follow merges so a collector can find the account it is logged into", () => {
   const store = new LedgerStore(":memory:", defaultPriceBook);
-  const accounts = ["owl", "phronara"].map((externalId) => ({
+  const accounts = ["alice", "bob"].map((externalId) => ({
     externalId,
     name: externalId,
     platform: "google",
@@ -130,9 +130,9 @@ test("members follow merges so a collector can find the account it is logged int
     },
     "2026-11-17T08:00:00.000Z",
   );
-  store.setAccountMerge("mac:phronara", "mac:owl");
+  store.setAccountMerge("mac:bob", "mac:alice");
   expect(store.accountMembers()).toEqual({
-    "mac:owl": ["mac:owl", "mac:phronara"],
+    "mac:alice": ["mac:alice", "mac:bob"],
   });
 });
 

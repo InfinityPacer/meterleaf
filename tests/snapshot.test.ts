@@ -349,7 +349,7 @@ test("ReportIndex windowSum keeps known period tokens when a request misses one 
   ): UsageFact => ({
     sourceId: "test",
     externalId,
-    accountExternalId: "agy-owl",
+    accountExternalId: "agy-alice",
     occurredAt,
     model: "gemini-4-carbon",
     upstreamModel: null,
@@ -367,8 +367,8 @@ test("ReportIndex windowSum keeps known period tokens when a request misses one 
     store.saveAccounts([
       {
         sourceId: "test",
-        externalId: "agy-owl",
-        name: "Antigravity (owl)",
+        externalId: "agy-alice",
+        name: "Antigravity (alice)",
         kind: "subscription",
         platform: "google",
         plan: "Google AI Ultra",
@@ -408,7 +408,7 @@ test("ReportIndex windowSum keeps known period tokens when a request misses one 
     const resolver = createAccountResolver(store.accounts());
     index.replace(store.usage().map((row) => toLedgerRecord(row, resolver)));
     const mixed = index.sumWindow(
-      "test:agy-owl",
+      "test:agy-alice",
       "2026-11-18T02:22:00.000Z",
       now,
       "subscription",
@@ -440,7 +440,7 @@ test("ReportIndex windowSum keeps known period tokens when a request misses one 
     );
     index.replace(store.usage().map((row) => toLedgerRecord(row, resolver)));
     const allNull = index.sumWindow(
-      "test:agy-owl",
+      "test:agy-alice",
       "2026-11-19T00:00:00.000Z",
       now,
       "subscription",
