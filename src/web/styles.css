@@ -1784,10 +1784,12 @@ footer > span {
   .ledger-section:not(.report-section) th:nth-child(4),
   .ledger-section:not(.report-section) th:nth-child(5),
   .ledger-section:not(.report-section) th:nth-child(6),
+  .ledger-section:not(.report-section) th:nth-child(7),
   .ledger-section:not(.report-section) td:nth-child(3),
   .ledger-section:not(.report-section) td:nth-child(4),
   .ledger-section:not(.report-section) td:nth-child(5),
-  .ledger-section:not(.report-section) td:nth-child(6) {
+  .ledger-section:not(.report-section) td:nth-child(6),
+  .ledger-section:not(.report-section) td:nth-child(7) {
     display: none;
   }
   th,

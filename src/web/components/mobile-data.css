@@ -220,7 +220,13 @@
     line-height: 1.4;
     overflow-wrap: anywhere;
   }
-  :root[data-mobile-layout="app"] .mobile-request-meta time {
+  :root[data-mobile-layout="app"]
+    .mobile-request-meta:has(.mobile-request-cache) {
+    grid-template-columns: max-content max-content minmax(0, 1fr);
+    column-gap: 10px;
+  }
+  :root[data-mobile-layout="app"] .mobile-request-meta time,
+  :root[data-mobile-layout="app"] .mobile-request-cache {
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }

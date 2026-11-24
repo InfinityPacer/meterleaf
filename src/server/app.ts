@@ -260,6 +260,7 @@ export function createApp({
             "accountId",
             "input",
             "cacheRead",
+            "cacheRate",
             "output",
             "usd",
           ])
