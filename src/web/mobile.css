@@ -433,7 +433,7 @@
       gap: 12px;
       padding: 0;
     }
-    /* 没有 Credits 卡片时只剩三张，费用卡独占一行。 */
+    /* 摘要为三张卡片时，主指标卡独占一行。 */
     .app-period
       .metrics:has(> .metric:nth-child(3):last-child)
       > .primary-metric {
