@@ -21,12 +21,38 @@ export interface OtelRequestAccount {
   model: string | null;
   /** 请求发生时间；event.timestamp 缺失时取记录时间，仍无法解析时保留 null。 */
   occurredAt: string | null;
+  /** 官方 claude_code.api_request 上报的总耗时（毫秒）。 */
+  durationMs?: number | null;
+  /** 官方 claude_code.api_request 上报的首 Token 延迟（毫秒）。 */
+  firstTokenMs?: number | null;
 }
+
+/** Codex 官方 OTLP 日志中与单次模型请求耗时相关的只读事件，不含提示词或邮箱等敏感信息。 */
+export type CodexOtelEvent =
+  | {
+      kind: "request_start";
+      sessionId: string;
+      occurredAtMs: number;
+      durationMs: number | null;
+    }
+  | {
+      kind: "response_completed";
+      sessionId: string;
+      occurredAtMs: number;
+      inputTokens: number | null;
+      cachedTokens: number | null;
+      cacheWriteTokens: number | null;
+      outputTokens: number | null;
+      reasoningTokens: number | null;
+      firstTokenMs: number | null;
+      durationMs: number | null;
+    };
 
 type JsonObject = Record<string, unknown>;
 
 const requestIdMax = 256;
 const attributeMax = 128;
+const maxLatencyMs = 24 * 60 * 60 * 1000;
 
 function object(value: unknown): JsonObject | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -38,26 +64,55 @@ function array(value: unknown): unknown[] | null {
   return Array.isArray(value) ? value : null;
 }
 
-/** OTLP JSON 的 AnyValue 只取字符串；其余类型不是这些属性会用的形态。 */
+/** OTLP JSON 的 AnyValue 字符串提取。 */
 function stringValue(value: unknown): string | null {
   const any = object(value);
   const text = any?.stringValue;
   return typeof text === "string" && text.length > 0 ? text : null;
 }
 
-function attributeMap(value: unknown): Map<string, string> {
-  const map = new Map<string, string>();
+/** OTLP JSON 的 AnyValue 布尔值提取（兼容 stringValue "true"/"false" 与 boolValue）。 */
+function boolValue(value: unknown): boolean | null {
+  const any = object(value);
+  if (!any) return null;
+  if (typeof any.boolValue === "boolean") return any.boolValue;
+  if (any.stringValue === "true") return true;
+  if (any.stringValue === "false") return false;
+  return null;
+}
+
+/** OTLP JSON 的 AnyValue 非负整毫秒/计数提取（兼容 intValue、doubleValue、stringValue）。 */
+function nonNegativeIntValue(value: unknown, max: number): number | null {
+  const any = object(value);
+  if (!any) return null;
+  let parsed: number | null = null;
+  if (typeof any.intValue === "number") parsed = any.intValue;
+  else if (typeof any.intValue === "string" && /^\d+$/.test(any.intValue))
+    parsed = Number(any.intValue);
+  else if (typeof any.doubleValue === "number") parsed = any.doubleValue;
+  else if (
+    typeof any.stringValue === "string" &&
+    /^\d+(?:\.\d+)?$/.test(any.stringValue)
+  )
+    parsed = Number(any.stringValue);
+  if (parsed === null || !Number.isFinite(parsed) || parsed < 0 || parsed > max)
+    return null;
+  return Math.round(parsed);
+}
+
+function rawAttributeMap(value: unknown): Map<string, unknown> {
+  const map = new Map<string, unknown>();
   for (const item of array(value) ?? []) {
     const entry = object(item);
     const key = entry?.key;
-    const text = stringValue(entry?.value);
-    if (typeof key === "string" && text !== null) map.set(key, text);
+    if (typeof key === "string" && entry?.value !== undefined)
+      map.set(key, entry.value);
   }
   return map;
 }
 
-function bounded(value: string | undefined, max: number): string | null {
-  return value !== undefined && value.length <= max ? value : null;
+function bounded(value: string | null | undefined, max: number): string | null {
+  return value && value.length <= max ? value : null;
 }
 
 /** event.timestamp 是 ISO 时间；记录时间在 OTLP JSON 里是纳秒字符串。 */
@@ -100,7 +155,7 @@ export function parseOtelRequestAccounts(
   for (const resourceLog of resourceLogs) {
     const resourceEntry = object(resourceLog);
     if (!resourceEntry) continue;
-    const resourceAttributes = attributeMap(
+    const resourceAttributes = rawAttributeMap(
       object(resourceEntry.resource)?.attributes,
     );
     for (const scopeLog of array(resourceEntry.scopeLogs) ?? []) {
@@ -111,36 +166,164 @@ export function parseOtelRequestAccounts(
         if (!logRecord) continue;
         // logRecord 与 resource 都可能带属性；同名的以更接近记录的一层为准。
         const attributes = new Map(resourceAttributes);
-        for (const [key, value] of attributeMap(logRecord.attributes))
+        for (const [key, value] of rawAttributeMap(logRecord.attributes))
           attributes.set(key, value);
+        const str = (key: string) => stringValue(attributes.get(key));
         const body = stringValue(logRecord.body);
         if (
           body !== OTEL_API_REQUEST_BODY &&
-          attributes.get("event.name") !== OTEL_API_REQUEST_EVENT
+          str("event.name") !== OTEL_API_REQUEST_EVENT
         )
           continue;
-        const requestId = bounded(attributes.get("request_id"), requestIdMax);
+        const requestId = bounded(str("request_id"), requestIdMax);
         if (!requestId) continue;
-        records.push({
+        const durationMs = nonNegativeIntValue(
+          attributes.get("duration_ms"),
+          maxLatencyMs,
+        );
+        const firstTokenMs =
+          nonNegativeIntValue(attributes.get("ttft_ms"), maxLatencyMs) ??
+          nonNegativeIntValue(attributes.get("first_token_ms"), maxLatencyMs);
+        const entry: OtelRequestAccount = {
           requestId,
-          accountUuid: bounded(
-            attributes.get("user.account_uuid"),
-            requestIdMax,
-          ),
-          organizationUuid: bounded(
-            attributes.get("organization.id"),
-            requestIdMax,
-          ),
-          sessionId: bounded(attributes.get("session.id"), requestIdMax),
-          model: bounded(attributes.get("model"), attributeMax),
+          accountUuid: bounded(str("user.account_uuid"), requestIdMax),
+          organizationUuid: bounded(str("organization.id"), requestIdMax),
+          sessionId: bounded(str("session.id"), requestIdMax),
+          model: bounded(str("model"), attributeMax),
           occurredAt:
-            isoFromText(attributes.get("event.timestamp") ?? null) ??
+            isoFromText(str("event.timestamp")) ??
             isoFromNanos(logRecord.timeUnixNano) ??
             isoFromNanos(logRecord.observedTimeUnixNano),
-        });
+        };
+        if (durationMs !== null) entry.durationMs = durationMs;
+        if (firstTokenMs !== null) entry.firstTokenMs = firstTokenMs;
+        records.push(entry);
         if (records.length >= OTEL_MAX_RECORDS) return records;
       }
     }
   }
   return records;
+}
+
+/**
+ * 解析 Codex CLI 官方 OTLP/HTTP JSON 日志中的请求起止与 TTFT 事件：
+ * - codex.websocket_request / codex.api_request（排除 /models）：记录单次请求的发起时刻；
+ * - codex.sse_event（event.kind = response.completed）：携带官方 ttft_ms 与精确 Token 计数。
+ * 不读取提示词、回复、邮箱或路径。
+ */
+export function parseCodexOtelEvents(
+  payload: unknown,
+): CodexOtelEvent[] | null {
+  const root = object(payload);
+  const resourceLogs = root ? array(root.resourceLogs) : null;
+  if (!resourceLogs) return null;
+  const events: CodexOtelEvent[] = [];
+  const maxTokens = 1_000_000_000;
+  for (const resourceLog of resourceLogs) {
+    const resourceEntry = object(resourceLog);
+    if (!resourceEntry) continue;
+    const resourceAttributes = rawAttributeMap(
+      object(resourceEntry.resource)?.attributes,
+    );
+    for (const scopeLog of array(resourceEntry.scopeLogs) ?? []) {
+      const scopeEntry = object(scopeLog);
+      if (!scopeEntry) continue;
+      for (const item of array(scopeEntry.logRecords) ?? []) {
+        const logRecord = object(item);
+        if (!logRecord) continue;
+        const attributes = new Map(resourceAttributes);
+        for (const [key, value] of rawAttributeMap(logRecord.attributes))
+          attributes.set(key, value);
+        const str = (key: string) => stringValue(attributes.get(key));
+        const eventName = str("event.name");
+        if (
+          eventName !== "codex.websocket_request" &&
+          eventName !== "codex.api_request" &&
+          eventName !== "codex.sse_event"
+        )
+          continue;
+        const sessionId = bounded(str("conversation.id"), requestIdMax);
+        if (!sessionId) continue;
+        const occurredIso =
+          isoFromText(str("event.timestamp")) ??
+          isoFromNanos(logRecord.timeUnixNano) ??
+          isoFromNanos(logRecord.observedTimeUnixNano);
+        const occurredAtMs = occurredIso ? Date.parse(occurredIso) : Number.NaN;
+        if (!Number.isFinite(occurredAtMs)) continue;
+
+        if (
+          eventName === "codex.websocket_request" ||
+          eventName === "codex.api_request"
+        ) {
+          if (boolValue(attributes.get("success")) === false) continue;
+          const endpoint = str("endpoint");
+          if (endpoint === "/models") continue;
+          const durationMs = nonNegativeIntValue(
+            attributes.get("duration_ms"),
+            maxLatencyMs,
+          );
+          events.push({
+            kind: "request_start",
+            sessionId,
+            occurredAtMs,
+            durationMs:
+              durationMs !== null && durationMs > 0 ? durationMs : null,
+          });
+        } else if (
+          eventName === "codex.sse_event" &&
+          str("event.kind") === "response.completed"
+        ) {
+          const inputTokens = nonNegativeIntValue(
+            attributes.get("input_token_count"),
+            maxTokens,
+          );
+          const cachedTokens = nonNegativeIntValue(
+            attributes.get("cached_token_count"),
+            maxTokens,
+          );
+          const cacheWriteTokens = nonNegativeIntValue(
+            attributes.get("cache_write_token_count"),
+            maxTokens,
+          );
+          const outputTokens = nonNegativeIntValue(
+            attributes.get("output_token_count"),
+            maxTokens,
+          );
+          const reasoningTokens = nonNegativeIntValue(
+            attributes.get("reasoning_token_count"),
+            maxTokens,
+          );
+          const firstTokenMs = nonNegativeIntValue(
+            attributes.get("ttft_ms"),
+            maxLatencyMs,
+          );
+          const durationMs = nonNegativeIntValue(
+            attributes.get("duration_ms"),
+            maxLatencyMs,
+          );
+          // 跳过启动预热空响应（例如 2 input / 0 output 且无 ttft_ms）。
+          if (
+            (outputTokens ?? 0) === 0 &&
+            (inputTokens ?? 0) <= 2 &&
+            firstTokenMs === null
+          )
+            continue;
+          events.push({
+            kind: "response_completed",
+            sessionId,
+            occurredAtMs,
+            inputTokens,
+            cachedTokens,
+            cacheWriteTokens,
+            outputTokens,
+            reasoningTokens,
+            firstTokenMs,
+            durationMs,
+          });
+        }
+        if (events.length >= OTEL_MAX_RECORDS) return events;
+      }
+    }
+  }
+  return events;
 }

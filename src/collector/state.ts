@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { IngestAccount, IngestUsage } from "../shared/ingest";
-import type { OtelRequestAccount } from "../shared/otel";
+import type { CodexOtelEvent, OtelRequestAccount } from "../shared/otel";
 import {
   attribute,
   type AccountSegment,
@@ -136,6 +136,36 @@ CREATE TABLE IF NOT EXISTS agy_shared_logs (
   events TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS source_usage (external_id TEXT PRIMARY KEY, source TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS codex_otel_starts (
+  session_id TEXT PRIMARY KEY,
+  started_ms INTEGER NOT NULL,
+  duration_ms INTEGER
+);
+CREATE TABLE IF NOT EXISTS codex_otel_timings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  occurred_ms INTEGER NOT NULL,
+  input_tokens INTEGER,
+  cached_tokens INTEGER,
+  output_tokens INTEGER,
+  first_token_ms INTEGER,
+  duration_ms INTEGER,
+  received_ms INTEGER NOT NULL,
+  matched INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS codex_otel_timings_session_time
+  ON codex_otel_timings (session_id, matched, occurred_ms);
+CREATE TABLE IF NOT EXISTS codex_recent_usage (
+  external_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  occurred_ms INTEGER NOT NULL,
+  input_tokens INTEGER,
+  cached_tokens INTEGER,
+  output_tokens INTEGER,
+  payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS codex_recent_usage_session_time
+  ON codex_recent_usage (session_id, occurred_ms);
 `;
 
 /**
@@ -817,6 +847,255 @@ export class CollectorState {
         .run(OTEL_QUEUE_LIMIT).changes;
       return { queued: records.length, dropped };
     });
+  }
+
+  /**
+   * 写入 Codex 官方 OTLP 日志事件：记录请求起点、计算总耗时与 TTFT，
+   * 若对应 rollout 用量刚在几秒前先一步入队，则立即补写耗时并重新入队更新。
+   */
+  recordCodexOtelEvents(
+    events: readonly CodexOtelEvent[],
+    nowMs: number = Date.now(),
+  ): { stored: number; backfilled: number } {
+    if (events.length === 0) return { stored: 0, backfilled: 0 };
+    const timingRetentionMs = 14 * 24 * 60 * 60 * 1000;
+    const matchWindowMs = 15_000;
+    const maxRequestDurationMs = 60 * 60 * 1000;
+    return this.write(() => {
+      let stored = 0;
+      let backfilled = 0;
+      for (const event of events) {
+        if (event.kind === "request_start") {
+          this.db
+            .query(
+              `INSERT INTO codex_otel_starts (session_id, started_ms, duration_ms)
+               VALUES (?, ?, ?)
+               ON CONFLICT (session_id) DO UPDATE SET
+                 started_ms = excluded.started_ms,
+                 duration_ms = excluded.duration_ms`,
+            )
+            .run(event.sessionId, event.occurredAtMs, event.durationMs);
+          continue;
+        }
+        const start = this.db
+          .query<{ started_ms: number; duration_ms: number | null }, [string]>(
+            "SELECT started_ms, duration_ms FROM codex_otel_starts WHERE session_id = ?",
+          )
+          .get(event.sessionId);
+        let durationMs = event.durationMs;
+        if (durationMs === null && start) {
+          const delta = event.occurredAtMs - start.started_ms;
+          if (delta >= 0 && delta <= maxRequestDurationMs) durationMs = delta;
+          else if (start.duration_ms !== null) durationMs = start.duration_ms;
+        }
+        if (
+          event.firstTokenMs !== null &&
+          durationMs !== null &&
+          durationMs < event.firstTokenMs
+        ) {
+          durationMs = event.firstTokenMs;
+        }
+        if (start) {
+          this.db
+            .query("DELETE FROM codex_otel_starts WHERE session_id = ?")
+            .run(event.sessionId);
+        }
+        if (event.firstTokenMs === null && durationMs === null) continue;
+
+        // 若同一请求已被先读取的 rollout 用量暂存，直接回填耗时并重推更新。
+        const pendingUsage = this.db
+          .query<
+            { external_id: string; payload: string },
+            [
+              string,
+              number,
+              number,
+              number | null,
+              number | null,
+              number | null,
+              number | null,
+              number | null,
+              number | null,
+              number,
+            ]
+          >(
+            `SELECT external_id, payload
+               FROM codex_recent_usage
+              WHERE session_id = ?
+                AND occurred_ms BETWEEN ? AND ?
+                AND (input_tokens IS NULL OR ? IS NULL OR input_tokens = ?)
+                AND (cached_tokens IS NULL OR ? IS NULL OR cached_tokens = ?)
+                AND (output_tokens IS NULL OR ? IS NULL OR output_tokens = ?)
+              ORDER BY ABS(occurred_ms - ?) ASC
+              LIMIT 1`,
+          )
+          .get(
+            event.sessionId,
+            event.occurredAtMs - matchWindowMs,
+            event.occurredAtMs + matchWindowMs,
+            event.inputTokens,
+            event.inputTokens,
+            event.cachedTokens,
+            event.cachedTokens,
+            event.outputTokens,
+            event.outputTokens,
+            event.occurredAtMs,
+          );
+        if (pendingUsage) {
+          const parsed = JSON.parse(pendingUsage.payload) as IngestUsage;
+          const enriched: IngestUsage = {
+            ...parsed,
+            metadata: {
+              ...parsed.metadata,
+              ...(event.firstTokenMs !== null
+                ? { first_token_ms: event.firstTokenMs }
+                : {}),
+              ...(durationMs !== null ? { duration_ms: durationMs } : {}),
+            },
+          };
+          this.enqueueRow("usage", enriched.externalId, enriched);
+          this.db
+            .query("DELETE FROM codex_recent_usage WHERE external_id = ?")
+            .run(pendingUsage.external_id);
+          backfilled += 1;
+          continue;
+        }
+
+        const duplicate = this.db
+          .query<
+            { id: number },
+            [string, number, number | null, number | null]
+          >(
+            `SELECT id FROM codex_otel_timings
+              WHERE session_id = ? AND occurred_ms = ?
+                AND input_tokens IS ? AND output_tokens IS ?
+              LIMIT 1`,
+          )
+          .get(
+            event.sessionId,
+            event.occurredAtMs,
+            event.inputTokens,
+            event.outputTokens,
+          );
+        if (duplicate) continue;
+
+        this.db
+          .query(
+            `INSERT INTO codex_otel_timings
+               (session_id, occurred_ms, input_tokens, cached_tokens, output_tokens, first_token_ms, duration_ms, received_ms, matched)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+          )
+          .run(
+            event.sessionId,
+            event.occurredAtMs,
+            event.inputTokens,
+            event.cachedTokens,
+            event.outputTokens,
+            event.firstTokenMs,
+            durationMs,
+            nowMs,
+          );
+        stored += 1;
+      }
+      this.db
+        .query("DELETE FROM codex_otel_timings WHERE received_ms < ?")
+        .run(nowMs - timingRetentionMs);
+      return { stored, backfilled };
+    });
+  }
+
+  /** 为一条 Codex rollout 用量查找并消费对应的官方 OTLP 耗时记录。 */
+  consumeCodexOtelTiming(
+    sessionId: string,
+    occurredMs: number,
+    inputTokens: number | null,
+    cachedTokens: number | null,
+    outputTokens: number | null,
+  ): { firstTokenMs: number | null; durationMs: number | null } | null {
+    const matchWindowMs = 15_000;
+    const row = this.db
+      .query<
+        {
+          id: number;
+          first_token_ms: number | null;
+          duration_ms: number | null;
+        },
+        [
+          string,
+          number,
+          number,
+          number | null,
+          number | null,
+          number | null,
+          number | null,
+          number | null,
+          number | null,
+          number,
+        ]
+      >(
+        `SELECT id, first_token_ms, duration_ms
+           FROM codex_otel_timings
+          WHERE session_id = ?
+            AND matched = 0
+            AND occurred_ms BETWEEN ? AND ?
+            AND (input_tokens IS NULL OR ? IS NULL OR input_tokens = ?)
+            AND (cached_tokens IS NULL OR ? IS NULL OR cached_tokens = ?)
+            AND (output_tokens IS NULL OR ? IS NULL OR output_tokens = ?)
+          ORDER BY ABS(occurred_ms - ?) ASC
+          LIMIT 1`,
+      )
+      .get(
+        sessionId,
+        occurredMs - matchWindowMs,
+        occurredMs + matchWindowMs,
+        inputTokens,
+        inputTokens,
+        cachedTokens,
+        cachedTokens,
+        outputTokens,
+        outputTokens,
+        occurredMs,
+      );
+    if (!row) return null;
+    this.db
+      .query("UPDATE codex_otel_timings SET matched = 1 WHERE id = ?")
+      .run(row.id);
+    return {
+      firstTokenMs: row.first_token_ms,
+      durationMs: row.duration_ms,
+    };
+  }
+
+  /** 暂存刚写入但尚未收到官方 OTEL 耗时的近期 Codex 用量（仅保留 24 小时），等待 OTEL 到达后自动补推。 */
+  savePendingCodexTimingUsage(
+    sessionId: string,
+    occurredMs: number,
+    inputTokens: number | null,
+    cachedTokens: number | null,
+    outputTokens: number | null,
+    usage: IngestUsage,
+    nowMs: number = Date.now(),
+  ) {
+    const retentionMs = 24 * 60 * 60 * 1000;
+    if (nowMs - occurredMs > retentionMs) return;
+    this.db
+      .query(
+        `INSERT OR REPLACE INTO codex_recent_usage
+           (external_id, session_id, occurred_ms, input_tokens, cached_tokens, output_tokens, payload)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        usage.externalId,
+        sessionId,
+        occurredMs,
+        inputTokens,
+        cachedTokens,
+        outputTokens,
+        JSON.stringify(usage),
+      );
+    this.db
+      .query("DELETE FROM codex_recent_usage WHERE occurred_ms < ?")
+      .run(nowMs - retentionMs);
   }
 
   /** 账户资料变化才进入待发送；返回是否有变化。 */

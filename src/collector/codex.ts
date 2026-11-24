@@ -515,13 +515,46 @@ export async function readCodex(
       return;
     }
     accounts.set(routed.id, routed);
-    if (
-      state.recordSourceUsage("codex", {
-        ...usage,
-        accountExternalId: routed.id,
-      })
-    )
+    const occurredMs = Date.parse(usage.occurredAt);
+    const totalInputTokens =
+      usage.tokens.input !== null && usage.tokens.cacheRead !== null
+        ? usage.tokens.input +
+          usage.tokens.cacheRead +
+          (usage.tokens.cacheWrite ?? 0)
+        : null;
+    const timing = state.consumeCodexOtelTiming(
+      context.session,
+      occurredMs,
+      totalInputTokens,
+      usage.tokens.cacheRead,
+      usage.tokens.output,
+    );
+    const fullUsage: IngestUsage = {
+      ...usage,
+      accountExternalId: routed.id,
+      metadata: {
+        ...usage.metadata,
+        ...(timing?.firstTokenMs != null
+          ? { first_token_ms: timing.firstTokenMs }
+          : {}),
+        ...(timing?.durationMs != null
+          ? { duration_ms: timing.durationMs }
+          : {}),
+      },
+    };
+    if (state.recordSourceUsage("codex", fullUsage)) {
       report.recorded++;
+      if (!timing) {
+        state.savePendingCodexTimingUsage(
+          context.session,
+          occurredMs,
+          totalInputTokens,
+          usage.tokens.cacheRead,
+          usage.tokens.output,
+          fullUsage,
+        );
+      }
+    }
   };
 
   /** 返回 false 表示文件超出本轮剩余预算，留待下一轮。 */
