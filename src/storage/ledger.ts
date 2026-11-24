@@ -486,7 +486,26 @@ export class LedgerStore {
     this.db
       .query("INSERT OR IGNORE INTO price_books VALUES (?, ?)")
       .run(priceBookKey(book), payload);
+    this.ensureRequestAccountTimingColumns();
     this.revalueRoutedMissingRates(book);
+  }
+
+  /** 为已有账本平滑补齐 request_accounts 的耗时列，不改变数据库 revision 以保持向前兼容。 */
+  private ensureRequestAccountTimingColumns() {
+    const columns = new Set(
+      this.db
+        .query<{ name: string }, []>("PRAGMA table_info(request_accounts)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("duration_ms")) {
+      this.db.exec("ALTER TABLE request_accounts ADD COLUMN duration_ms REAL;");
+    }
+    if (!columns.has("first_token_ms")) {
+      this.db.exec(
+        "ALTER TABLE request_accounts ADD COLUMN first_token_ms REAL;",
+      );
+    }
   }
 
   /**
@@ -766,10 +785,15 @@ export class LedgerStore {
   private requestAccount(sourceId: string, requestId: string) {
     return this.db
       .query<
-        { account_uuid: string | null; organization_uuid: string | null },
+        {
+          account_uuid: string | null;
+          organization_uuid: string | null;
+          duration_ms: number | null;
+          first_token_ms: number | null;
+        },
         [string, string]
       >(
-        "SELECT account_uuid, organization_uuid FROM request_accounts WHERE source_id=? AND request_id=?",
+        "SELECT account_uuid, organization_uuid, duration_ms, first_token_ms FROM request_accounts WHERE source_id=? AND request_id=?",
       )
       .get(sourceId, requestId);
   }
@@ -806,43 +830,35 @@ export class LedgerStore {
     return write.changes > 0;
   }
 
-  /**
-   * 为一条事实查找可覆盖的 OTEL 账户；不能覆盖时返回 null。账户与传入值相同也返回，
-   * 因为调用方需要把 otel 归属写进事实，才能在请求归属记录过期后继续保留结论。
-   * 补写占位账户时置 created，即使事实本身是重放，账户资料的变化也要推进账本版本。
-   */
-  private accountOverride(
+  private lookupRequestMapping(
     sourceId: string,
     fact: UsageFact,
     cache: Map<
       string,
-      { account_uuid: string | null; organization_uuid: string | null } | null
+      {
+        account_uuid: string | null;
+        organization_uuid: string | null;
+        duration_ms: number | null;
+        first_token_ms: number | null;
+      } | null
     >,
-    state: { created: boolean },
-  ): string | null {
-    if (fact.metadata.attribution === "model") return null;
+  ) {
     const requestId = LedgerStore.requestIdOf(fact.externalId);
     if (!requestId) return null;
     if (!cache.has(requestId))
       cache.set(requestId, this.requestAccount(sourceId, requestId) ?? null);
-    const mapping = cache.get(requestId);
-    if (!mapping?.account_uuid) return null;
-    if (
-      this.ensureRequestAccount(
-        sourceId,
-        mapping.account_uuid,
-        mapping.organization_uuid,
-      )
-    )
-      state.created = true;
-    return mapping.account_uuid;
+    return cache.get(requestId) ?? null;
   }
 
-  /** 已存事实的 otel 归属；请求归属记录过期后由它保持账户不再翻转。 */
-  private storedOtelAccount(
+  /** 已存事实的 otel 归属与官方耗时；请求映射过期或重放旧用量时保持结论不回退。 */
+  private storedFactPreserved(
     sourceId: string,
     externalId: string,
-  ): string | null {
+  ): {
+    otelAccount: string | null;
+    durationMs: number | null;
+    firstTokenMs: number | null;
+  } | null {
     const row = this.db
       .query<{ account_id: string; payload: string }, [string, string]>(
         "SELECT account_id, payload FROM usage_facts WHERE source_id=? AND external_id=?",
@@ -850,7 +866,47 @@ export class LedgerStore {
       .get(sourceId, externalId);
     if (!row) return null;
     const fact = JSON.parse(row.payload) as UsageFact;
-    return fact.metadata.attribution === "otel" ? row.account_id : null;
+    const durationMs =
+      typeof fact.metadata.duration_ms === "number" &&
+      Number.isFinite(fact.metadata.duration_ms)
+        ? fact.metadata.duration_ms
+        : null;
+    const firstTokenMs =
+      typeof fact.metadata.first_token_ms === "number" &&
+      Number.isFinite(fact.metadata.first_token_ms)
+        ? fact.metadata.first_token_ms
+        : null;
+    return {
+      otelAccount: fact.metadata.attribution === "otel" ? row.account_id : null,
+      durationMs,
+      firstTokenMs,
+    };
+  }
+
+  private static mergeFactTimings(
+    fact: UsageFact,
+    durationMs: number | null,
+    firstTokenMs: number | null,
+  ): UsageFact {
+    const hasDuration =
+      typeof fact.metadata.duration_ms === "number" &&
+      Number.isFinite(fact.metadata.duration_ms);
+    const hasFirstToken =
+      typeof fact.metadata.first_token_ms === "number" &&
+      Number.isFinite(fact.metadata.first_token_ms);
+    const nextDuration =
+      !hasDuration && durationMs !== null ? durationMs : null;
+    const nextFirstToken =
+      !hasFirstToken && firstTokenMs !== null ? firstTokenMs : null;
+    if (nextDuration === null && nextFirstToken === null) return fact;
+    return {
+      ...fact,
+      metadata: {
+        ...fact.metadata,
+        ...(nextDuration !== null ? { duration_ms: nextDuration } : {}),
+        ...(nextFirstToken !== null ? { first_token_ms: nextFirstToken } : {}),
+      },
+    };
   }
 
   /** 事实与当前价格表估值同步写入；内容未变的重放不产生变更。调用方负责事务。 */
@@ -862,34 +918,72 @@ export class LedgerStore {
     let changed = false;
     const requestAccounts = new Map<
       string,
-      { account_uuid: string | null; organization_uuid: string | null } | null
+      {
+        account_uuid: string | null;
+        organization_uuid: string | null;
+        duration_ms: number | null;
+        first_token_ms: number | null;
+      } | null
     >();
     const accounts = { created: false };
     for (const original of facts) {
       if (original.sourceId !== sourceId)
         throw new Error("Connector returned a foreign source record");
       let fact = original;
-      const override = this.accountOverride(
+      const mapping = this.lookupRequestMapping(
         sourceId,
         original,
         requestAccounts,
-        accounts,
       );
-      if (override !== null) {
+      if (original.metadata.attribution !== "model" && mapping?.account_uuid) {
+        if (
+          this.ensureRequestAccount(
+            sourceId,
+            mapping.account_uuid,
+            mapping.organization_uuid,
+          )
+        )
+          accounts.created = true;
         fact = {
-          ...original,
-          accountExternalId: override,
-          metadata: { ...original.metadata, attribution: "otel" },
+          ...fact,
+          accountExternalId: mapping.account_uuid,
+          metadata: { ...fact.metadata, attribution: "otel" },
         };
-      } else if (original.metadata.attribution !== "model") {
-        // 没有新映射时沿用已存结论，采集器补推旧用量不会把账户改回登录时间线。
-        const stored = this.storedOtelAccount(sourceId, original.externalId);
-        if (stored !== null)
-          fact = {
-            ...original,
-            accountExternalId: stored,
-            metadata: { ...original.metadata, attribution: "otel" },
-          };
+      }
+      if (mapping) {
+        fact = LedgerStore.mergeFactTimings(
+          fact,
+          mapping.duration_ms,
+          mapping.first_token_ms,
+        );
+      }
+      const needsStoredFallback =
+        (original.metadata.attribution !== "model" && !mapping?.account_uuid) ||
+        fact.metadata.duration_ms === undefined ||
+        fact.metadata.first_token_ms === undefined;
+      if (needsStoredFallback) {
+        const preserved = this.storedFactPreserved(
+          sourceId,
+          original.externalId,
+        );
+        if (preserved) {
+          if (
+            original.metadata.attribution !== "model" &&
+            !mapping?.account_uuid &&
+            preserved.otelAccount !== null
+          ) {
+            fact = {
+              ...fact,
+              accountExternalId: preserved.otelAccount,
+              metadata: { ...fact.metadata, attribution: "otel" },
+            };
+          }
+          fact = LedgerStore.mergeFactTimings(
+            fact,
+            preserved.durationMs,
+            preserved.firstTokenMs,
+          );
+        }
       }
       const factWrite = this.db
         .query(
@@ -1149,17 +1243,21 @@ export class LedgerStore {
     let rewritten = 0;
     this.db.transaction(() => {
       for (const record of records) {
+        const durationMs = record.durationMs ?? null;
+        const firstTokenMs = record.firstTokenMs ?? null;
         this.db
           .query(
             `INSERT INTO request_accounts
-               (source_id, request_id, account_uuid, organization_uuid, session_id, model, occurred_at, received_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               (source_id, request_id, account_uuid, organization_uuid, session_id, model, occurred_at, received_at, duration_ms, first_token_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_id, request_id) DO UPDATE SET
                account_uuid = COALESCE(request_accounts.account_uuid, excluded.account_uuid),
                organization_uuid = COALESCE(request_accounts.organization_uuid, excluded.organization_uuid),
                session_id = COALESCE(request_accounts.session_id, excluded.session_id),
                model = COALESCE(request_accounts.model, excluded.model),
-               occurred_at = COALESCE(request_accounts.occurred_at, excluded.occurred_at)`,
+               occurred_at = COALESCE(request_accounts.occurred_at, excluded.occurred_at),
+               duration_ms = COALESCE(request_accounts.duration_ms, excluded.duration_ms),
+               first_token_ms = COALESCE(request_accounts.first_token_ms, excluded.first_token_ms)`,
           )
           .run(
             sourceId,
@@ -1170,17 +1268,27 @@ export class LedgerStore {
             record.model,
             record.occurredAt,
             receivedAt,
+            durationMs,
+            firstTokenMs,
           );
         stored += 1;
-        // 后到的空值没有新信息，可能只是导出重试，不必再扫描已有事实。
-        if (!record.accountUuid) continue;
+        // 账户与耗时全为空时没有新信息，不必扫描已有事实。
+        if (!record.accountUuid && durationMs === null && firstTokenMs === null)
+          continue;
         const mapping = this.requestAccount(sourceId, record.requestId);
-        if (!mapping?.account_uuid) continue;
+        if (
+          !mapping?.account_uuid &&
+          mapping?.duration_ms == null &&
+          mapping?.first_token_ms == null
+        )
+          continue;
         rewritten += this.rewriteRequestFacts(
           sourceId,
           record.requestId,
           mapping.account_uuid,
           mapping.organization_uuid,
+          mapping.duration_ms,
+          mapping.first_token_ms,
         );
       }
       if (rewritten > 0) this.bumpRevision();
@@ -1341,39 +1449,48 @@ export class LedgerStore {
   private rewriteRequestFacts(
     sourceId: string,
     requestId: string,
-    accountUuid: string,
+    accountUuid: string | null,
     organizationUuid: string | null,
+    durationMs: number | null,
+    firstTokenMs: number | null,
   ): number {
     const prefix = `${requestId}:`;
     // advisor 子事件的键是 `${requestId}:${messageId}:advisor:${n}`，同一前缀即可覆盖。
     // 用主键前缀范围而不是 substr，避免每次 OTEL 事件扫描该来源的全部历史事实。
     const rows = this.db
       .query<
-        { external_id: string; payload: string },
+        { external_id: string; account_id: string; payload: string },
         [string, string, string]
       >(
-        "SELECT external_id, payload FROM usage_facts WHERE source_id=? AND external_id>=? AND external_id<?",
+        "SELECT external_id, account_id, payload FROM usage_facts WHERE source_id=? AND external_id>=? AND external_id<?",
       )
       .all(sourceId, prefix, `${prefix}\u{ffff}`);
     let rewritten = 0;
     for (const row of rows) {
       // `nr:` 事件按会话与消息去重，没有请求 ID 可与 OTEL 对应。
       if (row.external_id.startsWith("nr:")) continue;
-      const fact = JSON.parse(row.payload) as UsageFact;
-      if (fact.metadata.attribution === "model") continue;
-      // 账户相同时也要补上 otel 标记，否则请求归属记录过期后会退回传入的账户。
-      const payload = JSON.stringify({
-        ...fact,
-        accountExternalId: accountUuid,
-        metadata: { ...fact.metadata, attribution: "otel" },
-      });
-      if (payload === row.payload) continue;
-      this.ensureRequestAccount(sourceId, accountUuid, organizationUuid);
+      let next = JSON.parse(row.payload) as UsageFact;
+      let nextAccount = row.account_id;
+      if (accountUuid && next.metadata.attribution !== "model") {
+        // 账户相同时也要补上 otel 标记，否则请求归属记录过期后会退回传入的账户。
+        nextAccount = accountUuid;
+        next = {
+          ...next,
+          accountExternalId: accountUuid,
+          metadata: { ...next.metadata, attribution: "otel" },
+        };
+      }
+      next = LedgerStore.mergeFactTimings(next, durationMs, firstTokenMs);
+      const payload = JSON.stringify(next);
+      if (payload === row.payload && nextAccount === row.account_id) continue;
+      if (accountUuid && next.metadata.attribution !== "model") {
+        this.ensureRequestAccount(sourceId, accountUuid, organizationUuid);
+      }
       this.db
         .query(
           "UPDATE usage_facts SET account_id=?, payload=? WHERE source_id=? AND external_id=?",
         )
-        .run(accountUuid, payload, sourceId, row.external_id);
+        .run(nextAccount, payload, sourceId, row.external_id);
       rewritten += 1;
     }
     return rewritten;
