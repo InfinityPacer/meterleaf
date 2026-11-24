@@ -53,7 +53,7 @@ meterleaf-collector tasks remove <名称>
 - `--every` 是间隔分钟数，范围 1 到 1440，默认 10；`--timeout` 是限时秒数，默认 60，最长 600。任务结束或超时时，它启动的子进程会一起结束；脱离进程组自行运行的进程不受管理，但不会拖住同步。同名任务用 `--force` 覆盖。
 - 任务在每轮同步之后按登记顺序运行，与同步共用一把运行锁，所以不会和自己重叠，也不会与 `tasks run` 同时运行。服务端暂时连不上时任务照常运行。
 - 任务失败或超时只写进 `logs/collector.err.log`，不影响同步和其他任务。成功且没有输出时不写日志。
-- 任务的工作目录是数据目录下的 `tasks/<名称>`，可以在这里保存自己的状态，删除任务时不会一并删除。任务还能从环境变量读到 `METERLEAF_TASK_NAME`、`METERLEAF_TASK_STATE_DIR`，以及 `METERLEAF_CLAUDE_CONFIG_DIRS`，后者每行一个 Claude 配置目录，默认目录在前，随后是[登记的额外账户](collector.md#登记额外账户)。
+- 任务的工作目录是数据目录下的 `tasks/<名称>`，可以在这里保存自己的状态，删除任务时不会一并删除。任务还能从环境变量读到 `METERLEAF_TASK_NAME`、`METERLEAF_TASK_STATE_DIR`，以及 `METERLEAF_CLAUDE_CONFIG_DIRS_JSON`（无损 JSON 字符串数组）与 `METERLEAF_CLAUDE_CONFIG_DIRS`（每行一个 Claude 配置目录，过滤含换行路径以防误拆）：默认模式下默认目录在前、随后是[登记的额外账户](collector.md#登记额外账户)；配置 `claude.profilesDir` 后仅含该目录下的账号目录（无可用账号时分别为 `[]` 与空字符串，任务不回退到默认目录）。
 
 后台任务以低优先级运行，任务也一样。任务做什么由你负责，采集器不检查它读写哪些文件。
 

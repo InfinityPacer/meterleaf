@@ -1,9 +1,19 @@
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  closeSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   accountFact,
   readClaudeJson,
+  readClaudeJsonResult,
   type ClaudeAccount,
 } from "./claude-code/account";
 import {
@@ -47,6 +57,10 @@ export interface CollectSources {
   modelAccounts?: readonly ModelAccountRule[];
   /** 可选：同一台电脑上通过 CLAUDE_CONFIG_DIR 登录的其他账户。 */
   claudeProfiles?: readonly ClaudeProfile[];
+  /** 可选：仅采集该目录下的子目录账号；配置后跳过默认 ~/.claude / ~/.claude.json 及目录外的其他账户。 */
+  claudeProfilesDir?: string | null;
+  /** 可选：与 claudeProfilesDir 配合使用，按子目录名匹配 `<dir>/<name>.tsv` 作为状态栏额度缓存。 */
+  claudeStatuslineCacheDir?: string | null;
 }
 
 /** 额外账户本轮的结果；默认账户仍使用 CollectReport 顶部字段。 */
@@ -95,19 +109,171 @@ export interface CollectReport {
   statuslineIgnoredLines: number;
   /** 额外 Claude 账户的本轮结果。 */
   profiles: ProfileReport[];
+  /** 仅采集 profilesDir 时，根目录本身是否成功枚举。 */
+  profilesRootReadable: boolean;
+  /** 仅采集 profilesDir 时，根目录及子目录枚举是否完整；为 false 时不覆写本轮无法确认的受管 Claude 登录映射。 */
+  profilesDiscoveryComplete: boolean;
+  /** 根目录可读但单个候选子目录遇到非 ENOENT/ENOTDIR 错误而无法确认状态的路径。 */
+  uncertainProfileDirs: string[];
 }
 
 const chunkBytes = 4 * 1024 * 1024;
 const fingerprintBytes = 64;
 
-/** 递归列出会话 JSONL（含子代理目录）；读取期间被删除的目录直接忽略。 */
-export function listSessionFiles(root: string): string[] {
+const backupSegmentPattern = /(^|[._-])(bak|backup)([._-]|$)/i;
+
+function isAbsentError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/** 判断路径是否属于指定 profilesDir 的合法直接受管子目录（排除默认目录、根外路径、隐藏项与备份命名）。 */
+export function isManagedProfileDir(
+  configDir: string,
+  profilesDir: string,
+): boolean {
+  if (!isAbsolute(configDir)) return false;
+  const root = resolve(profilesDir);
+  const resolved = resolve(configDir);
+  if (dirname(resolved) !== root) return false;
+  const name = basename(resolved);
+  return (
+    name.length > 0 && !name.startsWith(".") && !backupSegmentPattern.test(name)
+  );
+}
+
+/**
+ * 独占根目录本身不可枚举（如 EACCES）时，判断既有摘要中的某条目录是否允许保留：
+ * 先按路径剔除默认目录及一切根外/非法命名项；对根内合法路径再做尽力 lstat 核查，
+ * 已确认为缺失或软链接的立即剔除，仍遇权限/IO 错误无法确认的予以保留。
+ */
+export function canPreserveManagedProfileDir(
+  configDir: string,
+  profilesDir: string,
+): boolean {
+  if (!isManagedProfileDir(configDir, profilesDir)) return false;
+  const resolved = resolve(configDir);
+  try {
+    if (!lstatSync(resolved).isDirectory()) return false;
+  } catch (error) {
+    return !isAbsentError(error);
+  }
+  try {
+    if (!lstatSync(join(resolved, ".claude.json")).isFile()) return false;
+  } catch (error) {
+    return !isAbsentError(error);
+  }
+  return true;
+}
+
+interface ProfileDiscoveryResult {
+  profiles: ClaudeProfile[];
+  /** 根目录是否成功枚举；失败时不能推断任何子目录已移出。 */
+  rootReadable: boolean;
+  /** 根目录及所有候选子目录元数据均完整读取时为 true；否则跳过游标清理以避免误删。 */
+  complete: boolean;
+  /** 元数据读取失败（非 ENOENT/ENOTDIR）的子目录键后缀，清理元信息时保留。 */
+  uncertainSuffixes: Set<string>;
+  /** 元数据读取失败（非 ENOENT/ENOTDIR）的子目录绝对路径，供摘要合并保留对应受管映射。 */
+  uncertainDirs: string[];
+}
+
+/**
+ * 动态扫描指定根目录下的直接子目录作为 Claude 账号配置目录。
+ * 使用 lstat 拒绝账号目录与 `.claude.json` 的软链接越界，忽略隐藏项、备份命名与不含
+ * 普通文件 `.claude.json` 的目录；若提供状态栏缓存目录且 `<statuslineCacheDir>/<子目录名>.tsv`
+ * 为普通文件，则自动关联该额度缓存。
+ */
+function scanClaudeProfiles(
+  profilesDir: string,
+  statuslineCacheDir?: string | null,
+): ProfileDiscoveryResult {
+  const root = resolve(profilesDir);
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return {
+      profiles: [],
+      rootReadable: false,
+      complete: false,
+      uncertainSuffixes: new Set(),
+      uncertainDirs: [],
+    };
+  }
+  const cacheRoot = statuslineCacheDir ? resolve(statuslineCacheDir) : null;
+  const profiles: ClaudeProfile[] = [];
+  const uncertainSuffixes = new Set<string>();
+  const uncertainDirs: string[] = [];
+  let complete = true;
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.name.startsWith(".") || backupSegmentPattern.test(entry.name))
+      continue;
+    const configDir = join(root, entry.name);
+    try {
+      // 拒绝账号目录软链接，防止指向 profilesDir 之外的账户。
+      if (!lstatSync(configDir).isDirectory()) continue;
+    } catch (error) {
+      if (!isAbsentError(error)) {
+        uncertainSuffixes.add(profileKeySuffix(configDir));
+        uncertainDirs.push(configDir);
+        complete = false;
+      }
+      continue;
+    }
+    try {
+      // 拒绝 .claude.json 软链接，只接受该目录内的普通文件。
+      if (!lstatSync(join(configDir, ".claude.json")).isFile()) continue;
+    } catch (error) {
+      if (!isAbsentError(error)) {
+        uncertainSuffixes.add(profileKeySuffix(configDir));
+        uncertainDirs.push(configDir);
+        complete = false;
+      }
+      continue;
+    }
+    let statuslineCache: string | undefined;
+    if (cacheRoot) {
+      const candidate = join(cacheRoot, `${entry.name}.tsv`);
+      try {
+        if (lstatSync(candidate).isFile()) statuslineCache = candidate;
+      } catch {
+        // 状态栏缓存尚未生成或不可读时跳过关联。
+      }
+    }
+    profiles.push({
+      configDir,
+      ...(statuslineCache ? { statuslineCache } : {}),
+    });
+  }
+  return {
+    profiles,
+    rootReadable: true,
+    complete,
+    uncertainSuffixes,
+    uncertainDirs,
+  };
+}
+
+export function discoverClaudeProfiles(
+  profilesDir: string,
+  statuslineCacheDir?: string | null,
+): ClaudeProfile[] {
+  return scanClaudeProfiles(profilesDir, statuslineCacheDir).profiles;
+}
+
+function listSessionFilesWithStatus(root: string): {
+  files: string[];
+  complete: boolean;
+} {
   const found: string[] = [];
+  let complete = true;
   const walk = (dir: string) => {
     let entries;
     try {
       entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      if (!isAbsentError(error)) complete = false;
       return;
     }
     for (const entry of entries) {
@@ -118,7 +284,37 @@ export function listSessionFiles(root: string): string[] {
     }
   };
   walk(root);
-  return found.sort();
+  return { files: found.sort(), complete };
+}
+
+/** 汇总指定账号目录各自的 `projects` 会话文件；多个目录软链接到同一位置时按真实路径去重。 */
+function listProfileSessionFiles(profiles: readonly ClaudeProfile[]): {
+  files: string[];
+  complete: boolean;
+} {
+  const projectDirs = new Set<string>();
+  let complete = true;
+  for (const profile of profiles) {
+    const candidate = join(resolve(profile.configDir), "projects");
+    try {
+      const real = realpathSync(candidate);
+      if (statSync(real).isDirectory()) projectDirs.add(real);
+    } catch (error) {
+      if (!isAbsentError(error)) complete = false;
+    }
+  }
+  const found = new Set<string>();
+  for (const dir of [...projectDirs].sort()) {
+    const result = listSessionFilesWithStatus(dir);
+    if (!result.complete) complete = false;
+    for (const file of result.files) found.add(file);
+  }
+  return { files: [...found].sort(), complete };
+}
+
+/** 递归列出会话 JSONL（含子代理目录）；读取期间被删除的目录直接忽略。 */
+export function listSessionFiles(root: string): string[] {
+  return listSessionFilesWithStatus(root).files;
 }
 
 function fingerprint(fd: number, offset: number): string {
@@ -148,6 +344,7 @@ export function ingestFile(
   path: string,
   report: CollectReport,
   onLogin: (at: string) => void = () => {},
+  options: { recordLoginHints?: boolean } = {},
 ) {
   let fd: number;
   try {
@@ -208,9 +405,11 @@ export function ingestFile(
     const handleLine = (raw: string) => {
       report.lines += 1;
       // 登录线索先于本文件的事件入库，本文件中切换前后的事件随即按切换时刻归属。
-      const login = loginMoment(raw);
-      if (login && state.recordLoginHint({ at: login, source: "transcript" }))
-        onLogin(login);
+      if (options.recordLoginHints !== false) {
+        const login = loginMoment(raw);
+        if (login && state.recordLoginHint({ at: login, source: "transcript" }))
+          onLogin(login);
+      }
       const apiRequest = parseApiRequestStart(raw);
       if (apiRequest) {
         requestStarts.set(apiRequest.id, apiRequest.atMs);
@@ -350,6 +549,9 @@ export function emptyReport(): CollectReport {
     statuslineQuotaSkipped: null,
     statuslineIgnoredLines: 0,
     profiles: [],
+    profilesRootReadable: true,
+    profilesDiscoveryComplete: true,
+    uncertainProfileDirs: [],
   };
 }
 
@@ -527,6 +729,44 @@ function stickyAccountFact(
 }
 
 /**
+ * 清理已移出采集范围的 Claude 目录遗留状态：
+ * 仅采集 profilesDir 时始终清除默认目录的凭据检查、额度摘要、时间线与历史绑定；
+ * 子目录元信息仅在根目录成功枚举时清理，并跳过本轮读取出错无法确认状态的子目录键。
+ */
+function pruneStaleClaudeMeta(
+  state: CollectorState,
+  discovery: ProfileDiscoveryResult,
+) {
+  const activeSuffixes = new Set(
+    discovery.profiles.map((profile) => profileKeySuffix(profile.configDir)),
+  );
+  state.clearDefaultTimeline();
+  state.write(() => {
+    state.deleteMeta(credentialCheckKey);
+    state.deleteMeta(credentialCandidateKey);
+    state.deleteMeta("last_quota_hash");
+    state.deleteMeta("last_quota_hash:statusline");
+    if (!discovery.rootReadable) return;
+    for (const prefix of [
+      `${credentialCheckKey}:`,
+      `${credentialCandidateKey}:`,
+      "last_quota_hash:claude-json:",
+      "last_quota_hash:statusline:",
+    ]) {
+      for (const row of state.metaByPrefix(prefix)) {
+        const suffix = row.key.slice(prefix.length);
+        if (
+          !activeSuffixes.has(suffix) &&
+          !discovery.uncertainSuffixes.has(suffix)
+        ) {
+          state.deleteMeta(row.key);
+        }
+      }
+    }
+  });
+}
+
+/**
  * 一轮采集：先记录当前登录账户并按新时间线修正归属，再读取会话增量，
  * 使本轮新事件直接使用延长后的区间；最后记录额度快照。
  *
@@ -544,7 +784,24 @@ export function collect(
   const modelAccounts = sources.modelAccounts ?? [];
   state.setModelAccounts(modelAccounts);
   const rules = `${attributionRules}:${modelAccountsDigest(modelAccounts)}`;
-  const snapshot = readClaudeJson(sources.claudeJson);
+  const exclusive = Boolean(sources.claudeProfilesDir);
+  const discovery = exclusive
+    ? scanClaudeProfiles(
+        sources.claudeProfilesDir!,
+        sources.claudeStatuslineCacheDir ?? null,
+      )
+    : null;
+  const profiles = discovery
+    ? discovery.profiles
+    : (sources.claudeProfiles ?? []);
+  if (discovery) {
+    report.profilesRootReadable = discovery.rootReadable;
+    report.profilesDiscoveryComplete = discovery.complete;
+    report.uncertainProfileDirs = discovery.uncertainDirs;
+    pruneStaleClaudeMeta(state, discovery);
+  }
+
+  const snapshot = exclusive ? null : readClaudeJson(sources.claudeJson);
   report.claudeJsonRead = snapshot !== null;
   if (snapshot?.account) {
     report.accountUuid = snapshot.account.accountUuid;
@@ -579,7 +836,9 @@ export function collect(
   }
   // 规则或模型映射与上次不同（含早期版本把空档记为未归属）时，按现行规则把已有事件重新归属一次。
   if (state.getMeta(attributionRulesKey) !== rules) {
-    report.reattributed += state.reattribute(null);
+    report.reattributed += state.reattribute(null, {
+      preserveTimelineAttribution: exclusive,
+    });
     state.setMeta(attributionRulesKey, rules);
   }
   if (state.getMeta(usageMetadataKey) !== usageMetadataVersion) {
@@ -587,24 +846,38 @@ export function collect(
     state.setMeta(usageMetadataKey, usageMetadataVersion);
   }
 
-  const files = listSessionFiles(sources.projectsDir);
+  const sessionScan = exclusive
+    ? listProfileSessionFiles(profiles)
+    : { files: listSessionFiles(sources.projectsDir), complete: true };
+  const files = sessionScan.files;
   report.files = files.length;
   let earliestLogin: string | null = null;
   for (const path of files)
-    ingestFile(state, path, report, (at) => {
-      if (earliestLogin === null || at < earliestLogin) earliestLogin = at;
-    });
+    ingestFile(
+      state,
+      path,
+      report,
+      (at) => {
+        if (!exclusive && (earliestLogin === null || at < earliestLogin))
+          earliestLogin = at;
+      },
+      { recordLoginHints: !exclusive },
+    );
   // 本轮新读到的登录线索可能改变此前文件里空档事件的归属。
-  if (earliestLogin !== null) {
+  if (!exclusive && earliestLogin !== null) {
     const since = state.gapStart(earliestLogin);
     if (since !== null) report.reattributed += state.reattribute(since);
   }
-  state.forgetMissingFiles(new Set(files));
+  // 独占模式下仅在目录与会话枚举均完整时清理缺失游标，避免临时权限或 IO 失败导致误清。
+  if (!exclusive || (discovery!.complete && sessionScan.complete)) {
+    state.forgetMissingFiles(new Set(files));
+  }
 
   // 先读状态栏缓存再确认账户，使采样时刻不晚于确认时刻。
-  const cache = sources.statuslineCache
-    ? readStatuslineCache(sources.statuslineCache)
-    : undefined;
+  const cache =
+    !exclusive && sources.statuslineCache
+      ? readStatuslineCache(sources.statuslineCache)
+      : undefined;
   if (snapshot?.account) {
     const accountUuid = snapshot.account.accountUuid;
     const confirmedAt = finishedAt().toISOString();
@@ -649,9 +922,19 @@ export function collect(
     }
   }
 
-  for (const profile of sources.claudeProfiles ?? [])
+  for (const profile of profiles)
     report.profiles.push(
-      collectProfile(state, sources, profile, report.accountUuid, now),
+      collectProfile(state, sources, profile, report.accountUuid, now, {
+        rejectSymlinkCredentialFile: exclusive,
+        onReadFailure: exclusive
+          ? () => {
+              report.profilesDiscoveryComplete = false;
+              if (!report.uncertainProfileDirs.includes(profile.configDir)) {
+                report.uncertainProfileDirs.push(profile.configDir);
+              }
+            }
+          : undefined,
+      }),
     );
   return report;
 }
@@ -672,6 +955,10 @@ function collectProfile(
   profile: ClaudeProfile,
   defaultAccountUuid: string | null,
   now: Date,
+  options: {
+    rejectSymlinkCredentialFile?: boolean;
+    onReadFailure?: () => void;
+  } = {},
 ): ProfileReport {
   const configDir = resolve(profile.configDir);
   const claudeJson = join(configDir, ".claude.json");
@@ -691,8 +978,14 @@ function collectProfile(
     statuslineQuotaSkipped: null,
     statuslineIgnoredLines: 0,
   };
-  const snapshot = readClaudeJson(claudeJson);
-  if (!snapshot?.account) {
+  const readResult = readClaudeJsonResult(claudeJson);
+  if (readResult.kind !== "ok") {
+    if (readResult.kind === "unreadable") options.onReadFailure?.();
+    result.skipped = "未能读取 .claude.json 或未登录";
+    return result;
+  }
+  const snapshot = readResult.snapshot;
+  if (!snapshot.account) {
     result.skipped = "未能读取 .claude.json 或未登录";
     return result;
   }
@@ -706,6 +999,7 @@ function collectProfile(
   const location: CredentialLocation = {
     claudeRoot: configDir,
     configDir: profile.configDir,
+    ...(options.rejectSymlinkCredentialFile ? { rejectSymlinkFile: true } : {}),
   };
   const version = sources.credential?.version(location) ?? null;
   const credential = currentCredentialPlan(
