@@ -183,12 +183,7 @@ export function PerformanceChart({ data, dimension, accounts }: Props) {
         axisLabel: {
           color: colors.muted,
           fontSize: 11.5,
-          formatter: (v: number) =>
-            v === 0
-              ? "0s"
-              : v < 1
-                ? `${Math.round(v * 1000)}ms`
-                : `${v.toFixed(1)}s`,
+          formatter: (v: number) => formatLatencyMs(v * 1000),
         },
         splitLine: {
           show: !hasTps,

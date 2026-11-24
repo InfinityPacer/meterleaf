@@ -29,7 +29,8 @@
   font: 14px/1.5 var(--font-sans);
   letter-spacing: 0;
 }
-.data-menu [role="menuitem"] {
+.data-menu [role="menuitem"],
+.data-menu [role="menuitemcheckbox"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -39,8 +40,78 @@
   border-radius: 6px;
   cursor: pointer;
 }
-.data-menu [role="menuitem"] svg {
+.data-menu [role="menuitemcheckbox"][data-disabled] {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+.data-menu [role="menuitem"] svg,
+.data-menu [role="menuitemcheckbox"] svg {
   flex-shrink: 0;
+}
+.ledger-columns-menu {
+  width: min(264px, calc(100vw - 24px));
+}
+.ledger-columns-presets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+}
+.ledger-preset-chip {
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 1px solid var(--control-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: 500 12px/1.2 var(--font-sans);
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+.ledger-preset-chip:hover {
+  background: var(--soft);
+  color: var(--ink);
+}
+.ledger-preset-chip[aria-pressed="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.ledger-column-option-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ledger-column-auto-hint {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.mobile-sort-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  margin-right: 4px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 550;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ledger-columns-menu [role="menuitemcheckbox"] {
+  min-height: 36px;
+  padding: 6px 10px;
+}
+.ledger-columns-menu [role="menuitemcheckbox"] svg {
+  color: var(--teal);
 }
 .data-menu [data-highlighted] {
   outline: 2px solid var(--blue);
@@ -68,7 +139,8 @@
     .model-chart-tool
     > .section-heading
     > .segmented,
-  :root[data-mobile-layout="app"] .request-section .search-control {
+  :root[data-mobile-layout="app"] .request-section .search-control,
+  :root[data-mobile-layout="app"] .ledger-columns-trigger {
     display: none;
   }
 
@@ -230,8 +302,15 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
+  :root[data-mobile-layout="app"] .mobile-request-sort-metric {
+    color: var(--ink);
+    font-weight: 500;
+  }
   :root[data-mobile-layout="app"] .mobile-request-account {
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     text-align: right;
   }
   :root[data-mobile-layout="app"] .mobile-request-item:hover,
@@ -519,6 +598,42 @@
     margin: 0;
     text-align: right;
     overflow-wrap: anywhere;
+  }
+}
+
+/* 竖屏平板（640px–900px 且高度充裕）在 App 模式下也展示零溢出紧凑表格与列开关，避免手机卡片过度拉伸。 */
+@media (min-width: 640px) and (max-width: 900px) and (min-height: 501px) {
+  :root[data-mobile-layout="app"] .request-table-scroll {
+    display: block;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+    padding: 4px 0;
+  }
+  :root[data-mobile-layout="app"] .mobile-request-list,
+  :root[data-mobile-layout="app"] .mobile-request-controls {
+    display: none;
+  }
+  :root[data-mobile-layout="app"] .ledger-columns-trigger {
+    display: inline-flex;
+    min-height: 38px;
+    height: 38px;
+  }
+  :root[data-mobile-layout="app"] .request-section .search-control {
+    display: flex;
+    min-height: 38px;
+    height: 38px;
+    width: 190px;
+    background: var(--surface);
+  }
+  :root[data-mobile-layout="app"] .request-section .search-control input {
+    width: 100%;
+    min-width: 0;
+  }
+  :root[data-mobile-layout="app"] .request-section > .section-heading {
+    margin-bottom: 12px;
   }
 }
 

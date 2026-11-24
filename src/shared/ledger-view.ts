@@ -14,6 +14,8 @@ import {
   filterRecords,
   isKnownNumber,
   numericAmount,
+  requestDurationMs,
+  requestFirstTokenMs,
   series,
   summarize,
   tokenFieldSummary,
@@ -169,6 +171,8 @@ type SortKey =
   | "cacheRead"
   | "cacheRate"
   | "output"
+  | "firstTokenMs"
+  | "durationMs"
   | "usd";
 type SortValue = number | string | null;
 
@@ -180,6 +184,8 @@ const sortKeys = new Set<SortKey>([
   "cacheRead",
   "cacheRate",
   "output",
+  "firstTokenMs",
+  "durationMs",
   "usd",
 ]);
 
@@ -204,6 +210,10 @@ function sortValue(row: LedgerRecord, key: SortKey): SortValue {
       return row[key];
     case "cacheRate":
       return cacheHitRate(row);
+    case "firstTokenMs":
+      return requestFirstTokenMs(row);
+    case "durationMs":
+      return requestDurationMs(row);
     case "usd":
       return numericAmount(row.usd);
   }
