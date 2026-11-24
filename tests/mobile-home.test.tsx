@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
+import { isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { AccountWindow, LedgerAccount } from "../src/shared/report";
-import { MobileHome } from "../src/web/components/MobileHome";
+import { AccountHeadingActions } from "../src/web/components/AccountHeadingActions";
+import {
+  MobileHome,
+  type MobileHomeProps,
+} from "../src/web/components/MobileHome";
 import { createDemoLedger } from "../src/web/demo/ledger";
 import { createLedgerView } from "../src/shared/ledger-view";
 import { quotaLabel } from "../src/web/lib/quota-display";
@@ -67,10 +72,11 @@ function accountFixture(overrides: Partial<LedgerAccount> = {}): LedgerAccount {
   };
 }
 
-function renderHome(
+function buildHomeProps(
   summary: UsageSummaryData | null,
   accounts: LedgerAccount[] = [],
-) {
+  overrides: Partial<MobileHomeProps> = {},
+): MobileHomeProps {
   const snapshot = createDemoLedger();
   const view = createLedgerView(snapshot, {
     filter: { days: 7, model: "all", account: "all", search: "" },
@@ -82,17 +88,46 @@ function renderHome(
     sort: "occurredAt",
     desc: true,
   });
+  return {
+    snapshot: view,
+    accounts,
+    asOf: view.asOf,
+    summary,
+    rangeLabel: "历史至今",
+    onAccount: () => {},
+    onRequests: () => {},
+    ...overrides,
+  };
+}
+
+function renderHome(
+  summary: UsageSummaryData | null,
+  accounts: LedgerAccount[] = [],
+  overrides: Partial<MobileHomeProps> = {},
+) {
   return renderToStaticMarkup(
-    <MobileHome
-      snapshot={view}
-      accounts={accounts}
-      asOf={view.asOf}
-      summary={summary}
-      rangeLabel="历史至今"
-      onAccount={() => {}}
-      onRequests={() => {}}
-    />,
+    <MobileHome {...buildHomeProps(summary, accounts, overrides)} />,
   );
+}
+
+function findElements(
+  node: ReactNode,
+  predicate: (props: Record<string, unknown>, type: unknown) => boolean,
+  found: Array<{ type: unknown; props: Record<string, unknown> }> = [],
+) {
+  if (Array.isArray(node)) {
+    for (const child of node) findElements(child, predicate, found);
+    return found;
+  }
+  if (!isValidElement(node)) return found;
+  const props = node.props as Record<string, unknown>;
+  if (predicate(props, node.type)) {
+    found.push({ type: node.type, props });
+  }
+  if (props.children !== undefined) {
+    findElements(props.children as ReactNode, predicate, found);
+  }
+  return found;
 }
 
 function accountCard(html: string) {
@@ -312,4 +347,203 @@ test("home hides the Fable row when upstream reports none or the whole week is e
   );
   expect(exhausted).toContain('data-quota-count="1"');
   expect(exhausted).not.toContain("Fable");
+});
+
+test("home stays flat by default and groups accounts by platform when enabled", () => {
+  const accounts = [
+    accountFixture({ id: "u1", name: "Unknown One", platform: undefined }),
+    accountFixture({ id: "a1", name: "Claude Max", platform: "anthropic" }),
+    accountFixture({ id: "o1", name: "ChatGPT Pro", platform: "openai" }),
+    accountFixture({ id: "a2", name: "Claude Team", platform: "anthropic" }),
+  ];
+
+  const flatHtml = renderHome(null, accounts);
+  expect(flatHtml).toContain('aria-label="账户额度摘要"');
+  expect(flatHtml).not.toContain("mobile-home-account-groups");
+
+  const groupedHtml = renderHome(null, accounts, { grouped: true });
+  expect(groupedHtml).toContain('class="mobile-home-account-groups"');
+  expect(groupedHtml).toContain('aria-label="Anthropic 账户"');
+  expect(groupedHtml).toContain('aria-label="OpenAI 账户"');
+  expect(groupedHtml).toContain('aria-label="其他 账户"');
+  expect(groupedHtml).toContain(
+    '<span class="mobile-home-account-group-name" title="Anthropic">Anthropic</span><span class="mobile-home-account-group-count">2</span>',
+  );
+  expect(groupedHtml).toContain(
+    '<span class="mobile-home-account-group-name" title="OpenAI">OpenAI</span><span class="mobile-home-account-group-count">1</span>',
+  );
+  expect(groupedHtml).toContain(
+    '<span class="mobile-home-account-group-name" title="其他">其他</span><span class="mobile-home-account-group-count">1</span>',
+  );
+  expect(groupedHtml.indexOf("Anthropic 账户")).toBeLessThan(
+    groupedHtml.indexOf("OpenAI 账户"),
+  );
+  expect(groupedHtml.indexOf("OpenAI 账户")).toBeLessThan(
+    groupedHtml.indexOf("其他 账户"),
+  );
+});
+
+test("home renders grouped headings for prototype-named custom platforms", () => {
+  const accounts = [
+    accountFixture({ id: "a1", name: "Claude Max", platform: "anthropic" }),
+    accountFixture({ id: "p1", name: "Proto Relay", platform: "__proto__" }),
+    accountFixture({ id: "c1", name: "Ctor Relay", platform: "constructor" }),
+    accountFixture({ id: "t1", name: "Str Relay", platform: "toString" }),
+  ];
+  const html = renderHome(null, accounts, { grouped: true });
+  expect(html).toContain('class="mobile-home-account-groups"');
+  expect(html).toContain('aria-label="Proto 账户"');
+  expect(html).toContain('aria-label="Constructor 账户"');
+  expect(html).toContain('aria-label="toString 账户"');
+  expect(html).toContain("Proto Relay");
+  expect(html).not.toContain("[object");
+  expect(html).not.toContain("function");
+});
+
+test("home falls back to flat list when empty, single-group, or viewing archived accounts", () => {
+  const singleGroupAccounts = [
+    accountFixture({ id: "a1", name: "Claude One", platform: "anthropic" }),
+    accountFixture({ id: "a2", name: "Claude Two", platform: "anthropic" }),
+  ];
+  const multiGroupAccounts = [
+    accountFixture({ id: "a1", name: "Claude One", platform: "anthropic" }),
+    accountFixture({ id: "o1", name: "OpenAI One", platform: "openai" }),
+  ];
+
+  expect(renderHome(null, [], { grouped: true })).toContain(
+    'aria-label="账户额度摘要"',
+  );
+  expect(renderHome(null, singleGroupAccounts, { grouped: true })).toContain(
+    'aria-label="账户额度摘要"',
+  );
+  expect(
+    renderHome(null, singleGroupAccounts, { grouped: true }),
+  ).not.toContain("mobile-home-account-groups");
+  const archivedHtml = renderHome(null, multiGroupAccounts, {
+    grouped: true,
+    showArchived: true,
+  });
+  expect(archivedHtml).toContain('aria-label="已归档账户列表"');
+  expect(archivedHtml).not.toContain("mobile-home-account-groups");
+});
+
+test("grouped sort mode renders group move buttons with boundary disabling and callbacks", () => {
+  const accounts = [
+    accountFixture({ id: "a1", name: "Claude One", platform: "anthropic" }),
+    accountFixture({ id: "a2", name: "Claude Two", platform: "anthropic" }),
+    accountFixture({ id: "o1", name: "OpenAI One", platform: "openai" }),
+    accountFixture({ id: "u1", name: "Other One", platform: undefined }),
+  ];
+  const moves: Array<[string, "up" | "down"]> = [];
+  const props = buildHomeProps(null, accounts, {
+    grouped: true,
+    editingOrder: true,
+    onMoveGroup: (groupKey, direction) => {
+      moves.push([groupKey, direction]);
+    },
+  });
+
+  const html = renderToStaticMarkup(<MobileHome {...props} />);
+  expect(html).toContain('aria-label="上移 Anthropic 分组"');
+  expect(html).toContain('aria-label="下移 Anthropic 分组"');
+  expect(html).toContain('aria-label="上移 OpenAI 分组"');
+  expect(html).toContain('aria-label="下移 OpenAI 分组"');
+  expect(html).not.toContain('aria-label="上移 其他 分组"');
+  expect(html).not.toContain('aria-label="下移 其他 分组"');
+
+  const tree = MobileHome(props);
+  const moveButtons = findElements(
+    tree,
+    (elProps, type) =>
+      type === "button" &&
+      elProps.className === "mobile-home-account-group-move",
+  );
+  expect(moveButtons.map((button) => button.props["aria-label"])).toEqual([
+    "上移 Anthropic 分组",
+    "下移 Anthropic 分组",
+    "上移 OpenAI 分组",
+    "下移 OpenAI 分组",
+  ]);
+  expect(moveButtons.map((button) => Boolean(button.props.disabled))).toEqual([
+    true,
+    false,
+    false,
+    true,
+  ]);
+
+  (moveButtons[1]!.props.onClick as () => void)();
+  (moveButtons[2]!.props.onClick as () => void)();
+  expect(moves).toEqual([
+    ["anthropic", "down"],
+    ["openai", "up"],
+  ]);
+
+  // 单账户组不开启组内拖拽排序，多账户组开启。
+  const sortableLists = findElements(
+    tree,
+    (_elProps, type) =>
+      typeof type === "function" && type.name === "SortableAccountList",
+  );
+  expect(sortableLists.map((list) => Boolean(list.props.enabled))).toEqual([
+    true,
+    false,
+    false,
+  ]);
+});
+
+test("AccountHeadingActions toggles compact and labeled platform grouping buttons", () => {
+  const desktopHtml = renderToStaticMarkup(
+    <AccountHeadingActions
+      archivedCount={2}
+      showArchived={false}
+      onShowArchived={() => {}}
+      editingOrder={false}
+      onEditingOrder={() => {}}
+      canSort
+      grouped
+      onGrouped={() => {}}
+      canGroup
+      render={(props) => <button type="button" {...props} />}
+    />,
+  );
+  expect(desktopHtml).toContain('aria-label="取消按平台分组"');
+  expect(desktopHtml).toContain('aria-pressed="true"');
+  expect(desktopHtml).toContain('data-active="true"');
+  expect(desktopHtml).toContain(">分组</button>");
+
+  const mobileHtml = renderToStaticMarkup(
+    <AccountHeadingActions
+      archivedCount={2}
+      showArchived={false}
+      onShowArchived={() => {}}
+      editingOrder={false}
+      onEditingOrder={() => {}}
+      canSort
+      grouped={false}
+      onGrouped={() => {}}
+      canGroup
+      compactGroupLabel
+      render={(props) => <button type="button" {...props} />}
+    />,
+  );
+  expect(mobileHtml).toContain('aria-label="按平台分组"');
+  expect(mobileHtml).toContain('aria-pressed="false"');
+  expect(mobileHtml).toContain('data-compact="true"');
+  expect(mobileHtml).not.toContain(">分组</button>");
+
+  const sortingHtml = renderToStaticMarkup(
+    <AccountHeadingActions
+      archivedCount={2}
+      showArchived={false}
+      onShowArchived={() => {}}
+      editingOrder
+      onEditingOrder={() => {}}
+      canSort
+      grouped
+      onGrouped={() => {}}
+      canGroup
+      render={(props) => <button type="button" {...props} />}
+    />,
+  );
+  expect(sortingHtml).not.toContain("按平台分组");
 });

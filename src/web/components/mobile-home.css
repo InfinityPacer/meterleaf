@@ -101,6 +101,7 @@
   font-size: 17px;
   line-height: 1.35;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .mobile-home-section-heading span {
@@ -123,11 +124,32 @@
   font-size: 13px;
   font-weight: 600;
   text-align: left;
+  white-space: nowrap;
 }
 
 .mobile-home-section-heading button:hover,
 .mobile-home-period-link:hover {
   color: var(--ink);
+}
+
+.mobile-home-section-heading button[data-compact="true"] {
+  justify-content: center;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.mobile-home-section-heading button[data-active="true"] {
+  color: color-mix(in srgb, var(--accent) 72%, var(--ink));
+  background: var(--accent-soft);
+}
+
+.mobile-home-section-heading button[data-active="true"]:hover {
+  color: color-mix(in srgb, var(--accent) 72%, var(--ink));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .mobile-home-summary-metrics {
@@ -344,7 +366,92 @@
 
 .mobile-home-accounts .account-heading-actions {
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.mobile-home-account-groups {
+  display: grid;
+  gap: 16px;
+  margin-top: 4px;
+}
+
+.mobile-home-account-group {
+  min-width: 0;
+}
+
+.mobile-home-account-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+
+.mobile-home-account-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.mobile-home-account-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-home-account-group-count {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.mobile-home-account-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-block: -6px;
+}
+
+.mobile-home-account-group-move {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+}
+
+.mobile-home-account-group-move:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--soft);
+}
+
+.mobile-home-account-group-move:disabled {
+  opacity: 0.35;
+}
+
+.mobile-home-account-group > .mobile-home-account-list {
+  margin-top: 0;
 }
 
 .mobile-home-account-card {
@@ -555,6 +662,14 @@
   .mobile-home-account-card[data-quota-count="1"] .mobile-home-account-avatar {
     width: 38px;
     height: 38px;
+  }
+
+  .mobile-home-accounts > .mobile-home-section-heading {
+    gap: 6px;
+  }
+
+  .mobile-home-accounts .account-heading-actions {
+    gap: 4px;
   }
 }
 

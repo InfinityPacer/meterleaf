@@ -28,6 +28,8 @@ import {
   PencilLine,
   BadgeCheck,
   BarChart3,
+  ChevronDown,
+  ChevronUp,
   Coins,
   Database,
   LogIn,
@@ -90,11 +92,15 @@ import {
 } from "./lib/preferences";
 import { emptyLedgerColumnOverrides } from "./lib/ledger-columns";
 import { accountFilterOptions } from "./lib/account-filter";
+import { isEmptyAccount } from "./lib/account-order";
 import {
-  isEmptyAccount,
-  orderedAccounts,
-  reorderAccount,
-} from "./lib/account-order";
+  buildAccountListState,
+  canSortGroupedAccounts,
+  groupAccountsByPlatform,
+  moveActiveGroup,
+  reorderActiveAccount,
+  type AccountGroup,
+} from "./lib/account-groups";
 import {
   AccountDragHandle,
   SortableAccountItem,
@@ -549,12 +555,18 @@ function AccountRow({
  */
 function OverviewQuotas({
   accounts,
+  groups,
   archivedCount,
   showArchived,
   onShowArchived,
+  grouped,
+  onGrouped,
+  canGroup,
+  canSort,
   editingOrder,
   onEditingOrder,
   onReorderAccount,
+  onMoveGroup,
   asOf,
   onOpen,
   onRequests,
@@ -564,12 +576,22 @@ function OverviewQuotas({
   compactUsage = false,
 }: {
   accounts: LedgerAccount[];
+  groups: AccountGroup<LedgerAccount>[];
   archivedCount: number;
   showArchived: boolean;
   onShowArchived: (show: boolean) => void;
+  grouped: boolean;
+  onGrouped: (grouped: boolean) => void;
+  canGroup: boolean;
+  canSort: boolean;
   editingOrder: boolean;
   onEditingOrder: (editing: boolean) => void;
-  onReorderAccount: (activeId: string, overId: string) => void;
+  onReorderAccount: (
+    activeId: string,
+    overId: string,
+    groupAccountIds?: ReadonlySet<string>,
+  ) => void;
+  onMoveGroup: (groupKey: string, direction: "up" | "down") => void;
   asOf: string;
   onOpen: (account: LedgerAccount) => void;
   onRequests: (account: LedgerAccount) => void;
@@ -579,6 +601,34 @@ function OverviewQuotas({
   compactUsage?: boolean;
 }) {
   const sorting = editingOrder && !showArchived;
+  const groupingActive = !showArchived && grouped && canGroup;
+  const movableGroups = groups.filter((group) => !group.isOther);
+  const canMoveGroups = sorting && groupingActive && movableGroups.length > 1;
+  const renderAccountItem = (account: LedgerAccount, itemSorting: boolean) => (
+    <SortableAccountItem
+      className="account-list-item"
+      key={account.id}
+      id={account.id}
+      enabled={itemSorting}
+    >
+      <AccountRow
+        account={account}
+        asOf={asOf}
+        archived={showArchived}
+        usdBasis={usdBasis}
+        compactUsage={compactUsage}
+        usage={accountUsage?.[account.id]}
+        onOpen={() =>
+          !showArchived &&
+          (account.fiveHour || account.sevenDay || hasThirdPartyPool(account))
+            ? onOpen(account)
+            : onRequests(account)
+        }
+      />
+      {renderActions(account)}
+    </SortableAccountItem>
+  );
+
   return (
     <section
       className="overview-quotas"
@@ -594,52 +644,109 @@ function OverviewQuotas({
           onShowArchived={onShowArchived}
           editingOrder={editingOrder}
           onEditingOrder={onEditingOrder}
-          canSort={accounts.length > 1}
+          canSort={canSort}
+          grouped={grouped}
+          onGrouped={onGrouped}
+          canGroup={canGroup}
+          compactGroupLabel={compactUsage}
           render={(props) => <Button variant="ghost" {...props} />}
         />
       </div>
-      <div
-        className="account-list"
-        aria-label={showArchived ? "已归档账户列表" : "账户额度摘要"}
-      >
-        <SortableAccountList
-          accounts={accounts}
-          enabled={sorting}
-          onReorder={onReorderAccount}
+      {groupingActive ? (
+        <div className="account-groups" aria-label="按平台分组的账户额度">
+          {groups.map((group, index) => {
+            const headingId = `account-group-heading-${index}`;
+            const groupSorting = sorting && group.accounts.length > 1;
+            const groupIdSet = new Set(
+              group.accounts.map((account) => account.id),
+            );
+            const movableIndex = group.isOther
+              ? -1
+              : movableGroups.findIndex((item) => item.key === group.key);
+            return (
+              <section
+                className="account-group"
+                key={group.key}
+                aria-labelledby={headingId}
+              >
+                <div className="account-group-heading">
+                  <h3 id={headingId} className="account-group-title">
+                    <span className="account-group-name" title={group.label}>
+                      {group.label}
+                    </span>
+                    <span className="account-group-count">
+                      {group.accounts.length}
+                    </span>
+                  </h3>
+                  {canMoveGroups && !group.isOther && (
+                    <div className="account-group-order-actions">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="account-group-move"
+                        disabled={movableIndex <= 0}
+                        aria-label={`上移 ${group.label} 分组`}
+                        title={`上移 ${group.label} 分组`}
+                        onClick={() => onMoveGroup(group.key, "up")}
+                      >
+                        <ChevronUp size={16} aria-hidden="true" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="account-group-move"
+                        disabled={
+                          movableIndex < 0 ||
+                          movableIndex >= movableGroups.length - 1
+                        }
+                        aria-label={`下移 ${group.label} 分组`}
+                        title={`下移 ${group.label} 分组`}
+                        onClick={() => onMoveGroup(group.key, "down")}
+                      >
+                        <ChevronDown size={16} aria-hidden="true" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+                <div
+                  className="account-list"
+                  aria-label={`${group.label} 账户`}
+                >
+                  <SortableAccountList
+                    accounts={group.accounts}
+                    enabled={groupSorting}
+                    onReorder={(activeId, overId) =>
+                      onReorderAccount(activeId, overId, groupIdSet)
+                    }
+                  >
+                    {group.accounts.map((account) =>
+                      renderAccountItem(account, groupSorting),
+                    )}
+                  </SortableAccountList>
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      ) : (
+        <div
+          className="account-list"
+          aria-label={showArchived ? "已归档账户列表" : "账户额度摘要"}
         >
-          {accounts.map((account) => (
-            <SortableAccountItem
-              className="account-list-item"
-              key={account.id}
-              id={account.id}
-              enabled={sorting}
-            >
-              <AccountRow
-                account={account}
-                asOf={asOf}
-                archived={showArchived}
-                usdBasis={usdBasis}
-                compactUsage={compactUsage}
-                usage={accountUsage?.[account.id]}
-                onOpen={() =>
-                  !showArchived &&
-                  (account.fiveHour ||
-                    account.sevenDay ||
-                    hasThirdPartyPool(account))
-                    ? onOpen(account)
-                    : onRequests(account)
-                }
-              />
-              {renderActions(account)}
-            </SortableAccountItem>
-          ))}
-        </SortableAccountList>
-        {!accounts.length && (
-          <p className="empty-chart">
-            {showArchived ? "暂无归档账户" : "暂无账户"}
-          </p>
-        )}
-      </div>
+          <SortableAccountList
+            accounts={accounts}
+            enabled={sorting}
+            onReorder={onReorderAccount}
+          >
+            {accounts.map((account) => renderAccountItem(account, sorting))}
+          </SortableAccountList>
+          {!accounts.length && (
+            <p className="empty-chart">
+              {showArchived ? "暂无归档账户" : "暂无账户"}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -651,6 +758,11 @@ export function App() {
     "account-order",
     prefs.accountOrder,
     [],
+  );
+  const [accountGrouping, setAccountGrouping] = usePreference<boolean>(
+    "account-grouping",
+    prefs.accountGrouping,
+    false,
   );
   const [editingAccountOrder, setEditingAccountOrder] = useState(false);
   const accountArchive = useAccountArchive();
@@ -934,19 +1046,27 @@ export function App() {
       setLedgerStart(lifetimeStart);
   }, [lifetimeStart, ledgerStart, setLedgerStart]);
   const hiddenIds = new Set(accountArchive.data?.hidden ?? []);
-  const sortedAccounts = orderedAccounts(
-    (quotaSnapshot?.accounts ?? []).filter(
-      (account) => !hiddenIds.has(account.id) && !isEmptyAccount(account),
-    ),
-    accountOrder,
-  );
   const archivedIds = new Set(accountArchive.data?.archived ?? []);
-  const activeAccounts = sortedAccounts.filter(
-    (account) => !archivedIds.has(account.id),
+  const accountList = buildAccountListState(
+    quotaSnapshot?.accounts ?? [],
+    accountOrder,
+    { hidden: hiddenIds, archived: archivedIds, isEmpty: isEmptyAccount },
   );
-  const archivedAccounts = sortedAccounts.filter((account) =>
-    archivedIds.has(account.id),
-  );
+  const activeAccounts = accountList.active;
+  const archivedAccounts = accountList.archived;
+  const activeIdSet = new Set(activeAccounts.map((account) => account.id));
+  const accountGroups = groupAccountsByPlatform(activeAccounts);
+  const canGroupAccounts = accountGroups.length > 1;
+  const groupingActive = !showArchived && accountGrouping && canGroupAccounts;
+  const canSortAccounts = groupingActive
+    ? canSortGroupedAccounts(accountGroups)
+    : activeAccounts.length > 1;
+  const activeEditingOrder = editingAccountOrder && canSortAccounts;
+  useEffect(() => {
+    if (editingAccountOrder && !canSortAccounts) {
+      setEditingAccountOrder(false);
+    }
+  }, [editingAccountOrder, canSortAccounts]);
   const accountFilterChoices = accountFilterOptions(
     activeAccounts,
     quotaSnapshot?.accounts ?? [],
@@ -958,13 +1078,29 @@ export function App() {
     setEditingAccountOrder(false);
     setShowArchived(show);
   };
-  const reorderVisibleAccount = (activeId: string, overId: string) => {
+  const reorderVisibleAccount = (
+    activeId: string,
+    overId: string,
+    groupAccountIds?: ReadonlySet<string>,
+  ) => {
     setAccountOrder(
-      reorderAccount(
-        sortedAccounts.map((value) => value.id),
+      reorderActiveAccount(
+        accountList.orderIds,
+        activeIdSet,
         activeId,
         overId,
-        (id) => !archivedIds.has(id),
+        groupAccountIds,
+      ),
+    );
+  };
+  const moveVisibleGroup = (groupKey: string, direction: "up" | "down") => {
+    setAccountOrder(
+      moveActiveGroup(
+        accountList.orderIds,
+        activeIdSet,
+        accountGroups,
+        groupKey,
+        direction,
       ),
     );
   };
@@ -972,7 +1108,7 @@ export function App() {
   const renderAccountActions = (account: LedgerAccount) => {
     return (
       <>
-        {editingAccountOrder && !showArchived && (
+        {activeEditingOrder && !showArchived && (
           <AccountDragHandle name={account.name} />
         )}
         <ActionMenu.Root>
@@ -1601,17 +1737,23 @@ export function App() {
                 onAccount={setSelectedAccount}
                 onRequests={(account) => openAccountRequests(account.id)}
                 showArchived={showArchived}
-                editingOrder={editingAccountOrder}
+                grouped={accountGrouping}
+                editingOrder={activeEditingOrder}
                 onReorderAccount={reorderVisibleAccount}
+                onMoveGroup={moveVisibleGroup}
                 renderAccountActions={renderAccountActions}
                 accountHeadingActions={
                   <AccountHeadingActions
                     archivedCount={archivedAccounts.length}
                     showArchived={showArchived}
                     onShowArchived={showArchivedAccounts}
-                    editingOrder={editingAccountOrder}
+                    editingOrder={activeEditingOrder}
                     onEditingOrder={setEditingAccountOrder}
-                    canSort={activeAccounts.length > 1}
+                    canSort={canSortAccounts}
+                    grouped={accountGrouping}
+                    onGrouped={setAccountGrouping}
+                    canGroup={canGroupAccounts}
+                    compactGroupLabel
                     render={(props) => <button type="button" {...props} />}
                   />
                 }
@@ -1634,12 +1776,18 @@ export function App() {
                 )}
                 <OverviewQuotas
                   accounts={showArchived ? archivedAccounts : activeAccounts}
+                  groups={accountGroups}
                   archivedCount={archivedAccounts.length}
                   showArchived={showArchived}
                   onShowArchived={showArchivedAccounts}
-                  editingOrder={editingAccountOrder}
+                  grouped={accountGrouping}
+                  onGrouped={setAccountGrouping}
+                  canGroup={canGroupAccounts}
+                  canSort={canSortAccounts}
+                  editingOrder={activeEditingOrder}
                   onEditingOrder={setEditingAccountOrder}
                   onReorderAccount={reorderVisibleAccount}
+                  onMoveGroup={moveVisibleGroup}
                   asOf={quotaAsOf}
                   accountUsage={snapshot?.view.accountUsage}
                   compactUsage={smallScreen}

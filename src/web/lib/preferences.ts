@@ -91,7 +91,12 @@ export const preferenceSchemas = {
   /** 账本首条记录时间，用于首屏立即换算历史至今，响应返回后按最新值校正。 */
   ledgerStart: z.string().min(10).max(40).nullable(),
   mobileLayout: z.enum(["sidebar", "app"]),
-  accountOrder: z.array(z.string().min(1).max(512)).max(10000),
+  /**
+   * 单项上限覆盖 ref(sourceId, externalId) 对 256 字符 UTF-8 外部 ID 的 URI 编码长度；
+   * 项数不设上限，避免完整账户顺序被整体拒写。
+   */
+  accountOrder: z.array(z.string().min(1).max(4096)),
+  accountGrouping: z.boolean(),
   page: z.enum(["overview", "reports", "ledger", "settings"]),
   unit: z.enum(["usd", "tokens"]),
   distributionUnit: z.enum(["usd", "tokens"]),
