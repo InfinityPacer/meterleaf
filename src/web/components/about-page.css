@@ -218,7 +218,7 @@
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #0e8a55;
+  background: #0b7a4a;
 }
 /* 色块展示配色本身的强调色，与当前选中哪种配色无关。 */
 .about-page .theme-palette-options i[data-palette="indigo"] {

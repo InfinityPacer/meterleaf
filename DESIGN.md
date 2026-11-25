@@ -25,10 +25,10 @@ CSS 变量或 Tailwind 的令牌类（`bg-background`、`text-muted-foreground`�
 | `canvas`                                              | `#f7f7f8` / `#0f0f11`                                                             | 页面画布底色，与 `index.html`、`offline.html` 首屏色保持一致     |
 | `surface` / `soft` / `soft-hover` / `elevated`        | `#ffffff` `#f1f2f4` `#e8eaee` `#ffffff` / `#161619` `#1f1f24` `#27272e` `#2b2b33` | 卡片与面板、次级控件底、悬停反馈底、分段控件滑块与浮起层         |
 | `sidebar`                                             | `#fbfbfc` / `#121215`                                                             | 桌面侧栏与移动端侧栏抽屉                                         |
-| `ink` / `muted` / `faint`                             | `#18181b` `#5b5c66` `#8b8d98` / `#f2f2f3` `#a0a1ab` `#6e707a`                     | 正文与主数字、标签与说明、次级弱提示                             |
+| `ink` / `muted` / `faint`                             | `#18181b` `#5b5c66` `#6b6d78` / `#f2f2f3` `#a0a1ab` `#868893`                     | 正文与主数字、标签与说明、次级弱提示                             |
 | `line` / `line-soft` / `control-line`                 | `#e4e5e9` `#eff0f3` `#d4d6dc` / `#27272d` `#1f1f24` `#383842`                     | 卡片与区块细线、表内弱分隔线、输入与下拉触发器描边               |
 | `track`                                               | `#e8e9ed` / `#26262c`                                                             | 额度进度条与构成条底槽                                           |
-| `accent` / `accent-ink`                               | 翠绿 `#0e8a55` `#ffffff` / `#3ccb8a` `#07130d`                                    | 进度、选中、焦点环、主要状态，`accent-ink` 是强调色实底上的文字  |
+| `accent` / `accent-ink`                               | 翠绿 `#0b7a4a` `#ffffff` / `#3ccb8a` `#07130d`                                    | 进度、选中、焦点环、主要状态，`accent-ink` 是强调色实底上的文字  |
 | `accent-soft` / `accent-line`                         | 强调色 8% / 12% 与 28% / 34%                                                      | 选中弱底与二档套餐徽标描边                                       |
 | `warn` / `danger`                                     | `#c2410c` `#c8323f` / `#f08a5d` `#f2798a`                                         | 环比升高提示、失败与破坏性操作                                   |
 | `quota-warn` / `quota-alert`                          | 琥珀 `#d97706` 红 `#dc2626` / `#f59e0b` `#ef4444`                                 | 额度进度条随用量变色的终点，两种主题色相一致                     |
