@@ -640,11 +640,21 @@
   }
 
   .mobile-home-summary-metrics > span {
-    padding-inline: 6px;
+    padding-inline: 0;
+  }
+
+  .mobile-home-summary-metrics > span + span {
+    padding-left: 8px;
   }
 
   .mobile-home-summary-metrics strong {
-    font-size: 19px;
+    font-size: 17px;
+    white-space: nowrap;
+  }
+
+  .mobile-home-summary-metrics[data-count="3"] strong {
+    font-size: 15.5px;
+    white-space: nowrap;
   }
 
   .mobile-home-summary-hero strong {

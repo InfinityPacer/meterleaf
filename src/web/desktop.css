@@ -540,7 +540,7 @@
   }
 
   .app-shell[data-page="overview"] .analysis-section {
-    grid-template-columns: minmax(0, 1fr) minmax(300px, 0.38fr);
+    grid-template-columns: minmax(0, 1fr) minmax(312px, 0.38fr);
     gap: 16px;
     padding: 0;
     border: 0;
@@ -550,11 +550,21 @@
   }
   .app-shell[data-page="overview"] .trend-panel,
   .app-shell[data-page="overview"] .model-panel {
+    display: flex;
+    flex-direction: column;
     padding: 22px 24px;
     border: 1px solid var(--desktop-line);
     border-radius: var(--radius-md);
     background: var(--desktop-panel);
     box-shadow: var(--desktop-shadow);
+  }
+  .app-shell[data-page="overview"] .trend-panel .usage-chart {
+    flex: 1 1 auto;
+    min-height: 250px;
+  }
+  .app-shell[data-page="overview"] .trend-panel .trend-insights {
+    margin-top: auto;
+    padding-top: 14px;
   }
 
   .app-shell .chart-toolbar {
@@ -1389,6 +1399,57 @@
   }
 }
 
+/* 中宽桌面（1101px+）起总览右侧模型分布使用紧凑单行列表，避免 1280px 下退化为仅展示 4 行的双行列表。 */
+@media (min-width: 1101px) {
+  .app-shell .overview-donut {
+    width: 180px;
+    max-width: 100%;
+    margin: 0 auto;
+  }
+  .app-shell .overview-donut .usage-chart {
+    height: 180px;
+  }
+  .app-shell .overview-donut .model-donut-total strong {
+    font-size: 21px;
+  }
+  .app-shell .model-breakdown {
+    max-height: 280px;
+    overflow: auto;
+  }
+  .app-shell .model-breakdown button {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content 42px;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    padding: 4px 0;
+  }
+  .app-shell .model-breakdown button > div:first-child {
+    display: contents;
+    font-size: 13px;
+  }
+  /* 带快照日期的模型名比名称列宽，折行保留完整标识，圆点对齐首行。 */
+  .app-shell .model-breakdown .model-label {
+    align-items: flex-start;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .app-shell .model-breakdown .model-label i {
+    margin-top: calc((1lh - 6px) / 2);
+  }
+  .app-shell .model-breakdown button > div:last-child {
+    display: contents;
+    font-size: 12px;
+  }
+  .app-shell .model-breakdown button > div:last-child > span:first-child {
+    display: none;
+  }
+  .app-shell .model-breakdown button > div:last-child > span:last-child {
+    text-align: right;
+  }
+}
+
 /* 总览将同一时段的筛选、指标和趋势排在左侧，模型占比跨行保持完整。 */
 @media (min-width: 1350px) {
   .app-shell[data-page="ledger"] main {
@@ -1420,53 +1481,6 @@
   .app-shell .model-distribution-layout .model-distribution-scroll {
     grid-column: 2;
     grid-row: 1;
-  }
-  .app-shell .overview-donut {
-    width: 180px;
-    max-width: 100%;
-    margin: 0 auto;
-  }
-  .app-shell .overview-donut .usage-chart {
-    height: 180px;
-  }
-  .app-shell .overview-donut .model-donut-total strong {
-    font-size: 21px;
-  }
-  .app-shell .model-breakdown {
-    max-height: 272px;
-    overflow: auto;
-  }
-  .app-shell .model-breakdown button {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) max-content 48px;
-    align-items: center;
-    gap: 8px;
-    min-height: 34px;
-    padding: 4px 0;
-  }
-  .app-shell .model-breakdown button > div:first-child {
-    display: contents;
-    font-size: 13px;
-  }
-  /* 带快照日期的模型名比名称列宽，折行保留完整标识，圆点对齐首行。 */
-  .app-shell .model-breakdown .model-label {
-    align-items: flex-start;
-    min-width: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-  .app-shell .model-breakdown .model-label i {
-    margin-top: calc((1lh - 6px) / 2);
-  }
-  .app-shell .model-breakdown button > div:last-child {
-    display: contents;
-    font-size: 12px;
-  }
-  .app-shell .model-breakdown button > div:last-child > span:first-child {
-    display: none;
-  }
-  .app-shell .model-breakdown button > div:last-child > span:last-child {
-    text-align: right;
   }
 }
 

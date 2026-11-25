@@ -31,7 +31,7 @@
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 2px 7px;
   min-width: 0;
 }
 
@@ -68,6 +68,16 @@
 .quota-window-cache::before {
   content: "·";
   margin-right: 7px;
+}
+
+/* 手机窄屏下命中率常换到第二行，去掉前置圆点并改用次级灰与留白分隔，避免行首孤立圆点。 */
+@media (max-width: 480px) {
+  .quota-window-cache {
+    color: var(--faint);
+  }
+  .quota-window-cache::before {
+    content: none;
+  }
 }
 
 .quota-window[data-exhausted="true"] .quota-window-status {

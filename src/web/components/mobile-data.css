@@ -366,7 +366,7 @@
     margin: 0;
     padding: 0;
     list-style: none;
-    max-height: 136px;
+    max-height: 168px;
     overflow-y: auto;
     overscroll-behavior: contain;
   }
@@ -374,8 +374,8 @@
     display: block;
     width: 100%;
     min-width: 0;
-    min-height: 34px;
-    padding: 4px 0;
+    min-height: 40px;
+    padding: 6px 0;
     border: 0;
     border-radius: 0;
     background: transparent;
@@ -436,8 +436,9 @@
   :root[data-mobile-layout="app"] .mobile-report-list {
     display: grid;
     grid-template-columns:
-      minmax(0, 1.25fr) minmax(48px, 0.75fr) minmax(48px, 0.8fr)
+      minmax(76px, 1.3fr) minmax(46px, 0.72fr) minmax(56px, 0.85fr)
       minmax(68px, max-content);
+    column-gap: 4px;
     min-width: 0;
     overflow: hidden;
     border: 1px solid var(--line);
@@ -634,6 +635,47 @@
   }
   :root[data-mobile-layout="app"] .request-section > .section-heading {
     margin-bottom: 12px;
+  }
+  /* 竖屏平板宽度充裕，模型分布圆环与列表并排展示，避免单列拉宽留白与 4 行窄滚区。 */
+  :root[data-mobile-layout="app"] .model-distribution-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+    align-items: center;
+    gap: 24px;
+  }
+  :root[data-mobile-layout="app"] .mobile-model-list {
+    max-height: 236px;
+  }
+}
+
+@media (max-width: 380px) {
+  :root[data-mobile-layout="app"] .mobile-report-list {
+    grid-template-columns:
+      minmax(72px, 1.28fr) minmax(42px, 0.65fr) minmax(54px, 0.85fr)
+      minmax(62px, max-content);
+    column-gap: 2px;
+    font-size: 11.5px;
+  }
+  :root[data-mobile-layout="app"] .mobile-report-columns,
+  :root[data-mobile-layout="app"] .mobile-report-item,
+  :root[data-mobile-layout="app"] .mobile-report-total {
+    padding-inline: 8px;
+  }
+  :root[data-mobile-layout="app"] .mobile-report-columns > button {
+    gap: 1px;
+    padding: 4px 2px;
+  }
+  :root[data-mobile-layout="app"] .mobile-report-columns > button > span {
+    white-space: nowrap;
+  }
+  :root[data-mobile-layout="app"] .mobile-report-item > summary > span,
+  :root[data-mobile-layout="app"] .mobile-report-total > span {
+    padding-inline: 2px;
+  }
+  :root[data-mobile-layout="app"]
+    .mobile-report-item
+    > summary
+    > span:first-child {
+    overflow-wrap: break-word;
   }
 }
 
