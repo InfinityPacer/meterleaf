@@ -31,10 +31,11 @@ export interface FileCursor {
   mtimeMs: number;
 }
 
-/** 单个文件本轮读到的某个事件：首行时间与四桶合计最大的一行。 */
+/** 单个文件本轮读到的某个事件：首行时间、当前所选行观测时间与四桶合计最大的一行。 */
 export interface FileObservation {
   key: string;
   firstTimestamp: string;
+  observedAt?: string;
   total: number;
   fact: UsageFact;
 }
@@ -64,6 +65,8 @@ export const OTEL_QUEUE_LIMIT = 50_000;
 export interface OutboxItem<T> {
   seq: number;
   payload: T;
+  /** 本机队列附带的最近观测时间（不进入 wire payload），供推送暂扣判断长响应完成时刻。 */
+  observedAt?: string;
 }
 
 export interface UsageTotals {
@@ -160,6 +163,10 @@ CREATE TABLE IF NOT EXISTS agy_shared_logs (
 );
 CREATE TABLE IF NOT EXISTS source_usage (external_id TEXT PRIMARY KEY, source TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS agy_seen_responses (response_key TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS usage_observed_at (
+  external_id TEXT PRIMARY KEY,
+  observed_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS codex_otel_starts (
   session_id TEXT PRIMARY KEY,
   started_ms INTEGER NOT NULL,
@@ -847,6 +854,11 @@ export class CollectorState {
           attribution,
         );
       if (observation.total > 0) {
+        this.recordUsageObservedAt(
+          observation.fact.externalId,
+          observation.firstTimestamp,
+          observation.observedAt ?? observation.firstTimestamp,
+        );
         this.enqueueUsage(
           observation.fact,
           observation.firstTimestamp,
@@ -882,6 +894,11 @@ export class CollectorState {
         .query("UPDATE events SET observation = ? WHERE key = ?")
         .run(JSON.stringify(updatedFact), observation.key);
       if (existing.total > 0) {
+        this.recordUsageObservedAt(
+          updatedFact.externalId,
+          existing.occurred_at,
+          observation.observedAt ?? observation.firstTimestamp,
+        );
         this.enqueueUsage(
           updatedFact,
           existing.occurred_at,
@@ -895,6 +912,11 @@ export class CollectorState {
     this.db
       .query("UPDATE events SET total = ?, observation = ? WHERE key = ?")
       .run(observation.total, serialized, observation.key);
+    this.recordUsageObservedAt(
+      observation.fact.externalId,
+      existing.occurred_at,
+      observation.observedAt ?? observation.firstTimestamp,
+    );
     this.enqueueUsage(
       observation.fact,
       existing.occurred_at,
@@ -902,6 +924,33 @@ export class CollectorState {
       this.attributionOf(observation.fact.model),
     );
     return true;
+  }
+
+  /** 记录跨行更新的长响应最新观测时间（独立本地表，不污染 outbox 协议载荷）。 */
+  private recordUsageObservedAt(
+    externalId: string,
+    occurredAt: string,
+    observedAt?: string,
+  ) {
+    if (!observedAt || observedAt === occurredAt) return;
+    const nextMs = Date.parse(observedAt);
+    if (!Number.isFinite(nextMs)) return;
+    const existing = this.db
+      .query<{ observed_at: string }, [string]>(
+        "SELECT observed_at FROM usage_observed_at WHERE external_id = ?",
+      )
+      .get(externalId);
+    if (existing) {
+      const prevMs = Date.parse(existing.observed_at);
+      if (Number.isFinite(prevMs) && nextMs <= prevMs) return;
+    }
+    this.db
+      .query(
+        `INSERT INTO usage_observed_at (external_id, observed_at)
+         VALUES (?, ?)
+         ON CONFLICT (external_id) DO UPDATE SET observed_at = excluded.observed_at`,
+      )
+      .run(externalId, observedAt);
   }
 
   private enqueueUsage(
@@ -1616,12 +1665,32 @@ export class CollectorState {
     return true;
   }
 
-  pending<T>(kind: OutboxKind, limit: number): OutboxItem<T>[] {
+  pending<T>(kind: OutboxKind, limit: number, afterSeq = 0): OutboxItem<T>[] {
+    if (kind === "usage") {
+      return this.db
+        .query<
+          { seq: number; payload: string; observed_at: string | null },
+          [string, number, number]
+        >(
+          `SELECT o.seq, o.payload, uo.observed_at
+           FROM outbox o
+           LEFT JOIN usage_observed_at uo ON uo.external_id = o.item_id
+           WHERE o.kind = ? AND o.seq > ?
+           ORDER BY o.seq ASC
+           LIMIT ?`,
+        )
+        .all(kind, afterSeq, limit)
+        .map((row) => ({
+          seq: row.seq,
+          payload: JSON.parse(row.payload) as T,
+          ...(row.observed_at ? { observedAt: row.observed_at } : {}),
+        }));
+    }
     return this.db
-      .query<{ seq: number; payload: string }, [string, number]>(
-        "SELECT seq, payload FROM outbox WHERE kind = ? ORDER BY seq LIMIT ?",
+      .query<{ seq: number; payload: string }, [string, number, number]>(
+        "SELECT seq, payload FROM outbox WHERE kind = ? AND seq > ? ORDER BY seq ASC LIMIT ?",
       )
-      .all(kind, limit)
+      .all(kind, afterSeq, limit)
       .map((row) => ({ seq: row.seq, payload: JSON.parse(row.payload) as T }));
   }
 
