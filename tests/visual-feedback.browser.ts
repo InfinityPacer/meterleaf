@@ -21,23 +21,29 @@ const baseUrl = new URL(base);
 const endpoint = process.env.METERLEAF_CDP_URL;
 if (!endpoint) throw new Error("METERLEAF_CDP_URL is required");
 const browser = await chromium.connectOverCDP(endpoint);
-const matchedPage = browser
-  .contexts()
-  .flatMap((context) => context.pages())
-  .find((candidate) => {
-    try {
-      const url = new URL(candidate.url());
-      return (
-        url.origin === baseUrl.origin &&
-        url.pathname === baseUrl.pathname &&
-        (!baseUrl.search || url.search === baseUrl.search)
-      );
-    } catch {
-      return false;
-    }
-  });
-if (!matchedPage)
-  throw new Error("Open the task page through the browser manager first");
+let matchedPage;
+try {
+  matchedPage = browser
+    .contexts()
+    .flatMap((context) => context.pages())
+    .find((candidate) => {
+      try {
+        const url = new URL(candidate.url());
+        return (
+          url.origin === baseUrl.origin &&
+          url.pathname === baseUrl.pathname &&
+          (!baseUrl.search || url.search === baseUrl.search)
+        );
+      } catch {
+        return false;
+      }
+    });
+  if (!matchedPage)
+    throw new Error("Open the task page through the browser manager first");
+} catch (error) {
+  await browser.close().catch(() => undefined);
+  throw error;
+}
 const page = matchedPage;
 page.setDefaultTimeout(10_000);
 
@@ -532,9 +538,9 @@ async function assertOverviewChartControl(mobileApp: boolean) {
   }
 }
 
-// 当前页导航项的图标使用强调色 --accent（绿色配色：浅色 #0e8a55，深色 #3ccb8a），其余项不用。
+// 当前页导航项的图标使用强调色 --accent（绿色配色：浅色 #0b7a4a，深色 #3ccb8a），其余项不用。
 async function assertCurrentNavigation(nav: Locator, theme: "light" | "dark") {
-  const accent = theme === "light" ? "rgb(14, 138, 85)" : "rgb(60, 203, 138)";
+  const accent = theme === "light" ? "rgb(11, 122, 74)" : "rgb(60, 203, 138)";
   const current = nav.locator('button[aria-current="page"]');
   await expect(current).toHaveCount(1);
   await expect(current).toHaveText("用量总览");
