@@ -46,3 +46,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## paseo-commandcode-usage
+
+Command Code 额度读取（`src/shared/commandcode.ts`、`src/collector/commandcode.ts`）按 Meterleaf 架构独立编写，
+接口顺序、凭据存储的查找顺序与字段回退规则参考了
+[ibousfiha/paseo-commandcode-usage](https://github.com/ibousfiha/paseo-commandcode-usage)
+（MIT License，Copyright (c) 2026 Issam Bousfiha），未移植其源代码。

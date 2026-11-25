@@ -48,6 +48,8 @@ export interface AccountWindow {
   percent: number | null;
   resetsAt: string | null;
   sampledAt?: string | null;
+  /** 当前周期起点；周期未知或已过期时为 null，旧缓存可能缺省。 */
+  startsAt?: string | null;
   state?: "active" | "expired" | "unknown";
   stale?: boolean;
   periodUsd?: string | null;
@@ -78,7 +80,7 @@ export interface LedgerAccount {
    */
   fiveHourThirdParty?: AccountWindow | null;
   sevenDayThirdParty?: AccountWindow | null;
-  /** 按订阅日起算的月额度，例如 OpenCode Go；上游未上报时缺省。 */
+  /** 按订阅日或账单周期起算的月额度，例如 OpenCode Go、Command Code；上游未上报时缺省。 */
   monthly?: AccountWindow | null;
   /** 全历史账户用量，不受报表筛选影响；缺失表示该来源尚未提供累计汇总。 */
   lifetime?: AccountLifetime;

@@ -3,6 +3,7 @@ import {
   hasThirdPartyPool,
   quotaView,
   type QuotaChargeReader,
+  type QuotaViewOptions,
 } from "../domain/quota";
 import { priceBookKey } from "../domain/pricing";
 import { reportBounds, type DateRange } from "../shared/date-range";
@@ -23,6 +24,20 @@ export { createAccountResolver, ref } from "../domain/account-merge";
 export type { AccountResolver } from "../domain/account-merge";
 
 const DAY_MS = 86_400_000;
+
+/**
+ * Command Code 的百分比是按已用量与上限换算的小数，不是四舍五入整数；账单周期的百分比随充值真实下降，
+ * 剩余额度的换算也不是固定上限，因此月窗不外推整周期额度。其他平台沿用默认规则。
+ */
+export function quotaViewOptions(
+  platform: string,
+  window: "short" | "monthly",
+): QuotaViewOptions {
+  if (platform !== "commandcode") return {};
+  return window === "monthly"
+    ? { allowPercentDrop: true, disableEstimate: true, roundedPercent: false }
+    : { roundedPercent: false };
+}
 
 function metadataText(
   metadata: UsageFact["metadata"],
@@ -214,17 +229,20 @@ export function liveSnapshot(
       (row) => root(row.fact.sourceId, row.fact.accountExternalId) === id,
     );
     const pooled = hasThirdPartyPool(quotaHistory);
+    const shortOptions = quotaViewOptions(account.platform, "short");
     const fiveHour = quotaView(
       quotaHistory.filter((row) => row.fact.window === "five-hour"),
       periodAccountUsage,
       now,
       pooled,
+      shortOptions,
     );
     const sevenDay = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day"),
       periodAccountUsage,
       now,
       pooled,
+      shortOptions,
     );
     const sevenDayFable = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day-fable"),
@@ -245,6 +263,8 @@ export function liveSnapshot(
       quotaHistory.filter((row) => row.fact.window === "monthly"),
       periodAccountUsage,
       now,
+      false,
+      quotaViewOptions(account.platform, "monthly"),
     );
     return {
       id,
@@ -252,7 +272,11 @@ export function liveSnapshot(
       plan: account.plan ?? "未提供",
       platform: account.platform,
       kind: account.kind,
-      sampledAt: sevenDay?.sampledAt ?? fiveHour?.sampledAt ?? null,
+      sampledAt:
+        sevenDay?.sampledAt ??
+        fiveHour?.sampledAt ??
+        monthly?.sampledAt ??
+        null,
       fiveHour,
       sevenDay,
       sevenDayFable,
@@ -374,17 +398,20 @@ export function indexedSnapshot(
     const pooled = hasThirdPartyPool(quotaHistory);
     const reader: QuotaChargeReader = (startInclusive, endInclusive, scope) =>
       sumWindow(id, startInclusive, endInclusive, usdBasis, scope);
+    const shortOptions = quotaViewOptions(account.platform, "short");
     const fiveHour = quotaView(
       quotaHistory.filter((row) => row.fact.window === "five-hour"),
       reader,
       now,
       pooled,
+      shortOptions,
     );
     const sevenDay = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day"),
       reader,
       now,
       pooled,
+      shortOptions,
     );
     const sevenDayFable = quotaView(
       quotaHistory.filter((row) => row.fact.window === "seven-day-fable"),
@@ -405,6 +432,8 @@ export function indexedSnapshot(
       quotaHistory.filter((row) => row.fact.window === "monthly"),
       reader,
       now,
+      false,
+      quotaViewOptions(account.platform, "monthly"),
     );
     return {
       id,
@@ -412,7 +441,11 @@ export function indexedSnapshot(
       plan: account.plan ?? "未提供",
       platform: account.platform,
       kind: account.kind,
-      sampledAt: sevenDay?.sampledAt ?? fiveHour?.sampledAt ?? null,
+      sampledAt:
+        sevenDay?.sampledAt ??
+        fiveHour?.sampledAt ??
+        monthly?.sampledAt ??
+        null,
       fiveHour,
       sevenDay,
       sevenDayFable,

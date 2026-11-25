@@ -60,6 +60,22 @@ const ompSourceSchema = z
   .strict();
 
 /**
+ * Command Code 额度读取。默认启用：检测到本地凭据后，sync 至少间隔 4 分钟向 api.commandcode.ai
+ * 读取一次只读额度；enabled 为 false 时不发出任何供应商请求。authFile 指定唯一凭据文件，
+ * accountId 指定额度挂到哪个 commandcode 平台的账户。
+ */
+const commandcodeSourceSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    authFile: z.string().startsWith("/").optional(),
+    accountId: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]{1,64}$/)
+      .optional(),
+  })
+  .strict();
+
+/**
  * 新来源只上传不早于这一时刻的记录，是各个来源共用的固定起点。
  * 本地记录历史可能比账本接入早，不支持更早的费率与账户推断。
  */
@@ -99,6 +115,8 @@ const configSchema = z
     agy: agySourceSchema.optional(),
     /** 可选：omp 会话记录读取器；目录不存在时该来源本轮为空。 */
     omp: ompSourceSchema.optional(),
+    /** 可选：Command Code 额度读取；服务端已读取同一账户额度时设 enabled: false。 */
+    commandcode: commandcodeSourceSchema.optional(),
     /** 可选：本机 OTEL 中转的监听端口，省略时使用 4319。 */
     otelRelay: otelRelaySchema.optional(),
     /** 可选：sync 收尾时按间隔运行的额外任务，按登记顺序执行，名称不能重复。 */

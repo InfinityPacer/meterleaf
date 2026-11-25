@@ -265,6 +265,106 @@ function restoreContext(saved: string | null): OmpContext {
   return { effort: null, tier: null };
 }
 
+/** 已完成历史补录的 omp 渠道规则摘要。 */
+export const OMP_RULES_DIGEST_META = "omp_channel_rules_digest";
+/** 正在补录的 omp 渠道规则摘要；补录跨多轮进行，完成后删除。 */
+export const OMP_RULES_PENDING_META = "omp_channel_rules_pending_digest";
+/**
+ * 仅用于从无规则摘要的旧版首次升级迁移：记录旧版已读完的文件偏移与末尾指纹，
+ * 使旧版已处理过但未写事件去重键的历史 429 只补记去重键而不重复触发实时刷新。
+ * 首次补录完成后即删除，此后所有规则变更与重写均纯按事件身份幂等去重。
+ */
+export const OMP_H0_MIGRATION_OFFSETS_META = "omp_h0_migration_offsets";
+
+type MigrationOffsets = Map<
+  string,
+  { inode: string; offset: number; tail: string }
+>;
+
+function readMigrationOffsets(state: CollectorState): MigrationOffsets {
+  const offsets: MigrationOffsets = new Map();
+  const rawText = state.getMeta(OMP_H0_MIGRATION_OFFSETS_META);
+  if (!rawText) return offsets;
+  try {
+    const raw = JSON.parse(rawText) as unknown;
+    if (raw && typeof raw === "object" && !Array.isArray(raw))
+      for (const [path, value] of Object.entries(raw)) {
+        const entry = value as {
+          inode?: unknown;
+          offset?: unknown;
+          tail?: unknown;
+        } | null;
+        if (
+          typeof entry?.inode === "string" &&
+          typeof entry.offset === "number" &&
+          Number.isFinite(entry.offset) &&
+          entry.offset >= 0 &&
+          typeof entry.tail === "string"
+        )
+          offsets.set(path, {
+            inode: entry.inode,
+            offset: entry.offset,
+            tail: entry.tail,
+          });
+      }
+  } catch {
+    // 迁移记录损坏时按无边界处理，最多多触发一次受冷却限制的实时刷新。
+  }
+  return offsets;
+}
+
+/** 生效的 omp 渠道规则摘要：规则变化后需要从头重读，把此前因无路由跳过的请求补录进来。 */
+export function ompRulesDigest(rules: readonly ChannelAccountRule[]) {
+  return hash(
+    JSON.stringify(
+      rules
+        .filter((rule) => rule.source === "omp")
+        .map((rule) => [
+          rule.channel,
+          rule.id,
+          rule.name,
+          rule.platform,
+          rule.kind,
+          rule.plan,
+        ]),
+    ),
+  );
+}
+
+/**
+ * 规则变化时的两阶段补录。进行中摘要与当前规则不同时（含 A → B 未完成又切回 A），
+ * 先清空读取进度与顺延标记，再记下新的进行中摘要，同一事务提交；首次发现规则与已完成摘要不同也一样。
+ * 进行中摘要等于当前规则时保留进度续扫；没有进行中摘要且规则未变时正常增量读取。返回补录中的摘要。
+ */
+function beginRulesBackfill(state: CollectorState, digest: string): string {
+  const completed = state.getMeta(OMP_RULES_DIGEST_META) ?? "";
+  const pending = state.getMeta(OMP_RULES_PENDING_META) ?? "";
+  if (pending === digest) return pending;
+  if (pending === "" && digest === completed) return "";
+  state.write(() => {
+    if (completed === "" && pending === "") {
+      const existing = state.listOmpFiles();
+      if (existing.length > 0) {
+        const migration: Record<
+          string,
+          { inode: string; offset: number; tail: string }
+        > = Object.create(null);
+        for (const file of existing)
+          migration[file.path] = {
+            inode: file.inode,
+            offset: file.offset,
+            tail: file.tail,
+          };
+        state.setMeta(OMP_H0_MIGRATION_OFFSETS_META, JSON.stringify(migration));
+      }
+    }
+    state.clearOmpFiles();
+    state.setMeta("omp_deferred", "");
+    state.setMeta(OMP_RULES_PENDING_META, digest);
+  });
+  return digest;
+}
+
 /**
  * 读取一轮 omp 会话记录。
  *
@@ -281,6 +381,10 @@ export async function readOmp(
   const report = emptyOmpReport();
   const rules = sources.channelAccounts;
   if (!existsSync(sources.sessionsDir)) return report;
+  // 已入账的请求靠用量键去重，从头重读不会重复上报；已由自定义规则归账的请求键不变，归属也不变。
+  const digest = ompRulesDigest(rules);
+  const currentPending = beginRulesBackfill(state, digest);
+  const migrationOffsets = readMigrationOffsets(state);
   const startMs = Date.parse(sources.start);
   const startIso = new Date(startMs).toISOString();
   const paths: { path: string; modified: number }[] = [];
@@ -313,7 +417,12 @@ export async function readOmp(
     missingAccount: boolean;
   }
 
-  const handleLine = (line: string, context: OmpContext, sinks: FileSinks) => {
+  const handleLine = (
+    line: string,
+    context: OmpContext,
+    sinks: FileSinks,
+    inH0MigrationRange: boolean,
+  ) => {
     if (!/"(?:assistant|thinking_level_change|service_tier_change)"/.test(line))
       return;
     let raw: unknown;
@@ -345,7 +454,15 @@ export async function readOmp(
     }
     const message = object(entry?.message);
     if (entry?.type !== "message" || message?.role !== "assistant") return;
-    if (message.provider === agyProvider && message.errorStatus === 429)
+    // 每条 429 按事件身份（整行哈希）只计一次：规则补录或重读遇到已计过的事件不再触发实时读取；
+    // 旧版首次升级迁移范围内的历史 429 只补记去重键，不重复触发刷新。
+    // 登记与读取进度在同一文件事务内提交，中途失败一起回滚。
+    if (
+      message.provider === agyProvider &&
+      message.errorStatus === 429 &&
+      state.recordOmpAgyExhausted(`omp-agy-429-${hash(line)}`) &&
+      !inH0MigrationRange
+    )
       report.agyExhausted++;
     let parsed: ReturnType<typeof ompMessage>;
     try {
@@ -462,6 +579,14 @@ export async function readOmp(
           ? saved
           : null;
       let offset = resume ? resume.offset : 0;
+      const migrationPrior = migrationOffsets.get(path);
+      const migrationOffset =
+        migrationPrior &&
+        migrationPrior.inode === inode &&
+        migrationPrior.offset <= length &&
+        migrationPrior.tail === tailFingerprint(fd, migrationPrior.offset)
+          ? migrationPrior.offset
+          : 0;
       const context = restoreContext(resume ? resume.context : null);
       const sinks: FileSinks = { accounts: new Map(), missingAccount: false };
       let fragment = Buffer.alloc(0);
@@ -491,7 +616,12 @@ export async function readOmp(
                 fragment,
                 block.subarray(start, newline),
               ]).toString("utf8");
-              handleLine(line, context, sinks);
+              handleLine(
+                line,
+                context,
+                sinks,
+                chunkStart + newline + 1 <= migrationOffset,
+              );
             }
             fragment = Buffer.alloc(0);
             discarding = false;
@@ -550,6 +680,13 @@ export async function readOmp(
   }
   if (nextDeferred !== deferredPath)
     state.setMeta("omp_deferred", nextDeferred ?? "");
+  // 整轮读完且没有顺延，补录才算完成；若存在旧版迁移边界一并清除。
+  if (!report.deferred && currentPending !== "" && currentPending === digest)
+    state.write(() => {
+      state.setMeta(OMP_RULES_DIGEST_META, digest);
+      state.deleteMeta(OMP_RULES_PENDING_META);
+      state.deleteMeta(OMP_H0_MIGRATION_OFFSETS_META);
+    });
 
   return report;
 }

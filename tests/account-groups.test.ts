@@ -22,6 +22,7 @@ test("normalizePlatformKey normalizes casing, whitespace, empty and unknown valu
   expect(normalizePlatformKey("Anthropic")).toBe("anthropic");
   expect(normalizePlatformKey("  OpenAI  ")).toBe("openai");
   expect(normalizePlatformKey("OpenCode-Go")).toBe("opencode-go");
+  expect(normalizePlatformKey("CommandCode")).toBe("commandcode");
   expect(normalizePlatformKey("  Sub2API ")).toBe("sub2api");
   expect(normalizePlatformKey("")).toBe(OTHER_PLATFORM_KEY);
   expect(normalizePlatformKey("   ")).toBe(OTHER_PLATFORM_KEY);
@@ -36,6 +37,7 @@ test("platformGroupLabel maps known vendors and formats custom platforms", () =>
   expect(platformGroupLabel("openai")).toBe("OpenAI");
   expect(platformGroupLabel("google")).toBe("Google");
   expect(platformGroupLabel("opencode-go")).toBe("OpenCode Go");
+  expect(platformGroupLabel("commandcode")).toBe("Command Code");
   expect(platformGroupLabel(OTHER_PLATFORM_KEY)).toBe("其他");
   expect(platformGroupLabel("deepseek-api")).toBe("Deepseek Api");
   expect(platformGroupLabel("custom_vendor")).toBe("Custom Vendor");

@@ -8,6 +8,7 @@ const KNOWN_PLATFORM_LABELS: ReadonlyMap<string, string> = new Map([
   ["openai", "OpenAI"],
   ["google", "Google"],
   ["opencode-go", "OpenCode Go"],
+  ["commandcode", "Command Code"],
   [OTHER_PLATFORM_KEY, "其他"],
 ]);
 

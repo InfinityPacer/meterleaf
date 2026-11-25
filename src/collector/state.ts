@@ -41,6 +41,23 @@ export interface FileObservation {
 
 export type OutboxKind = "usage" | "account" | "quota" | "otel";
 
+/** Command Code 套餐缓存（账户 id → planId），只在规则未写死套餐时采用。 */
+export const COMMAND_CODE_PLANS_META = "commandcode_plans";
+
+/** 某个 Command Code 账户已绑定的主体摘要（sha256:<hex>），不含明文组织或登录名。 */
+export function commandCodeIdentityMetaKey(accountId: string) {
+  return `commandcode_identity_hash:${accountId}`;
+}
+
+/**
+ * 只在本机待发送队列里使用的采样身份：Command Code 额度入队时冻结当时的平台与主体摘要，
+ * 推送前据此核对账户资料，发出前剥离，不进入 ingest 协议。
+ */
+export interface QuotaIdentity {
+  platform: "commandcode";
+  subjectKey: string;
+}
+
 /** 待发送的请求归属记录上限；超出时丢弃最早的。 */
 export const OTEL_QUEUE_LIMIT = 50_000;
 
@@ -473,6 +490,33 @@ export class CollectorState {
     );
   }
 
+  /** 全部已登记 omp 文件的路径、inode、字节偏移与末尾指纹，只读，仅用于旧版首次升级迁移。 */
+  listOmpFiles(): {
+    path: string;
+    inode: string;
+    offset: number;
+    tail: string;
+  }[] {
+    return this.db
+      .query<{ path: string; inode: string; offset: number; tail: string }, []>(
+        "SELECT path, inode, offset, tail FROM omp_files",
+      )
+      .all();
+  }
+
+  /**
+   * 登记已触发过实时刷新的 Antigravity 429 事件键（仅写 source_usage 幂等表，不进 outbox）。
+   * 返回 true 表示首次见到该事件；规则补录或重读遇到同一事件时返回 false。
+   */
+  recordOmpAgyExhausted(externalId: string): boolean {
+    const result = this.db
+      .query(
+        "INSERT OR IGNORE INTO source_usage (external_id, source) VALUES (?, ?)",
+      )
+      .run(externalId, "omp-agy-429");
+    return result.changes > 0;
+  }
+
   ompFilePaths(): string[] {
     return this.db
       .query<{ path: string }, []>("SELECT path FROM omp_files")
@@ -506,6 +550,11 @@ export class CollectorState {
         row.size,
         row.modified,
       );
+  }
+
+  /** 清空全部 omp 读取进度，下一轮从头重读；已入账的请求靠用量键去重，不会重复上报。 */
+  clearOmpFiles() {
+    this.db.query("DELETE FROM omp_files").run();
   }
 
   /** omp 文件消失或被移到别的目录只清理读取进度；已入账的用量靠 source_usage 保持幂等。 */
@@ -1150,8 +1199,44 @@ export class CollectorState {
       .run(nowMs - retentionMs);
   }
 
+  /** Command Code 套餐缓存；损坏或缺失时为空表。 */
+  commandCodePlans(): Record<string, string> {
+    try {
+      const raw = JSON.parse(
+        this.getMeta(COMMAND_CODE_PLANS_META) ?? "{}",
+      ) as unknown;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw))
+        return Object.create(null);
+      // 无原型的表：账户 id 可以是 constructor、__proto__ 这类名字，查表不能落到原型属性上。
+      const result: Record<string, string> = Object.create(null);
+      for (const [id, plan] of Object.entries(raw))
+        if (typeof plan === "string" && plan.length > 0) result[id] = plan;
+      return result;
+    } catch {
+      return Object.create(null);
+    }
+  }
+
+  /**
+   * omp、OpenCode、Codex 与模型映射都会写 Command Code 账户，但只有额度读取知道套餐与主体。
+   * 规则未写死套餐时补上缓存的套餐，主体摘要沿用已绑定的值，避免这些写入方把它们改回未知。
+   */
+  private withCommandCodeProfile(account: IngestAccount): IngestAccount {
+    if (account.platform !== "commandcode") return account;
+    const plan =
+      account.plan ?? this.commandCodePlans()[account.externalId] ?? null;
+    const subjectKey =
+      account.subjectKey ??
+      this.getMeta(commandCodeIdentityMetaKey(account.externalId)) ??
+      null;
+    return plan === account.plan && subjectKey === account.subjectKey
+      ? account
+      : { ...account, plan, subjectKey };
+  }
+
   /** 账户资料变化才进入待发送；返回是否有变化。 */
-  upsertAccount(account: IngestAccount): boolean {
+  upsertAccount(input: IngestAccount): boolean {
+    const account = this.withCommandCodeProfile(input);
     const serialized = JSON.stringify(account);
     const existing = this.db
       .query<{ payload: string }, [string]>(
@@ -1463,7 +1548,12 @@ export class CollectorState {
 
   /** 同一次上游采样只上报一次；每次采样各自保留，离线期间的历史采样不会被覆盖。 */
   /** 每个额度来源分别记住最近一次上报的内容，同一采样重复读取时不再入队。 */
-  recordQuota(snapshot: QuotaSnapshot, source = "claude-json"): boolean {
+  /** identity 只给 Command Code 额度：冻结采样时的平台与主体摘要，推送前核对、发出前剥离。 */
+  recordQuota(
+    snapshot: QuotaSnapshot,
+    source = "claude-json",
+    identity?: QuotaIdentity,
+  ): boolean {
     const metaKey =
       source === "claude-json"
         ? "last_quota_hash"
@@ -1474,7 +1564,7 @@ export class CollectorState {
         this.enqueue(
           "quota",
           `${quota.accountExternalId}:${quota.window}:${quota.sampledAt}`,
-          quota,
+          identity ? { ...quota, _identity: identity } : quota,
         );
       }
       this.setMeta(metaKey, snapshot.hash);

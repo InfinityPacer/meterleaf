@@ -24,6 +24,12 @@ import {
   type ProfileReport,
 } from "./collect";
 import { effectiveChannelAccounts } from "./channel-accounts";
+import {
+  COMMAND_CODE_STATUS_META,
+  commandCodeStatusText,
+  markCommandCodeStorageError,
+  maybeRefreshCommandCodeQuota,
+} from "./commandcode";
 import { readCodex, type CodexReaderSources } from "./codex";
 import {
   DEFAULT_OTEL_RELAY_PORT,
@@ -135,12 +141,19 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
   - 唯一的例外在 sync：发现新的 Antigravity 用量、缺少本地额度缓存或 omp 出现 429 时，
     按冷却间隔按需运行本机 agy -p /usage 或 omp usage --json（429 时先清理 omp 缓存）
     刷新状态栏额度缓存 ~/.cache/agy-statusline（由 agy/omp 自己联网读取额度）。
-    采集器本身不调用任何上游接口，scan 绝不触发。
+    除下文的 Command Code 额度外，采集器本身不调用任何上游接口，scan 绝不触发。
   - 只上传计量数字、模型、推理档位、时间与套餐；会话标识、消息内容、路径与
     凭据不读取、不上传。
   - 新来源只上传发生时间不早于 ${SOURCE_START.slice(0, 10)} 的记录，更早的历史在读取时丢弃。
   - 以上保证只针对采集器本身。用 tasks add 登记的额外任务由登记者负责，
     采集器只按时运行它们，不检查它们读写什么。
+
+Command Code 额度（默认启用）:
+  - sync 在检测到本地凭据（COMMAND_CODE_API_KEY、COMMANDCODE_API_KEY，或 ~/.commandcode、
+    ~/.pi/agent、~/.omp/agent 下的 auth.json）时，即使没有新的 omp 用量，也会至少间隔 4 分钟
+    以 Bearer 凭据向 https://api.commandcode.ai 读取一次只读额度。凭据文件只读，不改写。
+  - 只上传额度百分比、重置时间、套餐与组织的单向摘要；登录名、组织 ID 与凭据不上传。
+  - 在 config.json 设 "commandcode": { "enabled": false } 停用；scan 与 status 从不联网。
 
 数据目录: $METERLEAF_COLLECTOR_HOME，默认 ~/Library/Application Support/Meterleaf Collector
 `;
@@ -895,6 +908,30 @@ async function runSync(paths: CollectorPaths): Promise<number> {
     const summary = sourceReportText(sources);
     if (summary !== (state.getMeta("last_sources") ?? ""))
       state.setMeta("last_sources", summary);
+    // 额度读取失败只记状态，不影响本轮用量推送。本地状态库读写抛错时记为 storage-error，
+    // 不保留上一次的 ok；日志只写错误类名。
+    const syncState = state;
+    const logCommandCodeDiagnostic = (line: string) => {
+      try {
+        console.error(line);
+      } catch {
+        // 后台日志追加失败不能阻断后续普通用量推送。
+      }
+    };
+    const commandCode = await maybeRefreshCommandCodeQuota(
+      syncState,
+      config,
+    ).catch((error: unknown) => {
+      markCommandCodeStorageError(syncState);
+      logCommandCodeDiagnostic(
+        `${now} Command Code 额度状态写入失败: ${error instanceof Error ? error.name : "unknown"}`,
+      );
+      return null;
+    });
+    if (commandCode?.attempted && commandCode.status !== "ok")
+      logCommandCodeDiagnostic(
+        `${now} Command Code 额度读取失败: ${commandCodeStatusText(commandCode.status) ?? commandCode.status}`,
+      );
     const result = await pushOutbox(state, config);
     if (result.error) {
       state.setMeta("last_failure_at", now);
@@ -1423,7 +1460,7 @@ function runStatus(paths: CollectorPaths) {
                   `${rule.source}:${rule.channel} → ${rule.name} (${rule.platform})`,
               )
               .join("，")
-          : "未配置（使用内置默认：codex:openai → Codex，codex:go、opencode:opencode-go 与 omp:opencode-go → OpenCode Go）"
+          : "未配置（使用内置默认：codex:openai → Codex，codex:go、opencode:opencode-go 与 omp:opencode-go → OpenCode Go，omp、opencode 与 codex 的 commandcode → Command Code）"
       }`,
     );
     const codex = codexReaderConfig(config);
@@ -1438,6 +1475,11 @@ function runStatus(paths: CollectorPaths) {
           ? `Antigravity（${agy.conversationsDir}，额度 ${agy.statuslineDir}）`
           : "Antigravity 已停用"
       }，${omp ? `omp（${omp.sessionsDir}）` : "omp 已停用"}`,
+    );
+    console.log(
+      config.commandcode?.enabled === false
+        ? "Command Code 额度: 已停用"
+        : "Command Code 额度: 已启用（检测到本地凭据时由 sync 至少间隔 4 分钟读取一次）",
     );
     if (config.claude?.profilesDir && discoveredProfiles) {
       const names = discoveredProfiles
@@ -1525,6 +1567,22 @@ function runStatus(paths: CollectorPaths) {
       console.log(
         `Antigravity 额度刷新 (${profile}): 最近尝试 ${row.value}（${formatRefreshStatus(refreshStatus)}）`,
       );
+    }
+    if (config?.commandcode?.enabled !== false) {
+      const commandCodeStatus = commandCodeStatusText(
+        state.getMeta(COMMAND_CODE_STATUS_META),
+      );
+      const refreshedAt = Number(
+        state.getMeta("commandcode_quota_refresh_at") ?? "",
+      );
+      if (commandCodeStatus)
+        console.log(
+          `Command Code 额度: ${commandCodeStatus}${
+            Number.isFinite(refreshedAt) && refreshedAt > 0
+              ? `（最近尝试 ${new Date(refreshedAt).toISOString()}）`
+              : ""
+          }`,
+        );
     }
     const ompRefreshAt = state.getMeta("omp_agy_quota_refresh_at");
     if (ompRefreshAt) {

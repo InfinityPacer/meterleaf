@@ -112,6 +112,8 @@ const envSchema = z.object({
   METERLEAF_SESSION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   METERLEAF_OPENCODE_GO_KEY: optionalText,
   METERLEAF_OPENCODE_GO_ACCOUNT: optionalText,
+  METERLEAF_COMMAND_CODE_KEY: optionalText,
+  METERLEAF_COMMAND_CODE_ACCOUNT: optionalText,
 });
 /**
  * 填写 Go 的 Key 即在页面打开时读取 Go 额度。额度挂到推送来源中的账户上，格式为
@@ -152,6 +154,52 @@ function parseOpenCodeGo(
   };
 }
 
+/** 只有纯服务端模式（没有推送来源）才使用的保留来源，Command Code 额度挂在这个来源的账户上。 */
+export const COMMAND_CODE_SERVER_SOURCE_ID = "commandcode";
+
+/**
+ * 填写 Command Code 的 Key 即在页面打开时读取它的额度。额度挂到 sourceId:账户标识 上：
+ * 只有一个推送来源时默认取该来源的 commandcode 账户；没有推送来源（纯服务端）时默认用保留来源
+ * commandcode；多个推送来源时必须显式填写，避免挂错来源。
+ */
+function parseCommandCode(
+  config: z.infer<typeof envSchema>,
+  ingestKeys: readonly IngestKey[],
+) {
+  const key = config.METERLEAF_COMMAND_CODE_KEY;
+  if (!key) return undefined;
+  const ref = config.METERLEAF_COMMAND_CODE_ACCOUNT;
+  if (!ref) {
+    if (ingestKeys.length > 1)
+      throw new Error(
+        "METERLEAF_COMMAND_CODE_ACCOUNT is required when more than one ingest source is configured",
+      );
+    return {
+      key,
+      account: {
+        sourceId:
+          ingestKeys.length === 1
+            ? ingestKeys[0]!.sourceId
+            : COMMAND_CODE_SERVER_SOURCE_ID,
+        accountExternalId: "commandcode",
+      },
+    };
+  }
+  const [sourceId, accountExternalId, extra] = ref.split(":");
+  if (
+    extra !== undefined ||
+    !sourceIdSchema.safeParse(sourceId).success ||
+    !/^[a-zA-Z0-9_-]{1,64}$/.test(accountExternalId ?? "")
+  )
+    throw new Error(
+      "Invalid METERLEAF_COMMAND_CODE_ACCOUNT; expected sourceId:accountId",
+    );
+  return {
+    key,
+    account: { sourceId: sourceId!, accountExternalId: accountExternalId! },
+  };
+}
+
 /** 只有显式 demo=true 才能使用演示数据；缺配置不能静默切换运行模式。 */
 export function readConfig(env: Record<string, string | undefined>) {
   const result = envSchema.safeParse(env);
@@ -161,24 +209,47 @@ export function readConfig(env: Record<string, string | undefined>) {
     );
   const config = result.data;
   const ingestKeys = parseIngestKeys(config.METERLEAF_INGEST_KEYS);
-  // Sub2API 与本机采集器都是可选来源，但真实模式至少要有一个，否则账本永远为空。
+  const commandCode = parseCommandCode(config, ingestKeys);
+  // Sub2API、本机采集器与服务端 Command Code 额度都是可选来源，但真实模式至少要有一个，
+  // 否则账本永远为空。
   if (
     config.METERLEAF_DEMO === "false" &&
     !config.SUB2API_DATABASE_URL &&
-    ingestKeys.length === 0
+    ingestKeys.length === 0 &&
+    !commandCode
   )
     throw new Error(
-      "Live mode needs SUB2API_DATABASE_URL or METERLEAF_INGEST_KEYS",
+      "Live mode needs SUB2API_DATABASE_URL, METERLEAF_INGEST_KEYS or METERLEAF_COMMAND_CODE_KEY",
     );
   // 推送来源与拉取来源共用账本主键空间，同名会让两边互相覆盖。
   if (ingestKeys.some((key) => key.sourceId === config.METERLEAF_SOURCE_ID))
     throw new Error(
       "METERLEAF_INGEST_KEYS source must differ from METERLEAF_SOURCE_ID",
     );
+  const openCodeGo = parseOpenCodeGo(config, ingestKeys);
+  if (commandCode) {
+    // Sub2API 拉取来源按完整快照删除不在其中的账户，Command Code 账户不能落在它的来源里；
+    // 未配置 Sub2API 时同名来源也保留给它，避免日后接入时冲突。
+    if (commandCode.account.sourceId === config.METERLEAF_SOURCE_ID)
+      throw new Error(
+        "METERLEAF_COMMAND_CODE_ACCOUNT source must differ from METERLEAF_SOURCE_ID",
+      );
+    // 两个服务端额度写入方共用一个账户会互相覆盖窗口与套餐。
+    if (
+      openCodeGo &&
+      openCodeGo.account.sourceId === commandCode.account.sourceId &&
+      openCodeGo.account.accountExternalId ===
+        commandCode.account.accountExternalId
+    )
+      throw new Error(
+        "METERLEAF_COMMAND_CODE_ACCOUNT must differ from METERLEAF_OPENCODE_GO_ACCOUNT",
+      );
+  }
   return {
     ...config,
     ingestKeys,
     githubAuth: parseGithubAuth(config),
-    openCodeGo: parseOpenCodeGo(config, ingestKeys),
+    openCodeGo,
+    commandCode,
   };
 }
