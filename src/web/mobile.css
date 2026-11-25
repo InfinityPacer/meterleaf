@@ -479,10 +479,10 @@
       margin-left: auto;
     }
     .app-period .chart-style-control button {
-      min-width: 32px;
-      min-height: 36px;
-      width: 32px;
-      height: 36px;
+      min-width: 38px;
+      min-height: 40px;
+      width: 38px;
+      height: 40px;
     }
     .request-section {
       padding-top: 0;
@@ -670,10 +670,32 @@
     padding: 14px;
   }
   :root[data-mobile-layout="app"] .demo-badge {
-    max-width: 32px;
+    flex-shrink: 0;
+    max-width: 44px;
+    padding: 4px 6px;
     white-space: normal;
     text-align: center;
     line-height: 1.2;
+  }
+  :root[data-mobile-layout="app"] .app-period .chart-style-control button {
+    min-width: 34px;
+    min-height: 38px;
+    width: 34px;
+    height: 38px;
+  }
+  /* 极窄屏将峰值指标独占首行，避免日期与数值在圆点处折断并对齐下方两项基线。 */
+  :root[data-mobile-layout="app"] .app-period .trend-insights {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+  }
+  :root[data-mobile-layout="app"]
+    .app-period
+    .trend-insights
+    > div:first-child {
+    grid-column: 1 / -1;
+  }
+  :root[data-mobile-layout="app"] .app-period .trend-insights dd {
+    white-space: nowrap;
   }
 }
 @media (prefers-reduced-transparency: reduce) {
