@@ -8,7 +8,7 @@ Meterleaf 是独立 AI 用量账本，只读采集上游与本机用量并在本
 - 账务与使用：[使用与报表](docs/reporting.md) · [计价说明](docs/pricing.md)
 - 采集与部署：[本机采集器](docs/collector.md) · [采集器辅助脚本](docs/collector-tasks.md) · [接入 CPA](docs/cpa.md) · [部署指南](docs/deployment.md) · [版本与发布](docs/releasing.md)
 
-恢复工作时，读取当前任务实际引用的记录及必要设计、证据；没有记录时依据当前上下文继续。新的恢复记录可保存到 `.workbench/records/`。
+恢复工作时，读取当前任务实际引用的记录及必要设计、证据；没有记录时依据当前上下文继续。新的恢复记录可保存到 `.workbench/tasks/`。
 
 ## 目录地图与领域不变量
 
