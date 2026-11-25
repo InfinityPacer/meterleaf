@@ -621,3 +621,29 @@ test("a plan saved by an earlier version as a bare name is kept", async () => {
   await read(item, root);
   expect(item.account("codex")?.plan).toBe("pro");
 });
+
+test("a cached ChatGPT plan only applies while the account stays on the openai platform", async () => {
+  const root = codexRoot();
+  writeFileSync(
+    join(root, "sessions", "moved.jsonl"),
+    lines(meta, model, usage(1)),
+  );
+  const item = openState();
+  item.setMeta(
+    "codex_plans",
+    JSON.stringify({
+      codex: { plan: "pro", sampledAt: "2026-10-01T00:00:00.000Z" },
+    }),
+  );
+  await readCodex(item, {
+    home: root,
+    start,
+    channelAccounts: DEFAULT_CHANNEL_ACCOUNTS.map((rule) =>
+      rule.id === "codex" ? { ...rule, platform: "commandcode" } : rule,
+    ),
+  });
+  expect(item.account("codex")).toMatchObject({
+    platform: "commandcode",
+    plan: null,
+  });
+});

@@ -78,7 +78,9 @@ import {
   quotaResetMinute,
   showQuotaEstimate,
   accountQuotaWindows,
+  hasDetailQuota,
   hasThirdPartyPool,
+  monthlyQuotaLabel,
 } from "./lib/quota-display";
 import { useQuotaClock } from "./lib/use-quota-clock";
 import { useReportFilters } from "./lib/report-preferences";
@@ -343,15 +345,17 @@ function QuotaBar({
   asOf,
   reset,
   waiting = false,
+  platform,
 }: {
   window: AccountWindow | null;
   label: string;
   asOf: string;
   reset?: React.ReactNode;
   waiting?: boolean;
+  platform?: string | null;
 }) {
   const percent = waiting ? null : quotaPercent(window, asOf);
-  const suffix = waiting ? "等待更新" : quotaLabel(window, asOf);
+  const suffix = waiting ? "等待更新" : quotaLabel(window, asOf, platform);
   return (
     <div className="quota-bar">
       <div>
@@ -619,8 +623,7 @@ function OverviewQuotas({
         compactUsage={compactUsage}
         usage={accountUsage?.[account.id]}
         onOpen={() =>
-          !showArchived &&
-          (account.fiveHour || account.sevenDay || hasThirdPartyPool(account))
+          !showArchived && hasDetailQuota(account)
             ? onOpen(account)
             : onRequests(account)
         }
@@ -2458,24 +2461,25 @@ export function App() {
           </SheetHeader>
           {selectedAccount && snapshot && (
             <div className="detail-body">
-              {selectedAccount.fiveHour ||
-              selectedAccount.sevenDay ||
-              hasThirdPartyPool(selectedAccount) ? (
+              {hasDetailQuota(selectedAccount) ? (
                 <>
                   <div className="account-detail-windows">
-                    {detailWindows.map(({ key, label, window, waiting }) => (
-                      <QuotaBar
-                        key={key}
-                        window={window}
-                        label={
-                          key === "sevenDayFable"
-                            ? "Fable 周额度"
-                            : `${label} 窗口`
-                        }
-                        asOf={quotaAsOf}
-                        waiting={waiting}
-                      />
-                    ))}
+                    {detailWindows.map(
+                      ({ key, label, window, waiting, platform }) => (
+                        <QuotaBar
+                          key={key}
+                          window={window}
+                          platform={platform}
+                          label={
+                            key === "sevenDayFable"
+                              ? "Fable 周额度"
+                              : `${label} 窗口`
+                          }
+                          asOf={quotaAsOf}
+                          waiting={waiting}
+                        />
+                      ),
+                    )}
                     {!detailWindows.length && (
                       <span className="muted">额度 N/A</span>
                     )}
@@ -2658,7 +2662,9 @@ export function App() {
                     {detailWindows.some(({ key }) => key === "monthly") &&
                       selectedAccount.monthly && (
                         <>
-                          <dt>1m 重置</dt>
+                          <dt>
+                            {monthlyQuotaLabel(selectedAccount.platform)} 重置
+                          </dt>
                           <dd>
                             {selectedAccount.monthly.resetsAt
                               ? localTime(
@@ -2675,7 +2681,10 @@ export function App() {
                                 )
                               : "N/A"}
                           </dd>
-                          <dt>1m 周期费用</dt>
+                          <dt>
+                            {monthlyQuotaLabel(selectedAccount.platform)}{" "}
+                            周期费用
+                          </dt>
                           <dd>
                             {windowAmount(
                               selectedAccount.monthly,
@@ -2683,7 +2692,10 @@ export function App() {
                               quotaAsOf,
                             )}
                           </dd>
-                          <dt>1m 预估费用</dt>
+                          <dt>
+                            {monthlyQuotaLabel(selectedAccount.platform)}{" "}
+                            预估费用
+                          </dt>
                           <dd
                             title={estimateDescription(selectedAccount.monthly)}
                           >

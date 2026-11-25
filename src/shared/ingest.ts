@@ -78,6 +78,8 @@ export const ingestQuotaSchema = z
       "seven-day-fable",
       "five-hour-3p",
       "seven-day-3p",
+      // 账单周期（例如 Command Code）；服务端需先升级认识这个值，采集器才能发送。
+      "monthly",
     ]),
     percent: z.number().finite().min(0).max(1000).nullable(),
     /** 上游采样时间，不是采集器读取或上传时间。 */

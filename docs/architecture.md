@@ -2,22 +2,22 @@
 
 [返回首页](../README.md) · [贡献指南](../AGENTS.md)
 
-Meterleaf 是单容器运行的独立 AI 用量账本，只读采集上游网关和本机工具的用量与额度，在本地 SQLite 中独立计价、汇总和展示。它不代理模型请求、不修改上游数据，也不直接调用模型供应商接口（OpenCode Go 额度接口除外）。
+Meterleaf 是单容器运行的独立 AI 用量账本，只读采集上游网关和本机工具的用量与额度，在本地 SQLite 中独立计价、汇总和展示。它不代理模型请求、不修改上游数据，也不直接调用模型供应商接口（OpenCode Go 与 Command Code 的只读额度接口除外）。
 
 ## 组件与目录边界
 
-| 目录                  | 语言 / 运行时             | 职责与边界                                                                                                            |
-| --------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `src/connectors`      | TypeScript / Bun          | 服务端只读拉取连接器，目前解释 Sub2API PostgreSQL 的 `public.accounts` 与 `public.usage_logs`                         |
-| `src/collector`       | TypeScript / Bun + Swift  | macOS 本机采集器与 `Meterleaf.app` 托管服务，读取五种本地工具记录、托管本机 OTEL 中继、拉取额度摘要并调度用户额外任务 |
-| `collectors/cpa`      | Python 3.11+              | 独立可选的 CPA 同步容器，只读扫描 CLIProxyAPI 的 `usage-report` SQLite 账本并推送到服务端，不参与主容器构建           |
-| `src/domain`          | TypeScript                | 纯领域规则：互斥 Token 桶、多分支独立计价、账户合并视图与多段百分比额度预估，不依赖数据库或上游列名                   |
-| `src/storage`         | TypeScript / `bun:sqlite` | SQLite 持久化、版本链迁移、事实账本写入、报表索引、累计索引与视图缓存存取                                             |
-| `src/server`          | TypeScript / Fastify      | HTTP API、可选 GitHub OAuth 登录、采集器写入与 OTEL 入口、Sub2API 定时同步、OpenCode Go 额度轮询及多线程报表服务      |
-| `src/shared`          | TypeScript                | 服务端、前端与采集器共享的数据契约、线协议编码与查询校验                                                              |
-| `src/web` 与 `public` | React 19 / Vite           | 桌面与移动端前端、ECharts 图表、设计令牌与 PWA 静态壳 Service Worker                                                  |
-| `prices`              | TypeScript + JSON         | 声明式费率源表 `catalog.ts` 与编译生成的版本化价格表 `meterleaf.json`                                                 |
-| `scripts`             | TypeScript / Bash / Swift | 采集器打包、前端静态资源预压缩、价格表构建与对账、发布校验及本机辅助脚本                                              |
+| 目录                  | 语言 / 运行时             | 职责与边界                                                                                                                       |
+| --------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `src/connectors`      | TypeScript / Bun          | 服务端只读拉取连接器，目前解释 Sub2API PostgreSQL 的 `public.accounts` 与 `public.usage_logs`                                    |
+| `src/collector`       | TypeScript / Bun + Swift  | macOS 本机采集器与 `Meterleaf.app` 托管服务，读取五种本地工具记录、托管本机 OTEL 中继、拉取额度摘要并调度用户额外任务            |
+| `collectors/cpa`      | Python 3.11+              | 独立可选的 CPA 同步容器，只读扫描 CLIProxyAPI 的 `usage-report` SQLite 账本并推送到服务端，不参与主容器构建                      |
+| `src/domain`          | TypeScript                | 纯领域规则：互斥 Token 桶、多分支独立计价、账户合并视图与多段百分比额度预估，不依赖数据库或上游列名                              |
+| `src/storage`         | TypeScript / `bun:sqlite` | SQLite 持久化、版本链迁移、事实账本写入、报表索引、累计索引与视图缓存存取                                                        |
+| `src/server`          | TypeScript / Fastify      | HTTP API、可选 GitHub OAuth 登录、采集器写入与 OTEL 入口、Sub2API 定时同步、OpenCode Go 与 Command Code 额度轮询及多线程报表服务 |
+| `src/shared`          | TypeScript                | 服务端、前端与采集器共享的数据契约、线协议编码与查询校验                                                                         |
+| `src/web` 与 `public` | React 19 / Vite           | 桌面与移动端前端、ECharts 图表、设计令牌与 PWA 静态壳 Service Worker                                                             |
+| `prices`              | TypeScript + JSON         | 声明式费率源表 `catalog.ts` 与编译生成的版本化价格表 `meterleaf.json`                                                            |
+| `scripts`             | TypeScript / Bash / Swift | 采集器打包、前端静态资源预压缩、价格表构建与对账、发布校验及本机辅助脚本                                                         |
 
 `collectors/cpa` 位于仓库根目录而非 `src/`，因为它通过 `compose.cpa.yaml` 以只读卷挂载进独立的 `python:3.12-alpine` 容器运行，不应随 `Dockerfile` 中的 `COPY src ./src` 进入主服务端镜像。
 
@@ -30,6 +30,7 @@ flowchart LR
     Local["macOS 本机采集器 (5 来源 + OTEL 中继)"]
     CPA["CPA 同步容器"]
     GoAPI["OpenCode Go 额度接口"]
+    CCAPI["Command Code 额度接口"]
   end
 
   subgraph Server["Meterleaf 服务端"]
@@ -37,6 +38,7 @@ flowchart LR
     Sync["SyncRunner 与在线租约"]
     Ingest["Ingest / OTEL 入口"]
     GoQ["GoQuotaRefresher"]
+    CCQ["CommandCodeQuotaRefresher"]
     Ledger[("meterleaf.sqlite")]
     ViewSvc["ViewService (内存缓存 + SWR)"]
     ViewW["view-worker"]
@@ -54,6 +56,7 @@ flowchart LR
   Local --> Ingest --> Ledger
   CPA --> Ingest
   GoAPI --> GoQ --> Ledger
+  CCAPI --> CCQ --> Ledger
   Ledger -.->|"只读 + 变更日志"| ViewW
   ViewW --> IndexW
   ViewSvc --> ViewW --> Derived
@@ -72,6 +75,7 @@ flowchart LR
 - **Claude Code 账户归属**（`src/storage/ledger.ts`）：采集器给每条用量标上来源（模型映射 `model` 或登录时间线 `timeline`），会话记录里有有效会话 ID 时一并带上；服务端按优先级 `model` > `otel` > `session` > 时间线或未归属确定账户。`otel` 来自 `claude_code.api_request` 与 `claude_code.api_error` 的同一请求 ID；`session` 只在采集器报为未归属、带有效会话 ID 且没有精确 OTEL 时推断：同一会话里前后最近两条带账户的 OTEL 请求属于同一账户，两侧间隔都不超过 30 分钟，且任一侧最近时刻没有并列的其他账户。两种结论都写进用量事实，请求归属记录过期或采集器重发时不回退；精确 OTEL 晚到时把 `session` 升级为 `otel`，邻居请求晚于用量到达时也会补做推断。
 - **CPA 伴随容器**（`collectors/cpa/bridge.py`）：复用 `METERLEAF_INGEST_KEYS` 向 `/api/ingest/v1/batches` 推送幂等批次，游标、已送达与拒收记录保存在独立的 `cpa_data/state.sqlite`。
 - **OpenCode Go 额度**（`src/server/opencode-go.ts`）：仅在配置了密钥且有页面在线时轮询，最多每 2 分钟请求一次，读数无变化时最多每 4 分钟写一次盘。
+- **Command Code 额度**（`src/shared/commandcode.ts` 共用请求与解析，服务端 `src/server/commandcode.ts`、采集器 `src/collector/commandcode.ts`）：固定访问 `https://api.commandcode.ai`、拒绝重定向、15 秒总超时，依次读 whoami、并行读 credits 与 subscriptions，再按周期起点读 usage/summary；结果只含固定枚举、百分比、重置时间、套餐与组织单向摘要。服务端轮询节奏与 OpenCode Go 相同，与 Go 共用页面在线信号。服务端托管的账户由 `LedgerStore.saveProviderQuotaUpdate` 单事务校验平台与组织摘要、原子建户并写额度，`saveIngestBatch` 对同一账户跳过采集器额度、拒绝异平台资料。组织摘要绑定保存在既有 `sync_state` 表（键 `commandcode:identityDigest:<JSON[sourceId, accountId]>`）与账户 `subjectKey`，不改表结构；采集器托管时，带额度或套餐的批次必须附上同一摘要的账户条目，否则额度与套餐被跳过、用量照常入账。采集器在本机待发送队列的额度条目里冻结采样时的平台与摘要（`_identity`），推送前核对账户资料，不符即丢弃，发送前剥离该字段。
 
 ### 2. 存储四库与多线程报表引擎
 

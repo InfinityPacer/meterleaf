@@ -6,6 +6,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -15,7 +16,14 @@ import { Database } from "bun:sqlite";
 import { readAgy } from "../src/collector/agy";
 import { DEFAULT_CHANNEL_ACCOUNTS } from "../src/collector/channel-accounts";
 import { SOURCE_START } from "../src/collector/config";
-import { ompMessage, readOmp, type OmpContext } from "../src/collector/omp";
+import {
+  OMP_H0_MIGRATION_OFFSETS_META,
+  OMP_RULES_DIGEST_META,
+  OMP_RULES_PENDING_META,
+  ompMessage,
+  readOmp,
+  type OmpContext,
+} from "../src/collector/omp";
 import { CollectorState } from "../src/collector/state";
 import { quotaModelScope } from "../src/domain/quota";
 import type { IngestAccount, IngestUsage } from "../src/shared/ingest";
@@ -496,4 +504,306 @@ test("an Antigravity quota-exhausted response is counted for a refresh but not b
   expect(usages(state)).toHaveLength(0);
   // 已读过的响应下一轮不再触发。
   expect((await read(state, dirs)).agyExhausted).toBe(0);
+});
+
+const ruleB = [
+  ...DEFAULT_CHANNEL_ACCOUNTS,
+  {
+    source: "omp" as const,
+    channel: "zai",
+    id: "custom-zai",
+    name: "Custom",
+    platform: "zai",
+    kind: "subscription" as const,
+    plan: null,
+  },
+];
+const readWith = (
+  state: CollectorState,
+  dirs: { sessionsDir: string; credentialsDb: string; statuslineDir: string },
+  channelAccounts: typeof ruleB | typeof DEFAULT_CHANNEL_ACCOUNTS,
+  maxBytes?: number,
+) =>
+  readOmp(state, { ...dirs, start: SOURCE_START, channelAccounts }, maxBytes);
+const exhausted429 = (id: string, completedAt: number) =>
+  argon(id, {
+    errorStatus: 429,
+    completedAt,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  });
+/** 让 first 比 second 新，补录首轮按修改时间先读 first。 */
+function order(dirs: { sessionsDir: string }, first: string, second: string) {
+  const now = Date.now() / 1000;
+  utimesSync(join(dirs.sessionsDir, second), now - 60, now - 60);
+  utimesSync(join(dirs.sessionsDir, first), now, now);
+}
+
+test("rule-change backfill rereads history without counting old Antigravity 429 responses", async () => {
+  const dirs = workspace();
+  writeFileSync(join(dirs.statuslineDir, "current-account"), "alice\n");
+  writeSession(
+    dirs,
+    "-work/one.jsonl",
+    lines(title(), exhausted429("a1", Date.parse("2026-10-30T10:00:00Z"))),
+  );
+  const state = openState();
+  expect((await read(state, dirs)).agyExhausted).toBe(1);
+  const changed = await readWith(state, dirs, ruleB);
+  expect(changed.filesRead).toBeGreaterThan(0);
+  expect(changed.agyExhausted).toBe(0);
+});
+
+test("a 429 appended while a multi-round backfill is pending still counts; replayed history does not", async () => {
+  const dirs = workspace();
+  writeFileSync(join(dirs.statuslineDir, "current-account"), "alice\n");
+  writeSession(
+    dirs,
+    "-work/one.jsonl",
+    lines(title(), exhausted429("a1", Date.parse("2026-10-30T10:00:00Z"))),
+  );
+  writeSession(
+    dirs,
+    "-other/two.jsonl",
+    lines(title(), exhausted429("b1", Date.parse("2026-10-30T10:01:00Z"))),
+  );
+  const state = openState();
+  expect((await read(state, dirs)).agyExhausted).toBe(2);
+  order(dirs, "-work/one.jsonl", "-other/two.jsonl");
+  const first = await readWith(state, dirs, ruleB, 1);
+  expect(first).toMatchObject({ deferred: true, agyExhausted: 0 });
+  // 续扫前向尚未补扫的旧文件追加一条新的 429。
+  appendFileSync(
+    join(dirs.sessionsDir, "-other/two.jsonl"),
+    lines(exhausted429("b2", Date.parse("2026-10-30T10:02:00Z"))),
+  );
+  const resumed = await readWith(state, dirs, ruleB);
+  expect(resumed).toMatchObject({ deferred: false, agyExhausted: 1 });
+  expect(state.getMeta(OMP_RULES_PENDING_META)).toBeNull();
+  // 补录期间新建的文件同样按新内容计入。
+  writeSession(
+    dirs,
+    "-work/three.jsonl",
+    lines(title(), exhausted429("c1", Date.parse("2026-10-30T10:03:00Z"))),
+  );
+  expect((await readWith(state, dirs, ruleB)).agyExhausted).toBe(1);
+});
+
+test("switching A → B (incomplete) → A never recounts a 429 already counted during B", async () => {
+  const dirs = workspace();
+  writeFileSync(join(dirs.statuslineDir, "current-account"), "alice\n");
+  writeSession(
+    dirs,
+    "-work/one.jsonl",
+    lines(title(), exhausted429("a1", Date.parse("2026-10-30T10:00:00Z"))),
+  );
+  writeSession(
+    dirs,
+    "-other/two.jsonl",
+    lines(title(), exhausted429("b1", Date.parse("2026-10-30T10:01:00Z"))),
+  );
+  const state = openState();
+  expect((await read(state, dirs)).agyExhausted).toBe(2);
+  appendFileSync(
+    join(dirs.sessionsDir, "-work/one.jsonl"),
+    lines(exhausted429("a2", Date.parse("2026-10-30T10:02:00Z"))),
+  );
+  order(dirs, "-work/one.jsonl", "-other/two.jsonl");
+  const partial = await readWith(state, dirs, ruleB, 1);
+  expect(partial).toMatchObject({ deferred: true, agyExhausted: 1 });
+  const back = await readWith(state, dirs, DEFAULT_CHANNEL_ACCOUNTS);
+  expect(back).toMatchObject({ deferred: false, agyExhausted: 0 });
+  expect(state.getMeta(OMP_RULES_PENDING_META)).toBeNull();
+});
+
+/** 原地截断重写（同一 inode），返回重写前后的 inode 以便断言。 */
+function rewriteInPlace(path: string, content: string) {
+  const before = statSync(path).ino;
+  writeFileSync(path, content);
+  return { before, after: statSync(path).ino };
+}
+
+test("an in-place shorter rewrite with the same inode counts its new 429 during a rule-change backfill", async () => {
+  const dirs = workspace();
+  writeFileSync(join(dirs.statuslineDir, "current-account"), "alice\n");
+  const path = join(dirs.sessionsDir, "-work/one.jsonl");
+  writeSession(
+    dirs,
+    "-work/one.jsonl",
+    lines(
+      title(),
+      argon("a1", { completedAt: Date.parse("2026-10-30T10:00:00Z") }),
+      argon("a2", { completedAt: Date.parse("2026-10-30T10:01:00Z") }),
+      argon("a3", { completedAt: Date.parse("2026-10-30T10:02:00Z") }),
+    ),
+  );
+  const state = openState();
+  await read(state, dirs);
+  const oldOffset = statSync(path).size;
+  const content = lines(
+    title(),
+    exhausted429("n1", Date.parse("2026-10-30T11:00:00Z")),
+  );
+  const { before, after } = rewriteInPlace(path, content);
+  expect(after).toBe(before);
+  expect(Buffer.byteLength(content)).toBeLessThan(oldOffset);
+  expect((await readWith(state, dirs, ruleB)).agyExhausted).toBe(1);
+});
+
+test("an in-place rewrite at least as long as the old offset counts its new 429 because the tail fingerprint differs", async () => {
+  const dirs = workspace();
+  writeFileSync(join(dirs.statuslineDir, "current-account"), "alice\n");
+  const path = join(dirs.sessionsDir, "-work/one.jsonl");
+  writeSession(
+    dirs,
+    "-work/one.jsonl",
+    lines(
+      title(),
+      argon("a1", { completedAt: Date.parse("2026-10-30T10:00:00Z") }),
+      argon("a2", { completedAt: Date.parse("2026-10-30T10:01:00Z") }),
+    ),
+  );
+  const state = openState();
+  await read(state, dirs);
+  const oldOffset = statSync(path).size;
+  const content = lines(
+    title(),
+    exhausted429("n1", Date.parse("2026-10-30T11:00:00Z")),
+    ...Array.from({ length: 6 }, (_, index) =>
+      glm(`g${index}`, {
+        completedAt: Date.parse("2026-10-30T11:01:00Z") + index * 1000,
+      }),
+    ),
+  );
+  const { before, after } = rewriteInPlace(path, content);
+  expect(after).toBe(before);
+  expect(Buffer.byteLength(content)).toBeGreaterThanOrEqual(oldOffset);
+  // 新的 429 位于旧偏移之内，但旧偏移前的末尾指纹已不同。
+  expect(content.indexOf('"n1"')).toBeLessThan(oldOffset);
+  expect((await readWith(state, dirs, ruleB)).agyExhausted).toBe(1);
+});
+
+test("after an in-place rewrite, switching A → B (incomplete) → A does not recount the rewritten file's new 429", async () => {
+  const dirs = workspace();
+  writeFileSync(join(dirs.statuslineDir, "current-account"), "alice\n");
+  const path = join(dirs.sessionsDir, "-work/one.jsonl");
+  writeSession(
+    dirs,
+    "-work/one.jsonl",
+    lines(
+      title(),
+      argon("a1", { completedAt: Date.parse("2026-10-30T10:00:00Z") }),
+      argon("a2", { completedAt: Date.parse("2026-10-30T10:01:00Z") }),
+      argon("a3", { completedAt: Date.parse("2026-10-30T10:02:00Z") }),
+    ),
+  );
+  writeSession(
+    dirs,
+    "-other/two.jsonl",
+    lines(
+      title(),
+      argon("b1", { completedAt: Date.parse("2026-10-30T10:03:00Z") }),
+    ),
+  );
+  const state = openState();
+  await read(state, dirs);
+  const { before, after } = rewriteInPlace(
+    path,
+    lines(title(), exhausted429("n1", Date.parse("2026-10-30T11:00:00Z"))),
+  );
+  expect(after).toBe(before);
+  order(dirs, "-work/one.jsonl", "-other/two.jsonl");
+  const partial = await readWith(state, dirs, ruleB, 1);
+  expect(partial).toMatchObject({ deferred: true, agyExhausted: 1 });
+  const back = await readWith(state, dirs, DEFAULT_CHANNEL_ACCOUNTS);
+  expect(back).toMatchObject({ deferred: false, agyExhausted: 0 });
+});
+
+test("an equal-length in-place rewrite that keeps the last 256 bytes still counts its new 429 once, without touching the outbox", async () => {
+  const dirs = workspace();
+  writeFileSync(join(dirs.statuslineDir, "current-account"), "alice\n");
+  const path = join(dirs.sessionsDir, "-work/one.jsonl");
+  const base = Date.parse("2026-10-30T10:00:00Z");
+  // 等长替换：两行都补齐到同一字节长度（只含 ASCII）。
+  const oldEntry = argon("a-old", { completedAt: base });
+  const newEntry = exhausted429("n-new", base + 1000);
+  const width =
+    Math.max(JSON.stringify(oldEntry).length, JSON.stringify(newEntry).length) +
+    16;
+  const padded = (entry: object) => {
+    const bare = JSON.stringify({ ...entry, pad: "" });
+    return JSON.stringify({ ...entry, pad: "x".repeat(width - bare.length) });
+  };
+  const oldLine = padded(oldEntry);
+  const newLine = padded(newEntry);
+  expect(Buffer.byteLength(newLine)).toBe(Buffer.byteLength(oldLine));
+  const tail = lines(
+    ...Array.from({ length: 30 }, (_, index) =>
+      glm(`g${index}`, { completedAt: base + 60_000 + index * 1000 }),
+    ),
+  );
+  writeFileSync(path, lines(title()) + oldLine + "\n" + tail);
+  const state = openState();
+  await read(state, dirs);
+  state.acknowledge(state.pending("usage", 10_000).map((item) => item.seq));
+  const before = readFileSync(path);
+  expect(before.length).toBeGreaterThan(4096);
+  expect(before.indexOf(oldLine)).toBeLessThan(before.length - 256);
+
+  const { before: inodeBefore, after: inodeAfter } = rewriteInPlace(
+    path,
+    before.toString("utf8").replace(oldLine, newLine),
+  );
+  const after = readFileSync(path);
+  expect(inodeAfter).toBe(inodeBefore);
+  expect(after.length).toBe(before.length);
+  expect(after.subarray(-256).equals(before.subarray(-256))).toBe(true);
+
+  expect((await readWith(state, dirs, ruleB)).agyExhausted).toBe(1);
+  // 事件登记只写幂等表，不产生待发送条目。
+  expect(state.pendingCounts().usage).toBe(0);
+  expect(state.sourcePendingCounts().omp).toBe(0);
+  expect(
+    (await readWith(state, dirs, DEFAULT_CHANNEL_ACCOUNTS)).agyExhausted,
+  ).toBe(0);
+});
+
+test("upgrading from a legacy omp_files cursor without 429 keys suppresses old 429s while counting newly appended ones", async () => {
+  const dirs = workspace();
+  writeFileSync(join(dirs.statuslineDir, "current-account"), "alice\n");
+  const path = join(dirs.sessionsDir, "-work/one.jsonl");
+  const base = Date.parse("2026-10-30T10:00:00Z");
+  writeSession(
+    dirs,
+    "-work/one.jsonl",
+    lines(title(), exhausted429("h0-old", base)),
+  );
+
+  // 场景 1：模拟旧版已扫描并写入 omp_files 游标，但没有规则摘要和 omp-agy-429 去重键。
+  const stateOnlyOld = openState();
+  expect((await read(stateOnlyOld, dirs)).agyExhausted).toBe(1);
+  stateOnlyOld.deleteMeta(OMP_RULES_DIGEST_META);
+  stateOnlyOld.db
+    .query("DELETE FROM source_usage WHERE source = 'omp-agy-429'")
+    .run();
+
+  const migratedOnlyOld = await read(stateOnlyOld, dirs);
+  expect(migratedOnlyOld.filesRead).toBeGreaterThan(0);
+  expect(migratedOnlyOld.agyExhausted).toBe(0);
+  expect(stateOnlyOld.getMeta(OMP_H0_MIGRATION_OFFSETS_META)).toBeNull();
+  // 后续规则切换也不再重复触发旧 429（已补记去重键）。
+  expect((await readWith(stateOnlyOld, dirs, ruleB)).agyExhausted).toBe(0);
+
+  // 场景 2：同一旧版升级夹具在旧游标之后追加一条新 429，首次补录只计新 429。
+  const stateWithNew = openState();
+  expect((await read(stateWithNew, dirs)).agyExhausted).toBe(1);
+  stateWithNew.deleteMeta(OMP_RULES_DIGEST_META);
+  stateWithNew.db
+    .query("DELETE FROM source_usage WHERE source = 'omp-agy-429'")
+    .run();
+  appendFileSync(path, lines(exhausted429("post-upgrade-new", base + 60_000)));
+
+  const migratedWithNew = await read(stateWithNew, dirs);
+  expect(migratedWithNew.agyExhausted).toBe(1);
+  expect(stateWithNew.getMeta(OMP_H0_MIGRATION_OFFSETS_META)).toBeNull();
+  expect((await readWith(stateWithNew, dirs, ruleB)).agyExhausted).toBe(0);
 });

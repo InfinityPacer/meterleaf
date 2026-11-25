@@ -88,3 +88,59 @@ test("Codex supports Go, Plus, Pro 5x, Pro 20x, Team and Business", () => {
     expect(subscription("openai", plan)).not.toBeNull();
   }
 });
+
+test("Command Code plans show names without tiers and normalize unknown ids", () => {
+  expect(subscription("commandcode", "pro")).toEqual({
+    label: "Pro",
+    tier: null,
+  });
+  expect(subscription("commandcode", "MAX")).toEqual({
+    label: "Max",
+    tier: null,
+  });
+  expect(subscription("commandcode", "team")).toEqual({
+    label: "Team",
+    tier: null,
+  });
+  expect(subscription("commandcode", "free")).toEqual({
+    label: "Free",
+    tier: null,
+  });
+  expect(subscription("commandcode", "enterprise")).toEqual({
+    label: "Enterprise",
+    tier: null,
+  });
+  expect(subscription("commandcode", "pro_annual")).toEqual({
+    label: "Pro Annual",
+    tier: null,
+  });
+  expect(subscription("commandcode", "team--plus_v2")).toEqual({
+    label: "Team Plus V2",
+    tier: null,
+  });
+  // 其他平台的未知套餐规整规则不变。
+  expect(subscription("openai", "pro_annual")).toEqual({
+    label: "pro_annual",
+    tier: null,
+  });
+  expect(isManualPlanPlatform("commandcode")).toBe(false);
+});
+
+test("plan and platform names that match prototype keys are plain strings", () => {
+  expect(subscription("commandcode", "constructor")).toEqual({
+    label: "Constructor",
+    tier: null,
+  });
+  expect(subscription("commandcode", "toString")).toEqual({
+    label: "ToString",
+    tier: null,
+  });
+  expect(subscription("constructor", "pro")).toEqual({
+    label: "Pro",
+    tier: null,
+  });
+  expect(subscription("anthropic", "constructor")).toEqual({
+    label: "constructor",
+    tier: null,
+  });
+});

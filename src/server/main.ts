@@ -11,6 +11,8 @@ import { liveSnapshot } from "./snapshot";
 import { SyncRunner } from "./sync";
 import { createDiagnosticsLogger } from "./diagnostics";
 import { GoQuotaRefresher } from "./opencode-go";
+import { CommandCodeQuotaRefresher } from "./commandcode";
+import { ref } from "../domain/account-merge";
 import { ViewService } from "./view-service";
 import type { ViewQuery } from "../shared/ledger-view";
 import { buildQuotaSummary } from "../shared/quota-summary";
@@ -55,6 +57,18 @@ async function main() {
         // 请求归属记录只需保留一个短窗口；只记删除条数，不记请求或账户内容。
         onRequestAccountsExpired: (removed) =>
           logger.info("otel.request_accounts_expired", { removed }),
+        // 服务端读取 Command Code 额度时，它是该账户唯一的额度写入方。
+        serverManagedQuotaAccounts: new Set(
+          config.commandCode
+            ? [
+                ref(
+                  config.commandCode.account.sourceId,
+                  config.commandCode.account.accountExternalId,
+                ),
+              ]
+            : [],
+        ),
+        onCommandCodeWarning: (event, details) => logger.warn(event, details),
       },
     );
   }
@@ -93,6 +107,20 @@ async function main() {
           diagnostics: logger,
         })
       : null;
+  const commandCodeQuotas =
+    store && config.commandCode
+      ? new CommandCodeQuotaRefresher({
+          key: config.commandCode.key,
+          account: config.commandCode.account,
+          save: (update, collectedAt) =>
+            store!.saveProviderQuotaUpdate(update, collectedAt),
+          diagnostics: logger,
+        })
+      : null;
+  // 多个服务端额度来源共用页面在线信号，各自按自己的间隔读取。
+  const providerQuotaRefreshers = [goQuotas, commandCodeQuotas].filter(
+    (refresher) => refresher !== null,
+  );
   stage = "http-server";
   const reports = store
     ? new ViewService(
@@ -135,7 +163,14 @@ async function main() {
           reports.read(query, basis, undefined, refresh)
       : undefined,
     sync: sync ?? undefined,
-    providerQuotas: goQuotas ?? undefined,
+    providerQuotas: providerQuotaRefreshers.length
+      ? {
+          updatePresence: (id, visible) => {
+            for (const refresher of providerQuotaRefreshers)
+              refresher.updatePresence(id, visible);
+          },
+        }
+      : undefined,
     ledgerStatus: store
       ? () => {
           const times = [store.lastIngestAt(), sync?.status().lastSuccess]

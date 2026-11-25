@@ -38,6 +38,13 @@ export interface VisibleQuotaWindow {
   window: AccountWindow;
   /** 上游报过这个窗口，但当前快照已过期或缺值；只占位，不展示旧用量。 */
   waiting?: boolean;
+  /**
+   * 百分比、重置时间与本地用量分别按各自是否已知展示（Command Code 账户），
+   * 缺百分比时仍显示周期内的本地费用；省略时本地用量随百分比一起显示或隐藏。
+   */
+  independent?: boolean;
+  /** 账户平台；百分比文案按平台取精度，Command Code 保留 1 位小数。 */
+  platform?: string | null;
 }
 
 /**
@@ -130,29 +137,58 @@ export function withFableQuotaWindow(
   ];
 }
 
+/** 月度窗口的名称：Command Code 是按账单周期计算的额度，其余平台（例如 OpenCode Go）沿用 1m。 */
+export function monthlyQuotaLabel(platform?: string | null) {
+  return platform === "commandcode" ? "账单周期" : "1m";
+}
+
 /**
- * 月额度（例如 OpenCode Go）排在周额度之后，与 Fable 一样在周额度用尽时让位。
- * 它由服务端在页面打开时读取，过期或缺值时直接不显示，不保留占位。
+ * Command Code 的账单周期可能只有一部分可用：有百分比但没有周期，或有周期却没有百分比。
+ * 只要未过期且至少有其一就显示，缺的部分在窗口内单独标为未知。
+ */
+function partialMonthlyVisible(window: AccountWindow, asOf: string) {
+  return (
+    quotaState(window, asOf) !== "expired" &&
+    (quotaPercent(window, asOf) !== null || Boolean(window.resetsAt))
+  );
+}
+
+/**
+ * 月额度（例如 OpenCode Go、Command Code 账单周期）排在周额度之后，与 Fable 一样在周额度用尽时让位。
+ * 它由服务端或采集器定期读取，过期或缺值时直接不显示，不保留占位。
  */
 export function withExtraQuotaWindows(
   windows: VisibleQuotaWindow[],
-  account: Pick<LedgerAccount, "sevenDayFable" | "monthly">,
+  account: Pick<LedgerAccount, "sevenDayFable" | "monthly"> & {
+    platform?: string | null;
+  },
   asOf: string,
+  prioritizeExhaustedWeek = true,
 ): VisibleQuotaWindow[] {
   const result = withFableQuotaWindow(windows, account, asOf);
   const window = account.monthly ?? null;
   if (!window) return result;
+  // Command Code 只在紧凑视图因周额度用尽收起账单周期，完整视图照常列出；
+  // 其余平台（例如 OpenCode Go）无论哪种视图，周额度用尽时都收起月额度。
   const exhaustedWeekOnly =
     windows.length === 1 &&
     windows[0]!.key === "sevenDay" &&
     quotaPercent(windows[0]!.window, asOf) === 100;
-  if (
-    exhaustedWeekOnly ||
-    quotaState(window, asOf) !== "active" ||
-    quotaPercent(window, asOf) === null
-  )
-    return result;
-  return [...result, { key: "monthly", label: "1m", window }];
+  const suppressMonthly =
+    account.platform === "commandcode"
+      ? prioritizeExhaustedWeek && exhaustedWeekOnly
+      : exhaustedWeekOnly;
+  if (suppressMonthly) return result;
+  const visible =
+    account.platform === "commandcode"
+      ? partialMonthlyVisible(window, asOf)
+      : quotaState(window, asOf) === "active" &&
+        quotaPercent(window, asOf) !== null;
+  if (!visible) return result;
+  return [
+    ...result,
+    { key: "monthly", label: monthlyQuotaLabel(account.platform), window },
+  ];
 }
 
 /**
@@ -191,13 +227,26 @@ type PoolAccount = Pick<
   | "monthly"
   | "fiveHourThirdParty"
   | "sevenDayThirdParty"
->;
+> & { platform?: string | null };
 
 function thirdPartyPool(account: PoolAccount) {
   return {
     fiveHour: account.fiveHourThirdParty ?? null,
     sevenDay: account.sevenDayThirdParty ?? null,
   };
+}
+
+/**
+ * 桌面账户行点击时是否打开详情抽屉（否则跳到请求明细）：有 5h、7d 或第二额度池即可；
+ * 只有月度窗口时仅 Command Code（账单周期）打开详情，OpenCode Go 等其他平台保持原有行为。
+ */
+export function hasDetailQuota(account: PoolAccount) {
+  return Boolean(
+    account.fiveHour ||
+    account.sevenDay ||
+    hasThirdPartyPool(account) ||
+    (account.platform === "commandcode" && account.monthly),
+  );
 }
 
 /**
@@ -209,11 +258,23 @@ export function accountQuotaWindows(
   asOf: string,
   prioritizeExhaustedWeek = true,
 ): VisibleQuotaWindow[] {
+  if (account.platform === "commandcode")
+    return withExtraQuotaWindows(
+      visibleQuotaWindows(account, asOf, prioritizeExhaustedWeek),
+      account,
+      asOf,
+      prioritizeExhaustedWeek,
+    ).map((selection) => ({
+      ...selection,
+      independent: true,
+      platform: account.platform,
+    }));
   if (!hasThirdPartyPool(account))
     return withExtraQuotaWindows(
       visibleQuotaWindows(account, asOf, prioritizeExhaustedWeek),
       account,
       asOf,
+      prioritizeExhaustedWeek,
     );
   const gemini = visibleQuotaWindows(
     account,
@@ -281,11 +342,42 @@ export function quotaPercent(window: AccountWindow | null, asOf: string) {
     : null;
 }
 
-/** 缓存年龄不等于同步失败；采样时间在账户详情展示，缺值不补零。 */
-export function quotaLabel(window: AccountWindow | null, asOf: string) {
+/**
+ * 缓存年龄不等于同步失败；采样时间在账户详情展示，缺值不补零。百分比按上游原值显示，
+ * 只有 Command Code（按已用量换算，常带长小数）按 quotaPercentText 取 1 位小数。
+ */
+export function quotaLabel(
+  window: AccountWindow | null,
+  asOf: string,
+  platform?: string | null,
+) {
   const percent = quotaPercent(window, asOf);
   if (percent === null) return "N/A";
-  return `已用 ${percent}%`;
+  return platform === "commandcode"
+    ? `已用 ${quotaPercentText(percent)}%`
+    : `已用 ${percent}%`;
+}
+
+/**
+ * Command Code 百分比文案：保留 1 位小数并去掉末尾的 0，例如 45.5、33.3、45。
+ * [99.95, 100) 四舍五入会显示成 100，误读为已用尽，因此截断为 99.9。
+ */
+export function quotaPercentText(percent: number) {
+  if (percent >= 99.95 && percent < 100) return "99.9";
+  return String(Number(percent.toFixed(1)));
+}
+
+/**
+ * 窗口底部的本地用量（费用、Tokens、请求数、命中率）是否可信：只要周期起点已知且未过期就照常展示，
+ * 与上游是否给出百分比无关；没有完整周期时无法界定统计范围，显示 N/A。
+ */
+export function quotaPeriodKnown(window: AccountWindow | null, asOf: string) {
+  return (
+    window !== null &&
+    quotaState(window, asOf) !== "expired" &&
+    window.startsAt !== null &&
+    window.startsAt !== undefined
+  );
 }
 
 /**
