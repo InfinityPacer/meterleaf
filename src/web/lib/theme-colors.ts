@@ -19,11 +19,11 @@ export interface ThemeColors {
 }
 
 const fallback = {
-  accent: "#0e8a55",
-  accentRgb: "14 138 85",
+  accent: "#0b7a4a",
+  accentRgb: "11 122 74",
   ink: "#18181b",
   muted: "#5b5c66",
-  faint: "#8b8d98",
+  faint: "#6b6d78",
   line: "#e4e5e9",
   lineSoft: "#eff0f3",
   surface: "#ffffff",
@@ -41,7 +41,7 @@ function build(values: typeof fallback): ThemeColors {
     .trim()
     .split(/[\s,]+/)
     .map(Number);
-  const [r, g, b] = channels.length === 3 ? channels : [14, 138, 85];
+  const [r, g, b] = channels.length === 3 ? channels : [11, 122, 74];
   return {
     accent: values.accent,
     accentAlpha: (alpha) => `rgba(${r}, ${g}, ${b}, ${alpha})`,
