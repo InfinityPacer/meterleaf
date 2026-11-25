@@ -16,6 +16,7 @@ import {
   type OtelRequestAccount,
 } from "../shared/otel";
 import { effectiveChannelAccounts } from "./channel-accounts";
+import { UNATTRIBUTED_ACCOUNT_ID } from "./claude-code/account";
 import type { CollectorConfig } from "./config";
 import type { CollectorState, OutboxItem, QuotaIdentity } from "./state";
 import packageJson from "../../package.json";
@@ -24,6 +25,8 @@ export const COLLECTOR_NAME = "meterleaf-collector";
 export const COLLECTOR_VERSION = packageJson.version;
 /** 单次 OTLP 请求最多携带的记录数，与服务端的记录上限无关。 */
 export const OTEL_MAX_PUSH_RECORDS = 1000;
+/** 刚落盘且尚无同轮 OTEL 的未归属 Claude 用量暂扣时长（毫秒），避免瞬时闪现「未归属」。 */
+export const UNATTRIBUTED_HOLD_MS = 30_000;
 
 export interface PushLimits {
   usage: number;
@@ -54,6 +57,10 @@ export interface PushOptions {
   timeoutMs?: number;
   /** 非敏感告警输出，只含固定事件名与账户 id；默认写标准错误。 */
   warn?: (message: string) => void;
+  /** 当前时间来源；默认取系统时间，测试可注入以确定性控制暂扣窗口。 */
+  now?: () => Date;
+  /** 刚落盘未归属 Claude 用量的暂扣时长（毫秒）；默认 UNATTRIBUTED_HOLD_MS，<= 0 关闭。 */
+  unattributedHoldMs?: number;
 }
 
 /** 待发送队列里的额度条目；Command Code 额度带有只在本机使用的采样身份。 */
@@ -66,6 +73,42 @@ function wireQuota(quota: QueuedQuota): IngestQuota {
 }
 
 const maxBatchesPerRun = 1000;
+
+/** 请求来自事件键 `${requestId}:${messageId}`；`nr:` 开头的没有请求 ID。 */
+function requestIdOf(externalId: string): string | null {
+  if (externalId.startsWith("nr:")) return null;
+  const colon = externalId.indexOf(":");
+  return colon > 0 ? externalId.slice(0, colon) : null;
+}
+
+/**
+ * 刚落盘的未归属 Claude 时间线用量若带有请求 ID 且本轮尚未推过对应 OTEL，
+ * 在短暂窗口内暂扣一轮，避免 JSONL 早于 OTEL 导出导致服务端瞬时闪现「未归属」。
+ */
+function shouldHoldUnattributedUsage(
+  payload: IngestUsage,
+  nowMs: number,
+  holdMs: number,
+  pushedOtelRequestIds: ReadonlySet<string>,
+  observedAt?: string,
+): boolean {
+  if (holdMs <= 0) return false;
+  if (payload.accountExternalId !== UNATTRIBUTED_ACCOUNT_ID) return false;
+  if (payload.metadata?.attribution !== "timeline") return false;
+  const requestId = requestIdOf(payload.externalId);
+  if (!requestId || pushedOtelRequestIds.has(requestId)) return false;
+  const occurredMs = Date.parse(payload.occurredAt);
+  const observedMs = observedAt ? Date.parse(observedAt) : Number.NaN;
+  const refMs =
+    Number.isFinite(occurredMs) && Number.isFinite(observedMs)
+      ? Math.max(occurredMs, observedMs)
+      : Number.isFinite(occurredMs)
+        ? occurredMs
+        : observedMs;
+  if (!Number.isFinite(refMs)) return false;
+  const ageMs = nowMs - refMs;
+  return ageMs >= 0 && ageMs < holdMs;
+}
 
 /**
  * 当前配置里各账户 id 的平台：通道规则与模型规则都算。配置已把账户改成其他平台时，
@@ -213,6 +256,9 @@ export async function pushOutbox(
     };
   };
 
+  const holdMs = options.unattributedHoldMs ?? UNATTRIBUTED_HOLD_MS;
+  const pushedOtelRequestIds = new Set<string>();
+
   // 请求归属先推：服务端写入后面的用量时已经知道请求属于哪个账户。
   for (let round = 0; round < maxBatchesPerRun; round += 1) {
     const otel = state.pending<OtelRequestAccount>("otel", limits.otel);
@@ -233,18 +279,44 @@ export async function pushOutbox(
       return result;
     }
     state.acknowledge(otel.map((item) => item.seq));
+    for (const item of otel) {
+      pushedOtelRequestIds.add(item.payload.requestId);
+    }
     result.batches += 1;
     result.otel += otel.length;
   }
 
+  const nowMs = (options.now ? options.now() : new Date()).getTime();
+  let usageAfterSeq = 0;
+  let usageExhausted = false;
+
   for (let round = 0; round < maxBatchesPerRun; round += 1) {
-    const usage = state.pending<IngestUsage>("usage", limits.usage);
+    const rawUsage = usageExhausted
+      ? []
+      : state.pending<IngestUsage>("usage", limits.usage, usageAfterSeq);
+    if (rawUsage.length > 0) {
+      usageAfterSeq = rawUsage[rawUsage.length - 1]!.seq;
+    }
+    if (rawUsage.length < limits.usage) {
+      usageExhausted = true;
+    }
+    const usage = rawUsage.filter(
+      (item) =>
+        !shouldHoldUnattributedUsage(
+          item.payload,
+          nowMs,
+          holdMs,
+          pushedOtelRequestIds,
+          item.observedAt,
+        ),
+    );
     const queuedQuotas = state.pending<QueuedQuota>("quota", limits.quotas);
     const accountItems = state.pending<IngestAccount>(
       "account",
       limits.accounts,
     );
-    if (usage.length + queuedQuotas.length + accountItems.length === 0) break;
+    if (rawUsage.length + queuedQuotas.length + accountItems.length === 0)
+      break;
 
     const accounts = new Map<string, IngestAccount>();
     for (const item of accountItems) {
@@ -295,8 +367,11 @@ export async function pushOutbox(
       }
     }
     if (usage.length + quotas.length + accountItems.length === 0) {
-      // 本批只剩被丢弃的旧额度时继续取下一批；只剩顺延额度时说明名额无法腾出，留待下次。
-      if (dropped.length) continue;
+      // 本批只剩被丢弃的旧额度，或本页用量全部暂扣且后面还有待发用量时继续取下一批；
+      // 其余情况（只剩顺延额度或待发用量已翻完）说明名额无法腾出或全部暂扣，留待下次。
+      if (dropped.length > 0 || (!usageExhausted && rawUsage.length > 0)) {
+        continue;
+      }
       break;
     }
     const referenced = new Set([
@@ -335,6 +410,8 @@ export async function pushOutbox(
       ...accountItems,
     ];
     state.acknowledge(acknowledged.map((item) => item.seq));
+    // 推送期间可能有并发写入产生更大 seq 的新版本用量，下轮从 usageAfterSeq 继续探测一次。
+    usageExhausted = false;
     result.batches += 1;
     result.usage += usage.length;
     result.quotas += quotas.length;
