@@ -239,6 +239,18 @@ function rowsChargeReader(rows: readonly PricedUsage[]): QuotaChargeReader {
 }
 
 /**
+ * 个别平台的额度语义与默认不同时传入；省略时行为与其他平台一致。
+ * - allowPercentDrop：展示当前周期最新读数，允许百分比真实下降（例如充值后剩余额度变多）。
+ * - disableEstimate：不按百分比外推整周期额度，周期内的本地费用、请求数、Tokens 与命中率照常统计。
+ * - roundedPercent：上游百分比是否为四舍五入整数；为 false 时不做整数到达与下界校正。
+ */
+export interface QuotaViewOptions {
+  allowPercentDrop?: boolean;
+  disableEstimate?: boolean;
+  roundedPercent?: boolean;
+}
+
+/**
  * 百分比为整个上游账号，费用只覆盖本连接器；推算是条件性观测值而非订阅承诺额度。
  * 七天与月度窗口与其他账户一样按百分比外推：同一周期会更换或混用模型，
  * 按单一模型上限推算没有可靠依据。
@@ -248,6 +260,7 @@ export function quotaView(
   rowsOrSumReader: readonly PricedUsage[] | QuotaChargeReader,
   now: string,
   pooled = false,
+  options: QuotaViewOptions = {},
 ): QuotaView | null {
   if (!history.length) return null;
   // 每条读数只解析一次时间，历史较长时排序和逐周期筛选不再重复解析。
@@ -361,7 +374,11 @@ export function quotaView(
   };
   // 展示的百分比同样忽略过时回落，避免进度在相邻两个值之间来回跳。
   const displayPercent =
-    known && !expired && fact.percent !== null && fact.percent >= 0
+    known &&
+    !expired &&
+    fact.percent !== null &&
+    fact.percent >= 0 &&
+    !options.allowPercentDrop
       ? (cycleReadings(reset, sampled).observations.at(-1)?.percent ??
         fact.percent)
       : fact.percent;
@@ -385,9 +402,11 @@ export function quotaView(
       usd: null,
       credits: null,
       deltaPercent: null,
+      // 停用估值的窗口（Command Code）不会给出估值，周期未知也报 percent-unavailable，
+      // 不让页面误以为补上周期就能估算；已过期仍报 expired。
       reason: expired
         ? "expired"
-        : !known
+        : !known && !options.disableEstimate
           ? "window-unknown"
           : "percent-unavailable",
     },
@@ -397,7 +416,8 @@ export function quotaView(
     expired ||
     fact.percent === null ||
     fact.percent < 0 ||
-    fact.window === "five-hour"
+    fact.window === "five-hour" ||
+    options.disableEstimate
   )
     return result;
   const estimateCycle = (cycleReset: number, until: number) => {
@@ -439,7 +459,8 @@ export function quotaView(
       : observations;
     // 上游百分比为四舍五入整数。重新起算的基准点落在平台期中段时，相对百分比的取整偏差无法确定，
     // 不做校正；基准点是清零后的 0%，相对百分比就是上游读数，仍按首次到达校正。
-    const roundedPercent = !baseline || baseline.percent === 0;
+    const roundedPercent =
+      options.roundedPercent !== false && (!baseline || baseline.percent === 0);
     const segments = estimateQuotaSegments(
       estimateObservations,
       estimateRead,

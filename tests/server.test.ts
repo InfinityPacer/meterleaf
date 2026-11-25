@@ -9,7 +9,7 @@ import type { UsdBasis } from "../src/shared/report";
 
 test("live config is explicit and errors never repeat credentials", () => {
   expect(() => readConfig({})).toThrow(
-    "Live mode needs SUB2API_DATABASE_URL or METERLEAF_INGEST_KEYS",
+    "Live mode needs SUB2API_DATABASE_URL, METERLEAF_INGEST_KEYS or METERLEAF_COMMAND_CODE_KEY",
   );
   // Compose 未填写时传入空字符串，只接入采集器也能启动。
   const pushOnly = readConfig({

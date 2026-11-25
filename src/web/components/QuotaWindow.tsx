@@ -5,6 +5,7 @@ import {
   quotaFillStyle,
   quotaLabel,
   quotaPercent,
+  quotaPeriodKnown,
   quotaResetMinute,
   quotaWaitingReset,
   showQuotaEstimate,
@@ -68,7 +69,7 @@ export function QuotaWindow({
   /** 桌面账户行在右侧另有 7d 预估栏，此时不在窗口内重复。 */
   estimate?: boolean;
 }) {
-  const { key, label, window, waiting } = selection;
+  const { key, label, window, waiting, independent, platform } = selection;
   if (waiting) {
     const ended = quotaWaitingReset(window, asOf);
     return (
@@ -103,6 +104,8 @@ export function QuotaWindow({
   }
   const percent = quotaPercent(window, asOf);
   const usable = percent !== null;
+  // 底部本地用量：独立模式按周期是否已知判断，缺百分比时仍照常展示；默认随百分比一起显示。
+  const local = independent ? quotaPeriodKnown(window, asOf) : usable;
   // 预估未知时不写“预估 N/A”，账户详情里仍会显示 N/A。
   const estimateText = estimateAmount(window, "usd", asOf);
   const showEstimate =
@@ -113,10 +116,10 @@ export function QuotaWindow({
       key === "monthly") &&
     showQuotaEstimate(window, asOf) &&
     estimateText !== "N/A";
-  const status = usable ? quotaLabel(window, asOf) : "N/A";
+  const status = usable ? quotaLabel(window, asOf, platform) : "N/A";
   // 命中率没有分母时不补 0%，整项不显示；口径与统计页的缓存命中率相同。
   const cacheRate =
-    usable &&
+    local &&
     window.periodCacheRate !== null &&
     window.periodCacheRate !== undefined &&
     Number.isFinite(window.periodCacheRate)
@@ -161,7 +164,7 @@ export function QuotaWindow({
         {/* 周额度的整周预估紧跟已用费用，与右侧 Tokens、请求数同一行。 */}
         <span className="quota-window-amount">
           <strong aria-label={`${label}费用`}>
-            {usable
+            {local
               ? amount(numericAmount(window.periodUsd ?? null), "usd")
               : "N/A"}
           </strong>
@@ -176,9 +179,9 @@ export function QuotaWindow({
           )}
         </span>
         <span className="quota-window-volume">
-          {usable ? compact(window.periodTokens ?? null) : "N/A"} Tokens{" "}
+          {local ? compact(window.periodTokens ?? null) : "N/A"} Tokens{" "}
           <i aria-hidden="true">·</i>{" "}
-          {usable ? formatRequests(window.periodRequests) : "N/A"} 次
+          {local ? formatRequests(window.periodRequests) : "N/A"} 次
         </span>
       </span>
     </span>

@@ -2,7 +2,7 @@
 
 [返回首页](../README.md)
 
-Meterleaf 单容器提供前端与 API，可以只读访问 Sub2API PostgreSQL，也可以接收本机采集器推送的 Claude Code、Codex、OpenCode、Antigravity CLI 与 omp 用量，或 CPA 插件账本，并可选拉取 OpenCode Go 额度。至少配置一种来源，使用本地 SQLite 保存账本。它不代理模型请求、不修改上游，也不直接请求 OpenAI 或 Anthropic。系统内部模块与线程分工见[整体架构](architecture.md)。
+Meterleaf 单容器提供前端与 API，可以只读访问 Sub2API PostgreSQL，也可以接收本机采集器推送的 Claude Code、Codex、OpenCode、Antigravity CLI 与 omp 用量，或 CPA 插件账本，并可选拉取 OpenCode Go 与 Command Code 额度。至少配置一种来源，使用本地 SQLite 保存账本。它不代理模型请求、不修改上游，也不直接请求 OpenAI 或 Anthropic。系统内部模块与线程分工见[整体架构](architecture.md)。
 
 CLIProxyAPI（CPA）需要额外启动可选同步容器，读取 usage-report 插件保存的账本。安装、密钥追加、来源筛选和重复统计说明见[接入 CPA](cpa.md)。该方式复用 `METERLEAF_INGEST_KEYS`，不需要 Sub2API 数据库。
 
@@ -68,8 +68,9 @@ docker compose up -d --no-build --pull never
 | `METERLEAF_INGEST_KEYS`                | 未启用         | 本机采集器与 CPA 写入密钥，见下文                              |
 | `METERLEAF_GITHUB_CLIENT_ID` 等        | 未启用         | GitHub 登录，见下文                                            |
 | `METERLEAF_OPENCODE_GO_KEY` 等         | 未启用         | OpenCode Go 额度，见下文                                       |
+| `METERLEAF_COMMAND_CODE_KEY` 等        | 未启用         | Command Code 额度，见下文                                      |
 
-`SUB2API_DATABASE_URL` 与 `METERLEAF_INGEST_KEYS` 至少填写一项，未填写的来源不启用。
+`SUB2API_DATABASE_URL`、`METERLEAF_INGEST_KEYS` 与 `METERLEAF_COMMAND_CODE_KEY` 至少填写一项，未填写的来源不启用。
 
 打开页面时，有缓存的报表会先返回上次结果并立即在后台刷新，自动同步也按可见间隔运行，因此较长的隐藏同步与兜底刷新间隔只影响无人查看时的后台频率，用来减少 NAS 磁盘写入。无论来自 Sub2API 还是采集器的新用量，报表索引都每小时定时提交一次，平时打开页面即可看到新推送而不频繁写盘；采集器读取额度摘要有 5 分钟刷新节流，详见[整体架构](architecture.md#2-存储四库与多线程报表引擎)。
 
@@ -144,6 +145,31 @@ METERLEAF_OPENCODE_GO_KEY=<OpenCode Go 的 API Key>
 
 Go 的 7 天与月度（1m）额度预估与其他账户一样按当前周期百分比增量外推，不按单一模型上限查表折算，因为同一周期内可能切换或混用不同模型。采集器里配置的 `plan`（`go` 或 `go-plus`）用于显示套餐徽标。
 
+## Command Code 额度（可选）
+
+Command Code 的 5 小时、每周额度与账单周期可以由服务端读取，也可以由本机采集器读取（见[本机采集器](collector.md#command-code-额度)），同一个账户只选一处开启。服务端读取时它是这个账户唯一的额度写入方：采集器推来的同账户额度会被跳过，套餐也以服务端读到的为准。
+
+```dotenv
+METERLEAF_COMMAND_CODE_KEY=<Command Code 的 API Key>
+# 额度显示在哪个账户上：来源标识:账户标识。
+# 只有一个推送来源时可省略（默认取该来源的 commandcode 账户）；没有推送来源时默认用保留来源
+# commandcode:commandcode；配置多个推送来源时必须填写，否则服务无法启动。
+# METERLEAF_COMMAND_CODE_ACCOUNT=claude-code-macbook:commandcode
+```
+
+- 只配置这个 Key、不接 Sub2API 也不接采集器，服务也能启动，首次读到额度时自动建立 Command Code 账户。
+- 账户的来源不能与 `METERLEAF_SOURCE_ID` 同名，也不能与 OpenCode Go 额度用同一个账户，否则服务拒绝启动。
+- 账户已存在却不是 `commandcode` 平台（例如被别的规则先建成了未知平台）时，服务端拒绝写入并在日志里记 `command_code.account_platform_conflict`；读到的组织与账户已绑定的组织不同时同样拒绝，记 `command_code.identity_mismatch`。组织只以单向摘要保存，日志与账本里都没有组织名、登录名或 Key。
+- 读到的套餐总是覆盖原有套餐，即使比原来笼统（例如从 Team Premium 变为 Team）；没有读到套餐时保留原值。
+- 采集器推来的同账户资料只接受 `commandcode` 平台：账户已被建成其他平台时整条资料跳过。Claude Code 的 OpenTelemetry 请求归属指向这个账户时，用量照常归入，但不会先建一个 Claude 占位账户，日志记 `command_code.request_account_skipped`。
+- 同一台电脑的采集器也检测到 Command Code 凭据时，在采集器 `config.json` 里设 `"commandcode": { "enabled": false }`，避免两处同时读取。
+
+服务端只在有页面打开时读取，页面在线期间最多每 2 分钟读一次，读数无变化时最多每 4 分钟写一次盘。读取失败只记 `command_code.quota_rejected`（401/403）或 `command_code.quota_failed` 加固定的失败类型，不记录 Key 与上游返回内容。
+
+页面在周额度之后显示「账单周期」窗口：百分比按本期已花与剩余额度换算，保留一位小数，99.95% 到 100% 之间显示为 99.9%，避免误读为已用尽（其他平台的百分比按上游原值显示）；充值后剩余额度变多，百分比会如实下降。账单周期不外推整周期预估，只统计周期内的本地费用、Tokens、请求数与缓存命中率；上游只给了百分比或只给了周期时，缺的部分单独显示为 N/A 或「重置未知」。
+
+**在服务端与采集器之间迁移**：无论从采集器切到服务端还是反过来，沿用同一个账户 ID 前都要确认两边读取的是同一个 Command Code 组织；无法确认、或旧账户还没有绑定组织时，改用新的账户 ID。组织不同的额度与套餐会被拒绝写入，用量不受影响。采集器读取并已绑定组织的账户，之后推来的资料改成其他平台或其他组织时，服务端保留原账户资料并跳过额度（日志记 `command_code.account_platform_conflict` 或 `command_code.identity_mismatch`），即使这批只有用量也一样。
+
 ## GitHub 登录
 
 Meterleaf 可以要求访问者先用 GitHub 账号登录，只有允许名单里的账号能查看页面和读取接口。不开启时，任何能访问到服务的人都能看到账本，只适合本机或可信局域网。
@@ -208,7 +234,14 @@ docker compose pull
 docker compose up -d --no-build --pull never
 ```
 
-更新后用 `docker compose ps` 检查状态。接入了本机采集器时，先升级服务端再升级采集器，见[本机采集器](collector.md#升级)。
+更新后用 `docker compose ps` 检查状态。接入了本机采集器时，先升级服务端再升级采集器，见[本机采集器](collector.md#升级)。账单周期（`monthly`）额度同样如此：服务端要先升级到认识它的版本，再升级或启用会发送它的采集器。
+
+回退到不认识账单周期的旧服务端前，按以下顺序操作，否则采集器积压的账单周期额度会让旧服务端拒收整批数据：
+
+1. 在采集器 `config.json` 设 `"commandcode": { "enabled": false }`，关闭 Command Code 额度读取。
+2. 在新版服务端仍在线时运行 `meterleaf-collector sync`，确认 `meterleaf-collector status` 中待发送的额度已为 0。
+3. 再运行一次 `sync`，确认不再新增账单周期额度。
+4. 回退 Meterleaf 服务端。
 
 恢复前先准备备份对应的程序版本，再停止服务、保留当前数据并恢复完整备份。将下面的备份目录替换为实际名称：
 

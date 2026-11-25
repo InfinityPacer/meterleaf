@@ -15,8 +15,9 @@ import {
   OTEL_LOGS_PATH,
   type OtelRequestAccount,
 } from "../shared/otel";
+import { effectiveChannelAccounts } from "./channel-accounts";
 import type { CollectorConfig } from "./config";
-import type { CollectorState, OutboxItem } from "./state";
+import type { CollectorState, OutboxItem, QuotaIdentity } from "./state";
 import packageJson from "../../package.json";
 
 export const COLLECTOR_NAME = "meterleaf-collector";
@@ -38,6 +39,11 @@ export interface PushResult {
   quotas: number;
   /** 本轮随 OTLP 日志推送的请求归属记录数。 */
   otel: number;
+  /**
+   * 因账户已缺失、改为其他平台或改绑其他主体而丢弃的 Command Code 旧额度数；
+   * 这些额度来自另一个账户身份，不能随改写后的账户资料发出。
+   */
+  droppedQuotas: number;
   /** 失败原因；网络错误与 5xx 可重试，4xx 需要人工处理配置或服务端。 */
   error: { kind: "network" | "server" | "rejected"; message: string } | null;
 }
@@ -46,9 +52,37 @@ export interface PushOptions {
   fetch?: typeof fetch;
   limits?: Partial<PushLimits>;
   timeoutMs?: number;
+  /** 非敏感告警输出，只含固定事件名与账户 id；默认写标准错误。 */
+  warn?: (message: string) => void;
+}
+
+/** 待发送队列里的额度条目；Command Code 额度带有只在本机使用的采样身份。 */
+type QueuedQuota = IngestQuota & { _identity?: QuotaIdentity };
+
+/** 剥离本机字段，得到严格符合 ingest 协议的额度。 */
+function wireQuota(quota: QueuedQuota): IngestQuota {
+  const { _identity: _ignored, ...rest } = quota;
+  return rest;
 }
 
 const maxBatchesPerRun = 1000;
+
+/**
+ * 当前配置里各账户 id 的平台：通道规则与模型规则都算。配置已把账户改成其他平台时，
+ * 即使本机账户资料还没被新用量刷新，旧的 Command Code 额度也不能再发出。
+ */
+function configuredPlatforms(config: CollectorConfig) {
+  const platforms = new Map<string, Set<string>>();
+  const add = (id: string, platform: string) => {
+    const set = platforms.get(id) ?? new Set<string>();
+    set.add(platform);
+    platforms.set(id, set);
+  };
+  for (const rule of effectiveChannelAccounts(config))
+    add(rule.id, rule.platform);
+  for (const rule of config.modelAccounts ?? []) add(rule.id, rule.platform);
+  return platforms;
+}
 
 /**
  * 把 outbox 中的请求归属记录还原成服务端认识的 OTLP JSON。字段与原导出器一致，
@@ -134,8 +168,10 @@ export async function pushOutbox(
     accounts: 0,
     quotas: 0,
     otel: 0,
+    droppedQuotas: 0,
     error: null,
   };
+  const warn = options.warn ?? ((message: string) => console.error(message));
   const ingestUrl = `${config.server}${INGEST_BATCHES_PATH}`;
   const otelUrl = `${config.server}${OTEL_LOGS_PATH}`;
 
@@ -203,16 +239,65 @@ export async function pushOutbox(
 
   for (let round = 0; round < maxBatchesPerRun; round += 1) {
     const usage = state.pending<IngestUsage>("usage", limits.usage);
-    const quotas = state.pending<IngestQuota>("quota", limits.quotas);
+    const queuedQuotas = state.pending<QueuedQuota>("quota", limits.quotas);
     const accountItems = state.pending<IngestAccount>(
       "account",
       limits.accounts,
     );
-    if (usage.length + quotas.length + accountItems.length === 0) break;
+    if (usage.length + queuedQuotas.length + accountItems.length === 0) break;
 
     const accounts = new Map<string, IngestAccount>();
     for (const item of accountItems) {
       accounts.set(item.payload.externalId, item.payload);
+    }
+    // 带采样身份的额度必须与平台、主体摘要都相符的账户条目同批送达；账户已改写的旧额度丢弃，
+    // 账户名额已满的顺延到下一批。其余条目照常发送，普通用量不会被这些额度卡住。
+    const quotas: OutboxItem<QueuedQuota>[] = [];
+    const dropped: number[] = [];
+    const configured = configuredPlatforms(config);
+    for (const item of queuedQuotas) {
+      const identity = item.payload._identity;
+      if (!identity) {
+        quotas.push(item);
+        continue;
+      }
+      const id = item.payload.accountExternalId;
+      const account = accounts.get(id) ?? state.account(id);
+      const rulePlatforms = configured.get(id);
+      if (
+        !account ||
+        (rulePlatforms !== undefined &&
+          [...rulePlatforms].some(
+            (platform) => platform !== identity.platform,
+          )) ||
+        account.platform !== identity.platform ||
+        account.subjectKey !== identity.subjectKey
+      ) {
+        dropped.push(item.seq);
+        continue;
+      }
+      if (!accounts.has(id)) {
+        if (accounts.size >= limits.accounts) continue;
+        accounts.set(id, account);
+      }
+      quotas.push(item);
+    }
+    if (dropped.length) {
+      state.acknowledge(dropped);
+      result.droppedQuotas += dropped.length;
+      // 告警只是诊断输出；后台日志追加失败不能中断本批普通用量的推送。
+      try {
+        warn(
+          `${new Date().toISOString()} command_code.quota_dropped: 丢弃 ${dropped.length} 条账户已改写的 Command Code 额度`,
+        );
+      } catch {
+        // 见上。
+      }
+    }
+    if (usage.length + quotas.length + accountItems.length === 0) {
+      // 本批只剩被丢弃的旧额度时继续取下一批；只剩顺延额度时说明名额无法腾出，留待下次。
+      if (dropped.length) continue;
+      break;
     }
     const referenced = new Set([
       ...usage.map((item) => item.payload.accountExternalId),
@@ -232,7 +317,7 @@ export async function pushOutbox(
       collector: { name: COLLECTOR_NAME, version: COLLECTOR_VERSION },
       accounts: [...accounts.values()],
       usage: usage.map((item) => item.payload),
-      quotas: quotas.map((item) => item.payload),
+      quotas: quotas.map((item) => wireQuota(item.payload)),
     };
 
     const sent = await post(ingestUrl, JSON.stringify(batch));

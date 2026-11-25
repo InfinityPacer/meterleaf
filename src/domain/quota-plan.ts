@@ -30,8 +30,13 @@ const planFamilies: Record<string, readonly string[]> = {
   team: ["team-standard", "team-premium"],
 };
 
+/** 套餐标识来自上游，只查自有属性，"constructor" 等原型键不会误命中。 */
 function canonicalPlan(plan: string) {
-  return planAliases[plan] ?? plan;
+  return Object.hasOwn(planAliases, plan) ? planAliases[plan]! : plan;
+}
+
+function familyOf(plan: string): readonly string[] {
+  return Object.hasOwn(planFamilies, plan) ? planFamilies[plan]! : [];
 }
 
 /**
@@ -48,13 +53,14 @@ export function planRelation(
   const after = canonicalPlan(next);
   if (previous === next) return "same";
   // 旧写法换成新写法算细化；反过来保留已有的新写法。
-  if (before === after) return planAliases[previous] ? "refine" : "same";
+  if (before === after)
+    return Object.hasOwn(planAliases, previous) ? "refine" : "same";
   if (
     (before === "max-5x" && after === "team-premium") ||
     (before === "team-premium" && after === "max-5x")
   )
     return after === "team-premium" ? "refine" : "coarser";
-  if (planFamilies[before]?.includes(after)) return "refine";
-  if (planFamilies[after]?.includes(before)) return "coarser";
+  if (familyOf(before).includes(after)) return "refine";
+  if (familyOf(after).includes(before)) return "coarser";
   return "change";
 }

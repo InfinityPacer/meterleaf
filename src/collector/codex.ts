@@ -394,7 +394,12 @@ export async function readCodex(
       name: account.name,
       platform: account.platform,
       kind: account.kind,
-      plan: plans[account.id]?.plan ?? account.plan,
+      // 缓存的是 ChatGPT 凭据或额度里的套餐，只属于 openai 平台；同一 id 改配到其他平台
+      // （例如 commandcode）时不能沿用。
+      plan:
+        (account.platform === "openai" && Object.hasOwn(plans, account.id)
+          ? plans[account.id]!.plan
+          : null) ?? account.plan,
       subjectKey: null,
     });
   };
