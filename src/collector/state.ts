@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS agy_shared_logs (
   events TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS source_usage (external_id TEXT PRIMARY KEY, source TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS agy_seen_responses (response_key TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS codex_otel_starts (
   session_id TEXT PRIMARY KEY,
   started_ms INTEGER NOT NULL,
@@ -358,6 +359,49 @@ export class CollectorState {
     if (inserted.changes === 0) return false;
     this.enqueueRow("usage", usage.externalId, usage);
     return true;
+  }
+
+  hasSourceUsage(source: SourceName): boolean {
+    return (
+      this.db
+        .query<{ 1: number }, [SourceName]>(
+          "SELECT 1 FROM source_usage WHERE source = ? LIMIT 1",
+        )
+        .get(source) !== null
+    );
+  }
+
+  /**
+   * Antigravity 用量入账：除 external_id 外，再用单次上游响应标识做跨会话去重，
+   * 拦截 /btw 或会话分叉复制父会话 gen_metadata 带来的重复记账；已入账的旧记录重扫时
+   * 只补齐 response_key，不重复入队。
+   */
+  recordAgyUsage(usage: IngestUsage, responseKey: string | null): boolean {
+    const alreadyRecorded =
+      this.db
+        .query<{ 1: number }, [string]>(
+          "SELECT 1 FROM source_usage WHERE external_id = ?",
+        )
+        .get(usage.externalId) !== null;
+    if (alreadyRecorded) {
+      if (responseKey) {
+        this.db
+          .query(
+            "INSERT OR IGNORE INTO agy_seen_responses (response_key) VALUES (?)",
+          )
+          .run(responseKey);
+      }
+      return false;
+    }
+    if (responseKey) {
+      const seen = this.db
+        .query(
+          "INSERT OR IGNORE INTO agy_seen_responses (response_key) VALUES (?)",
+        )
+        .run(responseKey);
+      if (seen.changes === 0) return false;
+    }
+    return this.recordSourceUsage("agy", usage);
   }
 
   /** 新来源的待上传条数；按 external_id 与 outbox 的用量条目对应。 */
