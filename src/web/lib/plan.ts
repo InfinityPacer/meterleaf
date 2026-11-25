@@ -60,7 +60,27 @@ const knownPlans: Record<string, Record<string, PlanBadge>> = {
     go: { label: "Go", tier: null },
     "go-plus": { label: "Go Plus", tier: null },
   },
+  // Command Code 按额度池计费，不与其他平台的订阅倍数对齐，只显示名称。
+  commandcode: {
+    free: { label: "Free", tier: null },
+    pro: { label: "Pro", tier: null },
+    max: { label: "Max", tier: null },
+    team: { label: "Team", tier: null },
+    enterprise: { label: "Enterprise", tier: null },
+  },
 };
+
+/** Command Code 未登记的 planId（例如 pro_annual）把分隔符换成空格并词首大写。 */
+function commandCodePlanLabel(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(
+      /(^|\s)([a-z])/gi,
+      (_match, space: string, letter: string) => space + letter.toUpperCase(),
+    );
+}
 
 /**
  * 账户的套餐徽标。未知平台或未登记的套餐只整理大小写、不给档位；未提供
@@ -73,9 +93,19 @@ export function planBadge(
   if (!value || ["unknown", "未提供"].includes(value.toLowerCase())) {
     return account.kind === "api" ? { label: "API", tier: null } : null;
   }
+  // 只查自有属性：平台或套餐名可能是 constructor 这类与原型属性同名的值。
+  const platform = account.platform?.toLowerCase() ?? "";
+  const platformPlans = Object.hasOwn(knownPlans, platform)
+    ? knownPlans[platform]!
+    : null;
+  const key = value.toLowerCase();
   const known =
-    knownPlans[account.platform?.toLowerCase() ?? ""]?.[value.toLowerCase()];
+    platformPlans && Object.hasOwn(platformPlans, key)
+      ? platformPlans[key]
+      : undefined;
   if (known) return known;
+  if (account.platform?.toLowerCase() === "commandcode")
+    return { label: commandCodePlanLabel(value), tier: null };
   return {
     label: value
       .replace(/^max-(\d+x)$/i, "max $1")

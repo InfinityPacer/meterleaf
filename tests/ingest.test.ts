@@ -349,3 +349,41 @@ test("collector-only status exposes committed revision and receipt time without 
     store.close();
   }
 });
+
+test("ingest accepts the monthly billing-period window and stores it", async () => {
+  const { store, post } = setup();
+  const response = await post(
+    batch({
+      quotas: [
+        {
+          accountExternalId: "acct-1",
+          window: "monthly",
+          percent: 12.5,
+          sampledAt: "2026-09-24T16:10:17.109Z",
+          resetsAt: "2026-10-01T00:00:00.000Z",
+          windowMinutes: null,
+        },
+      ],
+    }),
+  );
+  expect(response.statusCode).toBe(200);
+  expect(
+    store.quotas().map((row) => [row.fact.window, row.fact.percent]),
+  ).toEqual([["monthly", 12.5]]);
+  // 未知窗口仍被拒绝，只放开 monthly。
+  const rejected = await post(
+    batch({
+      quotas: [
+        {
+          accountExternalId: "acct-1",
+          window: "yearly" as "monthly",
+          percent: 1,
+          sampledAt: null,
+          resetsAt: null,
+          windowMinutes: null,
+        },
+      ],
+    }),
+  );
+  expect(rejected.statusCode).toBe(400);
+});

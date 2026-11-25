@@ -56,7 +56,7 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
 
 保存后下一次同步生效，不需要重启后台任务。映射有变化时，采集器会把已经推送过的用量按新映射重新归属并补推一次，服务端的报表随之更新。`meterleaf-collector status` 会列出当前的映射。
 
-想在 Meterleaf 里看到 OpenCode Go 的额度，需要在服务端单独配置 Go 的 Key，见[部署指南](deployment.md#opencode-go-额度可选)。采集器本身不读取 Go 的 Key，也不调用任何供应商接口。
+想在 Meterleaf 里看到 OpenCode Go 的额度，需要在服务端单独配置 Go 的 Key，见[部署指南](deployment.md#opencode-go-额度可选)。采集器本身不读取 Go 的 Key，也不调用 Go 的接口；采集器唯一会主动访问的供应商接口是 [Command Code 额度](#command-code-额度)。
 
 ## Codex 与 OpenCode 来源
 
@@ -71,14 +71,15 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
 
 这些来源的日志自带供应商通道，账户在读取时就确定，不进入 Claude Code 的登录时间线，也不会被重新归属逻辑改写。通道与账户的对应关系按「来源加通道」决定，默认规则是：
 
-| 来源     | 通道          | 账户                                  |
-| -------- | ------------- | ------------------------------------- |
-| Codex    | `openai`      | `codex`（平台 openai，订阅）          |
-| Codex    | `go`          | `opencode-go`（平台 opencode-go，Go） |
-| OpenCode | `opencode-go` | `opencode-go`（平台 opencode-go，Go） |
-| omp      | `opencode-go` | `opencode-go`（平台 opencode-go，Go） |
+| 来源                 | 通道          | 账户                                                  |
+| -------------------- | ------------- | ----------------------------------------------------- |
+| Codex                | `openai`      | `codex`（平台 openai，订阅）                          |
+| Codex                | `go`          | `opencode-go`（平台 opencode-go，Go）                 |
+| OpenCode             | `opencode-go` | `opencode-go`（平台 opencode-go，Go）                 |
+| omp                  | `opencode-go` | `opencode-go`（平台 opencode-go，Go）                 |
+| omp、OpenCode、Codex | `commandcode` | `commandcode`（平台 commandcode，套餐由额度接口读取） |
 
-Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并计数，既不入账也不用来更新额度。OpenCode 里免费通道（例如 `opencode`）同样跳过。omp 的 `google-antigravity` 通道在未配置自定义规则时走 Antigravity 专属归属：先按凭据编号查 `~/.omp/agent/agent.db` 归入对应 Google 账号，查不到时再回退到当前 Antigravity 账户，见 [omp 来源](#omp-来源)。
+Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并计数，既不入账也不用来更新额度。OpenCode 里免费通道（例如 `opencode`）同样跳过。若升级前已在 `modelAccounts` 中把 `id: "commandcode"` 指向其他平台且未配置 `channelAccounts`，内置的 `commandcode` 默认渠道会跳过以免跨平台混账，如需接入 Command Code 请在 `channelAccounts` 指定独立账户 id。omp 的 `google-antigravity` 通道在未配置自定义规则时走 Antigravity 专属归属：先按凭据编号查 `~/.omp/agent/agent.db` 归入对应 Google 账号，查不到时再回退到当前 Antigravity 账户，见 [omp 来源](#omp-来源)。
 
 想自己指定对应关系，在采集器配置文件里加 `channelAccounts`（最多 50 条）。每条规则形如：
 
@@ -135,6 +136,21 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 - 通过 `opencode-go` 通道发起的请求归入 `opencode-go` 账户，与 OpenCode 的用量一起撑起 Go 的额度估算。通过 `google-antigravity` 通道发起的请求（未在 `channelAccounts` 单独覆写时）归入它实际使用的 Google 账号 `Antigravity (<label>)`，Gemini 模型计入 Gemini 池，其他模型计入 Claude/GPT 池，额度刷新见 [Antigravity 来源](#antigravity-来源)。omp 每条请求记着所用登录的编号，采集器只读打开 omp 的账号库 `~/.omp/agent/agent.db`（与会话目录同级），只查编号和登录邮箱，不读令牌，用邮箱本地部分得到标签。omp 登录多个 Google 账号并在它们之间分摊请求时，用量因此分别记到各自的账户下。早期没有编号的记录、或账号库里查不到的编号，归入 `~/.cache/agy-statusline/current-account` 记录的账号。其他通道没有规则时跳过并计数。
 - 请求按 omp 自己的消息标识、完成时间、通道、模型和 Token 数去重，不看文件路径和会话 ID。会话被移到别的工作目录、从中间分支出新会话而复制了历史消息，都不会重复计入。
 - 文件里有 Antigravity 请求却还没有活跃账号时（首次使用且没有状态栏缓存），这个文件暂不推进读取进度，等账号确定后自动补记。
+- omp 的渠道规则（内置默认或 `channelAccounts` 中 `omp` 的规则）变化后，采集器从头重读全部会话，把此前因没有规则而跳过的请求补记进来。已入账的请求按上面的去重规则不会重复，原来由自定义规则归账的请求也保持原账户。补记沿用每轮约 64 MiB 的读取上限，跨多轮完成，中途重启会接着读；补记期间规则又变了，会按最新规则重新从头读。已计数过的 Antigravity 429 按事件本身（整行内容）只计一次，补记或重读历史时不会重复触发实时额度读取；新产生的 429（包括追加到旧文件末尾或原地重写进文件的）照常触发。从无规则摘要的旧版首次升级补录时，旧版仅保存了文件偏移与末尾 256 字节指纹，因此该次一次性迁移按既有偏移与末尾指纹界定旧已读范围，范围内命中的 429 只补记去重键而不重复触发（游标之后追加或末尾指纹变化的新 429 照常触发）；首次补录完成后迁移边界清除，此后所有重读与原地重写均纯按事件本身去重。
+
+## Command Code 额度
+
+通过 omp、OpenCode 或 Codex 的 `commandcode` 通道使用 Command Code 时，用量默认归入 `commandcode` 账户（见[按通道归账](#按通道归账)），例如 `deepseek/deepseek-v4.1-flash` 这类带路由前缀的模型按官方模型名计价。额度由采集器在 `sync` 时读取，也可以改由服务端读取（见[部署指南](deployment.md#command-code-额度可选)），同一个账户只选一处。
+
+- **默认启用，会联网**：检测到本地凭据后，后台 `sync` 即使没有新的 omp 用量，也会至少间隔 4 分钟以 Bearer 凭据向 `https://api.commandcode.ai` 读取一次只读额度。地址固定，拒绝重定向，15 秒超时。调度延迟或上游故障时两次成功读取可能相隔超过 5 分钟，页面会把额度标为过时。`scan` 与 `status` 从不联网。
+- **停用**：在 `config.json` 中设 `"commandcode": { "enabled": false }`，此后不再向 Command Code 发出任何请求，用量照常推送。服务端已读取同一账户额度时应这样设置。
+- **凭据从哪里来**：配置了 `"commandcode": { "authFile": "/绝对路径/auth.json" }` 时只读这个文件；否则依次看环境变量 `COMMAND_CODE_API_KEY`、`COMMANDCODE_API_KEY`，再看 `~/.commandcode/auth.json`、`~/.pi/agent/auth.json`、`~/.omp/agent/auth.json`，用第一个有凭据的。选中的凭据过期或被拒（401/403）时停下等待，不会换用下一个位置的凭据；被拒后 30 分钟内不再尝试。凭据文件只读，不刷新令牌、不改写。
+- **额度挂到哪个账户**：在渠道规则与模型映射里找 `commandcode` 平台的账户。只有一个时自动使用；有多个时用 `"commandcode": { "accountId": "<账户 id>" }` 指定。指定的 id 不存在或不是 `commandcode` 平台、或者自定义规则里没有 `commandcode` 平台的账户，都不读取额度，`status` 会说明原因。
+- **套餐**：规则里写了 `plan` 时以它为准；`plan` 为 `null`（默认）时采用额度接口读到的套餐并缓存，接口暂时没给套餐时沿用上次读到的值。页面显示为 Free、Pro、Max、Team、Enterprise，其他套餐名把 `_`、`-` 换成空格并首字母大写。
+- **上传什么**：5 小时、每周与账单周期的百分比、重置时间、周期长度、套餐，以及组织（没有组织时为登录名）的单向摘要。登录名、组织 ID、凭据与接口原始返回不保存、不上传、不写日志；接口返回的套餐名与凭据、登录名或组织 ID 相同、以它们作为用 `-`、`_`、`.` 等分隔出的一段（例如登录名 `li` 时的 `plan-li`），或包含 3 个字符以上的登录名/组织 ID 时视为不可信，不采用。重置时间与周期边界须是真实的日历时间且不晚于公元 2243 年，否则按未知处理；不合上传协议的额度条目不入队。
+- **组织变化**：凭据换成了另一个组织时，采集器拒绝把新组织的额度与套餐写进原账户，`status` 显示原因；确需切换时改用新的账户 id。离线期间账户规则被改成其他平台或其他组织时，积压的旧额度在推送前丢弃，普通用量照常推送；只要当前配置（渠道规则或模型映射）已把这个账户 id 改成其他平台，即使还没有新用量刷新账户资料，旧额度也会丢弃。只设 `"enabled": false` 停用读取时，已积压的额度照常推送。
+- **本地状态写入失败**：读取后写入本机状态库出错时，`status` 显示「本地状态写入失败」，不沿用上一次的成功状态；本轮用量推送不受影响。
+- 账单周期的展示与预估规则见[部署指南](deployment.md#command-code-额度可选)。
 
 ## 多个 Claude 账户
 
@@ -293,7 +309,7 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
 ## 升级
 
-先升级 Meterleaf 服务端，再升级采集器。新版采集器可能推送旧服务端不认识的额度类型（例如 Fable 周额度），旧服务端会拒收整批数据；数据留在采集器的待发送队列里，服务端升级后自动补推，不会丢失。
+先升级 Meterleaf 服务端，再升级采集器。新版采集器可能推送旧服务端不认识的额度类型（例如 Fable 周额度、Command Code 的账单周期），旧服务端会拒收整批数据；数据留在采集器的待发送队列里，服务端升级后自动补推，不会丢失。需要把服务端回退到不认识账单周期的版本时，先按[部署指南](deployment.md#升级与备份恢复)的四步关闭采集并排空队列。
 
 重新构建后，用新的 `dist/Meterleaf.app` 替换「应用程序」中的旧版本，再执行一次 `meterleaf-collector install-launchd`。这条命令会按新应用包重新登记同步和 OTEL 中继两个后台任务。执行它的终端不要带 `CLAUDE_CONFIG_DIR` 或 `METERLEAF_COLLECTOR_HOME`，例如额外 Claude 账户的会话里就带着前者。这两个变量会让命令按自定义路径改装旧式 LaunchAgent，与应用自带的后台同步重复运行，每分钟同步两次并互相抢锁。不确定时用 `env -u CLAUDE_CONFIG_DIR meterleaf-collector install-launchd`，执行后 `status` 应显示同步和 OTEL 中继都由 Meterleaf.app 启用。读取进度、账户归属和写入密钥都在数据目录中，替换应用不会丢失。
 
@@ -301,7 +317,7 @@ alias meterleaf-collector="/Applications/Meterleaf.app/Contents/MacOS/meterleaf-
 
 ## 状态栏额度缓存（可选）
 
-`~/.claude.json` 里的额度缓存只在打开用量面板时刷新，平时很快过期。更新的额度只在 Claude Code 运行时出现：在终端里交给状态栏命令，在无界面模式下写进输出流。采集器不运行 Claude Code，也不调用额度接口，所以它只约定一个额度文件，由你按自己使用 Claude Code 的方式写出这个文件。终端用户使用下方的状态栏脚本；通过 Paseo 无界面使用 Claude Code 的包装脚本，以及额外定时任务（Paseo resume 可见性与额度开窗预热）见[采集器辅助脚本](collector-tasks.md)。
+`~/.claude.json` 里的额度缓存只在打开用量面板时刷新，平时很快过期。更新的额度只在 Claude Code 运行时出现：在终端里交给状态栏命令，在无界面模式下写进输出流。采集器不运行 Claude Code，也不调用 Claude 的额度接口，所以它只约定一个额度文件，由你按自己使用 Claude Code 的方式写出这个文件。终端用户使用下方的状态栏脚本；通过 Paseo 无界面使用 Claude Code 的包装脚本，以及额外定时任务（Paseo resume 可见性与额度开窗预热）见[采集器辅助脚本](collector-tasks.md)。
 
 Claude Code 每一轮都会把最新的 5 小时与 7 天额度传给状态栏命令。如果你的状态栏脚本把它写成文件，采集器可以读取这个文件，额度会比 `~/.claude.json` 里的缓存新得多。
 
@@ -344,13 +360,14 @@ meterleaf-collector statusline-cache ~/.cache/claude-statusline/rate-limits.tsv
 
 ## 日常查看与排障
 
-`meterleaf-collector status` 显示同步进度、待发送数量、最近一次成功或失败的原因、各 Antigravity 实例与 omp 的额度刷新状态，以及账户归属情况，不会显示密钥。
+`meterleaf-collector status` 显示同步进度、待发送数量、最近一次成功或失败的原因、各 Antigravity 实例与 omp 的额度刷新状态、Command Code 额度的读取状态，以及账户归属情况，不会显示密钥。
 
 - **网络不通或 Meterleaf 暂停**：未送达的数据保存在本机，恢复后自动补发，不会重复计数。OTEL 请求归属也走同一个队列，等待期间 `status` 的 `OTEL` 数量会逐渐增加。
 - **账户归属没有按 OTEL 更新**：先看 `status` 里 OTEL 中继是否显示「已启用」，再确认 `status` 的 `OTEL` 数量在请求后增加。数量长期不变时，检查 `settings.json` 的地址端口与采集器 `config.json` 的 `otelRelay.port` 是否一致，以及该端口是否被其他程序占用。中继成功接收时不逐条刷屏写日志，只记录启停、队列超限丢弃和写库异常，推送条数随 `sync` 日志与 `status` 展示。
 - **更换服务地址**：比如从局域网地址改为公网 HTTPS 地址，执行 `meterleaf-collector server https://meterleaf.example.com`。写入密钥不变，服务端不用改。
 - **提示密钥无效**：确认 Meterleaf 的 `METERLEAF_INGEST_KEYS` 包含 `init` 输出的那一行并已重启。换电脑或重新生成密钥时，用 `init --force` 并替换服务端对应的行。
 - **Antigravity 额度没有更新**：无界面运行时靠 `sync` 按需刷新。先看 `status` 中各实例和 omp 的额度刷新行，失败原因也在后台任务日志 `collector.err.log` 里。常见原因是找不到 `agy`（默认在 `~/.local/bin`，采集器会按固定目录查找，也可用 `AGY_BIN` / `OMP_BIN` 覆盖）或 `agy` 登录已失效，在终端运行 `agy` 重新登录即可。常规刷新失败后 5 分钟内不会重试，omp 429 触发的实时读取冷却为 1 分钟。
+- **Command Code 额度没有更新**：看 `status` 的「Command Code 额度」行。常见原因是没找到凭据、凭据过期（重新登录对应工具即可）、凭据被拒（30 分钟后自动再试）、有多个 `commandcode` 账户需要用 `accountId` 指定，或凭据换成了另一个组织。
 - **额度显示为过时**：Claude Code 并不在每次请求后刷新 `~/.claude.json` 里的额度缓存，观察到的刷新发生在打开设置中的用量面板时。采集器不会主动请求额度，可以启用上面的状态栏额度缓存获得更新的数据。
 - **Fable 显示「等待更新」**：状态栏只拿得到 5 小时与 7 天额度，Fable 周额度只来自 `~/.claude.json` 的缓存。上一周期结束后，在 Claude Code 里打开一次用量面板，下一轮采集就会带上新周期的 Fable 额度。
 - **切换过登录账户**：用量按登录账户分开记。两次运行之间切换账户时，采集器按切换时刻把这段时间的用量分给前后两个账户。在会话里执行 `/login` 时，以会话记录里登录成功的时间为准；在会话外登录时，以登录凭据的修改时间为准；两者都没有时，这段时间整体算给新账户。切换后其他终端里仍在运行的会话，可能还有几十秒继续使用旧账户，这几十秒的用量会算给新账户。额度读数不做这种推断，切换前后无法判断属于哪个账户的读数直接跳过。

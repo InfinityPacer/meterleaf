@@ -41,6 +41,7 @@ import {
 } from "../domain/quota-plan";
 import { quotaHistoryStart } from "../domain/quota";
 import { isManualPlanPlatform } from "../shared/account-plan";
+import { isValidSha256SubjectKey } from "../shared/commandcode";
 
 /** toISOString 的固定宽度格式，同格式的时间按文本比较即按时间先后。 */
 const isoTimestampGlob =
@@ -110,6 +111,34 @@ export interface LedgerStoreOptions {
   readonly?: boolean;
   /** 清理过期请求归属记录后的回调，只传删除条数。 */
   onRequestAccountsExpired?: (removed: number) => void;
+  /**
+   * 由服务端额度轮询独占写入额度的账户，元素为 ref(sourceId, externalId)。采集器推送到这些账户的
+   * 额度被跳过，账户资料只接受 commandcode 平台，套餐与主体摘要以服务端观测为准。
+   */
+  serverManagedQuotaAccounts?: ReadonlySet<string>;
+  /** Command Code 平台或主体冲突时的回调，只传固定事件名与账户位置，不含上游内容。 */
+  onCommandCodeWarning?: (
+    event: CommandCodeWarning,
+    details: { sourceId: string; accountExternalId: string },
+  ) => void;
+}
+
+export type CommandCodeWarning =
+  | "command_code.account_platform_conflict"
+  | "command_code.identity_mismatch"
+  | "command_code.request_account_skipped";
+
+export const COMMAND_CODE_PLATFORM = "commandcode";
+
+/**
+ * Command Code 账户已绑定的主体摘要，存于 sync_state，不改表结构。键含来源与账户，
+ * 两者都可能带冒号以外的任意字符，用 JSON 数组避免拼接歧义。
+ */
+export function commandCodeIdentityStateKey(
+  sourceId: string,
+  accountExternalId: string,
+) {
+  return `commandcode:identityDigest:${JSON.stringify([sourceId, accountExternalId])}`;
 }
 
 /** 一个来源账户窗口的最新读数；同一采样时刻可能有多条。 */
@@ -290,12 +319,17 @@ export class LedgerStore {
   /** 进程内节流；重启后第一次写入会重新检查一次过期记录。 */
   private lastRequestAccountCleanupMs = 0;
   private readonly onRequestAccountsExpired?: (removed: number) => void;
+  private readonly serverManagedQuotaAccounts: ReadonlySet<string>;
+  private readonly onCommandCodeWarning?: LedgerStoreOptions["onCommandCodeWarning"];
   constructor(
     path: string,
     readonly book: PriceBook,
     options: LedgerStoreOptions = {},
   ) {
     this.onRequestAccountsExpired = options.onRequestAccountsExpired;
+    this.serverManagedQuotaAccounts =
+      options.serverManagedQuotaAccounts ?? new Set();
+    this.onCommandCodeWarning = options.onCommandCodeWarning;
     if (options.readonly) {
       this.db = new Database(path, { readonly: true, strict: true });
       assertReadableSchema(this.db, "ledger");
@@ -869,6 +903,19 @@ export class LedgerStore {
     accountUuid: string,
     organizationUuid: string | null,
   ): boolean {
+    // 服务端托管的 Command Code 账户只能由服务端以 commandcode 平台建户；OTEL 映射到它时
+    // 用量照常归属，但不补 anthropic 占位资料，避免抢先占位后服务端额度因平台冲突被拒。
+    if (
+      this.serverManagedQuotaAccounts.has(ref(sourceId, accountUuid)) &&
+      this.storedAccount(sourceId, accountUuid) === null
+    ) {
+      this.warnCommandCode(
+        "command_code.request_account_skipped",
+        sourceId,
+        accountUuid,
+      );
+      return false;
+    }
     const write = this.db
       .query(
         `INSERT INTO accounts (source_id, external_id, payload) VALUES (?, ?, ?)
@@ -1241,10 +1288,34 @@ export class LedgerStore {
    * 从未知变为已知是补上一直成立的标签，直接改写最后一次观测，保留其时间，
    * 额度预估因此继续使用此前全部读数，不会从补上标签的时刻重新起算。
    */
-  private writeAccount(account: SourceAccount, observedAt: string) {
+  /**
+   * authoritativePlan：套餐来自 Command Code 额度接口的直接观测（服务端读取，或通过主体与采样水位
+   * 校验的采集器账户资料），非空时总是覆盖旧套餐，不按“更笼统”保留旧值，例如 team-premium 降为
+   * team 必须如实显示。
+   */
+  private writeAccount(
+    account: SourceAccount,
+    observedAt: string,
+    authoritativePlan = false,
+  ) {
     const key = quotaPlanHistoryKey(account.sourceId, account.externalId);
     const history = this.getState<QuotaPlanObservation[]>(key) ?? [];
     const previousObservation = history.at(-1);
+    if (
+      authoritativePlan &&
+      account.plan !== null &&
+      planRelation(previousObservation?.plan ?? null, account.plan) ===
+        "coarser"
+    ) {
+      history.push({ plan: account.plan, observedAt, changed: true });
+      this.setState(key, history);
+      this.db
+        .query(
+          "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET payload=excluded.payload WHERE accounts.payload IS NOT excluded.payload",
+        )
+        .run(account.sourceId, account.externalId, JSON.stringify(account));
+      return true;
+    }
     const previousRow = previousObservation
       ? null
       : this.db
@@ -1391,17 +1462,42 @@ export class LedgerStore {
     }
     this.db.transaction(() => {
       let changed = false;
+      const guard = this.commandCodeIngestGuard(sourceId, batch);
       for (const account of batch.accounts) {
+        const decision = guard.accounts.get(account.externalId);
+        if (decision === "skip") continue;
         const sampledMs = sampledByAccount.get(account.externalId);
+        const next = decision ?? account;
+        // 通过身份校验的采集器 Command Code 套餐来自额度接口的直接观测：任何不同的非空套餐都按变化处理，
+        // 过时批次不能改写，未过时的不按“更笼统”保留旧值。
+        const authoritativePlan =
+          guard.commandCode.has(account.externalId) &&
+          next.platform === COMMAND_CODE_PLATFORM;
+        // 服务端托管账户的套餐以服务端观测为准，采集器资料不会改动套餐，无需按采样时间拦截。
         if (
+          !guard.managed.has(account.externalId) &&
           sampledMs !== undefined &&
-          this.isStalePlanChange(account, sampledMs, nowMs)
-        )
+          this.isStalePlanChange(next, sampledMs, nowMs, authoritativePlan)
+        ) {
+          // Command Code 账户只丢弃过时的套餐，主体摘要仍与 sync_state 的绑定在同一事务落盘。
+          if (!guard.commandCode.has(account.externalId)) continue;
+          const stored = this.storedAccount(sourceId, account.externalId);
+          changed =
+            this.writeAccount({ ...next, plan: stored?.plan ?? null }, now) ||
+            changed;
           continue;
-        changed = this.writeAccount(account, now) || changed;
+        }
+        changed = this.writeAccount(next, now, authoritativePlan) || changed;
       }
+      for (const [key, digest] of guard.bind) this.setState(key, digest);
       changed = this.writeFacts(sourceId, batch.usage, now) || changed;
-      changed = this.writeQuotas(batch.quotas, now) || changed;
+      changed =
+        this.writeQuotas(
+          batch.quotas.filter(
+            (quota) => !guard.skipQuotas.has(quota.accountExternalId),
+          ),
+          now,
+        ) || changed;
       this.setState(`${sourceId}:ingest:last`, {
         at: now,
         batchId: batch.batchId,
@@ -1782,25 +1878,261 @@ export class LedgerStore {
     return rewritten;
   }
 
+  private storedAccount(sourceId: string, externalId: string) {
+    const row = this.db
+      .query<{ payload: string }, [string, string]>(
+        "SELECT payload FROM accounts WHERE source_id=? AND external_id=?",
+      )
+      .get(sourceId, externalId);
+    return row ? (JSON.parse(row.payload) as SourceAccount) : null;
+  }
+
+  private warnCommandCode(
+    event: CommandCodeWarning,
+    sourceId: string,
+    accountExternalId: string,
+  ) {
+    this.onCommandCodeWarning?.(event, { sourceId, accountExternalId });
+  }
+
+  /**
+   * 推送批次中 Command Code 账户的守卫，调用方负责事务。普通用量一律照常入账，只决定：
+   * 哪些账户条目跳过或改写（保留服务端套餐与主体摘要），哪些账户的额度跳过，以及首次绑定的主体摘要。
+   *
+   * 服务端托管账户：额度只由服务端写入；账户条目必须是 commandcode 平台，主体摘要不能与已绑定的不同。
+   * 采集器托管账户：一旦绑定主体，带额度或套餐的批次必须附上同一摘要的账户条目，否则额度与套餐都跳过，
+   * 防止离线期间改了组织或改了平台的旧额度混进同一账户。
+   */
+  private commandCodeIngestGuard(
+    sourceId: string,
+    batch: {
+      accounts: readonly SourceAccount[];
+      quotas: readonly QuotaFact[];
+    },
+  ) {
+    const accounts = new Map<string, SourceAccount | "skip">();
+    const skipQuotas = new Set<string>();
+    const bind = new Map<string, string>();
+    const managed = new Set<string>();
+    const commandCode = new Set<string>();
+    const incomingById = new Map<string, SourceAccount>();
+    for (const account of batch.accounts)
+      incomingById.set(account.externalId, account);
+    const quotaIds = new Set(
+      batch.quotas.map((quota) => quota.accountExternalId),
+    );
+    for (const id of new Set([...incomingById.keys(), ...quotaIds])) {
+      const incoming = incomingById.get(id) ?? null;
+      const existing = this.storedAccount(sourceId, id);
+      const key = commandCodeIdentityStateKey(sourceId, id);
+      const stateDigest = this.getState<string>(key);
+      if (this.serverManagedQuotaAccounts.has(ref(sourceId, id))) {
+        managed.add(id);
+        skipQuotas.add(id);
+        if (!incoming) continue;
+        if (
+          incoming.platform !== COMMAND_CODE_PLATFORM ||
+          (existing !== null && existing.platform !== COMMAND_CODE_PLATFORM)
+        ) {
+          accounts.set(id, "skip");
+          this.warnCommandCode(
+            "command_code.account_platform_conflict",
+            sourceId,
+            id,
+          );
+          continue;
+        }
+        const bound = stateDigest ?? existing?.subjectKey ?? null;
+        if (
+          incoming.subjectKey !== null &&
+          bound !== null &&
+          incoming.subjectKey !== bound
+        ) {
+          accounts.set(id, "skip");
+          this.warnCommandCode("command_code.identity_mismatch", sourceId, id);
+          continue;
+        }
+        accounts.set(id, {
+          ...incoming,
+          plan: existing?.plan ?? null,
+          subjectKey: existing?.subjectKey ?? null,
+        });
+        continue;
+      }
+      if (
+        existing?.platform !== COMMAND_CODE_PLATFORM &&
+        incoming?.platform !== COMMAND_CODE_PLATFORM &&
+        stateDigest === null
+      )
+        continue;
+      commandCode.add(id);
+      const bound = stateDigest ?? existing?.subjectKey ?? null;
+      const incomingDigest = isValidSha256SubjectKey(incoming?.subjectKey)
+        ? incoming!.subjectKey
+        : null;
+      const hasQuotas = quotaIds.has(id);
+      const planChange =
+        incoming !== null &&
+        incoming.plan !== null &&
+        incoming.plan !== (existing?.plan ?? null);
+      if (bound !== null) {
+        // 已绑定主体的账户：改平台或换主体的资料一律不改写账户（纯用量批次也一样），额度跳过，用量照常。
+        if (incoming && incoming.platform !== COMMAND_CODE_PLATFORM) {
+          accounts.set(id, "skip");
+          skipQuotas.add(id);
+          this.warnCommandCode(
+            "command_code.account_platform_conflict",
+            sourceId,
+            id,
+          );
+          continue;
+        }
+        if (
+          incoming &&
+          incoming.subjectKey !== null &&
+          incoming.subjectKey !== bound
+        ) {
+          accounts.set(id, "skip");
+          skipQuotas.add(id);
+          this.warnCommandCode("command_code.identity_mismatch", sourceId, id);
+          continue;
+        }
+        if (
+          (hasQuotas || planChange) &&
+          (incomingDigest === null || incomingDigest !== bound)
+        ) {
+          skipQuotas.add(id);
+          this.warnCommandCode("command_code.identity_mismatch", sourceId, id);
+          if (incoming)
+            accounts.set(id, {
+              ...incoming,
+              plan: existing?.plan ?? null,
+              subjectKey: existing?.subjectKey ?? bound,
+            });
+          continue;
+        }
+        if (stateDigest === null) bind.set(key, bound);
+        if (incoming)
+          accounts.set(id, {
+            ...incoming,
+            plan: incoming.plan ?? existing?.plan ?? null,
+            subjectKey: incomingDigest ?? existing?.subjectKey ?? bound,
+          });
+        continue;
+      }
+      if (incomingDigest !== null) {
+        bind.set(key, incomingDigest);
+        continue;
+      }
+      // 尚未绑定主体时，不带摘要的 Command Code 额度无法证明来自哪个组织，不予写入。
+      if (hasQuotas) {
+        skipQuotas.add(id);
+        this.warnCommandCode("command_code.identity_mismatch", sourceId, id);
+      }
+    }
+    return { accounts, skipQuotas, bind, managed, commandCode };
+  }
+
+  /**
+   * 服务端读取的 Command Code 额度在单一事务内落盘：账户已存在却不是 commandcode 平台、或主体摘要
+   * 与已绑定的不同，整体拒绝；账户不存在时原子建户。首次绑定的主体摘要独立于套餐写入，
+   * 没有 planId 时也落盘，且不把已知套餐改回未知。
+   */
+  saveProviderQuotaUpdate(
+    update: {
+      sourceId: string;
+      accountExternalId: string;
+      identityDigest: string;
+      observedPlan: string | null;
+      quotas: readonly QuotaFact[];
+    },
+    collectedAt: string,
+  ): "saved" | "unchanged" | "platform_conflict" | "identity_mismatch" {
+    const { sourceId, accountExternalId, identityDigest, observedPlan } =
+      update;
+    if (!isValidSha256SubjectKey(identityDigest))
+      throw new Error("Invalid Command Code identity digest");
+    for (const quota of update.quotas)
+      if (
+        quota.sourceId !== sourceId ||
+        quota.accountExternalId !== accountExternalId
+      )
+        throw new Error("Provider quota targets a different account");
+    return this.db.transaction(() => {
+      const existing = this.storedAccount(sourceId, accountExternalId);
+      if (existing && existing.platform !== COMMAND_CODE_PLATFORM) {
+        this.warnCommandCode(
+          "command_code.account_platform_conflict",
+          sourceId,
+          accountExternalId,
+        );
+        return "platform_conflict" as const;
+      }
+      const key = commandCodeIdentityStateKey(sourceId, accountExternalId);
+      const bound = this.getState<string>(key) ?? existing?.subjectKey ?? null;
+      if (bound !== null && bound !== identityDigest) {
+        this.warnCommandCode(
+          "command_code.identity_mismatch",
+          sourceId,
+          accountExternalId,
+        );
+        return "identity_mismatch" as const;
+      }
+      let changed = false;
+      if (!existing) {
+        changed = this.writeAccount(
+          {
+            sourceId,
+            externalId: accountExternalId,
+            name: "Command Code",
+            platform: COMMAND_CODE_PLATFORM,
+            kind: "subscription",
+            plan: observedPlan,
+            parentExternalId: null,
+            subjectKey: identityDigest,
+          },
+          collectedAt,
+        );
+      } else {
+        const nextPlan = observedPlan ?? existing.plan;
+        const nextSubjectKey = existing.subjectKey ?? identityDigest;
+        if (nextSubjectKey !== existing.subjectKey || observedPlan !== null)
+          changed =
+            this.writeAccount(
+              { ...existing, plan: nextPlan, subjectKey: nextSubjectKey },
+              collectedAt,
+              true,
+            ) || changed;
+      }
+      if (this.getState<string>(key) !== identityDigest)
+        this.setState(key, identityDigest);
+      changed = this.writeQuotas(update.quotas, collectedAt) || changed;
+      if (changed) this.bumpRevision();
+      return changed ? ("saved" as const) : ("unchanged" as const);
+    })();
+  }
+
   /** 额度采样不得早于已观察的套餐边界或已有快照；未来日期不能充当水位。 */
+  /** anyPlanDifference：两个不同的非空套餐都算变化（细化或更笼统也算），用于直接观测的套餐。 */
   private isStalePlanChange(
     account: SourceAccount,
     sampledMs: number,
     nowMs: number,
+    anyPlanDifference = false,
   ) {
     const priorRow = this.db
       .query<{ payload: string }, [string, string]>(
         "SELECT payload FROM accounts WHERE source_id=? AND external_id=?",
       )
       .get(account.sourceId, account.externalId);
-    if (
-      !priorRow ||
-      !isPlanChange(
-        (JSON.parse(priorRow.payload) as SourceAccount).plan,
-        account.plan,
-      )
-    )
-      return false;
+    if (!priorRow) return false;
+    const priorPlan = (JSON.parse(priorRow.payload) as SourceAccount).plan;
+    const changed = anyPlanDifference
+      ? priorPlan !== null &&
+        account.plan !== null &&
+        priorPlan !== account.plan
+      : isPlanChange(priorPlan, account.plan);
+    if (!changed) return false;
     const latestObservation = this.getState<QuotaPlanObservation[]>(
       quotaPlanHistoryKey(account.sourceId, account.externalId),
     )?.at(-1);

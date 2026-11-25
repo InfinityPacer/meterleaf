@@ -69,12 +69,25 @@ export const DEFAULT_CHANNEL_ACCOUNTS: readonly ChannelAccountRule[] = [
     kind: "subscription",
     plan: "go",
   },
+  // Command Code 的套餐由额度接口读取，规则里不写死。
+  ...(["omp", "opencode", "codex"] as const).map(
+    (source): ChannelAccountRule => ({
+      source,
+      channel: "commandcode",
+      id: "commandcode",
+      name: "Command Code",
+      platform: "commandcode",
+      kind: "subscription",
+      plan: null,
+    }),
+  ),
 ];
 
 /**
  * 生效的渠道规则。配置了 channelAccounts 时原样使用；否则用内置默认，但默认规则的账户
  * 若在模型映射里也有同一 id，就沿用模型映射的资料，避免两个写入方让服务端账户资料来回变化，
- * 也不让升级前自定义过账户名称的配置因此无法加载。
+ * 也不让升级前自定义过账户名称的配置因此无法加载。新增的 commandcode 默认渠道若遇到模型映射
+ * 已用同一 id 指向其他平台，则跳过默认渠道以免跨平台混账。
  */
 export function effectiveChannelAccounts(
   config: {
@@ -83,19 +96,22 @@ export function effectiveChannelAccounts(
   } | null,
 ): readonly ChannelAccountRule[] {
   if (config?.channelAccounts) return config.channelAccounts;
-  return DEFAULT_CHANNEL_ACCOUNTS.map((rule) => {
+  return DEFAULT_CHANNEL_ACCOUNTS.flatMap((rule) => {
     const model = config?.modelAccounts?.find(
       (candidate) => candidate.id === rule.id,
     );
-    return model
-      ? {
-          ...rule,
-          name: model.name,
-          platform: model.platform,
-          kind: model.kind,
-          plan: model.plan,
-        }
-      : rule;
+    if (!model) return [rule];
+    if (rule.platform === "commandcode" && model.platform !== rule.platform)
+      return [];
+    return [
+      {
+        ...rule,
+        name: model.name,
+        platform: model.platform,
+        kind: model.kind,
+        plan: model.plan,
+      },
+    ];
   });
 }
 
