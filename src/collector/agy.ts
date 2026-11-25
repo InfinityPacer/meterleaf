@@ -2246,6 +2246,22 @@ export function countAgyOutOfScopeSharedDbs(
 }
 
 /**
+ * 单次上游生成的跨会话去重键。Antigravity 的 `/btw` 或会话分叉会把父会话的
+ * `gen_metadata` 整表复制到新的 conversationId 下，仅按 `[conversationId, idx, executionId]`
+ * 会把复制来的历史整包重记。上游 `responseId`（缺失时退回 `messageId`）随原记录一起复制且
+ * 每次调用唯一，用来在本地拦截跨会话重复入账，同时保持既有 `externalId` 格式不变。
+ */
+function agyResponseIdentity(decoded: DecodedAgyGenMetadata): string | null {
+  const responseId = decoded.chatModel?.usage?.responseId?.trim();
+  if (responseId) return `resp:${responseId}`;
+  const messageId = decoded.chatModel?.usage?.messageId?.trim();
+  if (messageId) return `msg:${messageId}`;
+  return null;
+}
+
+const agyResponseDedupMetaKey = "agy_response_dedup_v1";
+
+/**
  * 读取一轮 Antigravity 状态栏额度缓存与本地会话数据库。
  * 1. 发现本轮应采集的实例（显式/池模式仅含受管非默认实例；默认模式含默认实例与同级已登录额外实例）；
  * 2. 扫描 statuslineDir 下对应的 quota-<label>.tsv，为每个 Google 账号建立 Gemini 与 Claude/GPT
@@ -2410,6 +2426,9 @@ export function readAgy(
     state.forgetMissingAgyFiles(allDbPaths);
   }
   const allSharedLogPaths = new Set<string>();
+  const needsResponseBackfill =
+    state.getMeta(agyResponseDedupMetaKey) !== "1" &&
+    state.hasSourceUsage("agy");
 
   for (const group of groups.values()) {
     group.dbPaths.sort();
@@ -2430,6 +2449,7 @@ export function readAgy(
       inode: string;
       size: number;
       modified: number;
+      birthtimeMs: number;
       walSize: number;
       walModified: number;
       latestMtimeMs: number;
@@ -2460,6 +2480,7 @@ export function readAgy(
       const inode = String(stat.ino);
       const saved = state.agyFile(path);
       if (
+        !needsResponseBackfill &&
         saved &&
         saved.inode === inode &&
         saved.size === stat.size &&
@@ -2477,11 +2498,22 @@ export function readAgy(
         inode,
         size: stat.size,
         modified: stat.mtimeMs,
+        birthtimeMs:
+          Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0
+            ? stat.birthtimeMs
+            : Number.POSITIVE_INFINITY,
         walSize,
         walModified,
         latestMtimeMs: Math.max(stat.mtimeMs, walModified),
       });
     }
+    // 先处理更早创建的父会话再处理同轮出现的分叉会话（如 /btw），保证父会话的
+    // 归属与 externalId 优先占位，避免分叉会话抢先入账。
+    pendingDbs.sort((a, b) =>
+      a.birthtimeMs === b.birthtimeMs
+        ? a.path.localeCompare(b.path)
+        : a.birthtimeMs - b.birthtimeMs,
+    );
 
     // 先完整快照待读会话库的 gen_metadata 与 steps，再读取共享日志做轮次归属：
     // agy 先写发送日志再提交数据库，先拷库后读日志可消除顺序写入期间的读取竞态。
@@ -2681,7 +2713,7 @@ export function readAgy(
             tokens: extracted.tokens,
             metadata,
           };
-          if (state.recordSourceUsage("agy", usage)) {
+          if (state.recordAgyUsage(usage, agyResponseIdentity(decoded))) {
             report.recorded += 1;
             dirtyProfiles.add(resolvedInstanceId);
           }
@@ -2700,6 +2732,15 @@ export function readAgy(
         }
       });
     }
+  }
+
+  if (
+    state.getMeta(agyResponseDedupMetaKey) !== "1" &&
+    !preserveCursorsOnUnreadable &&
+    report.unreadable === 0 &&
+    !report.skipped["(缺失账户)"]
+  ) {
+    state.setMeta(agyResponseDedupMetaKey, "1");
   }
 
   if (!preserveCursorsOnUnreadable) {
