@@ -80,7 +80,11 @@ function tierFrom(usage: JsonObject): string | null {
   return text(usage.service_tier, 32);
 }
 
-/** 只放计量相关短值；对话、路径、工作目录和分支都不进入元数据。 */
+/**
+ * 只放计量相关短值；对话、路径、工作目录和分支都不进入元数据。会话 ID 用于服务端在
+ * 缺少精确 OTEL 时按同会话前后请求推断账户。stop_reason 为 null 的中断响应上游
+ * 已计费，照常记账。
+ */
 function metadataFrom(line: JsonObject, usage: JsonObject | null) {
   const metadata: UsageFact["metadata"] = {};
   const effort = text(line.effort);
@@ -97,6 +101,8 @@ function metadataFrom(line: JsonObject, usage: JsonObject | null) {
   if (geo && geo !== "not_available") metadata.inference_geo = geo;
   const version = text(line.version);
   if (version) metadata.client_version = version;
+  const sessionId = text(line.sessionId, 64);
+  if (sessionId) metadata.session_id = sessionId;
   return metadata;
 }
 
@@ -164,6 +170,8 @@ export function parseLine(raw: string): LineResult {
       }
       const version = text(line.version);
       if (version) metadata.client_version = version;
+      const sessionId = text(line.sessionId, 64);
+      if (sessionId) metadata.session_id = sessionId;
       observations.push({
         key: advisorKey,
         timestamp: at,

@@ -8,7 +8,12 @@ import {
   migrateSchema,
 } from "./schema";
 import { subjectKeyFrom } from "../shared/account-subject";
-import type { OtelRequestAccount } from "../shared/otel";
+import {
+  MAX_STANDARD_ISO_MS,
+  MIN_STANDARD_ISO_MS,
+  standardIso,
+  type OtelRequestAccount,
+} from "../shared/otel";
 import Decimal from "decimal.js";
 import { createHash } from "node:crypto";
 import type {
@@ -50,6 +55,45 @@ const REQUEST_ACCOUNT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 /** 超过这个行数才分批删除，避免一次长事务阻塞写入。 */
 const REQUEST_ACCOUNT_BULK_THRESHOLD = 10_000;
 const REQUEST_ACCOUNT_DELETE_BATCH = 5_000;
+
+/**
+ * 同会话前后夹逼推断的单侧时间窗口。缺少精确 OTEL 的用量（例如用户中断流式响应，
+ * Claude Code 不发请求事件）只有在同一会话前后各有一条同账户的 OTEL 请求、且两侧
+ * 间隔都不超过这个窗口时才归到该账户；更长的间隔可能跨越 `--resume` 换号。
+ */
+export const SESSION_BRACKET_WINDOW_MS = 30 * 60 * 1000;
+/** 采集器上报的未归属占位账户；与采集器的 UNATTRIBUTED_ACCOUNT_ID 一致。 */
+const UNATTRIBUTED_ACCOUNT = "unattributed";
+/** 用量时间可能带时区偏移，按文本预筛范围时两侧各放宽一天再按毫秒精确比较。 */
+const OFFSET_TEXT_MARGIN_MS = 24 * 60 * 60 * 1000;
+
+/** 四位年份 UTC 的首尾文本，与 MIN/MAX_STANDARD_ISO_MS 对应。 */
+const MIN_STANDARD_ISO_TEXT = "0000-01-01T00:00:00.000Z";
+const MAX_STANDARD_ISO_TEXT = "9999-12-31T23:59:59.999Z";
+
+type FactAttribution = "otel" | "session";
+
+interface BracketAccount {
+  accountUuid: string;
+  organizationUuid: string | null;
+}
+
+interface StoredFactRow {
+  account_id: string;
+  payload: string;
+}
+
+/** 按键名排序的 JSON，用于判断两份载荷内容是否相同而不受键序影响。 */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) => {
+    if (item === null || typeof item !== "object" || Array.isArray(item))
+      return item;
+    const sorted: Record<string, unknown> = {};
+    for (const name of Object.keys(item).sort())
+      sorted[name] = (item as Record<string, unknown>)[name];
+    return sorted;
+  });
+}
 
 /**
  * 维护窗口内让估值触发器跳过变更日志的标记。维护代码在同一个事务里插入、删除，
@@ -487,7 +531,22 @@ export class LedgerStore {
       .query("INSERT OR IGNORE INTO price_books VALUES (?, ?)")
       .run(priceBookKey(book), payload);
     this.ensureRequestAccountTimingColumns();
+    this.ensureSessionBracketIndexes();
     this.revalueRoutedMissingRates(book);
+  }
+
+  /**
+   * 同会话夹逼推断用的两条索引。只加索引、不改表结构，因此与耗时列一样幂等补齐，
+   * 不递增数据库 revision，旧版本仍能读取升级后的账本。
+   */
+  private ensureSessionBracketIndexes() {
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS request_accounts_session_time
+        ON request_accounts(source_id, session_id, occurred_at);
+      CREATE INDEX IF NOT EXISTS usage_facts_unattributed_session
+        ON usage_facts(source_id, json_extract(payload, '$.metadata.session_id'), occurred_at)
+        WHERE account_id = '${UNATTRIBUTED_ACCOUNT}';
+    `);
   }
 
   /** 为已有账本平滑补齐 request_accounts 的耗时列，不改变数据库 revision 以保持向前兼容。 */
@@ -790,10 +849,12 @@ export class LedgerStore {
           organization_uuid: string | null;
           duration_ms: number | null;
           first_token_ms: number | null;
+          session_id: string | null;
+          occurred_at: string | null;
         },
         [string, string]
       >(
-        "SELECT account_uuid, organization_uuid, duration_ms, first_token_ms FROM request_accounts WHERE source_id=? AND request_id=?",
+        "SELECT account_uuid, organization_uuid, duration_ms, first_token_ms, session_id, occurred_at FROM request_accounts WHERE source_id=? AND request_id=?",
       )
       .get(sourceId, requestId);
   }
@@ -850,21 +911,94 @@ export class LedgerStore {
     return cache.get(requestId) ?? null;
   }
 
-  /** 已存事实的 otel 归属与官方耗时；请求映射过期或重放旧用量时保持结论不回退。 */
-  private storedFactPreserved(
+  /**
+   * 同会话前后夹逼：取同一会话里时间不晚于和不早于该用量的最近两条带账户的 OTEL 请求，
+   * 两侧账户相同且各自间隔不超过 SESSION_BRACKET_WINDOW_MS 才返回该账户。
+   * 只有一侧、两侧账户不同、间隔过长，或任一侧最近时刻并列着不同账户的请求，
+   * 都返回 null，让用量保持未归属。
+   */
+  private sessionBracketAccount(
     sourceId: string,
-    externalId: string,
-  ): {
-    otelAccount: string | null;
+    sessionId: string,
+    occurredAt: string,
+  ): BracketAccount | null {
+    const factMs = Date.parse(occurredAt);
+    const at = standardIso(factMs);
+    if (at === null) return null;
+    type Neighbor = {
+      account_uuid: string;
+      organization_uuid: string | null;
+      occurred_at: string;
+    };
+    // 两侧都限定在四位年份文本范围内：升级前落库的扩展年份时间（如 -000001-…）
+    // 按文本排在 0000 年之前，不能被当成最近邻居。
+    const neighbor = (from: string, to: string, order: "DESC" | "ASC") =>
+      this.db
+        .query<Neighbor, [string, string, string, string]>(
+          `SELECT account_uuid, organization_uuid, occurred_at FROM request_accounts
+            WHERE source_id=? AND session_id=? AND account_uuid IS NOT NULL
+              AND occurred_at IS NOT NULL AND occurred_at >= ? AND occurred_at <= ?
+            ORDER BY occurred_at ${order} LIMIT 1`,
+        )
+        .get(sourceId, sessionId, from, to);
+    // LIMIT 1 在同刻多账户时任取一条，必须确认最近时刻只有一个账户。
+    const ambiguous = (neighborAt: string) =>
+      (this.db
+        .query<{ accounts: number }, [string, string, string]>(
+          `SELECT COUNT(DISTINCT account_uuid) AS accounts FROM request_accounts
+            WHERE source_id=? AND session_id=? AND occurred_at=?
+              AND account_uuid IS NOT NULL`,
+        )
+        .get(sourceId, sessionId, neighborAt)?.accounts ?? 0) > 1;
+    const prev = neighbor(MIN_STANDARD_ISO_TEXT, at, "DESC");
+    if (!prev) return null;
+    const next = neighbor(at, MAX_STANDARD_ISO_TEXT, "ASC");
+    if (!next || prev.account_uuid !== next.account_uuid) return null;
+    if (
+      standardIso(Date.parse(prev.occurred_at)) !== prev.occurred_at ||
+      standardIso(Date.parse(next.occurred_at)) !== next.occurred_at
+    )
+      return null;
+    if (ambiguous(prev.occurred_at)) return null;
+    if (next.occurred_at !== prev.occurred_at && ambiguous(next.occurred_at))
+      return null;
+    const prevMs = Date.parse(prev.occurred_at);
+    const nextMs = Date.parse(next.occurred_at);
+    const before = factMs - prevMs;
+    const after = nextMs - factMs;
+    if (
+      !(before >= 0 && before <= SESSION_BRACKET_WINDOW_MS) ||
+      !(after >= 0 && after <= SESSION_BRACKET_WINDOW_MS)
+    )
+      return null;
+    return {
+      accountUuid: prev.account_uuid,
+      organizationUuid: prev.organization_uuid ?? next.organization_uuid,
+    };
+  }
+
+  private static sessionIdOf(fact: UsageFact): string | null {
+    const value = fact.metadata.session_id;
+    return typeof value === "string" && value.length > 0 ? value : null;
+  }
+
+  /** 推断只作用于采集器报为未归属、且不是模型映射的用量。 */
+  private static bracketCandidate(fact: UsageFact): string | null {
+    if (fact.accountExternalId !== UNATTRIBUTED_ACCOUNT) return null;
+    if (fact.metadata.attribution === "model") return null;
+    return LedgerStore.sessionIdOf(fact);
+  }
+
+  /**
+   * 已存事实的服务端归属（精确 otel 或同会话推断 session）与官方耗时；
+   * 请求映射过期或重放旧用量时保持结论不回退，两种标记各自保留不互相改写。
+   */
+  private static storedFactPreserved(row: StoredFactRow): {
+    account: string | null;
+    attribution: FactAttribution | null;
     durationMs: number | null;
     firstTokenMs: number | null;
-  } | null {
-    const row = this.db
-      .query<{ account_id: string; payload: string }, [string, string]>(
-        "SELECT account_id, payload FROM usage_facts WHERE source_id=? AND external_id=?",
-      )
-      .get(sourceId, externalId);
-    if (!row) return null;
+  } {
     const fact = JSON.parse(row.payload) as UsageFact;
     const durationMs =
       typeof fact.metadata.duration_ms === "number" &&
@@ -876,8 +1010,14 @@ export class LedgerStore {
       Number.isFinite(fact.metadata.first_token_ms)
         ? fact.metadata.first_token_ms
         : null;
+    const attribution =
+      fact.metadata.attribution === "otel" ||
+      fact.metadata.attribution === "session"
+        ? fact.metadata.attribution
+        : null;
     return {
-      otelAccount: fact.metadata.attribution === "otel" ? row.account_id : null,
+      account: attribution ? row.account_id : null,
+      attribution,
       durationMs,
       firstTokenMs,
     };
@@ -930,6 +1070,11 @@ export class LedgerStore {
       if (original.sourceId !== sourceId)
         throw new Error("Connector returned a foreign source record");
       let fact = original;
+      const stored = this.db
+        .query<StoredFactRow, [string, string]>(
+          "SELECT account_id, payload FROM usage_facts WHERE source_id=? AND external_id=?",
+        )
+        .get(sourceId, original.externalId);
       const mapping = this.lookupRequestMapping(
         sourceId,
         original,
@@ -961,30 +1106,67 @@ export class LedgerStore {
         (original.metadata.attribution !== "model" && !mapping?.account_uuid) ||
         fact.metadata.duration_ms === undefined ||
         fact.metadata.first_token_ms === undefined;
-      if (needsStoredFallback) {
-        const preserved = this.storedFactPreserved(
-          sourceId,
-          original.externalId,
+      // 优先级：model > otel > session > 采集器时间线或未归属。
+      let serverAttributed = false;
+      if (needsStoredFallback && stored) {
+        const preserved = LedgerStore.storedFactPreserved(stored);
+        if (
+          original.metadata.attribution !== "model" &&
+          !mapping?.account_uuid &&
+          preserved.attribution !== null &&
+          preserved.account !== null
+        ) {
+          fact = {
+            ...fact,
+            accountExternalId: preserved.account,
+            metadata: {
+              ...fact.metadata,
+              attribution: preserved.attribution,
+            },
+          };
+          serverAttributed = true;
+        }
+        fact = LedgerStore.mergeFactTimings(
+          fact,
+          preserved.durationMs,
+          preserved.firstTokenMs,
         );
-        if (preserved) {
+      }
+      const bracketSession =
+        mapping?.account_uuid || serverAttributed
+          ? null
+          : LedgerStore.bracketCandidate(original);
+      if (bracketSession) {
+        const inferred = this.sessionBracketAccount(
+          sourceId,
+          bracketSession,
+          original.occurredAt,
+        );
+        if (inferred) {
           if (
-            original.metadata.attribution !== "model" &&
-            !mapping?.account_uuid &&
-            preserved.otelAccount !== null
-          ) {
-            fact = {
-              ...fact,
-              accountExternalId: preserved.otelAccount,
-              metadata: { ...fact.metadata, attribution: "otel" },
-            };
-          }
-          fact = LedgerStore.mergeFactTimings(
-            fact,
-            preserved.durationMs,
-            preserved.firstTokenMs,
-          );
+            this.ensureRequestAccount(
+              sourceId,
+              inferred.accountUuid,
+              inferred.organizationUuid,
+            )
+          )
+            accounts.created = true;
+          fact = {
+            ...fact,
+            accountExternalId: inferred.accountUuid,
+            metadata: { ...fact.metadata, attribution: "session" },
+          };
         }
       }
+      // 各写入路径给元数据追加键的先后不同（归属与耗时），内容相同只是键序不同时
+      // 沿用已存文本，避免重放把同一事实记成一次变更。
+      let payload = JSON.stringify(fact);
+      if (
+        stored &&
+        stored.payload !== payload &&
+        canonicalJson(JSON.parse(stored.payload)) === canonicalJson(fact)
+      )
+        payload = stored.payload;
       const factWrite = this.db
         .query(
           `INSERT INTO usage_facts VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET account_id=excluded.account_id, occurred_at=excluded.occurred_at, payload=excluded.payload WHERE usage_facts.payload<>excluded.payload`,
@@ -994,7 +1176,7 @@ export class LedgerStore {
           fact.externalId,
           fact.accountExternalId,
           fact.occurredAt,
-          JSON.stringify(fact),
+          payload,
           now,
         );
       const valuationWrite = this.db
@@ -1242,6 +1424,8 @@ export class LedgerStore {
     let stored = 0;
     let rewritten = 0;
     this.db.transaction(() => {
+      // 按合并后的映射收集会话邻居：账户、会话与时间可能由同一请求的多条记录分别补齐。
+      const spans = new Map<string, { min: number; max: number }>();
       for (const record of records) {
         const durationMs = record.durationMs ?? null;
         const firstTokenMs = record.firstTokenMs ?? null;
@@ -1272,10 +1456,24 @@ export class LedgerStore {
             firstTokenMs,
           );
         stored += 1;
-        // 账户与耗时全为空时没有新信息，不必扫描已有事实。
+        const mapping = this.requestAccount(sourceId, record.requestId);
+        if (
+          mapping?.account_uuid &&
+          mapping.session_id &&
+          mapping.occurred_at
+        ) {
+          const atMs = Date.parse(mapping.occurred_at);
+          if (standardIso(atMs) !== null) {
+            const span = spans.get(mapping.session_id);
+            if (span) {
+              span.min = Math.min(span.min, atMs);
+              span.max = Math.max(span.max, atMs);
+            } else spans.set(mapping.session_id, { min: atMs, max: atMs });
+          }
+        }
+        // 账户与耗时全为空时不会改变同一请求的用量，不必按请求 ID 扫描。
         if (!record.accountUuid && durationMs === null && firstTokenMs === null)
           continue;
-        const mapping = this.requestAccount(sourceId, record.requestId);
         if (
           !mapping?.account_uuid &&
           mapping?.duration_ms == null &&
@@ -1291,6 +1489,7 @@ export class LedgerStore {
           mapping.first_token_ms,
         );
       }
+      rewritten += this.rewriteSessionBracketFacts(sourceId, spans);
       if (rewritten > 0) this.bumpRevision();
     })();
     this.expireRequestAccounts(receivedAt);
@@ -1443,6 +1642,93 @@ export class LedgerStore {
       )
       .get()?.sequence;
     return sequence ?? null;
+  }
+
+  /**
+   * OTEL 晚于用量到达时，新请求可能成为已存未归属用量的前或后邻居。只回查本批涉及的
+   * 会话、且离本批合并后有效映射不超过一个窗口的未归属用量；窗口外的用量即使最近邻居
+   * 变了也超出窗口，结论不变。
+   * 调用方负责事务和 revision。
+   */
+  private rewriteSessionBracketFacts(
+    sourceId: string,
+    spans: ReadonlyMap<string, { min: number; max: number }>,
+  ): number {
+    // 查询边界收在四位年份范围内，极端时间不会让 toISOString 抛错回滚整批。到达年份
+    // 边界时改用不带小数秒的前缀与 '~' 结尾：用量文本可能是 +00:00 偏移或省略毫秒，
+    // 按文本比较会落在 .000Z 与 .999Z 之外；精确范围仍由下面的毫秒校验决定。
+    const lowerBound = (ms: number) =>
+      ms <= MIN_STANDARD_ISO_MS
+        ? "0000-01-01T00:00:00"
+        : new Date(ms).toISOString();
+    const upperBound = (ms: number) =>
+      ms >= MAX_STANDARD_ISO_MS
+        ? "9999-12-31T23:59:59~"
+        : new Date(ms).toISOString();
+    let rewritten = 0;
+    for (const [sessionId, span] of spans) {
+      const rows = this.db
+        .query<
+          { external_id: string; payload: string },
+          [string, string, string, string]
+        >(
+          `SELECT external_id, payload FROM usage_facts
+            WHERE source_id=?
+              AND json_extract(payload, '$.metadata.session_id')=?
+              AND account_id='${UNATTRIBUTED_ACCOUNT}'
+              AND occurred_at>=? AND occurred_at<=?`,
+        )
+        .all(
+          sourceId,
+          sessionId,
+          lowerBound(
+            span.min - SESSION_BRACKET_WINDOW_MS - OFFSET_TEXT_MARGIN_MS,
+          ),
+          upperBound(
+            span.max + SESSION_BRACKET_WINDOW_MS + OFFSET_TEXT_MARGIN_MS,
+          ),
+        );
+      for (const row of rows) {
+        const fact = JSON.parse(row.payload) as UsageFact;
+        const candidate = LedgerStore.bracketCandidate(fact);
+        if (candidate !== sessionId) continue;
+        const factMs = Date.parse(fact.occurredAt);
+        if (
+          standardIso(factMs) === null ||
+          factMs < span.min - SESSION_BRACKET_WINDOW_MS ||
+          factMs > span.max + SESSION_BRACKET_WINDOW_MS
+        )
+          continue;
+        const inferred = this.sessionBracketAccount(
+          sourceId,
+          sessionId,
+          fact.occurredAt,
+        );
+        if (!inferred) continue;
+        this.ensureRequestAccount(
+          sourceId,
+          inferred.accountUuid,
+          inferred.organizationUuid,
+        );
+        const next: UsageFact = {
+          ...fact,
+          accountExternalId: inferred.accountUuid,
+          metadata: { ...fact.metadata, attribution: "session" },
+        };
+        this.db
+          .query(
+            "UPDATE usage_facts SET account_id=?, payload=? WHERE source_id=? AND external_id=?",
+          )
+          .run(
+            inferred.accountUuid,
+            JSON.stringify(next),
+            sourceId,
+            row.external_id,
+          );
+        rewritten += 1;
+      }
+    }
+    return rewritten;
   }
 
   /** 请求先到、用量后到时由 writeFacts 覆盖；这里处理相反顺序。 */
