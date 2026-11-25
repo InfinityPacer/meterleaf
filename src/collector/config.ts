@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { basename, resolve } from "node:path";
 import { z } from "zod";
+import { AGY_EXTRA_DIR_NAME_RE } from "./agy";
 import {
   accountProfileConflict,
   channelAccountRuleSchema,
@@ -49,6 +51,21 @@ const agySourceSchema = z
     enabled: z.boolean().default(true),
     conversationsDir: z.string().startsWith("/").optional(),
     statuslineDir: z.string().startsWith("/").optional(),
+    /** 显式指定要采集的 Antigravity 实例目录（appDataDir）列表；配置后不再自动发现默认目录或其他同级目录。 */
+    appDataDirs: z
+      .array(
+        z
+          .string()
+          .startsWith("/")
+          .refine((dir) => AGY_EXTRA_DIR_NAME_RE.test(basename(resolve(dir))), {
+            message:
+              "目录名必须为 antigravity-cli-<名称>（仅含字母、数字、_ 或 -，且不能是默认目录 antigravity-cli）",
+          }),
+      )
+      .max(50)
+      .optional(),
+    /** 动态读取账号池清单文件（accounts.json）中启用且就绪的非默认实例目录（始终排除 default / antigravity-cli）。 */
+    poolAccountsFile: z.string().startsWith("/").optional(),
   })
   .strict();
 

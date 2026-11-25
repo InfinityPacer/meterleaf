@@ -4,12 +4,15 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  agyAllowedQuotaLabels,
+  agyInstanceAccounts,
+  inspectExplicitAgyOutOfScope,
+  isAgyExplicitScope,
   maybeRefreshAgyQuota,
   maybeRefreshOmpAgyQuota,
   readAgy,
   type AgyReaderReport,
   type AgyReaderSources,
-  agyInstanceAccounts,
 } from "./agy";
 import { readClaudeJson } from "./claude-code/account";
 import {
@@ -638,13 +641,21 @@ export function agyReaderConfig(
 ): AgyReaderSources | null {
   if (config?.agy?.enabled === false) return null;
   const home = process.env.HOME || homedir();
+  const defaultGeminiDir = resolve(join(home, ".gemini"));
   return {
     conversationsDir: resolve(
       config?.agy?.conversationsDir ??
-        join(home, ".gemini", "antigravity-cli", "conversations"),
+        join(defaultGeminiDir, "antigravity-cli", "conversations"),
     ),
     statuslineDir: agyStatuslineDir(config),
     start: SOURCE_START,
+    defaultGeminiDir,
+    ...(config?.agy?.appDataDirs
+      ? { appDataDirs: config.agy.appDataDirs }
+      : {}),
+    ...(config?.agy?.poolAccountsFile
+      ? { poolAccountsFile: resolve(config.agy.poolAccountsFile) }
+      : {}),
   };
 }
 
@@ -669,13 +680,14 @@ export async function readNewSources(
   let agyReport = agy ? readAgy(state, agy) : null;
   let ompReport = omp ? await readOmp(state, omp) : null;
   if (options.allowQuotaRefresh && agy) {
+    const agyExplicit = isAgyExplicitScope(agy);
     const ompMissing = (ompReport?.agyMissingAccount ?? 0) > 0;
     const exhausted = (ompReport?.agyExhausted ?? 0) > 0;
     // omp 一次读回它登录的所有 Google 账号，omp 的用量只靠它刷新。agy 只能刷新自己登录的
-    // 账号，用于 agy 自己的用量，以及 omp 请求找不到账号时补上 current-account。
+    // 账号，用于 agy 自己的用量，以及默认模式下 omp 请求找不到账号时补上 current-account。
     const agyMissing = (agyReport?.skipped["(缺失账户)"] ?? 0) > 0;
     const agyMissingQuota = (agyReport?.missingQuotaProfiles ?? 0) > 0;
-    if (ompMissing) {
+    if (ompMissing && !agyExplicit) {
       let dirty: (string | null)[] = [];
       try {
         const parsed = JSON.parse(
@@ -698,12 +710,22 @@ export async function readNewSources(
       (agyReport?.recorded ?? 0) > 0 ||
       agyMissing ||
       agyMissingQuota ||
-      ompMissing
+      (ompMissing && !agyExplicit)
         ? await maybeRefreshAgyQuota(state, agy)
         : null;
+    // 在 agy 探测完成后再重算显式许可标签，确保同轮新写出 current-account-<key> 的账号立即参与 omp 刷新。
+    const allowedLabels = agyExplicit ? agyAllowedQuotaLabels(agy) : null;
     const ompRefresh =
-      omp && ((ompReport?.agyRecorded ?? 0) > 0 || ompMissing || exhausted)
-        ? await maybeRefreshOmpAgyQuota(state, omp, { exhausted })
+      omp &&
+      ((ompReport?.agyRecorded ?? 0) > 0 || ompMissing || exhausted) &&
+      (!allowedLabels || allowedLabels.size > 0)
+        ? await maybeRefreshOmpAgyQuota(
+            state,
+            omp,
+            { exhausted },
+            new Date(),
+            allowedLabels ? { allowedLabels } : {},
+          )
         : null;
     if (agyRefresh?.refreshed || ompRefresh?.refreshed) {
       const again = readAgy(state, agy);
@@ -733,6 +755,7 @@ function settleAgy(first: AgyReaderReport, again: AgyReaderReport) {
     quotas: first.quotas + again.quotas,
     activeAccount: again.activeAccount,
     missingQuotaProfiles: again.missingQuotaProfiles,
+    skippedOutOfScopeShared: again.skippedOutOfScopeShared,
   };
 }
 
@@ -1422,6 +1445,81 @@ function redirectToLog(paths: CollectorPaths) {
   console.error = (...items: unknown[]) => appendLog(err, text(items));
 }
 
+/** status 来源栏里的 Antigravity 描述；同时配置池清单与显式目录时两者均展示。 */
+export function formatAgySourceDesc(
+  agy: AgyReaderSources | null,
+  instances?: readonly {
+    appDataDir: string;
+    profile: string | null;
+    key: string | null;
+    account: string | null;
+  }[],
+): string {
+  if (!agy) return "Antigravity 已停用";
+  if (isAgyExplicitScope(agy)) {
+    const resolved = instances ?? agyInstanceAccounts(agy);
+    const names = resolved
+      .map((item) => item.key ?? item.profile ?? item.appDataDir)
+      .join("、");
+    const originParts: string[] = [];
+    if (agy.poolAccountsFile) originParts.push(`池 ${agy.poolAccountsFile}`);
+    if (agy.appDataDirs !== undefined) {
+      originParts.push(
+        agy.poolAccountsFile
+          ? `显式目录 (${agy.appDataDirs.length})`
+          : "显式目录",
+      );
+    }
+    const origin = originParts.join(" + ");
+    const outOfScope = inspectExplicitAgyOutOfScope(agy);
+    const skippedSuffix = outOfScope.outOfScopeUnreadable
+      ? `，目录不可读，已暂缓 ${outOfScope.skippedShared} 个库`
+      : outOfScope.skippedShared > 0
+        ? `，跳过范围外共享库 ${outOfScope.skippedShared} 个`
+        : "";
+    return `Antigravity（${origin}，${resolved.length} 个实例${names ? `：${names}` : ""}，额度 ${agy.statuslineDir}${skippedSuffix}）`;
+  }
+  return `Antigravity（${agy.conversationsDir}，额度 ${agy.statuslineDir}）`;
+}
+
+/** status 的 Antigravity 额度刷新状态行；显式/池模式下仅显示当前生效范围内的实例。 */
+export function formatAgyRefreshLines(
+  state: CollectorState,
+  agy: AgyReaderSources | null,
+  instances?: readonly { key: string | null }[],
+): string[] {
+  const formatRefreshStatus = (status: string) =>
+    status.startsWith("error:") ? `失败，${status.slice(6)}` : "成功";
+  const explicitScope = agy ? isAgyExplicitScope(agy) : false;
+  const activeKeys = explicitScope
+    ? new Set(
+        (instances ?? agyInstanceAccounts(agy!))
+          .map((item) => item.key)
+          .filter((key): key is string => key !== null),
+      )
+    : null;
+  const lines: string[] = [];
+  if (!explicitScope) {
+    const refreshAt = state.getMeta("agy_quota_refresh_at");
+    if (refreshAt) {
+      const refreshStatus = state.getMeta("agy_quota_refresh_status") ?? "";
+      lines.push(
+        `Antigravity 额度刷新: 最近尝试 ${refreshAt}（${formatRefreshStatus(refreshStatus)}）`,
+      );
+    }
+  }
+  for (const row of state.metaByPrefix("agy_quota_refresh_at:")) {
+    const key = row.key.slice("agy_quota_refresh_at:".length);
+    if (activeKeys && !activeKeys.has(key)) continue;
+    const refreshStatus =
+      state.getMeta(`agy_quota_refresh_status:${key}`) ?? "";
+    lines.push(
+      `Antigravity 额度刷新 (${key}): 最近尝试 ${row.value}（${formatRefreshStatus(refreshStatus)}）`,
+    );
+  }
+  return lines;
+}
+
 function runStatus(paths: CollectorPaths) {
   const config = loadConfig(paths.configFile);
   console.log(`数据目录: ${paths.dataDir}`);
@@ -1467,14 +1565,13 @@ function runStatus(paths: CollectorPaths) {
     const opencode = opencodeReaderConfig(config);
     const agy = agyReaderConfig(config);
     const omp = ompReaderConfig(config);
+    const agyInstances =
+      agy && isAgyExplicitScope(agy) ? agyInstanceAccounts(agy) : undefined;
+    const agyDesc = formatAgySourceDesc(agy, agyInstances);
     console.log(
       `读取来源: ${
         codex ? `Codex（${codex.home}）` : "Codex 已停用"
-      }，${opencode ? `OpenCode（${opencode.database}）` : "OpenCode 已停用"}，${
-        agy
-          ? `Antigravity（${agy.conversationsDir}，额度 ${agy.statuslineDir}）`
-          : "Antigravity 已停用"
-      }，${omp ? `omp（${omp.sessionsDir}）` : "omp 已停用"}`,
+      }，${opencode ? `OpenCode（${opencode.database}）` : "OpenCode 已停用"}，${agyDesc}，${omp ? `omp（${omp.sessionsDir}）` : "omp 已停用"}`,
     );
     console.log(
       config.commandcode?.enabled === false
@@ -1553,20 +1650,9 @@ function runStatus(paths: CollectorPaths) {
     if (lastSources) console.log(`上轮来源: ${lastSources}`);
     const formatRefreshStatus = (status: string) =>
       status.startsWith("error:") ? `失败，${status.slice(6)}` : "成功";
-    const refreshAt = state.getMeta("agy_quota_refresh_at");
-    if (refreshAt) {
-      const refreshStatus = state.getMeta("agy_quota_refresh_status") ?? "";
-      console.log(
-        `Antigravity 额度刷新: 最近尝试 ${refreshAt}（${formatRefreshStatus(refreshStatus)}）`,
-      );
-    }
-    for (const row of state.metaByPrefix("agy_quota_refresh_at:")) {
-      const profile = row.key.slice("agy_quota_refresh_at:".length);
-      const refreshStatus =
-        state.getMeta(`agy_quota_refresh_status:${profile}`) ?? "";
-      console.log(
-        `Antigravity 额度刷新 (${profile}): 最近尝试 ${row.value}（${formatRefreshStatus(refreshStatus)}）`,
-      );
+    const agyForRefresh = agyReaderConfig(config);
+    for (const line of formatAgyRefreshLines(state, agyForRefresh)) {
+      console.log(line);
     }
     if (config?.commandcode?.enabled !== false) {
       const commandCodeStatus = commandCodeStatusText(
