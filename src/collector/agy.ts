@@ -925,6 +925,12 @@ export interface AgyReaderSources {
   conversationsDir: string;
   statuslineDir: string;
   start: string;
+  /** 可选：显式指定要采集的 Antigravity 实例 appDataDir 绝对路径列表；设置后不再自动发现默认目录或同级目录。 */
+  appDataDirs?: readonly string[];
+  /** 可选：动态读取账号池清单文件（accounts.json）中启用且就绪的非默认实例目录。 */
+  poolAccountsFile?: string;
+  /** 可选：本机默认 .gemini 根目录，确保即使覆盖 conversationsDir 也能识别并排除默认目录下的范围外共享库。 */
+  defaultGeminiDir?: string;
 }
 
 export interface AgyReaderReport extends SourceReaderReport {
@@ -936,6 +942,8 @@ export interface AgyReaderReport extends SourceReaderReport {
   activeAccount: string | null;
   /** 存在尚未生成额度缓存的已登录额外实例，供 sync 首次补刷额度。 */
   missingQuotaProfiles: number;
+  /** 显式/池模式下因可被范围外实例访问而整库跳过的共享会话库数量。 */
+  skippedOutOfScopeShared: number;
   /** 本轮是否按需运行了 agy -p /usage 并写出新的额度缓存。 */
   quotaRefreshed: boolean;
   /** 本轮按需刷新失败的原因；未尝试或成功时为 null。 */
@@ -952,6 +960,7 @@ export function emptyAgyReport(): AgyReaderReport {
     quotaIgnoredLines: 0,
     activeAccount: null,
     missingQuotaProfiles: 0,
+    skippedOutOfScopeShared: 0,
     quotaRefreshed: false,
     quotaRefreshError: null,
   };
@@ -1150,12 +1159,38 @@ export function resolveAgyActiveAccount(
   const label = activeAgyLabel(statuslineDir);
   return { label, plan: label ? (readPlanMap(state)[label] ?? null) : null };
 }
+/** 允许的额外 Antigravity 实例目录名：严格匹配 antigravity-cli-<名称>，排除默认目录 antigravity-cli。 */
+export const AGY_EXTRA_DIR_NAME_RE =
+  /^antigravity-cli-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/** 是否启用了显式/账号池采集范围（配置了 appDataDirs 或 poolAccountsFile）。 */
+export function isAgyExplicitScope(
+  sources: Pick<AgyReaderSources, "appDataDirs" | "poolAccountsFile">,
+): boolean {
+  return Boolean(sources.poolAccountsFile || sources.appDataDirs !== undefined);
+}
+
 interface AgyInstance {
+  /** 实例全局身份键：默认实例为 null；位于默认 geminiDir 下为 profileName，其他父目录下带规范路径摘要后缀。 */
+  id: string | null;
   /** 默认实例为 null；额外实例为 antigravity-cli-<name> 的后缀名。 */
   profileName: string | null;
   appDataDir: string;
   geminiDir: string;
   conversationsDir: string;
+}
+
+function computeInstanceId(
+  profileName: string,
+  realAppDataDir: string,
+  defaultRealGeminiDir: string,
+  fullHash = false,
+): string {
+  if (canonicalDir(dirname(realAppDataDir)) === defaultRealGeminiDir) {
+    return profileName;
+  }
+  const digest = hash(realAppDataDir);
+  return `${profileName}.${fullHash ? digest : digest.slice(0, 12)}`;
 }
 
 /** 额外实例必须存在非空普通文件 antigravity-oauth-token，避免在 macOS 触发 agy 弹浏览器登录。 */
@@ -1168,17 +1203,145 @@ function hasNonEmptyOAuthTokenFile(appDataDir: string): boolean {
   }
 }
 
+/** 从账号池清单文件（accounts.json）读取当前启用且就绪的非默认实例目录列表；文件缺失或损坏时返回空数组。 */
+function readPoolAppDataDirs(
+  poolAccountsFile: string,
+  geminiDir: string,
+): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(poolAccountsFile, "utf8"));
+  } catch {
+    return [];
+  }
+  const list = Array.isArray(parsed)
+    ? parsed
+    : parsed &&
+        typeof parsed === "object" &&
+        Array.isArray((parsed as { accounts?: unknown }).accounts)
+      ? (parsed as { accounts: unknown[] }).accounts
+      : [];
+  const dirs: string[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as {
+      kind?: unknown;
+      enabled?: unknown;
+      status?: unknown;
+      removedAt?: unknown;
+      appDataDir?: unknown;
+    };
+    if (record.kind === "default") continue;
+    if (record.enabled !== true) continue;
+    if (record.status !== "ready") continue;
+    if (record.removedAt) continue;
+    if (
+      typeof record.appDataDir !== "string" ||
+      record.appDataDir.trim() === ""
+    )
+      continue;
+    const resolved = record.appDataDir.startsWith("/")
+      ? resolve(record.appDataDir)
+      : resolve(geminiDir, record.appDataDir);
+    // 严格排除默认目录 antigravity-cli，防止误采非池实例。
+    if (basename(resolved) === "antigravity-cli") continue;
+    dirs.push(resolved);
+  }
+  return dirs;
+}
+
 /**
  * 列出所有需要扫描的 Antigravity CLI 实例。
- * 默认实例取 sources.conversationsDir；当它位于 <geminiDir>/antigravity-cli/conversations 时，
- * 自动发现同级 <geminiDir>/antigravity-cli-<name> 下已登录（存在非空 antigravity-oauth-token）的额外账户实例。
+ * - 若配置了 poolAccountsFile 或 appDataDirs，则仅采集对应显式/在池非默认实例，不扫描默认目录与其他同级目录；
+ * - 否则默认实例取 sources.conversationsDir，位于 <geminiDir>/antigravity-cli/conversations 时自动发现同级已登录额外实例。
  */
-function discoverAgyInstances(conversationsDir: string): AgyInstance[] {
+function discoverAgyInstances(
+  sources:
+    | string
+    | Pick<
+        AgyReaderSources,
+        | "conversationsDir"
+        | "appDataDirs"
+        | "poolAccountsFile"
+        | "defaultGeminiDir"
+      >,
+): AgyInstance[] {
+  const conversationsDir =
+    typeof sources === "string" ? sources : sources.conversationsDir;
   const absConversationsDir = resolve(conversationsDir);
   const appDataDir = dirname(absConversationsDir);
   const geminiDir = dirname(appDataDir);
+  const explicitMode =
+    typeof sources !== "string" && isAgyExplicitScope(sources);
+  const prefix = "antigravity-cli-";
+
+  if (explicitMode && typeof sources !== "string") {
+    const defaultRealAppDataDir = canonicalDir(appDataDir);
+    const defaultRealGeminiDir = canonicalDir(geminiDir);
+    const homeDefaultRealAppDataDir = sources.defaultGeminiDir
+      ? canonicalDir(join(resolve(sources.defaultGeminiDir), "antigravity-cli"))
+      : null;
+    const rawCandidates: string[] = [];
+    if (sources.poolAccountsFile) {
+      rawCandidates.push(
+        ...readPoolAppDataDirs(sources.poolAccountsFile, geminiDir),
+      );
+    }
+    for (const dir of sources.appDataDirs ?? []) {
+      rawCandidates.push(resolve(dir));
+    }
+    const seenRealDirs = new Set<string>();
+    const usedIds = new Set<string>();
+    const instances: AgyInstance[] = [];
+    for (const dir of rawCandidates) {
+      const resolved = resolve(dir);
+      if (basename(resolved) === "antigravity-cli") continue;
+      try {
+        if (!statSync(resolved).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      const realDir = canonicalDir(resolved);
+      // 排除默认目录及其软链接别名，并在解析真实路径后按统一命名规则与真实目录去重。
+      if (
+        basename(realDir) === "antigravity-cli" ||
+        realDir === defaultRealAppDataDir ||
+        (homeDefaultRealAppDataDir !== null &&
+          realDir === homeDefaultRealAppDataDir)
+      ) {
+        continue;
+      }
+      const dirName = basename(realDir);
+      if (!AGY_EXTRA_DIR_NAME_RE.test(dirName)) continue;
+      if (seenRealDirs.has(realDir)) continue;
+      seenRealDirs.add(realDir);
+      if (!hasNonEmptyOAuthTokenFile(realDir)) continue;
+      const profileName = dirName.slice(prefix.length);
+      let id = computeInstanceId(profileName, realDir, defaultRealGeminiDir);
+      if (usedIds.has(id)) {
+        id = computeInstanceId(
+          profileName,
+          realDir,
+          defaultRealGeminiDir,
+          true,
+        );
+      }
+      usedIds.add(id);
+      instances.push({
+        id,
+        profileName,
+        appDataDir: realDir,
+        geminiDir: dirname(realDir),
+        conversationsDir: join(realDir, "conversations"),
+      });
+    }
+    instances.sort((a, b) => a.appDataDir.localeCompare(b.appDataDir));
+    return instances;
+  }
+
   const instances: AgyInstance[] = [
     {
+      id: null,
       profileName: null,
       appDataDir,
       geminiDir,
@@ -1197,11 +1360,9 @@ function discoverAgyInstances(conversationsDir: string): AgyInstance[] {
   } catch {
     return instances;
   }
-  const prefix = "antigravity-cli-";
   for (const name of entries) {
-    if (!name.startsWith(prefix)) continue;
+    if (!AGY_EXTRA_DIR_NAME_RE.test(name)) continue;
     const profileName = name.slice(prefix.length);
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(profileName)) continue;
     const profileAppDataDir = join(geminiDir, name);
     try {
       if (!statSync(profileAppDataDir).isDirectory()) continue;
@@ -1216,6 +1377,7 @@ function discoverAgyInstances(conversationsDir: string): AgyInstance[] {
       continue;
     }
     instances.push({
+      id: profileName,
       profileName,
       appDataDir: profileAppDataDir,
       geminiDir,
@@ -1301,6 +1463,7 @@ interface AgyTurnAttribution {
   maxAtMs: number;
   label: string;
   profileName: string | null;
+  instanceId: string | null;
   /** 2 = 实际发送用户消息（轮次级），1 = 创建/加载会话（会话级）。 */
   priority: 1 | 2;
 }
@@ -1449,8 +1612,42 @@ function narrowFileGlogTimestamps(
   return perLine;
 }
 
-interface CachedSharedLogEvent extends AgyTurnAttribution {
+interface CachedSharedLogEvent {
   convId: string;
+  minAtMs: number;
+  maxAtMs: number;
+  label: string;
+  profileName: string | null;
+  instanceId?: string | null;
+  priority: 1 | 2;
+}
+
+/** 轻量枚举实例当前存在的日志文件路径（不读取正文），用于共享日志缓存裁剪。 */
+function listInstanceLogPaths(appDataDir: string): string[] {
+  const paths: string[] = [];
+  const collectIfFile = (path: string) => {
+    try {
+      if (statSync(path).isFile()) paths.push(path);
+    } catch {
+      // 忽略不存在或读取瞬间消失的日志。
+    }
+  };
+  const logDir = join(appDataDir, "log");
+  try {
+    for (const name of readdirSync(logDir)) {
+      if (
+        !(name.startsWith("acp-server-") || name.startsWith("cli-")) ||
+        !name.endsWith(".log")
+      ) {
+        continue;
+      }
+      collectIfFile(join(logDir, name));
+    }
+  } catch {
+    // 没有 log 子目录时只试 cli.log。
+  }
+  collectIfFile(join(appDataDir, "cli.log"));
+  return paths;
 }
 
 export interface SharedLogFileOps {
@@ -1466,7 +1663,7 @@ export interface SharedLogFileOps {
 }
 
 /**
- * 多个账号通过软链共享同一个 conversations/ 目录时，读取各实例隔离的 log/ 目录，
+ * 多个账号通过软链共享同一个 conversations/ 目录或会话库文件时，读取各实例隔离的 log/ 目录，
  * 提取本次待扫描会话的账号切换与发消息时间点，使跨账号加载的同一会话也能按轮次精准归账。
  * 解析结果按日志文件的 inode/size/mtime 缓存在 CollectorState 中，未变动的老日志不重复读盘。
  */
@@ -1502,7 +1699,7 @@ function indexSharedConversationLogs(
       size: number;
       mtimeMs: number;
     }[] = [];
-    const collectFile = (path: string) => {
+    for (const path of listInstanceLogPaths(instance.appDataDir)) {
       try {
         const st = statSync(path);
         if (st.isFile()) {
@@ -1516,24 +1713,9 @@ function indexSharedConversationLogs(
       } catch {
         // 忽略不存在或读取瞬间消失的日志。
       }
-    };
-    const logDir = join(instance.appDataDir, "log");
-    try {
-      for (const name of readdirSync(logDir)) {
-        if (
-          !(name.startsWith("acp-server-") || name.startsWith("cli-")) ||
-          !name.endsWith(".log")
-        ) {
-          continue;
-        }
-        collectFile(join(logDir, name));
-      }
-    } catch {
-      // 没有 log 子目录时只试 cli.log。
     }
-    collectFile(join(instance.appDataDir, "cli.log"));
 
-    const defaultLabelKey = `${instance.profileName ?? ""}\0${defaultLabel ?? ""}`;
+    const defaultLabelKey = `${instance.id ?? ""}\0${defaultLabel ?? ""}`;
     for (const candidate of candidateFiles) {
       const filePath = candidate.path;
       presentLogPaths.add(filePath);
@@ -1555,6 +1737,8 @@ function indexSharedConversationLogs(
               maxAtMs: ev.maxAtMs,
               label: ev.label,
               profileName: ev.profileName,
+              instanceId:
+                ev.instanceId !== undefined ? ev.instanceId : instance.id,
               priority: ev.priority,
             });
             index.set(ev.convId, list);
@@ -1667,6 +1851,7 @@ function indexSharedConversationLogs(
           maxAtMs: cands[cands.length - 1]!,
           label: item.label,
           profileName: instance.profileName,
+          instanceId: instance.id,
           priority: item.priority,
         };
         fileEvents.push(ev);
@@ -1677,6 +1862,7 @@ function indexSharedConversationLogs(
           maxAtMs: ev.maxAtMs,
           label: ev.label,
           profileName: ev.profileName,
+          instanceId: instance.id,
           priority: ev.priority,
         });
         index.set(item.convId, list);
@@ -1721,7 +1907,11 @@ function indexSharedConversationLogs(
 function resolveSharedTurnAttribution(
   events: readonly AgyTurnAttribution[] | undefined,
   occurredAtMs: number,
-): { label: string; profileName: string | null } | null {
+): {
+  label: string;
+  profileName: string | null;
+  instanceId: string | null;
+} | null {
   if (!events || events.length === 0 || !Number.isFinite(occurredAtMs)) {
     return null;
   }
@@ -1737,7 +1927,11 @@ function resolveSharedTurnAttribution(
   }
   const matched = matchedTurn ?? matchedOpen;
   return matched
-    ? { label: matched.label, profileName: matched.profileName }
+    ? {
+        label: matched.label,
+        profileName: matched.profileName,
+        instanceId: matched.instanceId,
+      }
     : null;
 }
 
@@ -1762,7 +1956,7 @@ function resolveInstanceLabel(
   if (instance.profileName !== null) {
     return (
       labelFromOAuthTokenFile(instance.appDataDir) ??
-      readAgyCurrentAccount(statuslineDir, instance.profileName) ??
+      readAgyCurrentAccount(statuslineDir, instance.id) ??
       labelFromAppDataLogs(instance.appDataDir)
     );
   }
@@ -1773,27 +1967,291 @@ function resolveInstanceLabel(
     activeAgyLabel(statuslineDir)
   );
 }
-/** 本机每个 Antigravity CLI 实例当前登录的账户；默认实例 profile 为 null，未识别时 account 为 null。 */
+/** 本机每个 Antigravity CLI 实例当前登录的账户；默认实例 profile 与 key 为 null，未识别时 account 为 null。 */
 export function agyInstanceAccounts(
-  sources: Pick<AgyReaderSources, "conversationsDir" | "statuslineDir">,
-): { appDataDir: string; profile: string | null; account: string | null }[] {
-  return discoverAgyInstances(sources.conversationsDir).map((instance) => {
+  sources: Pick<
+    AgyReaderSources,
+    | "conversationsDir"
+    | "statuslineDir"
+    | "appDataDirs"
+    | "poolAccountsFile"
+    | "defaultGeminiDir"
+  >,
+): {
+  appDataDir: string;
+  profile: string | null;
+  key: string | null;
+  account: string | null;
+}[] {
+  return discoverAgyInstances(sources).map((instance) => {
     const label = resolveInstanceLabel(instance, sources.statuslineDir);
     return {
       appDataDir: instance.appDataDir,
       profile: instance.profileName,
+      key: instance.id,
       account: label ? agyAccountId(label) : null,
     };
   });
 }
 
 /**
+ * 显式/池模式下允许上报与刷新额度的账号标签集合；默认模式返回 null（不限制）。
+ */
+export function agyAllowedQuotaLabels(
+  sources: Pick<
+    AgyReaderSources,
+    | "conversationsDir"
+    | "statuslineDir"
+    | "appDataDirs"
+    | "poolAccountsFile"
+    | "defaultGeminiDir"
+  >,
+): Set<string> | null {
+  if (!isAgyExplicitScope(sources)) return null;
+  const labels = new Set<string>();
+  for (const instance of discoverAgyInstances(sources)) {
+    const label = resolveInstanceLabel(instance, sources.statuslineDir);
+    if (label) labels.add(label);
+  }
+  return labels;
+}
+
+/** 清理显式/池模式下已移出采集范围的实例遗留的额度刷新状态元信息。 */
+function pruneStaleAgyRefreshMeta(
+  state: CollectorState,
+  instances: readonly AgyInstance[],
+) {
+  const hasDefault = instances.some((item) => item.id === null);
+  const activeIds = new Set(
+    instances.map((item) => item.id).filter((id): id is string => id !== null),
+  );
+  state.write(() => {
+    if (!hasDefault) {
+      state.deleteMeta("agy_quota_refresh_at");
+      state.deleteMeta("agy_quota_refresh_status");
+    }
+    for (const row of state.metaByPrefix("agy_quota_refresh_at:")) {
+      const id = row.key.slice("agy_quota_refresh_at:".length);
+      if (!activeIds.has(id)) state.deleteMeta(row.key);
+    }
+    for (const row of state.metaByPrefix("agy_quota_refresh_status:")) {
+      const id = row.key.slice("agy_quota_refresh_status:".length);
+      if (!activeIds.has(id)) state.deleteMeta(row.key);
+    }
+  });
+}
+
+function isMissingPathError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/** 枚举单个 conversations 目录下所有有效 .db 文件的规范真实路径（只读目录项与 stat，不读内容）；非 ENOENT/ENOTDIR 错误置 unreadable。 */
+function listRealDbFiles(convDir: string): {
+  paths: string[];
+  unreadable: boolean;
+} {
+  let entries: string[];
+  try {
+    entries = readdirSync(convDir).sort();
+  } catch (error) {
+    return { paths: [], unreadable: !isMissingPathError(error) };
+  }
+  const paths: string[] = [];
+  let unreadable = false;
+  for (const name of entries) {
+    if (!name.endsWith(".db")) continue;
+    const rawPath = join(convDir, name);
+    try {
+      if (!statSync(rawPath).isFile()) continue;
+    } catch (error) {
+      if (!isMissingPathError(error)) unreadable = true;
+      continue;
+    }
+    try {
+      paths.push(realpathSync(rawPath));
+    } catch (error) {
+      if (!isMissingPathError(error)) unreadable = true;
+    }
+  }
+  return { paths, unreadable };
+}
+
+/**
+ * 显式/池模式的 A1′ 集合差规划（供 readAgy 与 status 共用）：
+ * - 只读枚举目录与真实路径，绝不读取范围外实例的令牌、日志或 .db 内容；
+ * - 若合同涵盖的父目录或范围外 conversations 目录不可读（如 EACCES/EPERM），实行 fail-closed 暂缓全部范围内库；
+ * - 凡可被范围外实例访问（或单文件软链接指向非范围内会话目录）的 .db 整库跳过；
+ * - 其余 .db 按各自所属的范围内成员集合分组：单成员独占文件直采，多成员仅范围内共享文件走共享日志归属。
+ */
+function planExplicitAgyDbs(
+  sources: Pick<
+    AgyReaderSources,
+    "conversationsDir" | "appDataDirs" | "poolAccountsFile" | "defaultGeminiDir"
+  >,
+  instances: readonly AgyInstance[],
+  instanceLabels?: ReadonlyMap<AgyInstance, string | null>,
+): {
+  collect: Map<string, { instance: AgyInstance; label: string | null }[]>;
+  skippedOutOfScopePaths: Set<string>;
+  outOfScopeUnreadable: boolean;
+} {
+  const absConversationsDir = resolve(sources.conversationsDir);
+  const defaultRealAppDataDir = canonicalDir(dirname(absConversationsDir));
+  const defaultRealGeminiDir = canonicalDir(
+    dirname(dirname(absConversationsDir)),
+  );
+  const inScopeRealAppDirs = new Set(
+    instances.map((inst) => canonicalDir(inst.appDataDir)),
+  );
+  const inScopeConvDirs = new Set<string>();
+  let outOfScopeUnreadable = false;
+  for (const inst of instances) {
+    try {
+      if (statSync(inst.conversationsDir).isDirectory()) {
+        inScopeConvDirs.add(realpathSync(inst.conversationsDir));
+      }
+    } catch (error) {
+      if (!isMissingPathError(error)) outOfScopeUnreadable = true;
+    }
+  }
+
+  const outOfScopeDb = new Set<string>();
+  if (!inScopeRealAppDirs.has(defaultRealAppDataDir)) {
+    const listed = listRealDbFiles(absConversationsDir);
+    if (listed.unreadable) outOfScopeUnreadable = true;
+    for (const dbPath of listed.paths) outOfScopeDb.add(dbPath);
+  }
+  const parentDirs = new Set<string>([
+    defaultRealGeminiDir,
+    ...instances.map((inst) => canonicalDir(inst.geminiDir)),
+  ]);
+  if (sources.defaultGeminiDir) {
+    parentDirs.add(canonicalDir(resolve(sources.defaultGeminiDir)));
+  }
+  for (const parent of parentDirs) {
+    let entries: string[];
+    try {
+      entries = readdirSync(parent).sort();
+    } catch (error) {
+      if (!isMissingPathError(error)) outOfScopeUnreadable = true;
+      continue;
+    }
+    for (const name of entries) {
+      if (name !== "antigravity-cli" && !name.startsWith("antigravity-cli-")) {
+        continue;
+      }
+      const dir = join(parent, name);
+      try {
+        if (!statSync(dir).isDirectory()) continue;
+      } catch (error) {
+        if (!isMissingPathError(error)) outOfScopeUnreadable = true;
+        continue;
+      }
+      let realDir: string;
+      try {
+        realDir = realpathSync(dir);
+      } catch (error) {
+        if (!isMissingPathError(error)) outOfScopeUnreadable = true;
+        continue;
+      }
+      if (inScopeRealAppDirs.has(realDir)) continue;
+      const convDir = join(realDir, "conversations");
+      const listed = listRealDbFiles(convDir);
+      if (listed.unreadable) outOfScopeUnreadable = true;
+      for (const dbPath of listed.paths) outOfScopeDb.add(dbPath);
+    }
+  }
+
+  const inScopeDb = new Map<
+    string,
+    { instance: AgyInstance; label: string | null }[]
+  >();
+  const skippedOutOfScopePaths = new Set<string>();
+  for (const instance of instances) {
+    const label = instanceLabels
+      ? (instanceLabels.get(instance) ?? null)
+      : null;
+    const listed = listRealDbFiles(instance.conversationsDir);
+    if (listed.unreadable) outOfScopeUnreadable = true;
+    for (const realDbPath of listed.paths) {
+      if (!inScopeConvDirs.has(dirname(realDbPath))) {
+        skippedOutOfScopePaths.add(realDbPath);
+        continue;
+      }
+      const members = inScopeDb.get(realDbPath) ?? [];
+      if (
+        !members.some(
+          (member) => member.instance.appDataDir === instance.appDataDir,
+        )
+      ) {
+        members.push({ instance, label });
+      }
+      inScopeDb.set(realDbPath, members);
+    }
+  }
+
+  if (outOfScopeUnreadable) {
+    for (const realDbPath of inScopeDb.keys()) {
+      skippedOutOfScopePaths.add(realDbPath);
+    }
+    return {
+      collect: new Map(),
+      skippedOutOfScopePaths,
+      outOfScopeUnreadable: true,
+    };
+  }
+
+  const collect = new Map<
+    string,
+    { instance: AgyInstance; label: string | null }[]
+  >();
+  for (const [realDbPath, members] of inScopeDb) {
+    if (outOfScopeDb.has(realDbPath)) {
+      skippedOutOfScopePaths.add(realDbPath);
+      continue;
+    }
+    collect.set(realDbPath, members);
+  }
+
+  return { collect, skippedOutOfScopePaths, outOfScopeUnreadable: false };
+}
+
+/** 显式/池模式下范围外共享跳过计数与目录可读性状态（供 status 与 readAgy 共享同一口径）。 */
+export function inspectExplicitAgyOutOfScope(
+  sources: Pick<
+    AgyReaderSources,
+    "conversationsDir" | "appDataDirs" | "poolAccountsFile" | "defaultGeminiDir"
+  >,
+): { skippedShared: number; outOfScopeUnreadable: boolean } {
+  if (!isAgyExplicitScope(sources)) {
+    return { skippedShared: 0, outOfScopeUnreadable: false };
+  }
+  const instances = discoverAgyInstances(sources);
+  const plan = planExplicitAgyDbs(sources, instances);
+  return {
+    skippedShared: plan.skippedOutOfScopePaths.size,
+    outOfScopeUnreadable: plan.outOfScopeUnreadable,
+  };
+}
+
+/** 显式/池模式下因可被范围外实例访问而跳过的共享会话库数量。 */
+export function countAgyOutOfScopeSharedDbs(
+  sources: Pick<
+    AgyReaderSources,
+    "conversationsDir" | "appDataDirs" | "poolAccountsFile" | "defaultGeminiDir"
+  >,
+): number {
+  return inspectExplicitAgyOutOfScope(sources).skippedShared;
+}
+
+/**
  * 读取一轮 Antigravity 状态栏额度缓存与本地会话数据库。
- * 1. 扫描 statuslineDir 下所有 quota-<label>.tsv，为每个 Google 账号建立 Gemini 与 Claude/GPT
+ * 1. 发现本轮应采集的实例（显式/池模式仅含受管非默认实例；默认模式含默认实例与同级已登录额外实例）；
+ * 2. 扫描 statuslineDir 下对应的 quota-<label>.tsv，为每个 Google 账号建立 Gemini 与 Claude/GPT
  *    两个配额池账户并上报额度快照；
- * 2. 读取默认实例及同级 antigravity-cli-<name> 额外实例的账号归属；
  * 3. 只读扫描各实例 conversationsDir 下所有 *.db 的 gen_metadata 与 steps，按模型归入对应账户，
- *    通过 source_usage 保持重跑幂等。
+ *    通过 source_usage 保持重跑幂等，并清理已移出目录的跟踪记录与刷新状态。
  */
 export function readAgy(
   state: CollectorState,
@@ -1803,8 +2261,30 @@ export function readAgy(
 ): AgyReaderReport {
   const report = emptyAgyReport();
   const plans = readPlanMap(state);
+  const explicitMode = isAgyExplicitScope(sources);
+  const instances = discoverAgyInstances(sources);
+  // 仅在显式/池模式下清理已移出范围的刷新状态，默认模式保留既有 5 分钟退避记录。
+  if (explicitMode) {
+    pruneStaleAgyRefreshMeta(state, instances);
+  }
+
+  const instanceLabels = new Map<AgyInstance, string | null>();
+  for (const instance of instances) {
+    instanceLabels.set(
+      instance,
+      resolveInstanceLabel(instance, sources.statuslineDir),
+    );
+  }
+  const allowedQuotaLabels = explicitMode
+    ? new Set(
+        [...instanceLabels.values()].filter((label): label is string =>
+          Boolean(label),
+        ),
+      )
+    : null;
 
   for (const label of listAgyQuotaLabels(sources.statuslineDir)) {
+    if (allowedQuotaLabels && !allowedQuotaLabels.has(label)) continue;
     const cache = readAgyQuotaFile(
       join(sources.statuslineDir, agyQuotaFileName(label)),
       label,
@@ -1828,12 +2308,14 @@ export function readAgy(
     });
   }
 
-  const instances = discoverAgyInstances(sources.conversationsDir);
-  const defaultLabel = resolveInstanceLabel(
-    instances[0]!,
-    sources.statuslineDir,
-  );
-  report.activeAccount = defaultLabel;
+  const defaultInstance =
+    instances.find((item) => item.profileName === null) ?? null;
+  const defaultLabel = defaultInstance
+    ? (instanceLabels.get(defaultInstance) ?? null)
+    : null;
+  report.activeAccount =
+    defaultLabel ??
+    (instances[0] ? (instanceLabels.get(instances[0]) ?? null) : null);
 
   const startMs = Date.parse(sources.start);
   const startIso = new Date(startMs).toISOString();
@@ -1848,10 +2330,7 @@ export function readAgy(
   const groups = new Map<string, ConvGroup>();
 
   for (const instance of instances) {
-    const label =
-      instance.profileName === null
-        ? defaultLabel
-        : resolveInstanceLabel(instance, sources.statuslineDir);
+    const label = instanceLabels.get(instance) ?? null;
     if (label) {
       const accounts = agyAccountsForLabel(label, plans[label] ?? null);
       state.upsertAccount(accounts.account);
@@ -1861,15 +2340,17 @@ export function readAgy(
         instance.profileName !== null &&
         !existsSync(join(sources.statuslineDir, agyQuotaFileName(label)))
       ) {
-        dirtyProfiles.add(instance.profileName);
+        dirtyProfiles.add(instance.id);
         report.missingQuotaProfiles += 1;
       }
     }
+    if (explicitMode) continue;
     if (!existsSync(instance.conversationsDir)) continue;
-    const key = canonicalDir(instance.conversationsDir);
-    const existing = groups.get(key);
+    const convDirKey = canonicalDir(instance.conversationsDir);
+    const member = { instance, label };
+    const existing = groups.get(convDirKey);
     if (existing) {
-      existing.members.push({ instance, label });
+      existing.members.push(member);
       continue;
     }
     let dbNames: string[] = [];
@@ -1884,24 +2365,63 @@ export function readAgy(
       join(instance.conversationsDir, name),
     );
     for (const path of dbPaths) allDbPaths.add(path);
-    const member = { instance, label };
-    groups.set(key, {
+    groups.set(convDirKey, {
       primary: member,
       members: [member],
       dbPaths,
     });
   }
 
-  state.forgetMissingAgyFiles(allDbPaths);
+  let preserveCursorsOnUnreadable = false;
+  if (explicitMode) {
+    const plan = planExplicitAgyDbs(sources, instances, instanceLabels);
+    if (plan.outOfScopeUnreadable) {
+      preserveCursorsOnUnreadable = true;
+      report.unreadable += 1;
+      report.skippedOutOfScopeShared = plan.skippedOutOfScopePaths.size;
+      report.skipped["(目录不可读，已暂缓)"] =
+        plan.skippedOutOfScopePaths.size || 1;
+    } else {
+      if (plan.skippedOutOfScopePaths.size > 0) {
+        report.skippedOutOfScopeShared = plan.skippedOutOfScopePaths.size;
+        report.skipped["(范围外共享库)"] = plan.skippedOutOfScopePaths.size;
+      }
+      for (const [realDbPath, members] of plan.collect) {
+        allDbPaths.add(realDbPath);
+        const groupKey = members
+          .map((m) => m.instance.appDataDir)
+          .sort()
+          .join("\0");
+        const existing = groups.get(groupKey);
+        if (existing) {
+          existing.dbPaths.push(realDbPath);
+        } else {
+          groups.set(groupKey, {
+            primary: members[0]!,
+            members,
+            dbPaths: [realDbPath],
+          });
+        }
+      }
+    }
+  }
+
+  if (!preserveCursorsOnUnreadable) {
+    state.forgetMissingAgyFiles(allDbPaths);
+  }
   const allSharedLogPaths = new Set<string>();
-  let scannedSharedLogs = false;
-  let hasAnySharedGroup = false;
 
   for (const group of groups.values()) {
+    group.dbPaths.sort();
     const { instance, label: instanceAccount } = group.primary;
     const isShared = group.members.length > 1;
-    if (isShared) hasAnySharedGroup = true;
-    const watermarkAccount = instanceAccount ?? (isShared ? "__shared__" : "");
+    const watermarkAccount =
+      explicitMode && isShared
+        ? `__shared__:${group.members
+            .map((m) => `${m.instance.id ?? ""}:${m.label ?? ""}`)
+            .sort()
+            .join(",")}`
+        : (instanceAccount ?? (isShared ? "__shared__" : ""));
 
     // 预筛发生变化的文件；共享目录只在存在待读文件时才按需扫描各实例日志。
     interface PendingDb {
@@ -2027,18 +2547,28 @@ export function readAgy(
     }
 
     let sharedTurnIndex: Map<string, AgyTurnAttribution[]> | null = null;
-    if (isShared && loadedDbs.length > 0) {
-      const dirtyConvIds = new Set(
-        loadedDbs.map((entry) => entry.item.conversationId),
-      );
-      sharedTurnIndex = indexSharedConversationLogs(
-        state,
-        group.members,
-        dirtyConvIds,
-        allSharedLogPaths,
-        logFileOps,
-      );
-      scannedSharedLogs = true;
+    if (isShared) {
+      if (loadedDbs.length > 0) {
+        const dirtyConvIds = new Set(
+          loadedDbs.map((entry) => entry.item.conversationId),
+        );
+        sharedTurnIndex = indexSharedConversationLogs(
+          state,
+          group.members,
+          dirtyConvIds,
+          allSharedLogPaths,
+          logFileOps,
+        );
+      } else {
+        // 即使本轮 DB 无变化，也轻量收集当前活跃共享成员的日志路径，确保已移出成员的共享日志缓存立即清理。
+        for (const { instance: memberInstance } of group.members) {
+          for (const logPath of listInstanceLogPaths(
+            memberInstance.appDataDir,
+          )) {
+            allSharedLogPaths.add(logPath);
+          }
+        }
+      }
     }
 
     for (const { item, genRows, steps } of loadedDbs) {
@@ -2105,15 +2635,15 @@ export function readAgy(
             ? resolveSharedTurnAttribution(turnEvents, Date.parse(occurredAt))
             : null;
           const resolvedLabel = sharedHit?.label ?? instanceAccount;
-          const resolvedProfile = sharedHit
-            ? sharedHit.profileName
-            : instance.profileName;
+          const resolvedInstanceId = sharedHit
+            ? sharedHit.instanceId
+            : instance.id;
 
           if (!resolvedLabel) {
             report.skipped["(缺失账户)"] =
               (report.skipped["(缺失账户)"] ?? 0) + 1;
             skippedMissingInFile += 1;
-            dirtyProfiles.add(instance.profileName);
+            dirtyProfiles.add(instance.id);
             continue;
           }
 
@@ -2153,7 +2683,7 @@ export function readAgy(
           };
           if (state.recordSourceUsage("agy", usage)) {
             report.recorded += 1;
-            dirtyProfiles.add(resolvedProfile);
+            dirtyProfiles.add(resolvedInstanceId);
           }
         }
 
@@ -2172,9 +2702,7 @@ export function readAgy(
     }
   }
 
-  if (scannedSharedLogs) {
-    state.forgetMissingAgySharedLogs(allSharedLogPaths);
-  } else if (!hasAnySharedGroup) {
+  if (!preserveCursorsOnUnreadable) {
     state.forgetMissingAgySharedLogs(allSharedLogPaths);
   }
 
@@ -2214,10 +2742,12 @@ export interface AgyRefreshOptions {
   /** 覆盖 agy 可执行文件位置，默认读 AGY_BIN 再按固定目录查找。 */
   agyBin?: string;
   timeoutMs?: number;
-  /** 指定需要刷新的实例名（null 为默认实例）；省略时刷新默认实例。 */
+  /** 指定需要刷新的实例身份键或短名（null 为默认实例）；省略时按 agy_dirty_profiles 刷新。 */
   profiles?: readonly (string | null)[];
-  /** 内部传递：刷新指定额外实例时使用其 geminiDir 与 appDataDir。 */
+  /** 内部传递：刷新指定额外实例时使用其 profileName、accountKey、geminiDir 与 appDataDir。 */
   profileName?: string | null;
+  /** 状态栏 current-account-<accountKey> 隔离键；省略时回退到 profileName。 */
+  accountKey?: string | null;
   geminiDir?: string;
   appDataDir?: string;
 }
@@ -2225,6 +2755,8 @@ export interface OmpQuotaRefreshOptions {
   /** 覆盖 omp 可执行文件位置，默认读 OMP_BIN 再按固定目录查找。 */
   ompBin?: string;
   timeoutMs?: number;
+  /** 可选：显式/池模式下仅允许写入与上报的账号标签集合。 */
+  allowedLabels?: ReadonlySet<string>;
 }
 
 /**
@@ -2440,6 +2972,8 @@ export async function refreshAgyQuota(
     error: null,
   };
   const profileName = options.profileName ?? null;
+  const accountKey =
+    options.accountKey !== undefined ? options.accountKey : profileName;
   let effectiveGeminiDir = options.geminiDir
     ? resolve(options.geminiDir)
     : null;
@@ -2534,7 +3068,7 @@ export async function refreshAgyQuota(
         ? ((options.appDataDir
             ? labelFromOAuthTokenFile(options.appDataDir)
             : null) ??
-          readAgyCurrentAccount(sources.statuslineDir, profileName) ??
+          readAgyCurrentAccount(sources.statuslineDir, accountKey) ??
           (options.appDataDir
             ? labelFromAppDataLogs(options.appDataDir)
             : null))
@@ -2554,10 +3088,10 @@ export async function refreshAgyQuota(
     );
     if (
       logged &&
-      readAgyCurrentAccount(sources.statuslineDir, profileName) !== logged
+      readAgyCurrentAccount(sources.statuslineDir, accountKey) !== logged
     ) {
-      const accountFile = profileName
-        ? `current-account-${profileName}`
+      const accountFile = accountKey
+        ? `current-account-${accountKey}`
         : "current-account";
       replaceFile(join(sources.statuslineDir, accountFile), `${logged}\n`);
     }
@@ -2592,17 +3126,18 @@ async function maybeRefreshInstanceQuota(
     error: null,
   };
   const profileName = instance.profileName;
+  const instanceKey = instance.id;
   if (profileName !== null && !hasNonEmptyOAuthTokenFile(instance.appDataDir)) {
     return skipped;
   }
-  const refreshAtKey = profileName
-    ? `agy_quota_refresh_at:${profileName}`
+  const refreshAtKey = instanceKey
+    ? `agy_quota_refresh_at:${instanceKey}`
     : "agy_quota_refresh_at";
-  const statusKey = profileName
-    ? `agy_quota_refresh_status:${profileName}`
+  const statusKey = instanceKey
+    ? `agy_quota_refresh_status:${instanceKey}`
     : "agy_quota_refresh_status";
-  const displayName = profileName
-    ? `Antigravity (@${profileName})`
+  const displayName = instanceKey
+    ? `Antigravity (@${instanceKey})`
     : "Antigravity";
 
   const lastAttemptAt = state.getMeta(refreshAtKey);
@@ -2625,6 +3160,7 @@ async function maybeRefreshInstanceQuota(
   const result = await refreshAgyQuota(sources, {
     ...options,
     profileName,
+    accountKey: instanceKey,
     geminiDir: instance.geminiDir,
     appDataDir: instance.appDataDir,
   });
@@ -2650,8 +3186,8 @@ export async function maybeRefreshAgyQuota(
   now: Date = new Date(),
   options: AgyRefreshOptions = {},
 ): Promise<AgyQuotaRefreshResult> {
-  const instances = discoverAgyInstances(sources.conversationsDir);
-  let targets: readonly (string | null)[] = [null];
+  const instances = discoverAgyInstances(sources);
+  let targets: readonly (string | null)[] = [];
   if (options.profiles && options.profiles.length > 0) {
     targets = options.profiles;
   } else {
@@ -2666,9 +3202,11 @@ export async function maybeRefreshAgyQuota(
         );
       }
     } catch {
-      // 忽略损坏的元信息，回退到默认实例。
+      // 忽略损坏的元信息。
     }
-    if (targets.length === 0) targets = [null];
+    if (targets.length === 0 && instances.some((item) => item.id === null)) {
+      targets = [null];
+    }
   }
   const finalResult: AgyQuotaRefreshResult = {
     attempted: false,
@@ -2677,9 +3215,16 @@ export async function maybeRefreshAgyQuota(
     error: null,
   };
   for (const target of targets) {
-    const instance =
-      instances.find((item) => item.profileName === target) ??
-      (target === null ? instances[0]! : null);
+    let instance = instances.find((item) => item.id === target) ?? null;
+    if (
+      !instance &&
+      target !== null &&
+      options.profiles &&
+      options.profiles.length > 0
+    ) {
+      const byProfile = instances.filter((item) => item.profileName === target);
+      if (byProfile.length === 1) instance = byProfile[0]!;
+    }
     if (!instance) continue;
     const res = await maybeRefreshInstanceQuota(
       state,
@@ -2807,6 +3352,9 @@ export async function refreshOmpAgyQuota(
     labels: [],
     error: null,
   };
+  if (options.allowedLabels && options.allowedLabels.size === 0) {
+    return { ...result, error: "当前 Antigravity 采集范围内没有可用账号" };
+  }
   const ompBin = findExecutable("omp", options.ompBin ?? process.env.OMP_BIN);
   if (!ompBin) return { ...result, error: "找不到 omp 可执行文件" };
   result.attempted = true;
@@ -2830,13 +3378,26 @@ export async function refreshOmpAgyQuota(
     if (outcome !== 0) return { ...result, error: `omp 退出码 ${outcome}` };
     const accounts = parseOmpUsageReports(readFileSync(outFile, "utf8"));
     if (typeof accounts === "string") return { ...result, error: accounts };
+    const filtered = options.allowedLabels
+      ? new Map(
+          [...accounts.entries()].filter(([label]) =>
+            options.allowedLabels!.has(label),
+          ),
+        )
+      : accounts;
+    if (filtered.size === 0) {
+      return {
+        ...result,
+        error: "omp usage 返回的账号均不在当前 Antigravity 采集范围内",
+      };
+    }
     mkdirSync(sources.statuslineDir, { recursive: true, mode: 0o700 });
-    for (const [label, rows] of accounts)
+    for (const [label, rows] of filtered)
       mergeQuotaFile(
         join(sources.statuslineDir, agyQuotaFileName(label)),
         rows,
       );
-    return { ...result, refreshed: true, labels: [...accounts.keys()].sort() };
+    return { ...result, refreshed: true, labels: [...filtered.keys()].sort() };
   } catch (error) {
     return {
       ...result,
@@ -2865,6 +3426,9 @@ export async function maybeRefreshOmpAgyQuota(
   now: Date = new Date(),
   options: OmpQuotaRefreshOptions = {},
 ): Promise<OmpQuotaRefreshResult> {
+  if (options.allowedLabels && options.allowedLabels.size === 0) {
+    return { attempted: false, refreshed: false, labels: [], error: null };
+  }
   const lastAttemptAt = state.getMeta("omp_agy_quota_refresh_at");
   if (lastAttemptAt) {
     const elapsed = now.getTime() - Date.parse(lastAttemptAt);
