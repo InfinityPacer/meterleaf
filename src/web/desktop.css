@@ -1241,6 +1241,14 @@
     font-size: 12px;
     white-space: nowrap;
   }
+  /* 桌面任意视口高度下，横滚粘性表头都与普通表头保持同一底色，避免出现白块断层。 */
+  .app-shell
+    .request-section
+    .request-table-scroll[data-overflow="true"]
+    thead
+    :is(th:first-child, th[data-column-id="usd"], th[data-column-id="open"]) {
+    background: color-mix(in srgb, var(--soft) 45%, var(--desktop-panel));
+  }
 
   .app-shell .request-section .time-cell {
     gap: 3px;
@@ -1378,12 +1386,6 @@
     position: sticky;
     top: 0;
     z-index: 2;
-  }
-  .app-shell[data-page="ledger"]
-    .request-table-scroll[data-overflow="true"]
-    thead
-    :is(th:first-child, th[data-column-id="usd"], th[data-column-id="open"]) {
-    background: color-mix(in srgb, var(--soft) 45%, var(--desktop-panel));
   }
 }
 

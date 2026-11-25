@@ -670,7 +670,9 @@
     padding: 14px;
   }
   :root[data-mobile-layout="app"] .demo-badge {
-    max-width: 32px;
+    flex-shrink: 0;
+    max-width: 44px;
+    padding: 4px 6px;
     white-space: normal;
     text-align: center;
     line-height: 1.2;
