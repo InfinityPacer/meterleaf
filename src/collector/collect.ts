@@ -449,6 +449,7 @@ export function ingestFile(
           observations.set(observation.key, {
             key: observation.key,
             firstTimestamp: observation.timestamp,
+            observedAt: observation.timestamp,
             total: observation.total,
             fact,
           });
@@ -467,6 +468,7 @@ export function ingestFile(
             };
           }
           seen.total = observation.total;
+          seen.observedAt = observation.timestamp;
           seen.fact = fact;
         } else if (observation.total === seen.total && durationMs !== null) {
           const previousDuration =
@@ -474,6 +476,7 @@ export function ingestFile(
               ? seen.fact.metadata.duration_ms
               : null;
           if (previousDuration === null || durationMs > previousDuration) {
+            seen.observedAt = observation.timestamp;
             seen.fact = {
               ...seen.fact,
               metadata: { ...seen.fact.metadata, duration_ms: durationMs },

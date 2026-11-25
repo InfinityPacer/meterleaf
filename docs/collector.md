@@ -161,7 +161,7 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 
 一台 Mac 上可以用多个 Claude 订阅账户。默认账户使用 `~/.claude`，其他账户分别设 `CLAUDE_CONFIG_DIR` 登录，例如 `~/.claude-profiles/work`。如果把这些目录的 `projects` 软链接到 `~/.claude/projects`，会话记录集中在一处，方便跨账户恢复，但 JSONL 的每一行都没有账户字段。采集器只能按登录时间线归属，而时间线只代表默认目录当前登录的账户，额外账户的用量会被记到默认账户。
 
-Claude Code 的 OpenTelemetry 日志能补上这个信息，同时还能提供单次请求的官方耗时指标。开启导出后，正常完成的 API 请求会发出一条 `claude_code.api_request` 日志，带 `user.account_uuid`、`organization.id`、`session.id`、`request_id`，以及 `duration_ms`（总耗时）和 `ttft_ms`（首字延迟）。`request_id` 与会话记录里的 `requestId` 相同，服务端据此把那次请求归到正确的账户并补齐耗时字段。出错的请求发出 `claude_code.api_error`，同样带请求 ID 和账户，服务端只用它确定账户，不计耗时。
+Claude Code 的 OpenTelemetry 日志能补上这个信息，同时还能提供单次请求的官方耗时指标。开启导出后，正常完成的 API 请求会发出一条 `claude_code.api_request` 日志，带 `user.account_uuid`、`organization.id`、`session.id`、`request_id`，以及 `duration_ms`（总耗时）和 `ttft_ms`（首字延迟）。`request_id` 与会话记录里的 `requestId` 相同，服务端据此把那次请求归到正确的账户并补齐耗时字段。出错的请求发出 `claude_code.api_error`，同样带请求 ID 和账户，服务端只用它确定账户，不计耗时。带有请求 ID 且尚未归属的刚产生 Claude Code 记录（30 秒内且同轮未收到对应 OTEL）会在推送阶段短暂暂扣一轮，等 OTEL 到达后再一起送出，避免页面短暂闪现「未归属」；超过 30 秒或无请求 ID 的记录照常推送，不会丢账。
 
 在回复生成途中按 Esc 打断时，会话记录里已经写下这次回复的用量（上游照常计费，Meterleaf 也照常记账），但两种 OTEL 日志都不会发出。只要采集器无法确认账户而把这条用量报为未归属，且该行带有有效会话 ID，服务端就会在同一会话内按发生时间向前、向后各找最近一条带账户的 OTEL 请求：两条属于同一账户，且各自与这条用量相隔不超过 30 分钟，就把它归到该账户。前后账户不同（例如中途用另一账户 `--resume` 了同一会话）、只有一侧、间隔更长，或最近时刻同时有两个账户的请求时，保持未归属。
 
