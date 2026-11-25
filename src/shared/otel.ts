@@ -6,9 +6,15 @@
 export const OTEL_LOGS_PATH = "/api/otel/v1/logs";
 /** 与采集批次相同上限；解压后的大小也受此约束。 */
 export const OTEL_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
-/** 记录 body 与 event.name 两种事件标记，任一命中即视为一次 API 请求。 */
+/** 记录 body 与 event.name 两种事件标记，任一命中即视为一次 API 请求或请求失败。 */
 export const OTEL_API_REQUEST_BODY = "claude_code.api_request";
 export const OTEL_API_REQUEST_EVENT = "api_request";
+/**
+ * 非用户中断的请求失败事件同样带 request_id 与账户，只用于归属；失败耗时不代表
+ * 成功请求的官方耗时，因此不读取 duration_ms 与首 Token 延迟。
+ */
+export const OTEL_API_ERROR_BODY = "claude_code.api_error";
+export const OTEL_API_ERROR_EVENT = "api_error";
 /** 单次请求最多处理的记录数；超出部分忽略，避免异常客户端放大写入。 */
 export const OTEL_MAX_RECORDS = 10_000;
 
@@ -115,11 +121,29 @@ function bounded(value: string | null | undefined, max: number): string | null {
   return value && value.length <= max ? value : null;
 }
 
+/**
+ * 归属时间按文本比较先后，只接受四位年份的 UTC 时间；超出 0000–9999 年时
+ * toISOString 会输出带符号的扩展年份，文本序与时间序不一致，视为无效。
+ */
+// Date.UTC 会把 0–99 年映射到 1900 年代，下界直接按文本解析。
+export const MIN_STANDARD_ISO_MS = Date.parse("0000-01-01T00:00:00.000Z");
+export const MAX_STANDARD_ISO_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
+
+/** 毫秒时间在四位年份范围内时返回标准 ISO 文本，否则返回 null。 */
+export function standardIso(ms: number): string | null {
+  if (
+    !Number.isFinite(ms) ||
+    ms < MIN_STANDARD_ISO_MS ||
+    ms > MAX_STANDARD_ISO_MS
+  )
+    return null;
+  return new Date(ms).toISOString();
+}
+
 /** event.timestamp 是 ISO 时间；记录时间在 OTLP JSON 里是纳秒字符串。 */
 function isoFromText(value: string | null): string | null {
   if (!value) return null;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  return standardIso(Date.parse(value));
 }
 
 function isoFromNanos(value: unknown): string | null {
@@ -133,14 +157,12 @@ function isoFromNanos(value: unknown): string | null {
     nanos = BigInt(value);
   else return null;
   const millis = Number(nanos / 1_000_000n);
-  if (!Number.isFinite(millis)) return null;
-  const at = new Date(millis);
-  return Number.isFinite(at.getTime()) ? at.toISOString() : null;
+  return standardIso(millis);
 }
 
 /**
- * 解析 OTLP/HTTP JSON 中的 Claude Code API 请求日志。只提取请求 ID、账户、组织、
- * 会话、模型与时间；提示词、回复、工具内容和路径即使随请求到达也不读取。
+ * 解析 OTLP/HTTP JSON 中的 Claude Code API 请求与请求失败日志。只提取请求 ID、账户、组织、
+ * 会话、模型与时间（成功请求另取官方耗时）；提示词、回复、工具内容和路径即使随请求到达也不读取。
  * 返回 null 表示整体格式无效（400）；单条记录不完整时忽略该条。
  *
  * 服务端直接接收 OTEL 日志和本机中转入队都使用这一份解析，避免两处字段口径不同。
@@ -170,20 +192,26 @@ export function parseOtelRequestAccounts(
           attributes.set(key, value);
         const str = (key: string) => stringValue(attributes.get(key));
         const body = stringValue(logRecord.body);
-        if (
-          body !== OTEL_API_REQUEST_BODY &&
-          str("event.name") !== OTEL_API_REQUEST_EVENT
-        )
-          continue;
+        const eventName = str("event.name");
+        // 任一层带失败标记就按失败处理：body 与 event.name 可能分别来自记录和 resource。
+        const isError =
+          body === OTEL_API_ERROR_BODY || eventName === OTEL_API_ERROR_EVENT;
+        const isRequest =
+          body === OTEL_API_REQUEST_BODY ||
+          eventName === OTEL_API_REQUEST_EVENT;
+        if (!isRequest && !isError) continue;
         const requestId = bounded(str("request_id"), requestIdMax);
         if (!requestId) continue;
-        const durationMs = nonNegativeIntValue(
-          attributes.get("duration_ms"),
-          maxLatencyMs,
-        );
-        const firstTokenMs =
-          nonNegativeIntValue(attributes.get("ttft_ms"), maxLatencyMs) ??
-          nonNegativeIntValue(attributes.get("first_token_ms"), maxLatencyMs);
+        const durationMs = isError
+          ? null
+          : nonNegativeIntValue(attributes.get("duration_ms"), maxLatencyMs);
+        const firstTokenMs = isError
+          ? null
+          : (nonNegativeIntValue(attributes.get("ttft_ms"), maxLatencyMs) ??
+            nonNegativeIntValue(
+              attributes.get("first_token_ms"),
+              maxLatencyMs,
+            ));
         const entry: OtelRequestAccount = {
           requestId,
           accountUuid: bounded(str("user.account_uuid"), requestIdMax),
