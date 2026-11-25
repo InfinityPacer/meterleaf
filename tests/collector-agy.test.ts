@@ -112,6 +112,7 @@ function buildGenMetadataFixture(options: {
   cacheReadTokens?: number;
   apiProvider?: number;
   messageId?: string;
+  responseId?: string;
   thinkingOutputTokens?: number;
   responseOutputTokens?: number;
   serviceTier?: string;
@@ -139,6 +140,8 @@ function buildGenMetadataFixture(options: {
     usageChunks.push(varintField(9, options.thinkingOutputTokens));
   if (options.responseOutputTokens !== undefined)
     usageChunks.push(varintField(10, options.responseOutputTokens));
+  if (options.responseId !== undefined)
+    usageChunks.push(stringField(11, options.responseId));
   if (options.serviceTier !== undefined)
     usageChunks.push(stringField(13, options.serviceTier));
 
@@ -4390,6 +4393,175 @@ test("readNewSources recomputes allowedLabels after agy probe writes current-acc
     else process.env.AGY_BIN = prevAgyBin;
     if (prevOmpBin === undefined) delete process.env.OMP_BIN;
     else process.env.OMP_BIN = prevOmpBin;
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readAgy deduplicates forked /btw conversations by upstream response identity, including after upgrading legacy state", async () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-fork-dedup-"));
+  const convDir = join(root, "conversations");
+  const statusDir = join(root, "statusline");
+  mkdirSync(convDir, { recursive: true });
+  mkdirSync(statusDir, { recursive: true });
+  writeFileSync(join(statusDir, "current-account"), "alice\n");
+
+  interface RowSpec {
+    idx: number;
+    sec: number;
+    execId: string;
+    messageId?: string;
+    responseId?: string;
+    inputTokens: number;
+  }
+  const writeConv = (name: string, rows: RowSpec[]) => {
+    const dbPath = join(convDir, `${name}.db`);
+    const db = new Database(dbPath);
+    db.exec(
+      "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+        "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+    );
+    for (const row of rows) {
+      db.query(
+        "INSERT INTO steps (idx, type, status, metadata) VALUES (?1, 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', 'DONE', ?2)",
+      ).run(
+        row.idx,
+        buildStepMetadataFixture({
+          createdAtSeconds: row.sec - 2,
+          finishedAtSeconds: row.sec - 1,
+          completedAtSeconds: row.sec,
+          executionId: row.execId,
+        }),
+      );
+      db.query(
+        "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (?1, ?2, ?3)",
+      ).run(
+        row.idx,
+        row.execId,
+        buildGenMetadataFixture({
+          modelEnum: 1532,
+          responseModel: "gemini-4-neon",
+          modelDisplayName: "Gemini 4 Neon (High)",
+          inputTokens: row.inputTokens,
+          outputTokens: 200,
+          cacheReadTokens: 1_000,
+          cacheWriteTokens: 0,
+          thinkingOutputTokens: 50,
+          responseOutputTokens: 150,
+          messageId: row.messageId,
+          responseId: row.responseId,
+          executionId: row.execId,
+          stepIndices: [row.idx],
+        }),
+      );
+    }
+    db.close();
+    return dbPath;
+  };
+
+  const baseSec = 1_795_500_000;
+  const parentRows: RowSpec[] = [
+    {
+      idx: 0,
+      sec: baseSec,
+      execId: "exec-parent-1",
+      messageId: "bot-parent-1",
+      responseId: "resp-parent-1",
+      inputTokens: 10_000,
+    },
+    {
+      idx: 1,
+      sec: baseSec + 10,
+      execId: "exec-parent-1",
+      messageId: "bot-parent-2",
+      inputTokens: 12_000,
+    },
+    {
+      idx: 2,
+      sec: baseSec + 20,
+      execId: "exec-parent-no-id",
+      inputTokens: 1_500,
+    },
+  ];
+  const btwOwnRow: RowSpec = {
+    idx: 3,
+    sec: baseSec + 30,
+    execId: "exec-btw-1",
+    messageId: "bot-btw-1",
+    responseId: "resp-btw-1",
+    inputTokens: 3_000,
+  };
+  const sources = {
+    conversationsDir: convDir,
+    statuslineDir: statusDir,
+    start: "2026-09-20T00:00:00.000Z",
+  };
+
+  // 1. 常规场景：父会话已入账，随后 /btw 复制父会话全部 gen_metadata 并新增 1 条自身回复。
+  const state = new CollectorState(":memory:");
+  try {
+    writeConv("z-parent", parentRows);
+    const first = readAgy(state, sources);
+    expect(first.recorded).toBe(3);
+
+    // /btw 文件名在字典序上故意排在父会话前面。
+    const btwPath = writeConv("a-btw", [
+      parentRows[0]!,
+      parentRows[1]!,
+      btwOwnRow,
+    ]);
+    const second = readAgy(state, sources);
+    expect(second.recorded).toBe(1);
+    expect(
+      state
+        .pending<IngestUsage>("usage", 10)
+        .map((item) => item.payload.tokens.input)
+        .sort((a, b) => (a ?? 0) - (b ?? 0)),
+    ).toEqual([1_500, 3_000, 10_000, 12_000]);
+
+    // 模拟升级自旧版 state.sqlite：已有 source_usage 与 agy_files 水位，但没有 agy_seen_responses 与回填标记。
+    rmSync(btwPath);
+    state.db.exec(
+      "DELETE FROM agy_seen_responses; DELETE FROM meta WHERE key = 'agy_response_dedup_v1';",
+    );
+    // 升级后首次扫描时，即使父会话文件未改动且新的 /btw 临时库同时出现，也先回填父会话响应标识并拦截拷贝行。
+    await Bun.sleep(15);
+    writeConv("0-btw-after-upgrade", [
+      parentRows[0]!,
+      parentRows[1]!,
+      {
+        idx: 2,
+        sec: baseSec + 40,
+        execId: "exec-btw-2",
+        messageId: "bot-btw-2",
+        responseId: "resp-btw-2",
+        inputTokens: 4_500,
+      },
+    ]);
+    const upgraded = readAgy(state, sources);
+    expect(upgraded.filesRead).toBe(2);
+    expect(upgraded.recorded).toBe(1);
+    expect(state.getMeta("agy_response_dedup_v1")).toBe("1");
+
+    // 回填完成后，未改动的文件恢复跳过。
+    const settled = readAgy(state, sources);
+    expect(settled.filesRead).toBe(0);
+    expect(settled.recorded).toBe(0);
+
+    // 同轮首次扫描同时遇到父会话与更晚创建的分叉会话时，父会话优先占位且只记录一次。
+    const freshState = new CollectorState(":memory:");
+    try {
+      const sameTick = readAgy(freshState, sources);
+      expect(sameTick.recorded).toBe(4);
+      const inputs = freshState
+        .pending<IngestUsage>("usage", 10)
+        .map((item) => item.payload.tokens.input)
+        .sort((a, b) => (a ?? 0) - (b ?? 0));
+      expect(inputs).toEqual([1_500, 4_500, 10_000, 12_000]);
+    } finally {
+      freshState.close();
+    }
+  } finally {
     state.close();
     rmSync(root, { recursive: true, force: true });
   }
