@@ -1113,10 +1113,10 @@ h3 {
   max-width: 104px;
 }
 .ledger-section[data-width-tier="s"] .request-table-scroll .model-label {
-  max-width: 130px;
+  max-width: clamp(128px, calc(100vw - 560px), 156px);
 }
 .ledger-section[data-width-tier="sm"] .request-table-scroll .model-label {
-  max-width: 124px;
+  max-width: clamp(112px, calc(100vw - 470px), 156px);
 }
 .ledger-section[data-width-tier="xl"]
   .request-table-scroll
@@ -1142,7 +1142,39 @@ h3 {
   font-size: 13px;
 }
 .ledger-section[data-width-tier="xs"] .request-table-scroll .model-label {
-  max-width: clamp(64px, calc(100vw - 256px), 180px);
+  max-width: clamp(88px, calc(100vw - 232px), 180px);
+}
+@media (max-width: 360px) {
+  .ledger-section[data-width-tier="xs"] .request-table-scroll :is(th, td) {
+    font-size: 12.5px;
+  }
+  .ledger-section[data-width-tier="xs"]
+    .request-table-scroll
+    :is(th, td):not([data-column-id="open"]) {
+    padding-inline: 3px;
+  }
+  .ledger-section[data-width-tier="xs"]
+    .request-table-scroll
+    :is(th, td)[data-column-id="open"] {
+    width: 30px;
+    min-width: 30px;
+    max-width: 30px;
+    padding-inline: 2px;
+  }
+  .ledger-section[data-width-tier="xs"]
+    .request-table-scroll
+    td[data-column-id="open"]
+    button {
+    width: 26px;
+    min-width: 26px;
+    height: 26px;
+    min-height: 26px;
+  }
+  .ledger-section[data-width-tier="xs"]
+    .request-table-scroll[data-overflow="true"]
+    :is(th, td)[data-column-id="usd"] {
+    right: 30px;
+  }
 }
 .request-table-scroll tbody tr.ledger-clickable-row {
   cursor: pointer;
@@ -1150,20 +1182,30 @@ h3 {
 .request-table-scroll tbody tr.ledger-clickable-row:hover td {
   background: color-mix(in srgb, var(--soft) 55%, var(--surface));
 }
-/* 手动显示超出当前宽度的列时，粘性锚定首列与右侧费用/明细列并给出边缘阴影提示。 */
-.request-table-scroll[data-overflow="true"] th:first-child,
-.request-table-scroll[data-overflow="true"] td:first-child {
+/* 手动显示超出当前宽度的列时，粘性锚定首列（xs 极窄屏除外，避免挤占中间滚动视窗）与右侧费用/明细列。 */
+.ledger-section:not([data-width-tier="xs"])
+  .request-table-scroll[data-overflow="true"]
+  th:first-child,
+.ledger-section:not([data-width-tier="xs"])
+  .request-table-scroll[data-overflow="true"]
+  td:first-child {
   position: sticky;
   left: 0;
   z-index: 1;
   background: var(--surface);
 }
-.request-table-scroll[data-overflow="true"] thead th:first-child {
+.ledger-section:not([data-width-tier="xs"])
+  .request-table-scroll[data-overflow="true"]
+  thead
+  th:first-child {
   z-index: 3;
+  background: var(--canvas);
 }
-.request-table-scroll[data-overflow="true"][data-scroll-left="true"]
+.ledger-section:not([data-width-tier="xs"])
+  .request-table-scroll[data-overflow="true"][data-scroll-left="true"]
   th:first-child,
-.request-table-scroll[data-overflow="true"][data-scroll-left="true"]
+.ledger-section:not([data-width-tier="xs"])
+  .request-table-scroll[data-overflow="true"][data-scroll-left="true"]
   td:first-child {
   box-shadow: 6px 0 10px -6px rgb(15 23 42 / 24%);
 }
@@ -1176,6 +1218,7 @@ h3 {
 }
 .request-table-scroll[data-overflow="true"] thead th[data-column-id="open"] {
   z-index: 3;
+  background: var(--canvas);
 }
 .request-table-scroll[data-overflow="true"] th[data-column-id="usd"],
 .request-table-scroll[data-overflow="true"] td[data-column-id="usd"] {
@@ -1186,6 +1229,7 @@ h3 {
 }
 .request-table-scroll[data-overflow="true"] thead th[data-column-id="usd"] {
   z-index: 3;
+  background: var(--canvas);
 }
 .request-table-scroll[data-overflow="true"][data-scroll-right="true"]
   th[data-column-id="usd"],
@@ -1198,6 +1242,14 @@ h3 {
   tr.ledger-clickable-row:hover
   :is(td:first-child, td[data-column-id="usd"], td[data-column-id="open"]) {
   background: color-mix(in srgb, var(--soft) 55%, var(--surface));
+}
+@media (max-width: 900px) {
+  /* 深色侧栏窄屏下表格直接位于 --canvas 页面底上，粘性数据单元格与之保持同色。 */
+  :root.dark[data-mobile-layout="sidebar"]
+    .request-table-scroll[data-overflow="true"]
+    :is(td:first-child, td[data-column-id="usd"], td[data-column-id="open"]) {
+    background: var(--canvas);
+  }
 }
 
 .report-period {
@@ -1980,9 +2032,10 @@ footer > span {
   }
   .ledger-heading-tools {
     width: 100%;
+    flex-wrap: wrap;
   }
   .ledger-heading-tools .search-control {
-    flex: 1;
+    flex: 1 1 180px;
     min-width: 0;
     width: auto;
   }
