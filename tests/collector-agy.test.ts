@@ -2,11 +2,14 @@ import { Database } from "bun:sqlite";
 import { expect, spyOn, test } from "bun:test";
 import {
   appendFileSync,
+  chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -16,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   agyAccountsForLabel,
+  agyAllowedQuotaLabels,
   agyInstanceAccounts,
   agyQuotaSnapshot,
   decodeAgyGenMetadata,
@@ -30,8 +34,12 @@ import {
   refreshAgyQuota,
   type AgyReaderReport,
 } from "../src/collector/agy";
-import type { CollectorConfig } from "../src/collector/config";
-import { readNewSources } from "../src/collector/main";
+import { loadConfig, type CollectorConfig } from "../src/collector/config";
+import {
+  formatAgyRefreshLines,
+  formatAgySourceDesc,
+  readNewSources,
+} from "../src/collector/main";
 import { CollectorState } from "../src/collector/state";
 import type { UsageFact } from "../src/domain/connector";
 import { defaultPriceBook } from "../src/domain/default-prices";
@@ -799,6 +807,7 @@ test("readAgy ingests quota and SQLite conversations idempotently and attributes
         quotaIgnoredLines: 0,
         activeAccount: "alice",
         missingQuotaProfiles: 0,
+        skippedOutOfScopeShared: 0,
         quotaRefreshed: false,
         quotaRefreshError: null,
       });
@@ -2780,6 +2789,1607 @@ test("shared conversation log cache skips unchanged logs across rounds, saves wa
       .map((item) => item.payload.accountExternalId);
     expect(accounts).toEqual(["agy-bob", "agy-bob"]);
   } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("poolAccountsFile collects only enabled ready non-default pool directories and prunes excluded instances", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-pool-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const acct3Dir = join(geminiDir, "antigravity-cli-acct3");
+    const poolADir = join(geminiDir, "antigravity-cli-pool-p-aaaa1111");
+    const poolBDir = join(geminiDir, "antigravity-cli-pool-p-bbbb2222");
+    const poolDisabledDir = join(geminiDir, "antigravity-cli-pool-p-cccc3333");
+    for (const dir of [
+      defaultDir,
+      acct3Dir,
+      poolADir,
+      poolBDir,
+      poolDisabledDir,
+    ]) {
+      mkdirSync(join(dir, "conversations"), { recursive: true });
+    }
+    mkdirSync(statusDir, { recursive: true });
+    writeFileSync(
+      join(defaultDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "defaultuser@example.com" }),
+    );
+    writeFileSync(
+      join(acct3Dir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "acct3user@example.com" }),
+    );
+    writeFileSync(
+      join(poolADir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "poola@example.com" }),
+    );
+    writeFileSync(
+      join(poolBDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "poolb@example.com" }),
+    );
+    writeFileSync(
+      join(poolDisabledDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "disabled@example.com" }),
+    );
+
+    const writeDb = (dir: string, name: string, execId: string) => {
+      const db = new Database(join(dir, "conversations", `${name}.db`));
+      db.exec(
+        "CREATE TABLE gen_metadata (idx INTEGER, data BLOB); CREATE TABLE steps (idx INTEGER, data BLOB);",
+      );
+      const t = Math.floor(Date.parse("2026-11-24T10:00:00.000Z") / 1000);
+      db.query("INSERT INTO gen_metadata (idx, data) VALUES (1, ?)").run(
+        buildGenMetadataFixture({
+          responseModel: "gemini-4-neon",
+          inputTokens: 1000,
+          outputTokens: 200,
+          createdAtSeconds: t,
+          executionId: execId,
+        }),
+      );
+      db.close();
+    };
+    writeDb(defaultDir, "conv-default", "exec-default");
+    writeDb(acct3Dir, "conv-acct3", "exec-acct3");
+    writeDb(poolADir, "conv-pool-a", "exec-pool-a");
+    writeDb(poolBDir, "conv-pool-b", "exec-pool-b");
+    writeDb(poolDisabledDir, "conv-disabled", "exec-disabled");
+
+    const poolAccountsFile = join(root, "accounts.json");
+    writeFileSync(
+      poolAccountsFile,
+      JSON.stringify({
+        version: 1,
+        accounts: [
+          {
+            id: "acct-1",
+            kind: "default",
+            appDataDir: "antigravity-cli",
+            enabled: true,
+            status: "ready",
+          },
+          {
+            id: "p-aaaa1111",
+            kind: "managed",
+            appDataDir: "antigravity-cli-pool-p-aaaa1111",
+            enabled: true,
+            status: "ready",
+          },
+          {
+            id: "p-bbbb2222",
+            kind: "managed",
+            appDataDir: "antigravity-cli-pool-p-bbbb2222",
+            enabled: true,
+            status: "ready",
+          },
+          {
+            id: "p-cccc3333",
+            kind: "managed",
+            appDataDir: "antigravity-cli-pool-p-cccc3333",
+            enabled: false,
+            status: "ready",
+          },
+        ],
+      }),
+    );
+
+    // 预置旧默认实例与非池实例的刷新状态和跟踪文件，验证切换池模式后会被自动清理。
+    state.setMeta("agy_quota_refresh_at", "2026-11-24T09:00:00.000Z");
+    state.setMeta("agy_quota_refresh_status", "ok:defaultuser");
+    state.setMeta("agy_quota_refresh_at:acct3", "2026-11-24T09:00:00.000Z");
+    state.setMeta("agy_quota_refresh_status:acct3", "ok:acct3user");
+    state.setMeta(
+      "agy_quota_refresh_at:pool-p-aaaa1111",
+      "2026-11-24T09:00:00.000Z",
+    );
+
+    const sources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      poolAccountsFile,
+    };
+
+    const accounts = agyInstanceAccounts(sources);
+    expect(accounts.map((a) => a.profile)).toEqual([
+      "pool-p-aaaa1111",
+      "pool-p-bbbb2222",
+    ]);
+    expect(accounts.map((a) => a.account)).toEqual(["agy-poola", "agy-poolb"]);
+
+    const report = readAgy(
+      state,
+      sources,
+      new Date("2026-11-24T10:05:00.000Z"),
+    );
+    expect(report.filesRead).toBe(2);
+    expect(report.recorded).toBe(2);
+    expect(state.agyFilePaths()).toEqual([
+      join(realpathSync(poolADir), "conversations", "conv-pool-a.db"),
+      join(realpathSync(poolBDir), "conversations", "conv-pool-b.db"),
+    ]);
+    expect(state.getMeta("agy_quota_refresh_at")).toBeNull();
+    expect(state.getMeta("agy_quota_refresh_status")).toBeNull();
+    expect(state.getMeta("agy_quota_refresh_at:acct3")).toBeNull();
+    expect(state.getMeta("agy_quota_refresh_status:acct3")).toBeNull();
+    expect(state.getMeta("agy_quota_refresh_at:pool-p-aaaa1111")).toBe(
+      "2026-11-24T09:00:00.000Z",
+    );
+
+    const usageAccounts = state
+      .pending<IngestUsage>("usage", 10)
+      .map((item) => item.payload.accountExternalId)
+      .sort();
+    expect(usageAccounts).toEqual(["agy-poola", "agy-poolb"]);
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("appDataDirs explicit list excludes default antigravity-cli, supports empty array, and missing/corrupt poolAccountsFile returns empty set", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-explicit-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const alphaDir = join(geminiDir, "antigravity-cli-alpha");
+    const betaDir = join(geminiDir, "antigravity-cli-beta");
+    for (const dir of [defaultDir, alphaDir, betaDir]) {
+      mkdirSync(join(dir, "conversations"), { recursive: true });
+    }
+    mkdirSync(statusDir, { recursive: true });
+    writeFileSync(
+      join(defaultDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "defaultuser@example.com" }),
+    );
+    writeFileSync(
+      join(alphaDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "alpha@example.com" }),
+    );
+    writeFileSync(
+      join(betaDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "beta@example.com" }),
+    );
+
+    const writeDb = (dir: string, name: string, execId: string) => {
+      const db = new Database(join(dir, "conversations", `${name}.db`));
+      db.exec(
+        "CREATE TABLE gen_metadata (idx INTEGER, data BLOB); CREATE TABLE steps (idx INTEGER, data BLOB);",
+      );
+      const t = Math.floor(Date.parse("2026-11-24T10:00:00.000Z") / 1000);
+      db.query("INSERT INTO gen_metadata (idx, data) VALUES (1, ?)").run(
+        buildGenMetadataFixture({
+          responseModel: "gemini-4-neon",
+          inputTokens: 1000,
+          outputTokens: 200,
+          createdAtSeconds: t,
+          executionId: execId,
+        }),
+      );
+      db.close();
+    };
+    writeDb(defaultDir, "conv-default", "exec-default");
+    writeDb(alphaDir, "conv-alpha", "exec-alpha");
+    writeDb(betaDir, "conv-beta", "exec-beta");
+
+    const now = new Date("2026-11-24T10:05:00.000Z");
+    const baseSources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+    };
+
+    // 1. 显式 appDataDirs 包含默认目录 antigravity-cli 时，默认目录仍被排除，仅采集列出的非默认实例。
+    const explicitSources = {
+      ...baseSources,
+      appDataDirs: [defaultDir, alphaDir],
+    };
+    expect(agyInstanceAccounts(explicitSources).map((a) => a.profile)).toEqual([
+      "alpha",
+    ]);
+    const explicitReport = readAgy(state, explicitSources, now);
+    expect(explicitReport.filesRead).toBe(1);
+    expect(explicitReport.recorded).toBe(1);
+    expect(state.agyFilePaths()).toEqual([
+      join(realpathSync(alphaDir), "conversations", "conv-alpha.db"),
+    ]);
+
+    // 2. 空数组 appDataDirs: [] 显式不采集任何实例，并清理既有跟踪文件与刷新状态。
+    state.setMeta("agy_quota_refresh_at:alpha", "2026-11-24T09:00:00.000Z");
+    state.setMeta("agy_quota_refresh_status:alpha", "ok:alpha");
+    const emptySources = {
+      ...baseSources,
+      appDataDirs: [] as string[],
+    };
+    expect(agyInstanceAccounts(emptySources)).toEqual([]);
+    const emptyReport = readAgy(state, emptySources, now);
+    expect(emptyReport.filesRead).toBe(0);
+    expect(emptyReport.recorded).toBe(0);
+    expect(state.agyFilePaths()).toEqual([]);
+    expect(state.getMeta("agy_quota_refresh_at:alpha")).toBeNull();
+    expect(state.getMeta("agy_quota_refresh_status:alpha")).toBeNull();
+
+    // 3. poolAccountsFile 缺失或损坏时返回空集合，不回退到默认自动发现。
+    const missingPoolSources = {
+      ...baseSources,
+      poolAccountsFile: join(root, "does-not-exist.json"),
+    };
+    expect(agyInstanceAccounts(missingPoolSources)).toEqual([]);
+    const missingReport = readAgy(state, missingPoolSources, now);
+    expect(missingReport.filesRead).toBe(0);
+    expect(missingReport.recorded).toBe(0);
+
+    const corruptPoolFile = join(root, "corrupt-accounts.json");
+    writeFileSync(corruptPoolFile, "{not valid json");
+    const corruptPoolSources = {
+      ...baseSources,
+      poolAccountsFile: corruptPoolFile,
+    };
+    expect(agyInstanceAccounts(corruptPoolSources)).toEqual([]);
+    const corruptReport = readAgy(state, corruptPoolSources, now);
+    expect(corruptReport.filesRead).toBe(0);
+    expect(corruptReport.recorded).toBe(0);
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("explicit scope excludes symlink aliases to default antigravity-cli and deduplicates symlink aliases to the same directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-symlink-scope-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const workDir = join(geminiDir, "antigravity-cli-work");
+    const defaultAlias = join(geminiDir, "antigravity-cli-default-alias");
+    const workAlias = join(geminiDir, "antigravity-cli-work-alias");
+
+    mkdirSync(join(defaultDir, "conversations"), { recursive: true });
+    mkdirSync(join(workDir, "conversations"), { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+    symlinkSync(defaultDir, defaultAlias);
+    symlinkSync(workDir, workAlias);
+
+    writeFileSync(
+      join(defaultDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "defaultuser@example.com" }),
+    );
+    writeFileSync(
+      join(workDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "worker@example.com" }),
+    );
+
+    const poolAccountsFile = join(root, "accounts.json");
+    writeFileSync(
+      poolAccountsFile,
+      JSON.stringify([
+        {
+          kind: "managed",
+          appDataDir: defaultAlias,
+          enabled: true,
+          status: "ready",
+        },
+        {
+          kind: "managed",
+          appDataDir: workAlias,
+          enabled: true,
+          status: "ready",
+        },
+      ]),
+    );
+
+    const sources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [defaultAlias, workDir, workAlias],
+      poolAccountsFile,
+    };
+
+    const accounts = agyInstanceAccounts(sources);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toEqual({
+      appDataDir: realpathSync(workDir),
+      profile: "work",
+      key: "work",
+      account: "agy-worker",
+    });
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("config validation rejects invalid appDataDirs basenames and valid antigravity-cli-work passes discovery and probe end-to-end", async () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-config-probe-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const baseConfig = {
+      server: "https://meterleaf.example.com",
+      sourceId: "mac-test",
+      key: "mlk_test_key_1234567890",
+      createdAt: "2026-11-24T00:00:00.000Z",
+    };
+
+    for (const badDir of [
+      "/profiles/work",
+      "/profiles/work.eu",
+      "/x/antigravity-cli",
+    ]) {
+      const cfgPath = join(root, "bad-config.json");
+      writeFileSync(
+        cfgPath,
+        JSON.stringify({ ...baseConfig, agy: { appDataDirs: [badDir] } }),
+      );
+      expect(() => loadConfig(cfgPath)).toThrow(/antigravity-cli-<名称>/);
+    }
+
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const workDir = join(geminiDir, "antigravity-cli-work");
+    mkdirSync(join(defaultDir, "conversations"), { recursive: true });
+    mkdirSync(join(workDir, "conversations"), { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+    writeFileSync(
+      join(workDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "worker@example.com" }),
+    );
+
+    const validCfgPath = join(root, "valid-config.json");
+    writeFileSync(
+      validCfgPath,
+      JSON.stringify({ ...baseConfig, agy: { appDataDirs: [workDir] } }),
+    );
+    const loaded = loadConfig(validCfgPath);
+    expect(loaded?.agy?.appDataDirs).toEqual([workDir]);
+
+    const fakeAgy = join(root, "fake-agy.sh");
+    const resetIso = "2026-11-25T15:00:00.000Z";
+    writeFileSync(
+      fakeAgy,
+      [
+        "#!/bin/sh",
+        'app_data=""',
+        'log_file=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --app_data_dir) app_data="$2"; shift 2 ;;',
+        '    --log-file) log_file="$2"; shift 2 ;;',
+        "    *) shift ;;",
+        "  esac",
+        "done",
+        'if [ "$app_data" != "antigravity-cli-work" ]; then exit 9; fi',
+        'if [ -n "$log_file" ]; then',
+        '  echo "I1124 10:00:01.000000 1 oauth.go:1] authenticated successfully as worker@example.com" > "$log_file"',
+        "fi",
+        `printf '{"status":"SUCCESS","command":{"data":{"groups":[{"buckets":[{"id":"gemini-5h","remaining_fraction":0.8,"reset_time":"${resetIso}"}]}]}}}'`,
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fakeAgy, 0o755);
+
+    const sources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [workDir],
+    };
+    const report = readAgy(
+      state,
+      sources,
+      new Date("2026-11-24T10:05:00.000Z"),
+    );
+    expect(report.missingQuotaProfiles).toBe(1);
+
+    const refreshed = await maybeRefreshAgyQuota(
+      state,
+      sources,
+      new Date("2026-11-24T10:05:00.000Z"),
+      { agyBin: fakeAgy },
+    );
+    expect(refreshed.attempted).toBe(true);
+    expect(refreshed.refreshed).toBe(true);
+    expect(refreshed.label).toBe("worker");
+    expect(existsSync(join(statusDir, "quota-worker.tsv"))).toBe(true);
+    expect(readAgyCurrentAccount(statusDir, "work")).toBe("worker");
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("same-basename instances in different parent directories isolate refresh meta and current-account files", async () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-same-basename-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const defaultGeminiDir = join(root, ".gemini");
+    const defaultDir = join(defaultGeminiDir, "antigravity-cli");
+    const statusDir = join(root, "statusline");
+    const dirA = join(root, "parent-a", "antigravity-cli-work");
+    const dirB = join(root, "parent-b", "antigravity-cli-work");
+
+    for (const dir of [defaultDir, dirA, dirB]) {
+      mkdirSync(join(dir, "conversations"), { recursive: true });
+    }
+    mkdirSync(statusDir, { recursive: true });
+    // 不含 id_token_email 的非空令牌，验证账号标签按隔离后的 current-account-<key> 解析且绝不串号。
+    writeFileSync(join(dirA, "antigravity-oauth-token"), "{}");
+    writeFileSync(join(dirB, "antigravity-oauth-token"), "{}");
+
+    const bothSources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [dirA, dirB],
+    };
+    const bothAccounts = agyInstanceAccounts(bothSources);
+    expect(bothAccounts).toHaveLength(2);
+    const keyA = bothAccounts.find(
+      (item) => item.appDataDir === realpathSync(dirA),
+    )!.key!;
+    const keyB = bothAccounts.find(
+      (item) => item.appDataDir === realpathSync(dirB),
+    )!.key!;
+    expect(keyA).toMatch(/^work\.[0-9a-f]{12}$/);
+    expect(keyB).toMatch(/^work\.[0-9a-f]{12}$/);
+    expect(keyA).not.toBe(keyB);
+
+    const fakeAgy = join(root, "fake-agy-multi.sh");
+    const resetIso = "2026-11-25T15:00:00.000Z";
+    writeFileSync(
+      fakeAgy,
+      [
+        "#!/bin/sh",
+        'gemini_dir=""',
+        'log_file=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --gemini_dir) gemini_dir="$2"; shift 2 ;;',
+        '    --log-file) log_file="$2"; shift 2 ;;',
+        "    *) shift ;;",
+        "  esac",
+        "done",
+        'case "$gemini_dir" in',
+        '  *parent-a) email="worka@example.com" ;;',
+        '  *parent-b) email="workb@example.com" ;;',
+        "  *) exit 8 ;;",
+        "esac",
+        'if [ -n "$log_file" ]; then',
+        '  echo "I1124 10:00:01.000000 1 oauth.go:1] authenticated successfully as $email" > "$log_file"',
+        "fi",
+        `printf '{"status":"SUCCESS","command":{"data":{"groups":[{"buckets":[{"id":"gemini-5h","remaining_fraction":0.75,"reset_time":"${resetIso}"}]}]}}}'`,
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fakeAgy, 0o755);
+
+    const refreshRes = await maybeRefreshAgyQuota(
+      state,
+      bothSources,
+      new Date("2026-11-24T10:05:00.000Z"),
+      { agyBin: fakeAgy, profiles: [keyA, keyB] },
+    );
+    expect(refreshRes.refreshed).toBe(true);
+    expect(readAgyCurrentAccount(statusDir, keyA)).toBe("worka");
+    expect(readAgyCurrentAccount(statusDir, keyB)).toBe("workb");
+    expect(state.getMeta(`agy_quota_refresh_status:${keyA}`)).toBe("ok:worka");
+    expect(state.getMeta(`agy_quota_refresh_status:${keyB}`)).toBe("ok:workb");
+
+    // 移除 parent-a 后重扫：清理 keyA 元信息，保留 keyB 元信息，且 parent-b 仍准确解析为 workb。
+    const onlyBSources = {
+      ...bothSources,
+      appDataDirs: [dirB],
+    };
+    readAgy(state, onlyBSources, new Date("2026-11-24T10:06:00.000Z"));
+    expect(state.getMeta(`agy_quota_refresh_at:${keyA}`)).toBeNull();
+    expect(state.getMeta(`agy_quota_refresh_status:${keyA}`)).toBeNull();
+    expect(state.getMeta(`agy_quota_refresh_at:${keyB}`)).not.toBeNull();
+    expect(state.getMeta(`agy_quota_refresh_status:${keyB}`)).toBe("ok:workb");
+    expect(agyInstanceAccounts(onlyBSources)).toEqual([
+      {
+        appDataDir: realpathSync(dirB),
+        profile: "work",
+        key: keyB,
+        account: "agy-workb",
+      },
+    ]);
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("explicit scope filters out-of-scope quota files in readAgy and enforces allowedLabels in maybeRefreshOmpAgyQuota", async () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-omp-scope-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const bobDir = join(geminiDir, "antigravity-cli-bob");
+    mkdirSync(join(defaultDir, "conversations"), { recursive: true });
+    mkdirSync(join(bobDir, "conversations"), { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+
+    writeFileSync(
+      join(bobDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "bob@example.com" }),
+    );
+    writeFileSync(
+      join(statusDir, "quota-alice.tsv"),
+      "gemini_5h\t20\t1796000000\n",
+    );
+    writeFileSync(
+      join(statusDir, "quota-bob.tsv"),
+      "gemini_5h\t35\t1796000000\n",
+    );
+
+    const sources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [bobDir],
+    };
+    const allowed = agyAllowedQuotaLabels(sources)!;
+    expect([...allowed]).toEqual(["bob"]);
+
+    const report = readAgy(
+      state,
+      sources,
+      new Date("2026-11-24T10:05:00.000Z"),
+    );
+    expect(report.quotas).toBe(1);
+    const pendingQuotas = state.pending<IngestQuota>("quota", 10);
+    expect(pendingQuotas.map((q) => q.payload.accountExternalId)).toEqual([
+      "agy-bob",
+    ]);
+
+    // 构造只返回范围外账号（alice）的假 omp 脚本：不得写出新 quota-carol.tsv，也不得虚报成功。
+    const fakeOmp = join(root, "fake-omp.sh");
+    writeFileSync(
+      fakeOmp,
+      [
+        "#!/bin/sh",
+        'printf \'{"reports":[{"provider":"google-antigravity","metadata":{"email":"carol@example.com"},"limits":[{"id":"google-antigravity:google:default:gemini-5h","amount":{"remainingFraction":0.5},"window":{"resetsAt":1796000000000}}]}]}\'',
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fakeOmp, 0o755);
+
+    const ompRes = await maybeRefreshOmpAgyQuota(
+      state,
+      { statuslineDir: statusDir },
+      { exhausted: false },
+      new Date("2026-11-24T10:05:00.000Z"),
+      { ompBin: fakeOmp, allowedLabels: allowed },
+    );
+    expect(ompRes.attempted).toBe(true);
+    expect(ompRes.refreshed).toBe(false);
+    expect(ompRes.labels).toEqual([]);
+    expect(ompRes.error).toContain("不在当前 Antigravity 采集范围内");
+    expect(existsSync(join(statusDir, "quota-carol.tsv"))).toBe(false);
+
+    // allowedLabels 为空集合时直接跳过，不启动 omp 子进程。
+    const skippedRes = await maybeRefreshOmpAgyQuota(
+      state,
+      { statuslineDir: statusDir },
+      { exhausted: false },
+      new Date("2026-11-24T10:15:00.000Z"),
+      { ompBin: fakeOmp, allowedLabels: new Set() },
+    );
+    expect(skippedRes).toEqual({
+      attempted: false,
+      refreshed: false,
+      labels: [],
+      error: null,
+    });
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("shared log cache prunes removed member immediately when DB is unchanged, and default mode preserves refresh backoff when extra token disappears", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-prune-backoff-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const sharedConvDir = join(defaultDir, "conversations");
+    const dirA = join(geminiDir, "antigravity-cli-a");
+    const dirB = join(geminiDir, "antigravity-cli-b");
+    const dirC = join(geminiDir, "antigravity-cli-c");
+
+    mkdirSync(sharedConvDir, { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+    for (const [dir, email] of [
+      [dirA, "aa@example.com"],
+      [dirB, "bb@example.com"],
+      [dirC, "cc@example.com"],
+    ] as const) {
+      mkdirSync(join(dir, "log"), { recursive: true });
+      symlinkSync(sharedConvDir, join(dir, "conversations"));
+      writeFileSync(
+        join(dir, "antigravity-oauth-token"),
+        JSON.stringify({ id_token_email: email }),
+      );
+    }
+
+    const convId = "33333333-4444-4555-8666-777777777777";
+    const t1 = new Date(2026, 10, 24, 11, 0, 10, 0);
+    const db = new Database(join(sharedConvDir, `${convId}.db`));
+    db.exec(
+      "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+        "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+    );
+    const sec = Math.floor(t1.getTime() / 1000);
+    db.query(
+      "INSERT INTO steps (idx, type, status, metadata) VALUES (1, 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', 'DONE', ?1)",
+    ).run(
+      buildStepMetadataFixture({
+        createdAtSeconds: sec - 2,
+        finishedAtSeconds: sec - 1,
+        completedAtSeconds: sec,
+        executionId: "exec-a-1",
+      }),
+    );
+    db.query(
+      "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (1, 'exec-a-1', ?1)",
+    ).run(
+      buildGenMetadataFixture({
+        responseModel: "gemini-4-neon",
+        inputTokens: 1000,
+        outputTokens: 100,
+        executionId: "exec-a-1",
+        stepIndices: [1],
+      }),
+    );
+    db.close();
+
+    const logA = join(dirA, "log", "acp-server-20261124_110000-1.log");
+    const logB = join(dirB, "log", "acp-server-20261124_110000-2.log");
+    const logC = join(dirC, "log", "acp-server-20261124_110000-3.log");
+    writeFileSync(
+      logA,
+      `I1124 11:00:05.000000 1 server.go:1] Sending user message to conversation ${convId}\n`,
+    );
+    writeFileSync(logB, "I1124 11:00:01.000000 2 server.go:1] idle\n");
+    writeFileSync(logC, "I1124 11:00:01.000000 3 server.go:1] idle\n");
+
+    const baseSources = {
+      conversationsDir: sharedConvDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+    };
+
+    // 第一轮（默认模式，包含 A/B/C）：写入三个共享日志缓存条目。
+    readAgy(state, baseSources, t1);
+    expect(state.agySharedLog(logA)).not.toBeNull();
+    expect(state.agySharedLog(logB)).not.toBeNull();
+    expect(state.agySharedLog(logC)).not.toBeNull();
+
+    // 预置 C 的 5 分钟刷新退避记录，然后临时移除 C 的 token 文件（模拟默认模式下短暂缺令牌）。
+    state.setMeta("agy_quota_refresh_at:c", "2026-11-24T11:00:00.000Z");
+    state.setMeta("agy_quota_refresh_status:c", "error:temp");
+    rmSync(join(dirC, "antigravity-oauth-token"));
+
+    // 第二轮（默认模式，DB 未变化）：C 的共享日志缓存应立即清理，但默认模式必须保留 C 的 5 分钟刷新退避。
+    const second = readAgy(state, baseSources, t1);
+    expect(second.filesRead).toBe(0);
+    expect(state.agySharedLog(logA)).not.toBeNull();
+    expect(state.agySharedLog(logB)).not.toBeNull();
+    expect(state.agySharedLog(logC)).toBeNull();
+    expect(state.getMeta("agy_quota_refresh_at:c")).toBe(
+      "2026-11-24T11:00:00.000Z",
+    );
+    expect(state.getMeta("agy_quota_refresh_status:c")).toBe("error:temp");
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("status formatting shows both poolAccountsFile and appDataDirs and filters refresh lines to active explicit scope", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-status-fmt-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const alphaDir = join(geminiDir, "antigravity-cli-alpha");
+    const betaDir = join(geminiDir, "antigravity-cli-beta");
+    for (const dir of [defaultDir, alphaDir, betaDir]) {
+      mkdirSync(join(dir, "conversations"), { recursive: true });
+    }
+    mkdirSync(statusDir, { recursive: true });
+    writeFileSync(
+      join(alphaDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "alpha@example.com" }),
+    );
+    writeFileSync(
+      join(betaDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "beta@example.com" }),
+    );
+
+    const poolAccountsFile = join(root, "accounts.json");
+    writeFileSync(
+      poolAccountsFile,
+      JSON.stringify({
+        accounts: [
+          {
+            kind: "managed",
+            appDataDir: "antigravity-cli-alpha",
+            enabled: true,
+            status: "ready",
+          },
+        ],
+      }),
+    );
+
+    const combinedSources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      poolAccountsFile,
+      appDataDirs: [betaDir],
+    };
+    const desc = formatAgySourceDesc(combinedSources);
+    expect(desc).toContain(`池 ${poolAccountsFile}`);
+    expect(desc).toContain("显式目录 (1)");
+    expect(desc).toContain("2 个实例");
+    expect(desc).toContain("alpha");
+    expect(desc).toContain("beta");
+
+    // 预置默认实例与 alpha/beta 的旧刷新记录，未跑 sync 直接切换为 appDataDirs: [] 时，status 立即隐藏已移出实例。
+    state.setMeta("agy_quota_refresh_at", "2026-11-24T09:00:00.000Z");
+    state.setMeta("agy_quota_refresh_status", "ok:defaultuser");
+    state.setMeta("agy_quota_refresh_at:alpha", "2026-11-24T09:00:00.000Z");
+    state.setMeta("agy_quota_refresh_status:alpha", "ok:alpha");
+    state.setMeta("agy_quota_refresh_at:beta", "2026-11-24T09:00:00.000Z");
+    state.setMeta("agy_quota_refresh_status:beta", "ok:beta");
+
+    const activeLines = formatAgyRefreshLines(state, {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [betaDir],
+    });
+    expect(activeLines).toHaveLength(1);
+    expect(activeLines[0]).toContain("(beta)");
+
+    const emptyLines = formatAgyRefreshLines(state, {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [],
+    });
+    expect(emptyLines).toEqual([]);
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("A1' explicit set-difference skips shared conversations dir with out-of-scope default instance without reading its token and reports count in status", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-a1p-dir-shared-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  const defaultTokenPath = join(
+    root,
+    ".gemini",
+    "antigravity-cli",
+    "antigravity-oauth-token",
+  );
+  try {
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const sharedConvDir = join(defaultDir, "conversations");
+    const dirA = join(geminiDir, "antigravity-cli-a");
+
+    mkdirSync(sharedConvDir, { recursive: true });
+    mkdirSync(dirA, { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+    symlinkSync(sharedConvDir, join(dirA, "conversations"));
+
+    // 默认目录令牌不可读，验证 A1' 集合差绝不读取范围外实例令牌或日志。
+    writeFileSync(
+      defaultTokenPath,
+      JSON.stringify({ id_token_email: "secret-default@example.com" }),
+    );
+    chmodSync(defaultTokenPath, 0o000);
+    writeFileSync(
+      join(dirA, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "usera@example.com" }),
+    );
+
+    const db = new Database(join(sharedConvDir, "conv-shared.db"));
+    db.exec(
+      "CREATE TABLE gen_metadata (idx INTEGER, data BLOB); CREATE TABLE steps (idx INTEGER, data BLOB);",
+    );
+    db.query("INSERT INTO gen_metadata (idx, data) VALUES (1, ?)").run(
+      buildGenMetadataFixture({
+        responseModel: "gemini-4-neon",
+        inputTokens: 1_500,
+        outputTokens: 200,
+        createdAtSeconds: Math.floor(
+          Date.parse("2026-11-24T10:00:00.000Z") / 1000,
+        ),
+        executionId: "exec-shared-1",
+      }),
+    );
+    db.close();
+
+    const sources = {
+      conversationsDir: sharedConvDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [dirA],
+    };
+
+    const report = readAgy(
+      state,
+      sources,
+      new Date("2026-11-24T10:05:00.000Z"),
+    );
+    expect(report.filesRead).toBe(0);
+    expect(report.recorded).toBe(0);
+    expect(report.skippedOutOfScopeShared).toBe(1);
+    expect(report.skipped["(范围外共享库)"]).toBe(1);
+    expect(state.pending<IngestUsage>("usage", 10)).toEqual([]);
+    expect(formatAgySourceDesc(sources)).toContain("跳过范围外共享库 1 个");
+  } finally {
+    try {
+      chmodSync(defaultTokenPath, 0o600);
+    } catch {
+      // 忽略清理异常。
+    }
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("A1' explicit set-difference skips forward and reverse single-.db symlinks while collecting independent DBs", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-a1p-single-db-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const externalDir = join(root, "elsewhere");
+    const dirA = join(geminiDir, "antigravity-cli-a");
+    const dirOutB = join(geminiDir, "antigravity-cli-outb");
+
+    for (const dir of [defaultDir, dirA, dirOutB]) {
+      mkdirSync(join(dir, "conversations"), { recursive: true });
+    }
+    mkdirSync(externalDir, { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+
+    writeFileSync(
+      join(dirA, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "usera@example.com" }),
+    );
+    writeFileSync(
+      join(dirOutB, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "outb@example.com" }),
+    );
+
+    const writeDb = (dbPath: string, execId: string, inputTokens: number) => {
+      const db = new Database(dbPath);
+      db.exec(
+        "CREATE TABLE gen_metadata (idx INTEGER, data BLOB); CREATE TABLE steps (idx INTEGER, data BLOB);",
+      );
+      db.query("INSERT INTO gen_metadata (idx, data) VALUES (1, ?)").run(
+        buildGenMetadataFixture({
+          responseModel: "gemini-4-neon",
+          inputTokens,
+          outputTokens: 100,
+          createdAtSeconds: Math.floor(
+            Date.parse("2026-11-24T10:00:00.000Z") / 1000,
+          ),
+          executionId: execId,
+        }),
+      );
+      db.close();
+    };
+
+    // (b) 正向单文件软链接：A 分别软链到默认目录与外部任意目录的 .db。
+    const defaultDb = join(defaultDir, "conversations", "from-default.db");
+    const externalDb = join(externalDir, "from-external.db");
+    writeDb(defaultDb, "exec-default", 1_100);
+    writeDb(externalDb, "exec-external", 2_200);
+    symlinkSync(defaultDb, join(dirA, "conversations", "from-default.db"));
+    symlinkSync(externalDb, join(dirA, "conversations", "from-external.db"));
+
+    // (c) 反向单文件软链接：范围外 outB 软链到 A 的 one.db；A 另有独立 two.db。
+    const oneDb = join(dirA, "conversations", "one.db");
+    const twoDb = join(dirA, "conversations", "two.db");
+    writeDb(oneDb, "exec-one-shared", 3_300);
+    writeDb(twoDb, "exec-two-own", 4_400);
+    symlinkSync(oneDb, join(dirOutB, "conversations", "one.db"));
+
+    const sources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [dirA],
+    };
+
+    const report = readAgy(
+      state,
+      sources,
+      new Date("2026-11-24T10:05:00.000Z"),
+    );
+    expect(report.filesRead).toBe(1);
+    expect(report.recorded).toBe(1);
+    expect(report.skippedOutOfScopeShared).toBe(3);
+    expect(report.skipped["(范围外共享库)"]).toBe(3);
+    const usage = state.pending<IngestUsage>("usage", 10);
+    expect(usage).toHaveLength(1);
+    expect(usage[0]!.payload.accountExternalId).toBe("agy-usera");
+    expect(usage[0]!.payload.tokens.input).toBe(4_400);
+    expect(formatAgySourceDesc(sources)).toContain("跳过范围外共享库 3 个");
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("A1' per-file grouping splits in-scope shared single DB via logs while collecting sibling independent DB directly without logs", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-a1p-inscope-file-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const dirA = join(geminiDir, "antigravity-cli-a");
+    const dirB = join(geminiDir, "antigravity-cli-b");
+
+    for (const dir of [defaultDir, dirA, dirB]) {
+      mkdirSync(join(dir, "conversations"), { recursive: true });
+    }
+    mkdirSync(join(dirA, "log"), { recursive: true });
+    mkdirSync(join(dirB, "log"), { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+
+    writeFileSync(
+      join(dirA, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "usera@example.com" }),
+    );
+    writeFileSync(
+      join(dirB, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "userb@example.com" }),
+    );
+
+    const sharedConvId = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
+    const t1 = new Date(2026, 10, 24, 10, 0, 10, 0);
+    const t2 = new Date(2026, 10, 24, 10, 2, 10, 0);
+
+    // 仅范围内 A 与 B 共享单个文件 sharedConvId.db（存于 B，A 软链指向它）。
+    const sharedDbPath = join(dirB, "conversations", `${sharedConvId}.db`);
+    const sharedDb = new Database(sharedDbPath);
+    sharedDb.exec(
+      "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+        "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+    );
+    for (const [idx, when, execId, tokens] of [
+      [1, t1, "exec-a-1", 1_000],
+      [2, t2, "exec-b-1", 2_000],
+    ] as const) {
+      const sec = Math.floor(when.getTime() / 1000);
+      sharedDb
+        .query(
+          "INSERT INTO steps (idx, type, status, metadata) VALUES (?1, 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', 'DONE', ?2)",
+        )
+        .run(
+          idx,
+          buildStepMetadataFixture({
+            createdAtSeconds: sec - 2,
+            finishedAtSeconds: sec - 1,
+            completedAtSeconds: sec,
+            executionId: execId,
+          }),
+        );
+      sharedDb
+        .query(
+          "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (?1, ?2, ?3)",
+        )
+        .run(
+          idx,
+          execId,
+          buildGenMetadataFixture({
+            responseModel: "gemini-4-neon",
+            inputTokens: tokens,
+            outputTokens: 100,
+            executionId: execId,
+            stepIndices: [idx],
+          }),
+        );
+    }
+    sharedDb.close();
+    symlinkSync(
+      sharedDbPath,
+      join(dirA, "conversations", `${sharedConvId}.db`),
+    );
+
+    // B 另有独立 two.db（无任何发送日志），应按单实例直采归 B，不受 sharedConvId.db 共享牵连。
+    const ownDbPath = join(dirB, "conversations", "two.db");
+    const ownDb = new Database(ownDbPath);
+    ownDb.exec(
+      "CREATE TABLE gen_metadata (idx INTEGER, data BLOB); CREATE TABLE steps (idx INTEGER, data BLOB);",
+    );
+    ownDb.query("INSERT INTO gen_metadata (idx, data) VALUES (1, ?)").run(
+      buildGenMetadataFixture({
+        responseModel: "gemini-4-neon",
+        inputTokens: 5_000,
+        outputTokens: 100,
+        createdAtSeconds: Math.floor(t2.getTime() / 1000),
+        executionId: "exec-b-own",
+      }),
+    );
+    ownDb.close();
+
+    const logA = join(dirA, "log", "acp-server-20261124_100000-1.log");
+    writeFileSync(
+      logA,
+      [
+        "I1124 10:00:01.000000 1 server_oauth.go:226] OAuth: authenticated successfully as usera@example.com",
+        `I1124 10:00:05.000000 1 server.go:1883] Sending user message to conversation ${sharedConvId} (items=1, media=0)`,
+      ].join("\n") + "\n",
+    );
+    utimesSync(logA, t1, t1);
+
+    const logB = join(dirB, "log", "acp-server-20261124_100200-2.log");
+    writeFileSync(
+      logB,
+      [
+        "I1124 10:02:01.000000 2 server_oauth.go:226] OAuth: authenticated successfully as userb@example.com",
+        `I1124 10:02:05.000000 2 server.go:1883] Sending user message to conversation ${sharedConvId} (items=1, media=0)`,
+      ].join("\n") + "\n",
+    );
+    utimesSync(logB, t2, t2);
+
+    const sources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [dirA, dirB],
+    };
+
+    const report = readAgy(state, sources, new Date(2026, 10, 24, 10, 5, 0, 0));
+    expect(report.filesRead).toBe(2);
+    expect(report.recorded).toBe(3);
+    expect(report.skippedOutOfScopeShared).toBe(0);
+    const byTokens = new Map(
+      state
+        .pending<IngestUsage>("usage", 10)
+        .map((item) => [
+          item.payload.tokens.input,
+          item.payload.accountExternalId,
+        ]),
+    );
+    expect(byTokens.get(1_000)).toBe("agy-usera");
+    expect(byTokens.get(2_000)).toBe("agy-userb");
+    expect(byTokens.get(5_000)).toBe("agy-userb");
+    expect(formatAgySourceDesc(sources)).not.toContain("跳过范围外共享库");
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("A1' explicit set-difference covers defaultGeminiDir even when conversationsDir is overridden to a custom path", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-a1p-custom-conv-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const defaultGeminiDir = join(root, ".gemini");
+    const customConvDir = join(
+      root,
+      "custom",
+      "antigravity-cli",
+      "conversations",
+    );
+    const profilesDir = join(root, "profiles");
+    const dirA = join(profilesDir, "antigravity-cli-a");
+    const dirB = join(defaultGeminiDir, "antigravity-cli-b");
+    const statusDir = join(root, "statusline");
+
+    mkdirSync(customConvDir, { recursive: true });
+    mkdirSync(join(dirA, "conversations"), { recursive: true });
+    mkdirSync(join(dirB, "conversations"), { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+
+    writeFileSync(
+      join(dirA, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "usera@example.com" }),
+    );
+    writeFileSync(
+      join(dirB, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "userb@example.com" }),
+    );
+
+    const oneDb = join(dirA, "conversations", "one.db");
+    const db = new Database(oneDb);
+    db.exec(
+      "CREATE TABLE gen_metadata (idx INTEGER, data BLOB); CREATE TABLE steps (idx INTEGER, data BLOB);",
+    );
+    db.query("INSERT INTO gen_metadata (idx, data) VALUES (1, ?)").run(
+      buildGenMetadataFixture({
+        responseModel: "gemini-4-neon",
+        inputTokens: 2_345,
+        outputTokens: 100,
+        createdAtSeconds: Math.floor(
+          Date.parse("2026-11-24T10:00:00.000Z") / 1000,
+        ),
+        executionId: "exec-custom-conv-1",
+      }),
+    );
+    db.close();
+
+    // 位于 defaultGeminiDir 下的范围外 B 反向软链到外部 profiles/ 下 A 的 one.db。
+    symlinkSync(oneDb, join(dirB, "conversations", "one.db"));
+
+    const sources = {
+      conversationsDir: customConvDir,
+      defaultGeminiDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [dirA],
+    };
+
+    const report = readAgy(
+      state,
+      sources,
+      new Date("2026-11-24T10:05:00.000Z"),
+    );
+    expect(report.filesRead).toBe(0);
+    expect(report.recorded).toBe(0);
+    expect(report.skippedOutOfScopeShared).toBe(1);
+    expect(report.skipped["(范围外共享库)"]).toBe(1);
+    expect(state.pending<IngestUsage>("usage", 10)).toEqual([]);
+    expect(formatAgySourceDesc(sources)).toContain("跳过范围外共享库 1 个");
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("A1' explicit set-difference fails closed when an out-of-scope conversations dir is unreadable (chmod 0o111)", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-a1p-unreadable-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  const outBConvDir = join(
+    root,
+    ".gemini",
+    "antigravity-cli-b",
+    "conversations",
+  );
+  try {
+    const geminiDir = join(root, ".gemini");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const dirA = join(geminiDir, "antigravity-cli-a");
+    const statusDir = join(root, "statusline");
+
+    mkdirSync(join(defaultDir, "conversations"), { recursive: true });
+    mkdirSync(join(dirA, "conversations"), { recursive: true });
+    mkdirSync(outBConvDir, { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+
+    writeFileSync(
+      join(dirA, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "usera@example.com" }),
+    );
+
+    const oneDb = join(dirA, "conversations", "one.db");
+    const db = new Database(oneDb);
+    db.exec(
+      "CREATE TABLE gen_metadata (idx INTEGER, data BLOB); CREATE TABLE steps (idx INTEGER, data BLOB);",
+    );
+    db.query("INSERT INTO gen_metadata (idx, data) VALUES (1, ?)").run(
+      buildGenMetadataFixture({
+        responseModel: "gemini-4-neon",
+        inputTokens: 3_456,
+        outputTokens: 100,
+        createdAtSeconds: Math.floor(
+          Date.parse("2026-11-24T10:00:00.000Z") / 1000,
+        ),
+        executionId: "exec-unreadable-1",
+      }),
+    );
+    db.close();
+
+    symlinkSync(oneDb, join(outBConvDir, "one.db"));
+    // 0o111：可遍历但 readdirSync 返回 EACCES，验证 fail-closed 暂缓而不放行。
+    chmodSync(outBConvDir, 0o111);
+
+    const sources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      defaultGeminiDir: geminiDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [dirA],
+    };
+
+    const report = readAgy(
+      state,
+      sources,
+      new Date("2026-11-24T10:05:00.000Z"),
+    );
+    expect(report.filesRead).toBe(0);
+    expect(report.recorded).toBe(0);
+    expect(report.unreadable).toBeGreaterThan(0);
+    expect(report.skippedOutOfScopeShared).toBe(1);
+    expect(report.skipped["(目录不可读，已暂缓)"]).toBe(1);
+    expect(state.pending<IngestUsage>("usage", 10)).toEqual([]);
+    expect(formatAgySourceDesc(sources)).toContain("目录不可读，已暂缓 1 个库");
+  } finally {
+    try {
+      chmodSync(outBConvDir, 0o755);
+    } catch {
+      // 忽略清理异常。
+    }
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("A1' explicit set-difference fails closed when an in-scope sibling conversations dir is unreadable (chmod 0o111) and preserves cursors and shared log cache", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-a1p-inscope-eacces-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  const dirBConvDir = join(
+    root,
+    ".gemini",
+    "antigravity-cli-b",
+    "conversations",
+  );
+  try {
+    const geminiDir = join(root, ".gemini");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const dirA = join(geminiDir, "antigravity-cli-a");
+    const dirB = join(geminiDir, "antigravity-cli-b");
+    const statusDir = join(root, "statusline");
+
+    mkdirSync(join(defaultDir, "conversations"), { recursive: true });
+    mkdirSync(join(dirA, "conversations"), { recursive: true });
+    mkdirSync(dirBConvDir, { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+
+    writeFileSync(
+      join(dirA, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "usera@example.com" }),
+    );
+    writeFileSync(
+      join(dirB, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "userb@example.com" }),
+    );
+
+    const oneDb = join(dirA, "conversations", "one.db");
+    const db = new Database(oneDb);
+    db.exec(
+      "CREATE TABLE gen_metadata (idx INTEGER, data BLOB); CREATE TABLE steps (idx INTEGER, data BLOB);",
+    );
+    db.query("INSERT INTO gen_metadata (idx, data) VALUES (1, ?)").run(
+      buildGenMetadataFixture({
+        responseModel: "gemini-4-neon",
+        inputTokens: 4_567,
+        outputTokens: 100,
+        createdAtSeconds: Math.floor(
+          Date.parse("2026-11-24T10:00:00.000Z") / 1000,
+        ),
+        executionId: "exec-inscope-eacces-1",
+      }),
+    );
+    db.close();
+
+    symlinkSync(oneDb, join(dirBConvDir, "one.db"));
+    // 预置既有游标与共享日志缓存，验证瞬时目录不可读期间不会被误清。
+    const savedCursorPath = join(
+      realpathSync(dirA),
+      "conversations",
+      "prev.db",
+    );
+    state.saveAgyFile({
+      path: savedCursorPath,
+      inode: "1",
+      size: 10,
+      modified: 1000,
+      walSize: 0,
+      walModified: 0,
+      account: "usera",
+    });
+    const savedLogPath = join(realpathSync(dirA), "log", "acp-server-prev.log");
+    state.saveAgySharedLog({
+      path: savedLogPath,
+      inode: "2",
+      size: 20,
+      modified: 1000,
+      defaultLabel: "a\0usera",
+      events: "[]",
+    });
+
+    // B 同样在范围内，但 B 的 conversations/ 设为 0o111（readdirSync 返回 EACCES），不得把 one.db 当作 A 独占库入账。
+    chmodSync(dirBConvDir, 0o111);
+
+    const sources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      defaultGeminiDir: geminiDir,
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [dirA, dirB],
+    };
+
+    const report = readAgy(
+      state,
+      sources,
+      new Date("2026-11-24T10:05:00.000Z"),
+    );
+    expect(report.filesRead).toBe(0);
+    expect(report.recorded).toBe(0);
+    expect(report.unreadable).toBeGreaterThan(0);
+    expect(report.skippedOutOfScopeShared).toBe(1);
+    expect(report.skipped["(目录不可读，已暂缓)"]).toBe(1);
+    expect(state.pending<IngestUsage>("usage", 10)).toEqual([]);
+    expect(state.agyFile(savedCursorPath)).not.toBeNull();
+    expect(state.agySharedLog(savedLogPath)).not.toBeNull();
+    expect(formatAgySourceDesc(sources)).toContain("目录不可读，已暂缓 1 个库");
+  } finally {
+    try {
+      chmodSync(dirBConvDir, 0o755);
+    } catch {
+      // 忽略清理异常。
+    }
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("external parent dir instance keys use disjoint dot namespace and never collide with default parent dir profiles", () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-r3-disjoint-keys-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  try {
+    const defaultGeminiDir = join(root, ".gemini");
+    const defaultDir = join(defaultGeminiDir, "antigravity-cli");
+    const statusDir = join(root, "statusline");
+    const extWorkDir = join(root, "external", "antigravity-cli-work");
+    mkdirSync(join(defaultDir, "conversations"), { recursive: true });
+    mkdirSync(join(extWorkDir, "conversations"), { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+    writeFileSync(
+      join(extWorkDir, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "extwork@example.com" }),
+    );
+
+    const extKey = agyInstanceAccounts({
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      appDataDirs: [extWorkDir],
+    })[0]!.key!;
+    expect(extKey).toMatch(/^work\.[0-9a-f]{12}$/);
+
+    // 在默认父目录下故意构造带有旧 `--` 格式或与外部后缀同名的目录，验证命名空间数学不相交。
+    const defaultSameSuffix = join(
+      defaultGeminiDir,
+      `antigravity-cli-work--${extKey.slice("work.".length, "work.".length + 8)}`,
+    );
+    mkdirSync(join(defaultSameSuffix, "conversations"), { recursive: true });
+    writeFileSync(
+      join(defaultSameSuffix, "antigravity-oauth-token"),
+      JSON.stringify({ id_token_email: "defwork@example.com" }),
+    );
+
+    const bothSources = {
+      conversationsDir: join(defaultDir, "conversations"),
+      statuslineDir: statusDir,
+      start: "2026-09-20T00:00:00.000Z",
+      appDataDirs: [extWorkDir, defaultSameSuffix],
+    };
+    const accounts = agyInstanceAccounts(bothSources);
+    expect(accounts).toHaveLength(2);
+    const keys = accounts.map((a) => a.key!);
+    expect(new Set(keys).size).toBe(2);
+    const defKey = accounts.find(
+      (a) => a.appDataDir === realpathSync(defaultSameSuffix),
+    )!.key!;
+    expect(defKey).not.toContain(".");
+    expect(extKey).toContain(".");
+
+    state.setMeta(`agy_quota_refresh_at:${extKey}`, "2026-11-24T09:00:00.000Z");
+    state.setMeta(`agy_quota_refresh_at:${defKey}`, "2026-11-24T09:00:00.000Z");
+
+    // 移除外部实例后，仅清理 extKey，保留 defKey。
+    readAgy(
+      state,
+      { ...bothSources, appDataDirs: [defaultSameSuffix] },
+      new Date("2026-11-24T10:05:00.000Z"),
+    );
+    expect(state.getMeta(`agy_quota_refresh_at:${extKey}`)).toBeNull();
+    expect(state.getMeta(`agy_quota_refresh_at:${defKey}`)).toBe(
+      "2026-11-24T09:00:00.000Z",
+    );
+  } finally {
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readNewSources recomputes allowedLabels after agy probe writes current-account so same-round omp 429 refresh succeeds", async () => {
+  const root = mkdtempSync(join(tmpdir(), "meterleaf-agy-r3-same-round-omp-"));
+  const state = new CollectorState(join(root, "state.sqlite"));
+  const prevAgyBin = process.env.AGY_BIN;
+  const prevOmpBin = process.env.OMP_BIN;
+  try {
+    const geminiDir = join(root, ".gemini");
+    const statusDir = join(root, "statusline");
+    const defaultDir = join(geminiDir, "antigravity-cli");
+    const workDir = join(geminiDir, "antigravity-cli-work");
+    const ompSessionsDir = join(root, "omp", "sessions");
+    const ompProjectDir = join(ompSessionsDir, "proj-1");
+
+    mkdirSync(join(defaultDir, "conversations"), { recursive: true });
+    mkdirSync(join(workDir, "conversations"), { recursive: true });
+    mkdirSync(statusDir, { recursive: true });
+    mkdirSync(ompProjectDir, { recursive: true });
+
+    // 初始仅含无邮箱非空令牌且无 current-account-work，初始 agyAllowedQuotaLabels 为空集合。
+    writeFileSync(join(workDir, "antigravity-oauth-token"), "{}");
+
+    // work 实例有一条待归属用量，触发 agyMissing → maybeRefreshAgyQuota。
+    const db = new Database(join(workDir, "conversations", "conv-work.db"));
+    db.exec(
+      "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+        "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+    );
+    const tSec = Math.floor(Date.parse("2026-11-24T10:00:00.000Z") / 1000);
+    db.query(
+      "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (1, 'exec-work-1', ?1)",
+    ).run(
+      buildGenMetadataFixture({
+        responseModel: "gemini-4-neon",
+        inputTokens: 1_200,
+        outputTokens: 200,
+        createdAtSeconds: tSec,
+        executionId: "exec-work-1",
+      }),
+    );
+    db.close();
+
+    // omp 会话出现 google-antigravity 429，触发同轮 omp 实时刷新。
+    writeFileSync(
+      join(ompProjectDir, "session-1.jsonl"),
+      JSON.stringify({
+        type: "message",
+        id: "msg-429",
+        timestamp: "2026-11-24T10:01:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "google-antigravity",
+          model: "gemini-4-neon",
+          stopReason: "error",
+          errorStatus: 429,
+          errorMessage: "429 RESOURCE_EXHAUSTED: quota exceeded",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          timestamp: Date.parse("2026-11-24T10:01:00.000Z"),
+        },
+      }) + "\n",
+    );
+
+    const fakeAgy = join(root, "fake-agy.sh");
+    writeFileSync(
+      fakeAgy,
+      [
+        "#!/bin/sh",
+        'log_file=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --log-file) log_file="$2"; shift 2 ;;',
+        "    *) shift ;;",
+        "  esac",
+        "done",
+        'if [ -n "$log_file" ]; then',
+        '  echo "I1124 10:00:01.000000 1 oauth.go:1] authenticated successfully as freshworker@example.com" > "$log_file"',
+        "fi",
+        'printf \'{"status":"SUCCESS","command":{"data":{"groups":[{"buckets":[{"id":"gemini-5h","remaining_fraction":0.9,"reset_time":"2026-11-25T15:00:00.000Z"}]}]}}}"\' | sed \'s/"$//\'',
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fakeAgy, 0o755);
+
+    const ompInvokedFile = join(root, "omp-invoked.txt");
+    const fakeOmp = join(root, "fake-omp.sh");
+    writeFileSync(
+      fakeOmp,
+      [
+        "#!/bin/sh",
+        `echo "$@" >> "${ompInvokedFile}"`,
+        'if [ "$2" = "invalidate" ]; then exit 0; fi',
+        'printf \'{"reports":[{"provider":"google-antigravity","metadata":{"email":"freshworker@example.com"},"limits":[{"id":"google-antigravity:google:default:gemini-5h","amount":{"remainingFraction":0.0},"window":{"resetsAt":1796000000000}}]}]}\'',
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fakeOmp, 0o755);
+
+    process.env.AGY_BIN = fakeAgy;
+    process.env.OMP_BIN = fakeOmp;
+
+    const config: CollectorConfig = {
+      server: "https://meterleaf.example.com",
+      sourceId: "mac-test",
+      key: "mlk_test_key_1234567890",
+      createdAt: "2026-11-24T00:00:00.000Z",
+      codex: { enabled: false },
+      opencode: { enabled: false },
+      agy: {
+        enabled: true,
+        conversationsDir: join(defaultDir, "conversations"),
+        statuslineDir: statusDir,
+        appDataDirs: [workDir],
+      },
+      omp: {
+        enabled: true,
+        sessionsDir: ompSessionsDir,
+      },
+    };
+
+    expect(
+      agyAllowedQuotaLabels({
+        conversationsDir: join(defaultDir, "conversations"),
+        statuslineDir: statusDir,
+        appDataDirs: [workDir],
+      })!.size,
+    ).toBe(0);
+
+    const reports = await readNewSources(state, config, {
+      allowQuotaRefresh: true,
+    });
+    const agyReport = reports.find(
+      (r) => r.source === "agy",
+    ) as AgyReaderReport;
+    expect(agyReport.quotaRefreshed).toBe(true);
+    expect(readAgyCurrentAccount(statusDir, "work")).toBe("freshworker");
+    // 同轮重算 allowedLabels 后，omp 应被触发并成功写入 freshworker 的 429 实时额度（100%）。
+    expect(existsSync(ompInvokedFile)).toBe(true);
+    expect(state.getMeta("omp_agy_quota_refresh_status")).toBe(
+      "ok:freshworker",
+    );
+    const quotaContent = readFileSync(
+      join(statusDir, "quota-freshworker.tsv"),
+      "utf8",
+    );
+    expect(quotaContent).toContain("gemini_5h\t100\t1796000000");
+  } finally {
+    if (prevAgyBin === undefined) delete process.env.AGY_BIN;
+    else process.env.AGY_BIN = prevAgyBin;
+    if (prevOmpBin === undefined) delete process.env.OMP_BIN;
+    else process.env.OMP_BIN = prevOmpBin;
     state.close();
     rmSync(root, { recursive: true, force: true });
   }
