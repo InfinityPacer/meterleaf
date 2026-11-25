@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createDemoLedger } from "../src/web/demo/ledger";
 import { createLedgerView, type LedgerView } from "../src/shared/ledger-view";
@@ -120,4 +122,26 @@ test("distribution exposes sortable table headings and a ranking menu", () => {
   expect(html).toContain('aria-label="模型排名排序"');
   expect(html.match(/aria-sort=/g)).toHaveLength(5);
   expect(html).toContain('aria-sort="descending"');
+});
+
+test("donut chart canvas stacks above the center total so richText tooltips stay legible", () => {
+  const css = readFileSync(resolve("src/web/styles.css"), "utf8");
+  const rule = (selector: string) => {
+    const match = css.match(
+      new RegExp(
+        `${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`,
+      ),
+    );
+    expect(match, `missing CSS rule for ${selector}`).not.toBeNull();
+    return match![1]!;
+  };
+  const zIndex = (body: string) => {
+    const match = body.match(/z-index:\s*(-?\d+)\s*;/);
+    expect(match, "missing numeric z-index").not.toBeNull();
+    return Number(match![1]);
+  };
+  expect(rule(".model-donut")).toMatch(/isolation:\s*isolate\s*;/);
+  const chartRule = rule(".model-donut .usage-chart");
+  expect(chartRule).toMatch(/position:\s*relative\s*;/);
+  expect(zIndex(chartRule)).toBeGreaterThan(zIndex(rule(".model-donut-total")));
 });

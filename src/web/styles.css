@@ -1218,8 +1218,12 @@ h3 {
 .model-donut {
   position: relative;
   min-width: 0;
+  isolation: isolate;
 }
+/* 环图提示框用 richText 画在 canvas 上，画布层需高于中心汇总文案避免悬停重叠。 */
 .model-donut .usage-chart {
+  position: relative;
+  z-index: 1;
   height: 320px;
 }
 .model-distribution td {
@@ -1228,6 +1232,7 @@ h3 {
 .model-donut-total {
   position: absolute;
   inset: 0;
+  z-index: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
