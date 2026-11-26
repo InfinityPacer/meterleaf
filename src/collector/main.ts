@@ -656,6 +656,9 @@ export function agyReaderConfig(
     ...(config?.agy?.poolAccountsFile
       ? { poolAccountsFile: resolve(config.agy.poolAccountsFile) }
       : {}),
+    ...(config?.agy?.defaultPlan
+      ? { defaultPlan: config.agy.defaultPlan }
+      : {}),
   };
 }
 

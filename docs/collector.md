@@ -126,7 +126,8 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 - Token 用量来自 `~/.gemini/antigravity-cli/conversations/*.db` 以及同级 `~/.gemini/antigravity-cli-<name>/conversations/*.db`。额外实例仅在默认 `conversationsDir` 下、跳过含 `backup`/`bak` 段名的目录且存在非空普通文件 `antigravity-oauth-token` 时自动发现，每个实例优先从自身的令牌或日志识别所属账号。若多实例通过软链接共享同一 `conversations/` 目录，采集器按真实路径去重扫描，并增量缓存各实例日志中的发送记录，将跨账号切换的会话按轮次归属到实际调用账号（以单会话顺序写入为前提，两账号同时向同一会话并发写入时无法仅凭日志拆账）。`agy` 运行中会锁住会话库，采集器对无 WAL 的库以只读不可变模式打开，对存在 `.db-wal` 的库先把 `.db` 与 `.db-wal` 复制到系统临时目录再只读打开，不在 `~/.gemini` 下写入、加锁或创建附属文件。
 - 需要显式限定采集范围时，可在 `config.json` 的 `agy` 下配置可选字段 `appDataDirs` 或 `poolAccountsFile`（两者均未配置时保持上述默认自动发现行为）：
   - `appDataDirs`：显式指定要采集的实例 `appDataDir` 绝对路径数组（最多 50 项；每个目录名必须为 `antigravity-cli-<名称>` 且仅含字母、数字、`_` 或 `-`，设为 `[]` 表示显式不采集任何实例）。
-  - `poolAccountsFile`：指向账号池清单文件（`accounts.json`，支持顶层数组或 `{ "accounts": [...] }`）的绝对路径，动态筛选其中 `kind !== "default"`、`enabled === true`、`status === "ready"` 且未标记 `removedAt` 的非默认 `antigravity-cli-<名称>` 实例目录（相对路径按默认目录所在的 `.gemini` 目录解析）。
+  - `poolAccountsFile`：指向账号池清单文件（`accounts.json`，支持顶层数组或 `{ "accounts": [...] }`）的绝对路径，动态筛选其中 `kind !== "default"`、`enabled === true`、`status === "ready"` 且未标记 `removedAt` 的非默认 `antigravity-cli-<名称>` 实例目录（相对路径按默认目录所在的 `.gemini` 目录解析）。每次成功完整解析池清单后，采集器会自动上报当前在池与暂停/移出成员，Meterleaf 服务端据此自动归档暂停或移出的池账号（保留历史账单），并在账号重新启用或重新入池时自动解除归档或隐藏；清单缺失、损坏或存在未识别标签时保守跳过，避免误归档，且不影响 `agy-router` 等非池账号。
+  - `defaultPlan`：可选（`plus`、`pro`、`ultra-5x` 或 `ultra-20x`）。当上游未报出套餐或只报无倍数的 `Google AI Ultra` 时自动回退到该默认值；在页面里手动设置过的套餐优先级更高，不会被覆盖。
   - 配置任一项后即进入显式/池模式：不再扫描默认 `antigravity-cli` 目录（含指向默认目录的软链接别名）及其他同级目录，并按真实路径去重；仅采集范围内已登录（存在非空普通文件 `antigravity-oauth-token`）的实例会话与对应 `quota-<label>.tsv` 额度缓存，由 `omp` 触发的 Antigravity 额度刷新也同样仅处理范围内账号标签；已移出范围实例的跟踪记录、共享日志缓存与额度刷新状态自动清理；清单文件缺失或损坏时视为无可用实例。
   - 显式/池模式下按单个 `.db` 真实路径判定共享关系：凡可被范围外实例访问到的会话库（含共用 `conversations/` 目录、单文件正向或反向 `.db` 软链接，以及指向非范围内会话目录的单文件 `.db` 软链接）均整库跳过，并在同步摘要与 `status` 中显示跳过计数，不做跨范围拆账；如需采集，请将共享方一并纳入范围。仅范围内多个实例共享的库沿用既有日志时间轴归属，同目录下未共享的独立库不受牵连。范围外实例在默认 `.gemini` 与各范围内实例所在父目录下按 `antigravity-cli` / `antigravity-cli-*`（及默认 `conversationsDir`）识别；位于其他未声明路径下的未知实例与范围内实例通过软链共享不在自动识别保证范围内。若合同涵盖的父目录或实例的 `conversations/` 因权限等原因不可读，采集器将保守暂缓范围内会话库入账并在同步报告与 `status` 中提示原因。
 - 采集器解码 `gen_metadata` 表中的 `CortexStepGeneratorMetadata` protobuf，提取每次生成的未缓存输入、缓存读取、缓存写入、输出、属于输出子集的思考 Tokens 以及请求耗时，并关联 `steps` 表中的完成时间。由于 proto3 省略值为 0 的标量字段，输入字段存在时省略的缓存读写按 0 计，输入或输出字段本身缺失时保留未知、不补零。模型名与思考档位从上游响应模型、显示名和模型枚举归一化得到，同一账号的 Gemini、Claude 与 GPT-OSS 模型都记在这个账号的账户下。早于 `2026-09-20` 的记录在读取时丢弃，已读取记录按会话、步骤与执行标识幂等去重。
@@ -198,7 +199,7 @@ meterleaf-collector claude-profiles \
 }
 ```
 
-配置后，采集器只动态扫描 `profilesDir` 下非软链接且含普通文件 `.claude.json` 的直接子目录（忽略隐藏项与含 `bak` / `backup` 的备份目录），按子目录名自动匹配 `<statuslineCacheDir>/<目录名>.tsv` 状态栏缓存，并扫描这些目录各自的 `projects`（软链接到同一目录时按真实路径去重）。默认 `~/.claude` / `~/.claude.json` 及目录外的其他账户不再采集，目录成功完整枚举后会自动清理已移出目录的遗留状态，目录暂时不可读时保留既有状态避免误删。
+配置后，采集器只动态扫描 `profilesDir` 下非软链接且含普通文件 `.claude.json` 的直接子目录（忽略隐藏项与含 `bak` / `backup` 的备份目录），按子目录名自动匹配 `<statuslineCacheDir>/<目录名>.tsv` 状态栏缓存，并扫描这些目录各自的 `projects`（软链接到同一目录时按真实路径去重）。默认 `~/.claude` / `~/.claude.json` 及目录外的其他账户不再采集，目录成功完整枚举后会自动清理已移出目录的遗留状态，并向服务端同步当前受管账户集合（移出的目录自动归档、重新放回的目录自动恢复显示，不删除历史账单）；目录暂时不可读时保留既有状态避免误删或误归档。
 
 ### 开启 OTEL 导出
 

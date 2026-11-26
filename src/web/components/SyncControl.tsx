@@ -411,10 +411,16 @@ export function SyncControl({ compact = false }: { compact?: boolean }) {
   const revision = query.isError ? undefined : status?.ledger?.revision;
   useEffect(() => {
     if (revision === undefined || paused || !visible) return;
-    // 首次状态读取也核对报表，覆盖首屏报表与心跳之间恰好提交的新批次。
-    const changed = lastRevision.current !== revision;
+    // 首次状态读取也核对报表，覆盖首屏报表与心跳之间恰好提交的新批次；
+    // 后续版本推进同步刷新归档/隐藏列表，使受管账号池的增删启停立即可见。
+    const previous = lastRevision.current;
+    const changed = previous !== revision;
     lastRevision.current = revision;
-    if (changed) void invalidateOutdatedLedgerQueries(client, revision);
+    if (changed) {
+      void invalidateOutdatedLedgerQueries(client, revision);
+      if (previous !== undefined)
+        void client.invalidateQueries({ queryKey: ["account-archive"] });
+    }
   }, [revision, paused, visible, client]);
 
   const queryFailed = query.isError;

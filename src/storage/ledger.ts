@@ -42,6 +42,7 @@ import {
 import { quotaHistoryStart } from "../domain/quota";
 import { isManualPlanPlatform } from "../shared/account-plan";
 import { isValidSha256SubjectKey } from "../shared/commandcode";
+import type { IngestManagedScope } from "../shared/ingest";
 
 /** toISOString 的固定宽度格式，同格式的时间按文本比较即按时间先后。 */
 const isoTimestampGlob =
@@ -1430,6 +1431,92 @@ export class LedgerStore {
   }
 
   /**
+   * 同步受管账号池作用域成员状态（在 saveIngestBatch 事务内调用）：
+   * - 本轮活跃成员若曾被归档或隐藏，自动恢复显示；
+   * - 曾由该作用域托管（或本轮明确标记为暂停/停用）且当前不在活跃集合的成员自动归档，不删除历史用量；
+   * - 非该作用域托管的账户（如模型路由账户、手动管理的普通账户）完全不受影响。
+   */
+  private applyManagedScopes(
+    sourceId: string,
+    scopes: readonly IngestManagedScope[],
+  ): boolean {
+    if (!scopes.length) return false;
+    const sourceAccounts = this.sourceAccounts();
+    const existingRefs = new Set(
+      sourceAccounts.map((account) =>
+        ref(account.sourceId, account.externalId),
+      ),
+    );
+    const root = createAccountResolver(sourceAccounts, this.accountMerges());
+    const archived = new Set(this.archivedAccounts());
+    const hidden = new Set(this.hiddenAccounts());
+    const archivedBefore = JSON.stringify([...archived]);
+    const hiddenBefore = JSON.stringify([...hidden]);
+    let changed = false;
+
+    for (const item of scopes) {
+      const stateKey = `managed-scope:${JSON.stringify([sourceId, item.scope])}`;
+      const previousTracked = this.getState<string[]>(stateKey) ?? [];
+      const activeIds = new Set<string>();
+      const activeRoots = new Set<string>();
+      for (const externalId of item.activeAccountExternalIds) {
+        const id = ref(sourceId, externalId);
+        activeIds.add(id);
+        activeRoots.add(root(sourceId, externalId));
+      }
+      const inactiveIds = new Set<string>();
+      for (const externalId of item.inactiveAccountExternalIds ?? []) {
+        const id = ref(sourceId, externalId);
+        if (!activeIds.has(id)) inactiveIds.add(id);
+      }
+      const known = new Set<string>([
+        ...previousTracked,
+        ...activeIds,
+        ...inactiveIds,
+      ]);
+
+      // 活跃成员自动解除归档与隐藏（含其合并目标），确保重新入池或重新启用的账号立即可见。
+      for (const id of [...activeIds, ...activeRoots]) {
+        archived.delete(id);
+        hidden.delete(id);
+      }
+
+      // 离开活跃集合的托管成员自动归档（已有隐藏状态的不重复塞进归档），合并目标仍有其他活跃成员时不归档。
+      for (const id of known) {
+        if (activeIds.has(id)) continue;
+        const separator = id.indexOf(":");
+        const targetId =
+          separator > 0
+            ? root(
+                decodeURIComponent(id.slice(0, separator)),
+                decodeURIComponent(id.slice(separator + 1)),
+              )
+            : id;
+        if (activeRoots.has(targetId)) continue;
+        if (!existingRefs.has(id) && !existingRefs.has(targetId)) continue;
+        if (!hidden.has(targetId)) archived.add(targetId);
+      }
+
+      const nextTracked = [...known].sort();
+      if (JSON.stringify(nextTracked) !== JSON.stringify(previousTracked)) {
+        this.setState(stateKey, nextTracked);
+      }
+    }
+
+    const nextArchived = [...archived];
+    if (JSON.stringify(nextArchived) !== archivedBefore) {
+      this.setState("local:archived-accounts", nextArchived);
+      changed = true;
+    }
+    const nextHidden = [...hidden];
+    if (JSON.stringify(nextHidden) !== hiddenBefore) {
+      this.setState("local:hidden-accounts", nextHidden);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
    * 推送来源的一个批次在单一事务内提交：账户按条更新（不是完整快照，不删除旧账户），
    * 用量与估值按 externalId 幂等写入，额度快照按内容去重。成功返回后采集器才可确认送达。
    */
@@ -1441,6 +1528,7 @@ export class LedgerStore {
       accounts: readonly SourceAccount[];
       usage: readonly UsageFact[];
       quotas: readonly QuotaFact[];
+      managedScopes?: readonly IngestManagedScope[];
     },
     now: string,
   ) {
@@ -1498,6 +1586,10 @@ export class LedgerStore {
           ),
           now,
         ) || changed;
+      if (batch.managedScopes?.length) {
+        changed =
+          this.applyManagedScopes(sourceId, batch.managedScopes) || changed;
+      }
       this.setState(`${sourceId}:ingest:last`, {
         at: now,
         batchId: batch.batchId,
