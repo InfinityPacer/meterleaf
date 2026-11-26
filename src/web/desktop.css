@@ -823,6 +823,31 @@
     .app-shell .account-windows .quota-window-estimate {
       display: none;
     }
+    .app-shell .account-windows .quota-credits {
+      display: grid;
+      grid-template-columns: 104px minmax(60px, 1fr) 76px 150px;
+      grid-template-areas: "label . status amount";
+      align-items: baseline;
+      column-gap: 18px;
+    }
+    .app-shell .account-windows .quota-credits-head {
+      display: contents;
+    }
+    .app-shell .account-windows .quota-credits-label {
+      grid-area: label;
+    }
+    .app-shell .account-windows .quota-credits-label::after {
+      content: none;
+    }
+    .app-shell .account-windows .quota-credits-status {
+      grid-area: status;
+      text-align: right;
+    }
+    .app-shell .account-windows .quota-credits-balance {
+      grid-area: amount;
+      justify-self: end;
+      font-size: 16px;
+    }
   }
 
   .app-shell .account-capacity {

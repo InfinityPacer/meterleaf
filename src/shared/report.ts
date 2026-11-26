@@ -62,6 +62,15 @@ export interface AccountWindow {
   estimate?: import("../domain/quota").QuotaView["estimate"];
 }
 
+/** 上游账户额外 Credits 余额快照（例如 Codex 订阅额度用尽后可继续扣减的余额）。 */
+export interface AccountCredits {
+  hasCredits: boolean;
+  unlimited: boolean;
+  /** 上游原样十进制余额字符串；无限或未知时为 null。 */
+  balance: string | null;
+  sampledAt: string | null;
+}
+
 export interface LedgerAccount {
   id: string;
   name: string;
@@ -82,6 +91,8 @@ export interface LedgerAccount {
   sevenDayThirdParty?: AccountWindow | null;
   /** 按订阅日或账单周期起算的月额度，例如 OpenCode Go、Command Code；上游未上报时缺省。 */
   monthly?: AccountWindow | null;
+  /** 上游账户额外 Credits 余额（例如 Codex）；上游未上报或未启用时缺省。 */
+  credits?: AccountCredits | null;
   /** 全历史账户用量，不受报表筛选影响；缺失表示该来源尚未提供累计汇总。 */
   lifetime?: AccountLifetime;
 }

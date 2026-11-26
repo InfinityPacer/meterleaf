@@ -69,6 +69,20 @@ export const ingestAccountSchema = z
   })
   .strict();
 
+const creditsBalanceSchema = z
+  .string()
+  .regex(/^-?\d+(?:\.\d{1,18})?$/)
+  .max(64)
+  .nullable();
+
+export const ingestQuotaCreditsSchema = z
+  .object({
+    hasCredits: z.boolean(),
+    unlimited: z.boolean(),
+    balance: creditsBalanceSchema,
+  })
+  .strict();
+
 export const ingestQuotaSchema = z
   .object({
     accountExternalId: externalIdSchema,
@@ -80,14 +94,48 @@ export const ingestQuotaSchema = z
       "seven-day-3p",
       // 账单周期（例如 Command Code）；服务端需先升级认识这个值，采集器才能发送。
       "monthly",
+      // 账户额外 Credits 余额快照（例如 Codex）；服务端需先升级认识这个值，采集器才能发送。
+      "credits",
     ]),
     percent: z.number().finite().min(0).max(1000).nullable(),
     /** 上游采样时间，不是采集器读取或上传时间。 */
     sampledAt: timestampSchema.nullable(),
     resetsAt: timestampSchema.nullable(),
     windowMinutes: z.number().int().positive().nullable(),
+    credits: ingestQuotaCreditsSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.window === "credits") {
+      if (!value.credits) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["credits"],
+          message: "credits snapshot requires credits payload",
+        });
+      }
+      if (
+        value.percent !== null ||
+        value.resetsAt !== null ||
+        value.windowMinutes !== null
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["window"],
+          message:
+            "credits snapshot must not set window percent or reset fields",
+        });
+      }
+      return;
+    }
+    if (value.credits !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["credits"],
+        message: "credits payload is only allowed on credits window",
+      });
+    }
+  });
 
 export const ingestBatchSchema = z
   .object({

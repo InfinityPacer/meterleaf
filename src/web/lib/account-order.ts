@@ -53,6 +53,7 @@ export function isEmptyAccount(account: {
   fiveHourThirdParty?: unknown;
   sevenDayThirdParty?: unknown;
   monthly?: unknown;
+  credits?: unknown;
   lifetime?: { count: number };
 }): boolean {
   return (
@@ -63,6 +64,7 @@ export function isEmptyAccount(account: {
     !account.fiveHourThirdParty &&
     !account.sevenDayThirdParty &&
     !account.monthly &&
+    !account.credits &&
     account.lifetime?.count === 0
   );
 }

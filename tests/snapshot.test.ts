@@ -9,6 +9,7 @@ import { LedgerStore } from "../src/storage/ledger";
 import { ReportIndex } from "../src/storage/report-index";
 import {
   createAccountResolver,
+  indexedSnapshot,
   liveSnapshot,
   toLedgerRecord,
 } from "../src/server/snapshot";
@@ -449,6 +450,152 @@ test("ReportIndex windowSum keeps known period tokens when a request misses one 
     expect(allNull.tokens).toBeNull();
   } finally {
     index.close();
+    store.close();
+  }
+});
+
+test("live and indexed snapshots expose latest account credits across merges and clear disabled state", () => {
+  const store = new LedgerStore(":memory:", defaultPriceBook);
+  try {
+    const now = "2026-11-26T05:00:00.000Z";
+    store.saveIngestBatch(
+      "mac",
+      {
+        batchId: crypto.randomUUID(),
+        collector: { name: "meterleaf-collector", version: "0.0.0-test" },
+        accounts: [
+          {
+            sourceId: "mac",
+            externalId: "codex",
+            name: "Codex",
+            platform: "openai",
+            kind: "subscription",
+            plan: "prolite",
+            parentExternalId: null,
+            subjectKey: null,
+          },
+          {
+            sourceId: "mac",
+            externalId: "codex-mirror",
+            name: "Codex Mirror",
+            platform: "openai",
+            kind: "subscription",
+            plan: "prolite",
+            parentExternalId: null,
+            subjectKey: null,
+          },
+        ],
+        usage: [],
+        quotas: [
+          {
+            sourceId: "mac",
+            externalId: "codex:seven-day",
+            accountExternalId: "codex",
+            window: "seven-day",
+            percent: 100,
+            sampledAt: "2026-11-26T04:40:00.000Z",
+            resetsAt: "2026-11-27T02:10:45.000Z",
+            windowMinutes: 10080,
+          },
+          {
+            sourceId: "mac",
+            externalId: "codex:credits",
+            accountExternalId: "codex",
+            window: "credits",
+            percent: null,
+            sampledAt: "2026-11-26T04:30:00.000Z",
+            resetsAt: null,
+            windowMinutes: null,
+            credits: {
+              hasCredits: true,
+              unlimited: false,
+              balance: "10863.14",
+            },
+          },
+          {
+            sourceId: "mac",
+            externalId: "codex-mirror:credits",
+            accountExternalId: "codex-mirror",
+            window: "credits",
+            percent: null,
+            sampledAt: "2026-11-26T04:40:11.000Z",
+            resetsAt: null,
+            windowMinutes: null,
+            credits: {
+              hasCredits: true,
+              unlimited: false,
+              balance: "10859.9461050000",
+            },
+          },
+        ],
+      },
+      now,
+    );
+    store.setAccountMerge("mac:codex-mirror", "mac:codex");
+
+    const live = liveSnapshot(store, null, 7, now);
+    const indexed = indexedSnapshot(
+      {
+        book: store.book,
+        accounts: () => store.accounts(),
+        quotas: () => store.reportQuotas(now),
+        accountMerges: () => store.accountMerges(),
+      },
+      null,
+      now,
+      "subscription",
+      () => ({ usd: "0", credits: null, count: 0, tokens: 0, cacheRate: null }),
+    );
+    const expected = {
+      hasCredits: true,
+      unlimited: false,
+      balance: "10859.9461050000",
+      sampledAt: "2026-11-26T04:40:11.000Z",
+    };
+    expect(live.accounts[0]?.credits).toEqual(expected);
+    expect(indexed.accounts[0]?.credits).toEqual(expected);
+
+    // 最新快照报告无可用 Credits 时清空旧余额，不保留过时数值。
+    store.saveQuotas(
+      [
+        {
+          sourceId: "mac",
+          externalId: "codex:credits",
+          accountExternalId: "codex",
+          window: "credits",
+          percent: null,
+          sampledAt: "2026-11-26T04:50:00.000Z",
+          resetsAt: null,
+          windowMinutes: null,
+          credits: { hasCredits: false, unlimited: false, balance: "0" },
+        },
+      ],
+      now,
+    );
+    expect(
+      liveSnapshot(store, null, 7, now).accounts[0]?.credits,
+    ).toBeUndefined();
+    expect(
+      indexedSnapshot(
+        {
+          book: store.book,
+          accounts: () => store.accounts(),
+          quotas: () => store.reportQuotas(now),
+          accountMerges: () => store.accountMerges(),
+        },
+        null,
+        now,
+        "subscription",
+        () => ({
+          usd: "0",
+          credits: null,
+          count: 0,
+          tokens: 0,
+          cacheRate: null,
+        }),
+      ).accounts[0]?.credits,
+    ).toBeUndefined();
+  } finally {
     store.close();
   }
 });

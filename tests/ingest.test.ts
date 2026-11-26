@@ -387,3 +387,71 @@ test("ingest accepts the monthly billing-period window and stores it", async () 
   );
   expect(rejected.statusCode).toBe(400);
 });
+
+test("ingest accepts Codex credits snapshots and rejects malformed credits payloads", async () => {
+  const { store, post } = setup();
+  const ok = await post(
+    batch({
+      quotas: [
+        {
+          accountExternalId: "acct-1",
+          window: "credits",
+          percent: null,
+          sampledAt: "2026-09-24T16:10:17.109Z",
+          resetsAt: null,
+          windowMinutes: null,
+          credits: {
+            hasCredits: true,
+            unlimited: false,
+            balance: "10859.9461050000",
+          },
+        },
+      ],
+    }),
+  );
+  expect(ok.statusCode).toBe(200);
+  expect(store.quotas()[0]?.fact).toMatchObject({
+    window: "credits",
+    percent: null,
+    resetsAt: null,
+    windowMinutes: null,
+    credits: {
+      hasCredits: true,
+      unlimited: false,
+      balance: "10859.9461050000",
+    },
+  });
+
+  // 缺少 credits 字段、附带窗口字段或挂载在非 credits 窗口上都拒绝。
+  for (const invalid of [
+    {
+      accountExternalId: "acct-1",
+      window: "credits",
+      percent: null,
+      sampledAt: "2026-09-24T16:10:17.109Z",
+      resetsAt: null,
+      windowMinutes: null,
+    },
+    {
+      accountExternalId: "acct-1",
+      window: "credits",
+      percent: 50,
+      sampledAt: "2026-09-24T16:10:17.109Z",
+      resetsAt: null,
+      windowMinutes: null,
+      credits: { hasCredits: true, unlimited: false, balance: "10" },
+    },
+    {
+      accountExternalId: "acct-1",
+      window: "seven-day",
+      percent: 50,
+      sampledAt: "2026-09-24T16:10:17.109Z",
+      resetsAt: "2026-10-01T00:00:00.000Z",
+      windowMinutes: 10080,
+      credits: { hasCredits: true, unlimited: false, balance: "10" },
+    },
+  ]) {
+    const res = await post(batch({ quotas: [invalid as never] }));
+    expect(res.statusCode).toBe(400);
+  }
+});
