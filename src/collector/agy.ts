@@ -1431,6 +1431,189 @@ function readPoolRoutingTiers(
   return result;
 }
 
+interface PoolQuotaWindowRaw {
+  fiveHourUsedPct?: unknown;
+  fiveHourResetsAt?: unknown;
+  weeklyUsedPct?: unknown;
+  weeklyResetsAt?: unknown;
+}
+
+interface PoolQuotaEntryRaw {
+  sampledAtMs: number;
+  gemini?: PoolQuotaWindowRaw | null;
+  thirdParty?: PoolQuotaWindowRaw | null;
+}
+
+function parseIsoMs(value: unknown): number | null {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
+function parsePoolPercent(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 1000
+    ? value
+    : null;
+}
+
+/**
+ * 读取账号池同目录 quota-cache.json 中已缓存的额度快照（只读，缺失或损坏时返回空表）。
+ * 账号池自身会定期探测各账号的 Gemini 与第三方模型池额度，直接复用可避免重复启动 agy 进程，
+ * 也能在闲置账号窗口重置后及时同步最新读数。
+ */
+function readPoolQuotaEntries(
+  poolAccountsFile: string,
+  accountIdByDir: ReadonlyMap<string, string>,
+): Map<string, PoolQuotaEntryRaw> {
+  const result = new Map<string, PoolQuotaEntryRaw>();
+  if (accountIdByDir.size === 0) return result;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(
+      readFileSync(join(dirname(poolAccountsFile), "quota-cache.json"), "utf8"),
+    );
+  } catch {
+    return result;
+  }
+  const entries =
+    parsed &&
+    typeof parsed === "object" &&
+    !Array.isArray(parsed) &&
+    typeof (parsed as { entries?: unknown }).entries === "object" &&
+    (parsed as { entries?: unknown }).entries !== null &&
+    !Array.isArray((parsed as { entries?: unknown }).entries)
+      ? (parsed as { entries: Record<string, unknown> }).entries
+      : null;
+  if (!entries) return result;
+  for (const [dir, accountId] of accountIdByDir) {
+    const item = Object.hasOwn(entries, accountId) ? entries[accountId] : null;
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const record = item as {
+      sampledAt?: unknown;
+      quota?: unknown;
+    };
+    const quota =
+      record.quota &&
+      typeof record.quota === "object" &&
+      !Array.isArray(record.quota)
+        ? (record.quota as {
+            sampledAt?: unknown;
+            gemini?: unknown;
+            thirdParty?: unknown;
+          })
+        : null;
+    if (!quota) continue;
+    const sampledAtMs =
+      parseIsoMs(quota.sampledAt) ?? parseIsoMs(record.sampledAt);
+    if (sampledAtMs === null) continue;
+    const gemini =
+      quota.gemini &&
+      typeof quota.gemini === "object" &&
+      !Array.isArray(quota.gemini)
+        ? (quota.gemini as PoolQuotaWindowRaw)
+        : null;
+    const thirdParty =
+      quota.thirdParty &&
+      typeof quota.thirdParty === "object" &&
+      !Array.isArray(quota.thirdParty)
+        ? (quota.thirdParty as PoolQuotaWindowRaw)
+        : null;
+    if (!gemini && !thirdParty) continue;
+    result.set(dir, { sampledAtMs, gemini, thirdParty });
+  }
+  return result;
+}
+
+function buildPoolQuotaCacheForLabel(
+  label: string,
+  raw: PoolQuotaEntryRaw,
+  now: Date,
+): AgyQuotaCache | null {
+  if (!isValidAgyLabel(label)) return null;
+  const effectiveNowMs = Math.max(raw.sampledAtMs, now.getTime());
+  const entries: AgyQuotaEntry[] = [];
+  const pushBucket = (
+    key: AgyWindowKey,
+    usedValue: unknown,
+    resetValue: unknown,
+  ) => {
+    const rawPercent = parsePoolPercent(usedValue);
+    const resetMs = parseIsoMs(resetValue);
+    if (rawPercent === null && resetMs === null) return;
+    const spec = agyWindows[key];
+    const expired = resetMs !== null && resetMs <= effectiveNowMs;
+    entries.push({
+      key,
+      pool: spec.pool,
+      accountExternalId: agyAccountId(label),
+      window: spec.window,
+      windowMinutes: spec.minutes,
+      percent: expired ? null : rawPercent,
+      resetsAt: resetMs !== null ? new Date(resetMs).toISOString() : null,
+      expired,
+    });
+  };
+  if (raw.gemini) {
+    pushBucket(
+      "gemini_5h",
+      raw.gemini.fiveHourUsedPct,
+      raw.gemini.fiveHourResetsAt,
+    );
+    pushBucket(
+      "gemini_weekly",
+      raw.gemini.weeklyUsedPct,
+      raw.gemini.weeklyResetsAt,
+    );
+  }
+  if (raw.thirdParty) {
+    pushBucket(
+      "3p_5h",
+      raw.thirdParty.fiveHourUsedPct,
+      raw.thirdParty.fiveHourResetsAt,
+    );
+    pushBucket(
+      "3p_weekly",
+      raw.thirdParty.weeklyUsedPct,
+      raw.thirdParty.weeklyResetsAt,
+    );
+  }
+  if (entries.length === 0) return null;
+  return {
+    label,
+    sampledAt: new Date(raw.sampledAtMs).toISOString(),
+    plan: null,
+    entries,
+    ignoredLines: 0,
+  };
+}
+
+/** 判断缓存里是否存在「采样早于重置时间、现已过重置时间」的过期窗口，需要补刷一次最新读数。 */
+function hasExpiredQuotaNeedingRefresh(cache: AgyQuotaCache): boolean {
+  const sampledMs = Date.parse(cache.sampledAt);
+  return cache.entries.some(
+    (entry) =>
+      entry.expired &&
+      entry.resetsAt !== null &&
+      Number.isFinite(sampledMs) &&
+      sampledMs < Date.parse(entry.resetsAt),
+  );
+}
+
+/** 读取本轮是否存在已过期等待补刷的 Antigravity 实例。 */
+export function hasAgyExpiredQuota(state: CollectorState): boolean {
+  try {
+    const parsed = JSON.parse(
+      state.getMeta("agy_expired_profiles") ?? "[]",
+    ) as unknown;
+    return Array.isArray(parsed) && parsed.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** 从账号池清单文件（accounts.json）读取当前启用且就绪的非默认实例目录列表；文件缺失或损坏时返回空数组。 */
 function readPoolAppDataDirs(
   poolAccountsFile: string,
@@ -2485,13 +2668,15 @@ export function readAgy(
       resolveInstanceLabel(instance, sources.statuslineDir),
     );
   }
-  // 账号池模式下顺带读取同目录 routing-state.json 中已探测的套餐缓存（零进程开销）。
+  // 账号池模式下顺带只读同目录 routing-state.json（套餐缓存）与 quota-cache.json（额度缓存），零进程开销。
   let plansUpdated = false;
+  let poolMeta: PoolAccountsInspection | null = null;
+  const poolQuotaByLabel = new Map<string, AgyQuotaCache>();
   if (sources.poolAccountsFile) {
     const defaultGeminiDir = dirname(
       dirname(resolve(sources.conversationsDir)),
     );
-    const poolMeta = inspectPoolAccountsFile(
+    poolMeta = inspectPoolAccountsFile(
       sources.poolAccountsFile,
       defaultGeminiDir,
     );
@@ -2500,12 +2685,31 @@ export function readAgy(
         sources.poolAccountsFile,
         poolMeta.accountIdByDir,
       );
+      const cachedQuotas = readPoolQuotaEntries(
+        sources.poolAccountsFile,
+        poolMeta.accountIdByDir,
+      );
       for (const instance of instances) {
         const label = instanceLabels.get(instance);
-        const tierPlan = cachedTiers.get(canonicalDir(instance.appDataDir));
-        if (label && tierPlan && plans[label] !== tierPlan) {
+        if (!label) continue;
+        const realDir = canonicalDir(instance.appDataDir);
+        const tierPlan = cachedTiers.get(realDir);
+        if (tierPlan && plans[label] !== tierPlan) {
           plans[label] = tierPlan;
           plansUpdated = true;
+        }
+        const rawPoolQuota = cachedQuotas.get(realDir);
+        if (rawPoolQuota) {
+          const built = buildPoolQuotaCacheForLabel(label, rawPoolQuota, now);
+          if (built) {
+            const existing = poolQuotaByLabel.get(label);
+            if (
+              !existing ||
+              Date.parse(built.sampledAt) > Date.parse(existing.sampledAt)
+            ) {
+              poolQuotaByLabel.set(label, built);
+            }
+          }
         }
       }
     }
@@ -2521,16 +2725,35 @@ export function readAgy(
       )
     : null;
 
-  for (const label of listAgyQuotaLabels(sources.statuslineDir)) {
+  const candidateQuotaLabels = [
+    ...new Set([
+      ...listAgyQuotaLabels(sources.statuslineDir),
+      ...poolQuotaByLabel.keys(),
+    ]),
+  ].sort();
+  const expiredQuotaLabels = new Set<string>();
+
+  for (const label of candidateQuotaLabels) {
     if (allowedQuotaLabels && !allowedQuotaLabels.has(label)) continue;
-    const cache = readAgyQuotaFile(
+    const tsvCache = readAgyQuotaFile(
       join(sources.statuslineDir, agyQuotaFileName(label)),
       label,
       now,
     );
-    if (!cache) continue;
-    report.quotaIgnoredLines += cache.ignoredLines;
-    if (cache.plan) plans[label] = cache.plan;
+    const poolCache = poolQuotaByLabel.get(label) ?? null;
+    if (!tsvCache && !poolCache) continue;
+    if (tsvCache) report.quotaIgnoredLines += tsvCache.ignoredLines;
+    if (tsvCache?.plan && !plans[label]) plans[label] = tsvCache.plan;
+    const chosen =
+      tsvCache && poolCache
+        ? Date.parse(poolCache.sampledAt) > Date.parse(tsvCache.sampledAt)
+          ? poolCache
+          : tsvCache
+        : (tsvCache ?? poolCache)!;
+    if (chosen === tsvCache && tsvCache?.plan) plans[label] = tsvCache.plan;
+    if (hasExpiredQuotaNeedingRefresh(chosen)) {
+      expiredQuotaLabels.add(label);
+    }
     const effectivePlan = effectiveAgyPlan(
       plans[label] ?? null,
       sources.defaultPlan,
@@ -2539,8 +2762,8 @@ export function readAgy(
     state.write(() => {
       state.upsertAccount(accounts.account);
       for (const legacy of accounts.legacy) state.upsertAccount(legacy);
-      if (cache.entries.length > 0) {
-        const snapshot = agyQuotaSnapshot(cache);
+      if (chosen.entries.length > 0) {
+        const snapshot = agyQuotaSnapshot(chosen);
         if (state.recordQuota(snapshot, `agy:${label}`)) {
           report.quotas += snapshot.quotas.length;
         }
@@ -2562,6 +2785,7 @@ export function readAgy(
   const startIso = new Date(startMs).toISOString();
   const allDbPaths = new Set<string>();
   const dirtyProfiles = new Set<string | null>();
+  const expiredProfiles = new Set<string | null>();
 
   interface ConvGroup {
     primary: { instance: AgyInstance; label: string | null };
@@ -2579,13 +2803,21 @@ export function readAgy(
       );
       state.upsertAccount(accounts.account);
       for (const legacy of accounts.legacy) state.upsertAccount(legacy);
-      // 已登录的额外实例尚无本地额度缓存时，纳入本轮待刷新列表（仍受 5 分钟退避约束）。
+      // 已登录的额外实例尚无本地额度缓存（且账号池 quota-cache.json 也未提供）时，纳入本轮待刷新列表。
       if (
         instance.profileName !== null &&
-        !existsSync(join(sources.statuslineDir, agyQuotaFileName(label)))
+        !existsSync(join(sources.statuslineDir, agyQuotaFileName(label))) &&
+        !poolQuotaByLabel.has(label)
       ) {
         dirtyProfiles.add(instance.id);
         report.missingQuotaProfiles += 1;
+      } else if (
+        instance.profileName !== null &&
+        expiredQuotaLabels.has(label)
+      ) {
+        // 已登录额外/池实例的快照存在已过重置时间的窗口时，补刷一次最新读数（默认实例留给自身新用量或 omp）。
+        dirtyProfiles.add(instance.id);
+        expiredProfiles.add(instance.id);
       }
     }
     if (explicitMode) continue;
@@ -2976,6 +3208,7 @@ export function readAgy(
   }
 
   state.setMeta("agy_dirty_profiles", JSON.stringify([...dirtyProfiles]));
+  state.setMeta("agy_expired_profiles", JSON.stringify([...expiredProfiles]));
 
   // 配置了账号池清单且文件可读、所有在池实例标签均已解析时，上报当前活跃/停用成员集合，
   // 供服务端自动归档暂停或移出的池账号并恢复重新入池的账号；清单损坏或存在未识别标签时不上报。
@@ -2983,10 +3216,9 @@ export function readAgy(
     const absConversationsDir = resolve(sources.conversationsDir);
     const defaultGeminiDir = dirname(dirname(absConversationsDir));
     const defaultRealGeminiDir = canonicalDir(defaultGeminiDir);
-    const poolInfo = inspectPoolAccountsFile(
-      sources.poolAccountsFile,
-      defaultGeminiDir,
-    );
+    const poolInfo =
+      poolMeta ??
+      inspectPoolAccountsFile(sources.poolAccountsFile, defaultGeminiDir);
     const allActiveLabeled = instances.every((inst) =>
       Boolean(instanceLabels.get(inst)),
     );
@@ -3068,6 +3300,8 @@ export interface AgyRefreshOptions {
   timeoutMs?: number;
   /** 指定需要刷新的实例身份键或短名（null 为默认实例）；省略时按 agy_dirty_profiles 刷新。 */
   profiles?: readonly (string | null)[];
+  /** 多实例刷新时的最大并发度，默认 3。 */
+  concurrency?: number;
   /** 内部传递：刷新指定额外实例时使用其 profileName、accountKey、geminiDir 与 appDataDir。 */
   profileName?: string | null;
   /** 状态栏 current-account-<accountKey> 隔离键；省略时回退到 profileName。 */
@@ -3282,6 +3516,54 @@ async function runProbe(
 }
 
 /**
+ * 为 `agy -p /usage` 与 `agy acp` 统一构造隔离后的子进程环境变量：
+ * - 先清除 XDG_*、GEMINI_CLI_HOME、ANTIGRAVITY_*、SSH_* 与 WSL_INTEROP，避免宿主目录或会话环境串扰；
+ * - 非默认实例强制设 WSL_INTEROP=1；ACP 探测额外设 SSH_CONNECTION，防止 agy >= 1.5.17 漂移到 macOS Keychain
+ *   （`agy -p /usage` 在 SSH_CONNECTION 下会挂起，因此 usage 探测保持清除 SSH_CONNECTION）。
+ */
+function buildAgyProbeEnv(
+  profileName: string | null,
+  mode: "usage" | "acp",
+): Record<string, string> {
+  const home = process.env.HOME || homedir();
+  const env = probeEnv();
+  for (const name of tierStripEnvVars) delete env[name];
+  env.HOME = home;
+  env.METERLEAF_AGY_PROBE = "1";
+  env.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
+  env.BROWSER = "/usr/bin/false";
+  if (profileName !== null) {
+    env.WSL_INTEROP = "1";
+    if (mode === "acp") {
+      env.SSH_CONNECTION = tierProbeSshMarker;
+    }
+  }
+  return env;
+}
+
+/** 按指定并发上限执行异步任务，返回与输入顺序一致的结果数组。 */
+async function runWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  const concurrency = Math.max(1, Math.min(limit, items.length));
+  let cursor = 0;
+  const runWorker = async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
+  return results;
+}
+
+/**
  * 运行一次 agy -p /usage 并把结果写回状态栏额度缓存。失败只体现在返回值里，
  * 已有的 quota-<label>.tsv 与 current-account 保持原样。
  */
@@ -3341,22 +3623,12 @@ export async function refreshAgyQuota(
     tempDir = mkdtempSync(join(tmpdir(), "meterleaf-agy-usage-"));
     const logFile = join(tempDir, "agy.log");
     const outFile = join(tempDir, "usage.json");
-    const env = probeEnv();
-    // 清除 SSH 环境变量（agy -p /usage 在 SSH_CONNECTION 下会挂起）；默认实例同时清 WSL_INTEROP 以走 Keychain。
-    delete env.SSH_CONNECTION;
-    delete env.SSH_CLIENT;
-    delete env.SSH_TTY;
-    env.METERLEAF_AGY_PROBE = "1";
-    env.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
-    env.BROWSER = "/usr/bin/false";
+    const env = buildAgyProbeEnv(profileName, "usage");
 
     const argv = [agyBin];
     if (profileName !== null) {
-      env.WSL_INTEROP = "1";
       if (effectiveGeminiDir) argv.push("--gemini_dir", effectiveGeminiDir);
       argv.push("--app_data_dir", `antigravity-cli-${profileName}`);
-    } else {
-      delete env.WSL_INTEROP;
     }
     argv.push(
       "-p",
@@ -3442,6 +3714,7 @@ async function maybeRefreshInstanceQuota(
   instance: AgyInstance,
   now: Date,
   options: AgyRefreshOptions,
+  poolQuotaRaw?: PoolQuotaEntryRaw | null,
 ): Promise<AgyQuotaRefreshResult> {
   const skipped: AgyQuotaRefreshResult = {
     attempted: false,
@@ -3471,11 +3744,26 @@ async function maybeRefreshInstanceQuota(
   }
   const label = resolveInstanceLabel(instance, sources.statuslineDir);
   if (label) {
+    // 账号池同目录 quota-cache.json 5 分钟内刚采样过且没有待补刷的过期窗口时，直接复用，不重复启动 agy。
+    if (poolQuotaRaw) {
+      const poolAge = now.getTime() - poolQuotaRaw.sampledAtMs;
+      const poolCache = buildPoolQuotaCacheForLabel(label, poolQuotaRaw, now);
+      if (
+        poolCache &&
+        poolAge >= 0 &&
+        poolAge < refreshIntervalMs &&
+        !hasExpiredQuotaNeedingRefresh(poolCache)
+      ) {
+        return skipped;
+      }
+    }
     try {
-      const cacheAge =
-        now.getTime() -
-        statSync(join(sources.statuslineDir, agyQuotaFileName(label))).mtimeMs;
-      if (cacheAge < refreshIntervalMs) return skipped;
+      const quotaPath = join(sources.statuslineDir, agyQuotaFileName(label));
+      const cacheAge = now.getTime() - statSync(quotaPath).mtimeMs;
+      if (cacheAge < refreshIntervalMs) {
+        const parsed = readAgyQuotaFile(quotaPath, label, now);
+        if (!parsed || !hasExpiredQuotaNeedingRefresh(parsed)) return skipped;
+      }
     } catch {
       // 还没有额度缓存，需要刷新。
     }
@@ -3500,9 +3788,9 @@ async function maybeRefreshInstanceQuota(
 }
 
 /**
- * 发现新的 Antigravity 用量后调用。距上次尝试不足 5 分钟，或状态栏刚写过额度缓存时
- * 直接跳过。尝试时间在启动 agy 之前写入，失败也按 5 分钟退避，不会每分钟重试。
- * 错误只在与上轮不同时记一行日志。
+ * 发现新的 Antigravity 用量、缺失缓存或窗口过期后调用。距上次尝试不足 5 分钟，或状态栏/账号池
+ * 刚写过有效额度缓存时直接跳过。尝试时间在启动 agy 之前写入，失败也按 5 分钟退避。
+ * 多实例按有界并发（默认 3）执行，避免单轮 sync 被串行探测阻塞。
  */
 export async function maybeRefreshAgyQuota(
   state: CollectorState,
@@ -3532,12 +3820,24 @@ export async function maybeRefreshAgyQuota(
       targets = [null];
     }
   }
-  const finalResult: AgyQuotaRefreshResult = {
-    attempted: false,
-    refreshed: false,
-    label: null,
-    error: null,
-  };
+  let poolQuotas: ReadonlyMap<string, PoolQuotaEntryRaw> = new Map();
+  if (sources.poolAccountsFile) {
+    const defaultGeminiDir = dirname(
+      dirname(resolve(sources.conversationsDir)),
+    );
+    const poolMeta = inspectPoolAccountsFile(
+      sources.poolAccountsFile,
+      defaultGeminiDir,
+    );
+    if (poolMeta.ok) {
+      poolQuotas = readPoolQuotaEntries(
+        sources.poolAccountsFile,
+        poolMeta.accountIdByDir,
+      );
+    }
+  }
+  const targetInstances: AgyInstance[] = [];
+  const seenInstanceDirs = new Set<string>();
   for (const target of targets) {
     let instance = instances.find((item) => item.id === target) ?? null;
     if (
@@ -3550,13 +3850,31 @@ export async function maybeRefreshAgyQuota(
       if (byProfile.length === 1) instance = byProfile[0]!;
     }
     if (!instance) continue;
-    const res = await maybeRefreshInstanceQuota(
-      state,
-      sources,
-      instance,
-      now,
-      options,
-    );
+    const realDir = canonicalDir(instance.appDataDir);
+    if (seenInstanceDirs.has(realDir)) continue;
+    seenInstanceDirs.add(realDir);
+    targetInstances.push(instance);
+  }
+  const results = await runWithConcurrency(
+    targetInstances,
+    options.concurrency ?? 3,
+    (instance) =>
+      maybeRefreshInstanceQuota(
+        state,
+        sources,
+        instance,
+        now,
+        options,
+        poolQuotas.get(canonicalDir(instance.appDataDir)) ?? null,
+      ),
+  );
+  const finalResult: AgyQuotaRefreshResult = {
+    attempted: false,
+    refreshed: false,
+    label: null,
+    error: null,
+  };
+  for (const res of results) {
     if (res.attempted) finalResult.attempted = true;
     if (res.refreshed) {
       finalResult.refreshed = true;
@@ -3734,17 +4052,10 @@ export async function probeAgyTier(
   try {
     tempDir = mkdtempSync(join(tmpdir(), "meterleaf-agy-tier-"));
     chmodSync(tempDir, 0o700);
-    const env = probeEnv();
-    for (const name of tierStripEnvVars) delete env[name];
-    env.HOME = home;
-    env.METERLEAF_AGY_PROBE = "1";
-    env.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
-    env.BROWSER = "/usr/bin/false";
+    const env = buildAgyProbeEnv(profileName, "acp");
 
     const args = ["acp", "--disable-telemetry"];
     if (profileName !== null) {
-      env.SSH_CONNECTION = tierProbeSshMarker;
-      env.WSL_INTEROP = "1";
       if (effectiveGeminiDir && effectiveGeminiDir !== defaultGeminiDir) {
         args.push("--gemini-dir", effectiveGeminiDir);
       }
@@ -3982,6 +4293,7 @@ function readTierProbeRecord(
  * 为已知标签的 Antigravity 实例按需探测套餐类型（仅 sync 调用，scan 不联网）：
  * - 账号池模式下已在同目录 routing-state.json 中命中的实例跳过进程探测；
  * - 已有套餐按 24 小时 TTL 复查；首次缺失、探测失败或旧版 CLI 返回 null 时按 1 小时退避，防止死循环；
+ * - 每轮按有界并发（默认 2）与单轮上限（默认 2）执行，其余到期实例顺延下一轮 sync，避免阻塞后台推送；
  * - 探测成功后写入 agy_plans，并在已有 quota-<label>.tsv 时合并写入 plan 行，仍保留 defaultPlan 细化回退。
  */
 export async function maybeRefreshAgyTiers(
@@ -3991,6 +4303,10 @@ export async function maybeRefreshAgyTiers(
   options: Pick<AgyTierProbeOptions, "agyBin" | "timeoutMs"> & {
     /** 为 true 时只为尚无已知套餐的实例探测，已有套餐的不触发 24h 周期复查。 */
     onlyMissingPlan?: boolean;
+    /** 单轮最多探测的实例数，默认 2，剩余顺延下一轮。 */
+    maxProbesPerRound?: number;
+    /** 并发探测数上限，默认 2。 */
+    concurrency?: number;
   } = {},
 ): Promise<AgyTierRefreshResult> {
   const result: AgyTierRefreshResult = {
@@ -4018,6 +4334,11 @@ export async function maybeRefreshAgyTiers(
     }
   }
 
+  const dueTasks: {
+    instance: AgyInstance;
+    label: string;
+    probeKey: string;
+  }[] = [];
   for (const instance of instances) {
     if (
       instance.profileName !== null &&
@@ -4041,37 +4362,50 @@ export async function maybeRefreshAgyTiers(
       const waitMs = hasPlan && last.ok ? tierRefreshTtlMs : tierRetryBackoffMs;
       if (elapsed >= 0 && elapsed < waitMs) continue;
     }
+    dueTasks.push({ instance, label, probeKey });
+  }
 
-    state.setMeta(
-      probeKey,
-      JSON.stringify({
-        at: now.toISOString(),
-        ok: false,
-      } satisfies TierProbeRecord),
-    );
-    const probe = await probeAgyTier({
-      agyBin: options.agyBin,
-      timeoutMs: options.timeoutMs,
-      profileName: instance.profileName,
-      geminiDir: instance.geminiDir,
-      appDataDir: instance.appDataDir,
-    });
+  const maxProbes = Math.max(1, options.maxProbesPerRound ?? 2);
+  const batch = dueTasks.slice(0, maxProbes);
+  const outcomes = await runWithConcurrency(
+    batch,
+    options.concurrency ?? 2,
+    async (task) => {
+      state.setMeta(
+        task.probeKey,
+        JSON.stringify({
+          at: now.toISOString(),
+          ok: false,
+        } satisfies TierProbeRecord),
+      );
+      const probe = await probeAgyTier({
+        agyBin: options.agyBin,
+        timeoutMs: options.timeoutMs,
+        profileName: task.instance.profileName,
+        geminiDir: task.instance.geminiDir,
+        appDataDir: task.instance.appDataDir,
+      });
+      return { task, probe };
+    },
+  );
+
+  for (const { task, probe } of outcomes) {
     if (probe.attempted) result.attempted += 1;
     const normalized = normalizeAgyTierPlan(probe.tier);
     if (!normalized) continue;
 
     state.setMeta(
-      probeKey,
+      task.probeKey,
       JSON.stringify({
         at: now.toISOString(),
         ok: true,
       } satisfies TierProbeRecord),
     );
-    const changed = plans[label] !== normalized;
-    plans[label] = normalized;
+    const changed = plans[task.label] !== normalized;
+    plans[task.label] = normalized;
     state.setMeta("agy_plans", JSON.stringify(plans));
     // 仅在已有额度缓存文件时合并写入 plan 行，避免在首次刷额度前制造空壳 TSV 掩盖 missingQuotaProfiles。
-    const quotaPath = join(sources.statuslineDir, agyQuotaFileName(label));
+    const quotaPath = join(sources.statuslineDir, agyQuotaFileName(task.label));
     if (existsSync(quotaPath)) {
       try {
         mergeQuotaFile(
@@ -4084,7 +4418,7 @@ export async function maybeRefreshAgyTiers(
     }
     if (changed) {
       result.refreshed = true;
-      result.updatedLabels.push(label);
+      result.updatedLabels.push(task.label);
     }
   }
   return result;
@@ -4094,6 +4428,9 @@ export async function maybeRefreshAgyTiers(
 
 /** 额度已用完时 omp 会收到 429，此后不再产生用量，所以单独用较短的间隔去读一次实时额度。 */
 const exhaustedRefreshIntervalMs = 60_000;
+/** 本机未安装 omp 时按较长间隔退避，避免存在历史未归属 omp 请求时每 5 分钟反复报错。 */
+const ompMissingBinBackoffMs = 30 * 60_000;
+const ompMissingBinError = "找不到 omp 可执行文件";
 
 /**
  * omp usage --json 每个已登录账号一份报告，额度标识末段与 agy /usage 的桶名相同，
@@ -4254,9 +4591,14 @@ export async function maybeRefreshOmpAgyQuota(
   const lastAttemptAt = state.getMeta("omp_agy_quota_refresh_at");
   if (lastAttemptAt) {
     const elapsed = now.getTime() - Date.parse(lastAttemptAt);
-    const interval = trigger.exhausted
-      ? exhaustedRefreshIntervalMs
-      : refreshIntervalMs;
+    const missingBin =
+      state.getMeta("omp_agy_quota_refresh_status") ===
+      `error:${ompMissingBinError}`;
+    const interval = missingBin
+      ? ompMissingBinBackoffMs
+      : trigger.exhausted
+        ? exhaustedRefreshIntervalMs
+        : refreshIntervalMs;
     if (elapsed >= 0 && elapsed < interval)
       return { attempted: false, refreshed: false, labels: [], error: null };
   }

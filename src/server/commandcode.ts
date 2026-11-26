@@ -44,6 +44,8 @@ export function commandCodeQuotaFacts(
 
 /** 读数未变时最多隔这么久写一次，让页面上的采样时间不至于显得过时。 */
 const UNCHANGED_SAVE_MS = 4 * 60_000;
+/** 401/403 凭据被拒后的冷却时长，避免页面打开时每 2 分钟反复撞失效 Key。 */
+const REJECTED_COOLDOWN_MS = 30 * 60_000;
 
 export interface CommandCodeQuotaOptions {
   key: string;
@@ -57,33 +59,41 @@ export interface CommandCodeQuotaOptions {
   now?: () => number;
   /** 两次读取的最小间隔；页面每 15 秒报一次在线，只有间隔已到才再读。 */
   intervalMs?: number;
+  /** 401/403 被拒后的冷却时长，默认 30 分钟。 */
+  rejectedCooldownMs?: number;
 }
 
 /**
  * 只在有页面打开时读取 Command Code 额度：页面上报在线且距上次读取超过间隔才读一次，
- * 同一时刻只有一个请求，失败也计入间隔，避免反复请求被拒的 Key。
+ * 同一时刻只有一个请求，失败也计入间隔，401/403 施加长冷却避免反复请求被拒的 Key。
  * 账户由服务端独占写入额度：同一账户的采集器额度在入账时被跳过。
  */
 export class CommandCodeQuotaRefresher {
   private lastAttempt = Number.NEGATIVE_INFINITY;
+  private rejectedUntil = Number.NEGATIVE_INFINITY;
   /** 上次写入的读数与时刻；读数未变时少写快照，减少写盘与报表重算。 */
   private lastSaved: { readings: string; at: number } | null = null;
   private running: Promise<void> | null = null;
   private readonly fetch: typeof fetch;
   private readonly now: () => number;
   private readonly intervalMs: number;
+  private readonly rejectedCooldownMs: number;
 
   constructor(private readonly options: CommandCodeQuotaOptions) {
     this.fetch = options.fetch ?? fetch;
     this.now = options.now ?? Date.now;
     this.intervalMs = options.intervalMs ?? 120_000;
+    this.rejectedCooldownMs =
+      options.rejectedCooldownMs ?? REJECTED_COOLDOWN_MS;
   }
 
   updatePresence(_id: string, visible: boolean) {
     if (!visible) return;
     if (this.running) return;
-    if (this.now() - this.lastAttempt < this.intervalMs) return;
-    this.lastAttempt = this.now();
+    const now = this.now();
+    if (now < this.rejectedUntil) return;
+    if (now - this.lastAttempt < this.intervalMs) return;
+    this.lastAttempt = now;
     this.running = this.refresh().finally(() => {
       this.running = null;
     });
@@ -107,6 +117,7 @@ export class CommandCodeQuotaRefresher {
     }
     // 结果只含固定字面量与状态码，可直接记录；登录名、组织与上游原文不会出现在这里。
     if (result.status === "rejected") {
+      this.rejectedUntil = this.now() + this.rejectedCooldownMs;
       diagnostics.warn("command_code.quota_rejected", {
         status: result.httpStatus,
       });
@@ -121,6 +132,7 @@ export class CommandCodeQuotaRefresher {
       });
       return;
     }
+    this.rejectedUntil = Number.NEGATIVE_INFINITY;
     const sampledAt = new Date(this.now()).toISOString();
     const quotas = commandCodeQuotaFacts(
       result.windows,
