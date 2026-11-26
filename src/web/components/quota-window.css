@@ -195,7 +195,8 @@
   font-style: normal;
 }
 
-.quota-window[data-waiting="true"] .quota-window-foot strong {
+.quota-window[data-waiting="true"] .quota-window-foot strong,
+.quota-window[data-unopened="true"] .quota-window-foot strong {
   color: var(--muted);
 }
 

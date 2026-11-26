@@ -72,7 +72,8 @@ export function QuotaWindow({
   /** 桌面账户行在右侧另有 7d 预估栏，此时不在窗口内重复。 */
   estimate?: boolean;
 }) {
-  const { key, label, window, waiting, independent, platform } = selection;
+  const { key, label, window, waiting, unopened, independent, platform } =
+    selection;
   if (waiting) {
     const ended = quotaWaitingReset(window, asOf);
     return (
@@ -101,6 +102,37 @@ export function QuotaWindow({
             <strong aria-label={`${label}费用等待更新`}>—</strong>
           </span>
           <span className="quota-window-volume">新周期数据到达后显示</span>
+        </span>
+      </span>
+    );
+  }
+  if (unopened) {
+    return (
+      <span className="quota-window" data-window={key} data-unopened="true">
+        <span className="quota-window-head">
+          <span className="quota-window-title">
+            <strong className="quota-window-label">{label}</strong>
+            <span className="quota-window-status">已用 0%</span>
+          </span>
+          <span className="quota-window-reset">未开窗</span>
+        </span>
+        <span
+          className="quota-window-progress"
+          role="progressbar"
+          aria-label={`${label}额度使用情况`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={0}
+          aria-valuetext="已用 0%，未开窗"
+        >
+          <span style={quotaFillStyle(0)} />
+        </span>
+        {/* 未开窗时尚无周期起点，费用保留破折号不补零，标明首次请求后开始计时。 */}
+        <span className="quota-window-foot">
+          <span className="quota-window-amount">
+            <strong aria-label={`${label}尚未开窗`}>—</strong>
+          </span>
+          <span className="quota-window-volume">首次请求后开始计时</span>
         </span>
       </span>
     );
