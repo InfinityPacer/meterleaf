@@ -1,11 +1,13 @@
 import {
   INGEST_BATCHES_PATH,
   INGEST_MAX_ACCOUNTS,
+  INGEST_MAX_MANAGED_SCOPES,
   INGEST_MAX_QUOTAS,
   INGEST_MAX_USAGE,
   INGEST_SCHEMA_VERSION,
   type IngestAccount,
   type IngestBatch,
+  type IngestManagedScope,
   type IngestQuota,
   type IngestUsage,
 } from "../shared/ingest";
@@ -315,7 +317,17 @@ export async function pushOutbox(
       "account",
       limits.accounts,
     );
-    if (rawUsage.length + queuedQuotas.length + accountItems.length === 0)
+    const scopeItems = state.pending<IngestManagedScope>(
+      "scope",
+      INGEST_MAX_MANAGED_SCOPES,
+    );
+    if (
+      rawUsage.length +
+        queuedQuotas.length +
+        accountItems.length +
+        scopeItems.length ===
+      0
+    )
       break;
 
     const accounts = new Map<string, IngestAccount>();
@@ -366,7 +378,10 @@ export async function pushOutbox(
         // 见上。
       }
     }
-    if (usage.length + quotas.length + accountItems.length === 0) {
+    if (
+      usage.length + quotas.length + accountItems.length + scopeItems.length ===
+      0
+    ) {
       // 本批只剩被丢弃的旧额度，或本页用量全部暂扣且后面还有待发用量时继续取下一批；
       // 其余情况（只剩顺延额度或待发用量已翻完）说明名额无法腾出或全部暂扣，留待下次。
       if (dropped.length > 0 || (!usageExhausted && rawUsage.length > 0)) {
@@ -377,6 +392,7 @@ export async function pushOutbox(
     const referenced = new Set([
       ...usage.map((item) => item.payload.accountExternalId),
       ...quotas.map((item) => item.payload.accountExternalId),
+      ...scopeItems.flatMap((item) => item.payload.activeAccountExternalIds),
     ]);
     for (const id of referenced) {
       if (accounts.size >= limits.accounts) break;
@@ -393,6 +409,9 @@ export async function pushOutbox(
       accounts: [...accounts.values()],
       usage: usage.map((item) => item.payload),
       quotas: quotas.map((item) => wireQuota(item.payload)),
+      ...(scopeItems.length
+        ? { managedScopes: scopeItems.map((item) => item.payload) }
+        : {}),
     };
 
     const sent = await post(ingestUrl, JSON.stringify(batch));
@@ -408,6 +427,7 @@ export async function pushOutbox(
       ...usage,
       ...quotas,
       ...accountItems,
+      ...scopeItems,
     ];
     state.acknowledge(acknowledged.map((item) => item.seq));
     // 推送期间可能有并发写入产生更大 seq 的新版本用量，下轮从 usageAfterSeq 继续探测一次。

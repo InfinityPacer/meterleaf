@@ -1,5 +1,9 @@
 import { Database } from "bun:sqlite";
-import type { IngestAccount, IngestUsage } from "../shared/ingest";
+import type {
+  IngestAccount,
+  IngestManagedScope,
+  IngestUsage,
+} from "../shared/ingest";
 import type { CodexOtelEvent, OtelRequestAccount } from "../shared/otel";
 import {
   attribute,
@@ -40,7 +44,7 @@ export interface FileObservation {
   fact: UsageFact;
 }
 
-export type OutboxKind = "usage" | "account" | "quota" | "otel";
+export type OutboxKind = "usage" | "account" | "quota" | "otel" | "scope";
 
 /** Command Code 套餐缓存（账户 id → planId），只在规则未写死套餐时采用。 */
 export const COMMAND_CODE_PLANS_META = "commandcode_plans";
@@ -1665,6 +1669,35 @@ export class CollectorState {
     return true;
   }
 
+  /**
+   * 记录受管账号池作用域的成员快照；只有活跃/停用集合相对上次有变化时才入队，
+   * 推送成功后才确认，离线或失败时自动留待下次重试。
+   */
+  recordManagedScope(
+    scope: IngestManagedScope["scope"],
+    activeAccountExternalIds: readonly string[],
+    inactiveAccountExternalIds: readonly string[] = [],
+  ): boolean {
+    const active = [...new Set(activeAccountExternalIds)].sort();
+    const activeSet = new Set(active);
+    const inactive = [
+      ...new Set(inactiveAccountExternalIds.filter((id) => !activeSet.has(id))),
+    ].sort();
+    const payload: IngestManagedScope = {
+      scope,
+      activeAccountExternalIds: active,
+      ...(inactive.length ? { inactiveAccountExternalIds: inactive } : {}),
+    };
+    const serialized = JSON.stringify(payload);
+    const metaKey = `last_managed_scope:${scope}`;
+    if (this.getMeta(metaKey) === serialized) return false;
+    this.write(() => {
+      this.enqueue("scope", scope, payload);
+      this.setMeta(metaKey, serialized);
+    });
+    return true;
+  }
+
   pending<T>(kind: OutboxKind, limit: number, afterSeq = 0): OutboxItem<T>[] {
     if (kind === "usage") {
       return this.db
@@ -1700,6 +1733,7 @@ export class CollectorState {
       account: 0,
       quota: 0,
       otel: 0,
+      scope: 0,
     };
     for (const row of this.db
       .query<{ kind: OutboxKind; count: number }, []>(

@@ -28,6 +28,7 @@ const planAliases: Record<string, string> = {
 const planFamilies: Record<string, readonly string[]> = {
   max: ["max-5x", "max-20x"],
   team: ["team-standard", "team-premium"],
+  "Google AI Ultra": ["ultra-5x", "ultra-20x"],
 };
 
 /** 套餐标识来自上游，只查自有属性，"constructor" 等原型键不会误命中。 */

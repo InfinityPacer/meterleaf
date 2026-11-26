@@ -929,6 +929,8 @@ export interface AgyReaderSources {
   appDataDirs?: readonly string[];
   /** 可选：动态读取账号池清单文件（accounts.json）中启用且就绪的非默认实例目录。 */
   poolAccountsFile?: string;
+  /** 可选：上游未报出精确套餐倍数（如未提供或只报 Google AI Ultra）时的默认套餐。 */
+  defaultPlan?: string | null;
   /** 可选：本机默认 .gemini 根目录，确保即使覆盖 conversationsDir 也能识别并排除默认目录下的范围外共享库。 */
   defaultGeminiDir?: string;
 }
@@ -1203,16 +1205,40 @@ function hasNonEmptyOAuthTokenFile(appDataDir: string): boolean {
   }
 }
 
-/** 从账号池清单文件（accounts.json）读取当前启用且就绪的非默认实例目录列表；文件缺失或损坏时返回空数组。 */
-function readPoolAppDataDirs(
+/** 上游未上报套餐或只报无倍数的 Google AI Ultra 时回退到配置的默认套餐。 */
+function effectiveAgyPlan(
+  observed: string | null,
+  defaultPlan?: string | null,
+): string | null {
+  const fallback = defaultPlan?.trim() || null;
+  if (!observed) return fallback;
+  if (
+    fallback &&
+    observed.trim().toLowerCase() === "google ai ultra" &&
+    (fallback === "ultra-5x" || fallback === "ultra-20x")
+  ) {
+    return fallback;
+  }
+  return observed;
+}
+
+interface PoolAccountsInspection {
+  /** 清单文件是否成功读取且结构合法；为 false 时不能据此推断池成员已移出。 */
+  ok: boolean;
+  activeDirs: string[];
+  inactiveDirs: string[];
+}
+
+/** 从账号池清单文件（accounts.json）解析启用且就绪与已暂停/移出的非默认实例目录列表。 */
+function inspectPoolAccountsFile(
   poolAccountsFile: string,
   geminiDir: string,
-): string[] {
+): PoolAccountsInspection {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(poolAccountsFile, "utf8"));
   } catch {
-    return [];
+    return { ok: false, activeDirs: [], inactiveDirs: [] };
   }
   const list = Array.isArray(parsed)
     ? parsed
@@ -1220,8 +1246,10 @@ function readPoolAppDataDirs(
         typeof parsed === "object" &&
         Array.isArray((parsed as { accounts?: unknown }).accounts)
       ? (parsed as { accounts: unknown[] }).accounts
-      : [];
-  const dirs: string[] = [];
+      : null;
+  if (!list) return { ok: false, activeDirs: [], inactiveDirs: [] };
+  const activeDirs: string[] = [];
+  const inactiveDirs: string[] = [];
   for (const item of list) {
     if (!item || typeof item !== "object") continue;
     const record = item as {
@@ -1232,9 +1260,6 @@ function readPoolAppDataDirs(
       appDataDir?: unknown;
     };
     if (record.kind === "default") continue;
-    if (record.enabled !== true) continue;
-    if (record.status !== "ready") continue;
-    if (record.removedAt) continue;
     if (
       typeof record.appDataDir !== "string" ||
       record.appDataDir.trim() === ""
@@ -1245,9 +1270,25 @@ function readPoolAppDataDirs(
       : resolve(geminiDir, record.appDataDir);
     // 严格排除默认目录 antigravity-cli，防止误采非池实例。
     if (basename(resolved) === "antigravity-cli") continue;
-    dirs.push(resolved);
+    if (
+      record.enabled === true &&
+      record.status === "ready" &&
+      !record.removedAt
+    ) {
+      activeDirs.push(resolved);
+    } else {
+      inactiveDirs.push(resolved);
+    }
   }
-  return dirs;
+  return { ok: true, activeDirs, inactiveDirs };
+}
+
+/** 从账号池清单文件（accounts.json）读取当前启用且就绪的非默认实例目录列表；文件缺失或损坏时返回空数组。 */
+function readPoolAppDataDirs(
+  poolAccountsFile: string,
+  geminiDir: string,
+): string[] {
+  return inspectPoolAccountsFile(poolAccountsFile, geminiDir).activeDirs;
 }
 
 /**
@@ -2309,7 +2350,10 @@ export function readAgy(
     if (!cache) continue;
     report.quotaIgnoredLines += cache.ignoredLines;
     if (cache.plan) plans[label] = cache.plan;
-    const effectivePlan = plans[label] ?? null;
+    const effectivePlan = effectiveAgyPlan(
+      plans[label] ?? null,
+      sources.defaultPlan,
+    );
     const accounts = agyAccountsForLabel(label, effectivePlan);
     state.write(() => {
       state.upsertAccount(accounts.account);
@@ -2348,7 +2392,10 @@ export function readAgy(
   for (const instance of instances) {
     const label = instanceLabels.get(instance) ?? null;
     if (label) {
-      const accounts = agyAccountsForLabel(label, plans[label] ?? null);
+      const accounts = agyAccountsForLabel(
+        label,
+        effectiveAgyPlan(plans[label] ?? null, sources.defaultPlan),
+      );
       state.upsertAccount(accounts.account);
       for (const legacy of accounts.legacy) state.upsertAccount(legacy);
       // 已登录的额外实例尚无本地额度缓存时，纳入本轮待刷新列表（仍受 5 分钟退避约束）。
@@ -2748,6 +2795,61 @@ export function readAgy(
   }
 
   state.setMeta("agy_dirty_profiles", JSON.stringify([...dirtyProfiles]));
+
+  // 配置了账号池清单且文件可读、所有在池实例标签均已解析时，上报当前活跃/停用成员集合，
+  // 供服务端自动归档暂停或移出的池账号并恢复重新入池的账号；清单损坏或存在未识别标签时不上报。
+  if (sources.poolAccountsFile) {
+    const absConversationsDir = resolve(sources.conversationsDir);
+    const defaultGeminiDir = dirname(dirname(absConversationsDir));
+    const defaultRealGeminiDir = canonicalDir(defaultGeminiDir);
+    const poolInfo = inspectPoolAccountsFile(
+      sources.poolAccountsFile,
+      defaultGeminiDir,
+    );
+    const allActiveLabeled = instances.every((inst) =>
+      Boolean(instanceLabels.get(inst)),
+    );
+    if (poolInfo.ok && allActiveLabeled) {
+      const activeLabels = new Set<string>();
+      for (const inst of instances) {
+        const label = instanceLabels.get(inst);
+        if (label) activeLabels.add(label);
+      }
+      if (poolInfo.activeDirs.length > 0 && activeLabels.size === 0) {
+        return report;
+      }
+      const inactiveLabels = new Set<string>();
+      for (const dir of poolInfo.inactiveDirs) {
+        const resolved = resolve(dir);
+        const realDir = canonicalDir(resolved);
+        const dirName = basename(realDir);
+        if (!AGY_EXTRA_DIR_NAME_RE.test(dirName)) continue;
+        const profileName = dirName.slice("antigravity-cli-".length);
+        const id = computeInstanceId(
+          profileName,
+          realDir,
+          defaultRealGeminiDir,
+        );
+        const label = resolveInstanceLabel(
+          {
+            id,
+            profileName,
+            appDataDir: realDir,
+            geminiDir: dirname(realDir),
+            conversationsDir: join(realDir, "conversations"),
+          },
+          sources.statuslineDir,
+        );
+        if (label && !activeLabels.has(label)) inactiveLabels.add(label);
+      }
+      state.recordManagedScope(
+        "agy-pool",
+        [...activeLabels].map(agyAccountId),
+        [...inactiveLabels].map(agyAccountId),
+      );
+    }
+  }
+
   return report;
 }
 // ---- 额度按需刷新 ----
