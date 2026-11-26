@@ -53,7 +53,7 @@ const knownPlans: Record<string, Record<string, PlanBadge>> = {
     "google ai pro": { label: "Pro", tier: 1 },
     plus: { label: "Plus", tier: null },
     pro: { label: "Pro", tier: 1 },
-    "google ai ultra": { label: "Ultra", tier: null },
+    "google ai ultra": { label: "Ultra", tier: 2 },
     "ultra-5x": { label: "Ultra 5x", tier: 2 },
     "ultra-20x": { label: "Ultra 20x", tier: 3 },
     "gemini enterprise": { label: "Enterprise", tier: null },

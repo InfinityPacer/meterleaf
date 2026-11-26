@@ -71,10 +71,10 @@ test("OpenCode Go plans show their names without a usage tier", () => {
   });
 });
 
-test("Antigravity reports Google AI Ultra without its multiple", () => {
+test("Antigravity reports Google AI Ultra without its multiple using tier 2 styling", () => {
   expect(subscription("google", "Google AI Ultra")).toEqual({
     label: "Ultra",
-    tier: null,
+    tier: 2,
   });
 });
 test("Codex supports Go, Plus, Pro 5x, Pro 20x, Team and Business", () => {
