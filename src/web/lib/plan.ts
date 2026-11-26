@@ -47,13 +47,17 @@ const knownPlans: Record<string, Record<string, PlanBadge>> = {
     business: { label: "Business", tier: null },
   },
   google: {
+    free: { label: "Free", tier: null },
+    individual: { label: "Free", tier: null },
     "google ai plus": { label: "Plus", tier: null },
     "google ai pro": { label: "Pro", tier: 1 },
     plus: { label: "Plus", tier: null },
     pro: { label: "Pro", tier: 1 },
-    "google ai ultra": { label: "Ultra", tier: null },
+    "google ai ultra": { label: "Ultra", tier: 2 },
     "ultra-5x": { label: "Ultra 5x", tier: 2 },
     "ultra-20x": { label: "Ultra 20x", tier: 3 },
+    "gemini enterprise": { label: "Enterprise", tier: null },
+    "gemini enterprise plus": { label: "Enterprise Plus", tier: null },
   },
   // OpenCode Go 的额度不按订阅倍数分档，页面只显示名称。
   "opencode-go": {

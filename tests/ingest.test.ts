@@ -387,3 +387,153 @@ test("ingest accepts the monthly billing-period window and stores it", async () 
   );
   expect(rejected.statusCode).toBe(400);
 });
+
+test("ingest accepts Codex credits snapshots and rejects malformed credits payloads", async () => {
+  const { store, post } = setup();
+  const ok = await post(
+    batch({
+      quotas: [
+        {
+          accountExternalId: "acct-1",
+          window: "credits",
+          percent: null,
+          sampledAt: "2026-09-24T16:10:17.109Z",
+          resetsAt: null,
+          windowMinutes: null,
+          credits: {
+            hasCredits: true,
+            unlimited: false,
+            balance: "10859.9461050000",
+          },
+        },
+      ],
+    }),
+  );
+  expect(ok.statusCode).toBe(200);
+  expect(store.quotas()[0]?.fact).toMatchObject({
+    window: "credits",
+    percent: null,
+    resetsAt: null,
+    windowMinutes: null,
+    credits: {
+      hasCredits: true,
+      unlimited: false,
+      balance: "10859.9461050000",
+    },
+  });
+
+  // 缺少 credits 字段、附带窗口字段或挂载在非 credits 窗口上都拒绝。
+  for (const invalid of [
+    {
+      accountExternalId: "acct-1",
+      window: "credits",
+      percent: null,
+      sampledAt: "2026-09-24T16:10:17.109Z",
+      resetsAt: null,
+      windowMinutes: null,
+    },
+    {
+      accountExternalId: "acct-1",
+      window: "credits",
+      percent: 50,
+      sampledAt: "2026-09-24T16:10:17.109Z",
+      resetsAt: null,
+      windowMinutes: null,
+      credits: { hasCredits: true, unlimited: false, balance: "10" },
+    },
+    {
+      accountExternalId: "acct-1",
+      window: "seven-day",
+      percent: 50,
+      sampledAt: "2026-09-24T16:10:17.109Z",
+      resetsAt: "2026-10-01T00:00:00.000Z",
+      windowMinutes: 10080,
+      credits: { hasCredits: true, unlimited: false, balance: "10" },
+    },
+  ]) {
+    const res = await post(batch({ quotas: [invalid as never] }));
+    expect(res.statusCode).toBe(400);
+  }
+});
+
+test("managedScopes auto-restores re-added pool accounts, archives paused/removed ones, and leaves unrelated accounts untouched", async () => {
+  const { store, post } = setup();
+  const mkAccount = (externalId: string, name: string) => ({
+    externalId,
+    name,
+    platform: "google",
+    kind: "subscription" as const,
+    plan: "ultra-20x",
+    subjectKey: null,
+  });
+  // 先写入池账号和独立路由账号，并模拟历史手工隐藏/归档状态。
+  const seed = await post(
+    batch({
+      accounts: [
+        mkAccount("agy-alice", "Antigravity (alice)"),
+        mkAccount("agy-bob", "Antigravity (bob)"),
+        mkAccount("agy-paused", "Antigravity (paused)"),
+        mkAccount("agy-router", "Antigravity (CLI 路由)"),
+      ],
+      usage: [],
+      quotas: [],
+    }),
+  );
+  expect(seed.statusCode).toBe(200);
+  store.hideAccount("claude-code-mac:agy-alice");
+  store.hideAccount("claude-code-mac:agy-router");
+  store.setAccountArchived("claude-code-mac:agy-bob", true);
+
+  // 首轮同步：alice/bob 在活跃池中（应自动取消隐藏/归档），paused 在停用列表中（应自动归档），router 不受影响。
+  const revBefore = store.revision();
+  const first = await post(
+    batch({
+      accounts: [],
+      usage: [],
+      quotas: [],
+      managedScopes: [
+        {
+          scope: "agy-pool",
+          activeAccountExternalIds: ["agy-alice", "agy-bob"],
+          inactiveAccountExternalIds: ["agy-paused"],
+        },
+      ],
+    }),
+  );
+  expect(first.statusCode).toBe(200);
+  expect(store.revision()).toBeGreaterThan(revBefore);
+  expect(store.hiddenAccounts()).toEqual(["claude-code-mac:agy-router"]);
+  expect(store.archivedAccounts()).toEqual(["claude-code-mac:agy-paused"]);
+
+  // 后续 bob 从池里彻底删掉（不在 active 也不在 inactive），仍会被自动归档；重新加回 paused 则自动恢复。
+  const second = await post(
+    batch({
+      accounts: [],
+      usage: [],
+      quotas: [],
+      managedScopes: [
+        {
+          scope: "agy-pool",
+          activeAccountExternalIds: ["agy-alice", "agy-paused"],
+        },
+      ],
+    }),
+  );
+  expect(second.statusCode).toBe(200);
+  expect(store.hiddenAccounts()).toEqual(["claude-code-mac:agy-router"]);
+  expect(store.archivedAccounts()).toEqual(["claude-code-mac:agy-bob"]);
+
+  // 同一批次重复声明同一 scope 被拒绝。
+  const dup = await post(
+    batch({
+      accounts: [],
+      usage: [],
+      quotas: [],
+      managedScopes: [
+        { scope: "agy-pool", activeAccountExternalIds: ["agy-alice"] },
+        { scope: "agy-pool", activeAccountExternalIds: ["agy-bob"] },
+      ],
+    }),
+  );
+  expect(dup.statusCode).toBe(400);
+});

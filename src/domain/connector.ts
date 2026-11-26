@@ -56,6 +56,14 @@ export interface SourceAccount extends SourceRef {
   subjectKey: string | null;
 }
 
+/** 上游账户额外 Credits 余额，与本地按价格表推算的历史 Credits 估值相互独立。 */
+export interface QuotaCredits {
+  hasCredits: boolean;
+  unlimited: boolean;
+  /** 上游原样十进制余额字符串；无限或未知时为 null。 */
+  balance: string | null;
+}
+
 /** 快照时间与本地采集时间分离。无 resetAt 时仍可展示百分比，但不得推断周期。 */
 export interface QuotaFact extends SourceRef {
   accountExternalId: string;
@@ -64,6 +72,7 @@ export interface QuotaFact extends SourceRef {
    * five-hour-3p 与 seven-day-3p 是 Antigravity 的 Claude/GPT 额度池，与同一 Google 账户的
    * Gemini 池（five-hour、seven-day）分开消耗。
    * monthly 是按订阅日或账单周期起算的月额度，由 OpenCode Go 与 Command Code 提供。
+   * credits 是账户额外 Credits 余额快照（例如 Codex 订阅额度用尽后可继续扣减的余额）。
    */
   window:
     | "five-hour"
@@ -71,11 +80,14 @@ export interface QuotaFact extends SourceRef {
     | "seven-day-fable"
     | "five-hour-3p"
     | "seven-day-3p"
-    | "monthly";
+    | "monthly"
+    | "credits";
   percent: number | null;
   sampledAt: string | null;
   resetsAt: string | null;
   windowMinutes: number | null;
+  /** 仅在 window === "credits" 时提供。 */
+  credits?: QuotaCredits | null;
 }
 
 /** 游标对核心是不透明字符串；单页与游标在本地事务中一并提交。 */

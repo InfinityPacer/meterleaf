@@ -11,9 +11,60 @@
   min-width: 0;
 }
 
-.quota-window-list > .quota-window + .quota-window {
+.quota-window-list
+  > :is(.quota-window, .quota-credits)
+  + :is(.quota-window, .quota-credits) {
   padding-top: 12px;
   border-top: 1px solid var(--line);
+}
+
+/* 额外 Credits 余额行：移动端单行左右排布，桌面宽容器内对齐额度窗口四列。 */
+.quota-credits {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.quota-credits-head {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.quota-credits-label {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.quota-credits-label::after {
+  content: "·";
+  margin-left: 7px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.quota-credits-status {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.quota-credits-balance {
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.25;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* 用 flex 而非 auto 列：iOS Safari 在重置文字变长后不一定重算 auto 列宽，时间会溢出卡片。 */

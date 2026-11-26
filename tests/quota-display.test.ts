@@ -15,6 +15,10 @@ import {
   withExtraQuotaWindows,
   quotaResetMinute,
   accountQuotaWindows,
+  hasAccountCredits,
+  formatCreditsBalance,
+  creditsBalanceExact,
+  hasDetailQuota,
 } from "../src/web/lib/quota-display";
 
 type QuotaEstimate = NonNullable<AccountWindow["estimate"]>;
@@ -382,4 +386,45 @@ test("quota fill passes the used share to the color rule", () => {
     width: "0%",
     "--quota-used": 0,
   });
+});
+
+test("formats account credits balances cleanly and opens detail for credits-only accounts", () => {
+  const active = {
+    hasCredits: true,
+    unlimited: false,
+    balance: "10859.9461050000",
+    sampledAt: now,
+  };
+  expect(hasAccountCredits({ credits: active })).toBe(true);
+  expect(formatCreditsBalance(active)).toBe("10,859.95");
+  expect(creditsBalanceExact(active)).toBe("10859.946105");
+
+  const unlimited = {
+    hasCredits: true,
+    unlimited: true,
+    balance: null,
+    sampledAt: now,
+  };
+  expect(hasAccountCredits({ credits: unlimited })).toBe(true);
+  expect(formatCreditsBalance(unlimited)).toBe("不限量");
+  expect(creditsBalanceExact(unlimited)).toBeNull();
+
+  expect(
+    hasAccountCredits({
+      credits: {
+        hasCredits: false,
+        unlimited: false,
+        balance: "0",
+        sampledAt: now,
+      },
+    }),
+  ).toBe(false);
+  expect(formatCreditsBalance(null)).toBe("N/A");
+  expect(
+    hasDetailQuota({
+      fiveHour: null,
+      sevenDay: null,
+      credits: active,
+    }),
+  ).toBe(true);
 });

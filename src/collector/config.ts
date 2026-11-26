@@ -66,6 +66,8 @@ const agySourceSchema = z
       .optional(),
     /** 动态读取账号池清单文件（accounts.json）中启用且就绪的非默认实例目录（始终排除 default / antigravity-cli）。 */
     poolAccountsFile: z.string().startsWith("/").optional(),
+    /** 可选：上游未报出精确套餐倍数（如未提供或只报 Google AI Ultra）时的默认套餐。 */
+    defaultPlan: z.enum(["plus", "pro", "ultra-5x", "ultra-20x"]).optional(),
   })
   .strict();
 

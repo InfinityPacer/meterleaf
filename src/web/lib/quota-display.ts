@@ -1,6 +1,47 @@
 import type { CSSProperties } from "react";
-import type { AccountWindow, LedgerAccount } from "../../shared/report";
+import type {
+  AccountCredits,
+  AccountWindow,
+  LedgerAccount,
+} from "../../shared/report";
 import { amount, numericAmount } from "./report";
+
+const creditsBalanceFormat = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+/** 账户存在可展示的额外 Credits 余额（含不限量或已知数值）。 */
+export function hasAccountCredits(
+  account: Pick<LedgerAccount, "credits">,
+): boolean {
+  const credits = account.credits;
+  return Boolean(
+    credits &&
+    (credits.unlimited || (credits.hasCredits && credits.balance !== null)),
+  );
+}
+
+/** 账户额外 Credits 余额展示：千分位保留两位小数，不限量直接标明，缺值不补零。 */
+export function formatCreditsBalance(
+  credits: AccountCredits | null | undefined,
+): string {
+  if (!credits) return "N/A";
+  if (credits.unlimited) return "不限量";
+  if (!credits.hasCredits || credits.balance === null) return "N/A";
+  const value = Number(credits.balance);
+  return Number.isFinite(value) ? creditsBalanceFormat.format(value) : "N/A";
+}
+
+/** 去掉尾部多余零后的原始余额文本，用于详情与悬停提示。 */
+export function creditsBalanceExact(
+  credits: AccountCredits | null | undefined,
+): string | null {
+  if (!credits || credits.unlimited || credits.balance === null) return null;
+  const trimmed = credits.balance.trim();
+  if (!/^-?\d+(?:\.\d+)?$/.test(trimmed)) return null;
+  return trimmed.includes(".") ? trimmed.replace(/\.?0+$/, "") : trimmed;
+}
 
 /** 各入口只展示当前周期可用的预估，缺值和过期金额不补零。 */
 export function estimateAmount(
@@ -227,6 +268,7 @@ type PoolAccount = Pick<
   | "monthly"
   | "fiveHourThirdParty"
   | "sevenDayThirdParty"
+  | "credits"
 > & { platform?: string | null };
 
 function thirdPartyPool(account: PoolAccount) {
@@ -237,7 +279,7 @@ function thirdPartyPool(account: PoolAccount) {
 }
 
 /**
- * 桌面账户行点击时是否打开详情抽屉（否则跳到请求明细）：有 5h、7d 或第二额度池即可；
+ * 桌面账户行点击时是否打开详情抽屉（否则跳到请求明细）：有 5h、7d、第二额度池或额外 Credits 即可；
  * 只有月度窗口时仅 Command Code（账单周期）打开详情，OpenCode Go 等其他平台保持原有行为。
  */
 export function hasDetailQuota(account: PoolAccount) {
@@ -245,6 +287,7 @@ export function hasDetailQuota(account: PoolAccount) {
     account.fiveHour ||
     account.sevenDay ||
     hasThirdPartyPool(account) ||
+    hasAccountCredits(account) ||
     (account.platform === "commandcode" && account.monthly),
   );
 }

@@ -10,6 +10,8 @@ export const INGEST_SCHEMA_VERSION = 1;
 export const INGEST_MAX_USAGE = 2000;
 export const INGEST_MAX_ACCOUNTS = 100;
 export const INGEST_MAX_QUOTAS = 200;
+export const INGEST_MAX_MANAGED_SCOPES = 10;
+export const INGEST_MAX_SCOPE_ACCOUNTS = 200;
 /** 单批 JSON 上限；采集器按条数分批，正常批次远小于此值。 */
 export const INGEST_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
 
@@ -69,6 +71,20 @@ export const ingestAccountSchema = z
   })
   .strict();
 
+const creditsBalanceSchema = z
+  .string()
+  .regex(/^-?\d+(?:\.\d{1,18})?$/)
+  .max(64)
+  .nullable();
+
+export const ingestQuotaCreditsSchema = z
+  .object({
+    hasCredits: z.boolean(),
+    unlimited: z.boolean(),
+    balance: creditsBalanceSchema,
+  })
+  .strict();
+
 export const ingestQuotaSchema = z
   .object({
     accountExternalId: externalIdSchema,
@@ -80,12 +96,62 @@ export const ingestQuotaSchema = z
       "seven-day-3p",
       // 账单周期（例如 Command Code）；服务端需先升级认识这个值，采集器才能发送。
       "monthly",
+      // 账户额外 Credits 余额快照（例如 Codex）；服务端需先升级认识这个值，采集器才能发送。
+      "credits",
     ]),
     percent: z.number().finite().min(0).max(1000).nullable(),
     /** 上游采样时间，不是采集器读取或上传时间。 */
     sampledAt: timestampSchema.nullable(),
     resetsAt: timestampSchema.nullable(),
     windowMinutes: z.number().int().positive().nullable(),
+    credits: ingestQuotaCreditsSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.window === "credits") {
+      if (!value.credits) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["credits"],
+          message: "credits snapshot requires credits payload",
+        });
+      }
+      if (
+        value.percent !== null ||
+        value.resetsAt !== null ||
+        value.windowMinutes !== null
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["window"],
+          message:
+            "credits snapshot must not set window percent or reset fields",
+        });
+      }
+      return;
+    }
+    if (value.credits !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["credits"],
+        message: "credits payload is only allowed on credits window",
+      });
+    }
+  });
+
+export const ingestManagedScopeSchema = z
+  .object({
+    /** 受管账号池作用域（例如 Antigravity 账号池或 Claude 多账户目录）。 */
+    scope: z.enum(["agy-pool", "claude-profiles"]),
+    /** 本轮确认在池且活跃的账户 externalId 完整列表。 */
+    activeAccountExternalIds: z
+      .array(externalIdSchema)
+      .max(INGEST_MAX_SCOPE_ACCOUNTS),
+    /** 可选：池清单中明确处于暂停、未就绪或已移出状态的账户 externalId 列表。 */
+    inactiveAccountExternalIds: z
+      .array(externalIdSchema)
+      .max(INGEST_MAX_SCOPE_ACCOUNTS)
+      .optional(),
   })
   .strict();
 
@@ -103,12 +169,22 @@ export const ingestBatchSchema = z
     accounts: z.array(ingestAccountSchema).max(INGEST_MAX_ACCOUNTS),
     usage: z.array(ingestUsageSchema).max(INGEST_MAX_USAGE),
     quotas: z.array(ingestQuotaSchema).max(INGEST_MAX_QUOTAS),
+    managedScopes: z
+      .array(ingestManagedScopeSchema)
+      .max(INGEST_MAX_MANAGED_SCOPES)
+      .refine(
+        (scopes) =>
+          new Set(scopes.map((item) => item.scope)).size === scopes.length,
+        "Duplicate managed scope in batch",
+      )
+      .optional(),
   })
   .strict();
 
 export type IngestUsage = z.infer<typeof ingestUsageSchema>;
 export type IngestAccount = z.infer<typeof ingestAccountSchema>;
 export type IngestQuota = z.infer<typeof ingestQuotaSchema>;
+export type IngestManagedScope = z.infer<typeof ingestManagedScopeSchema>;
 export type IngestBatch = z.infer<typeof ingestBatchSchema>;
 
 /** 成功响应表示整批已在同一事务中持久化，采集器此后才能把条目标记为已送达。 */
