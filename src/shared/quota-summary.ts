@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import type { AccountWindow, LedgerAccount } from "./report";
+import type { AccountCredits, AccountWindow, LedgerAccount } from "./report";
 
 /**
  * 采集器用写入密钥读取的订阅额度摘要，供本机会话判断该切换哪个账户。
@@ -36,6 +36,8 @@ export interface QuotaSummaryAccount {
   /** 合并到该账户的全部来源账户，格式同 id，本机用它找到自己登录的账户。 */
   members: string[];
   windows: Partial<Record<QuotaSummaryWindowKey, QuotaSummaryWindow>>;
+  /** 上游账户额外 Credits 余额（例如 Codex）；无可用余额时省略。 */
+  credits?: AccountCredits;
 }
 
 export interface QuotaSummary {
@@ -95,6 +97,7 @@ export function buildQuotaSummary(
           platform: account.platform ?? null,
           members: [...(members[account.id] ?? [account.id])],
           windows,
+          ...(account.credits ? { credits: account.credits } : {}),
         };
       }),
   };

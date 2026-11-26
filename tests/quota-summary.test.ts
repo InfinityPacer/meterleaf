@@ -192,3 +192,27 @@ test("a report still being built answers 202 so the collector keeps its last sum
   });
   expect(response.statusCode).toBe(202);
 });
+
+test("summary includes active account credits when reported", () => {
+  const credits = {
+    hasCredits: true,
+    unlimited: false,
+    balance: "10859.9461050000",
+    sampledAt: "2026-11-26T04:40:11.300Z",
+  };
+  const summary = buildQuotaSummary(
+    "2026-11-26T04:45:00.000Z",
+    [
+      account({
+        id: "mac:codex",
+        name: "Codex",
+        plan: "prolite",
+        platform: "openai",
+        credits,
+      }),
+    ],
+    { archived: [], hidden: [], aliases: {} },
+    {},
+  );
+  expect(summary.accounts[0]?.credits).toEqual(credits);
+});

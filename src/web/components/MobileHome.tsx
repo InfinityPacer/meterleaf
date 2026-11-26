@@ -5,7 +5,11 @@ import { groupAccountsByPlatform } from "../lib/account-groups";
 import { planBadge } from "../lib/plan";
 import type { LedgerView } from "../../shared/ledger-view";
 import type { AccountLifetime, LedgerAccount } from "../../shared/report";
-import { accountQuotaWindows, hasThirdPartyPool } from "../lib/quota-display";
+import {
+  accountQuotaWindows,
+  hasAccountCredits,
+  hasThirdPartyPool,
+} from "../lib/quota-display";
 import {
   amount,
   compact,
@@ -14,7 +18,7 @@ import {
 } from "../lib/report";
 import "./mobile-home.css";
 import { SortableAccountItem, SortableAccountList } from "./AccountSortable";
-import { QuotaWindow } from "./QuotaWindow";
+import { AccountCreditsRow, QuotaWindow } from "./QuotaWindow";
 import { CompositionBar, type UsageSummaryData } from "./UsageSummary";
 
 const TIME_ZONE = "Asia/Shanghai";
@@ -231,13 +235,16 @@ export function MobileHome({
 
   const renderAccountItem = (account: LedgerAccount, itemSorting: boolean) => {
     const quotas = showArchived ? [] : accountQuotaWindows(account, asOf);
+    const hasCredits = !showArchived && hasAccountCredits(account);
+    const quotaItems = quotas.length + (hasCredits ? 1 : 0);
     const hasQuota =
       !showArchived &&
       Boolean(
         account.fiveHour ||
         account.sevenDay ||
         account.monthly ||
-        hasThirdPartyPool(account),
+        hasThirdPartyPool(account) ||
+        hasCredits,
       );
     const plan = planBadge(account);
     const open = () => (hasQuota ? onAccount(account) : onRequests(account));
@@ -252,7 +259,7 @@ export function MobileHome({
         <button
           type="button"
           className="mobile-home-account-card"
-          data-quota-count={quotas.length}
+          data-quota-count={quotaItems}
           onClick={open}
           aria-label={`查看 ${account.name} ${hasQuota ? "账户额度" : "请求用量"}`}
         >
@@ -278,11 +285,14 @@ export function MobileHome({
               aria-hidden="true"
             />
           </span>
-          {quotas.length ? (
-            <span className="quota-window-list" data-count={quotas.length}>
+          {quotaItems ? (
+            <span className="quota-window-list" data-count={quotaItems}>
               {quotas.map((quota) => (
                 <QuotaWindow key={quota.key} selection={quota} asOf={asOf} />
               ))}
+              {hasCredits && account.credits && (
+                <AccountCreditsRow credits={account.credits} />
+              )}
             </span>
           ) : hasQuota ? (
             <div className="mobile-home-quota-unavailable">

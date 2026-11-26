@@ -1,5 +1,6 @@
 import type { SourceAccount, UsageFact } from "../domain/connector";
 import {
+  accountCreditsView,
   hasThirdPartyPool,
   quotaView,
   type QuotaChargeReader,
@@ -266,6 +267,7 @@ export function liveSnapshot(
       false,
       quotaViewOptions(account.platform, "monthly"),
     );
+    const credits = accountCreditsView(quotaHistory);
     return {
       id,
       name: account.name,
@@ -276,6 +278,7 @@ export function liveSnapshot(
         sevenDay?.sampledAt ??
         fiveHour?.sampledAt ??
         monthly?.sampledAt ??
+        credits?.sampledAt ??
         null,
       fiveHour,
       sevenDay,
@@ -284,6 +287,7 @@ export function liveSnapshot(
         ? { fiveHourThirdParty, sevenDayThirdParty }
         : {}),
       ...(monthly ? { monthly } : {}),
+      ...(credits ? { credits } : {}),
     };
   });
   return {
@@ -435,6 +439,7 @@ export function indexedSnapshot(
       false,
       quotaViewOptions(account.platform, "monthly"),
     );
+    const credits = accountCreditsView(quotaHistory);
     return {
       id,
       name: account.name,
@@ -445,6 +450,7 @@ export function indexedSnapshot(
         sevenDay?.sampledAt ??
         fiveHour?.sampledAt ??
         monthly?.sampledAt ??
+        credits?.sampledAt ??
         null,
       fiveHour,
       sevenDay,
@@ -453,6 +459,7 @@ export function indexedSnapshot(
         ? { fiveHourThirdParty, sevenDayThirdParty }
         : {}),
       ...(monthly ? { monthly } : {}),
+      ...(credits ? { credits } : {}),
     };
   });
   return {

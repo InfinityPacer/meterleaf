@@ -179,7 +179,7 @@ test("Codex does not guess a missing model or inconsistent token counters", () =
   expect(() => codexEvent(row, context())).toThrow("inconsistent");
 });
 
-test("Codex quota windows follow duration, not primary/secondary position", () => {
+test("Codex quota windows follow duration, not primary/secondary position, and capture credits", () => {
   const snapshot = codexSnapshot(
     quotaEvent("2026-10-02T12:00:00.000Z", "pro"),
   )!;
@@ -191,7 +191,12 @@ test("Codex quota windows follow duration, not primary/secondary position", () =
     ["five-hour", 12],
   ]);
   expect(snapshot.quotas[0]!.sampledAt).toBe("2026-10-02T12:00:00.000Z");
-  expect(JSON.stringify(snapshot)).not.toContain("62500");
+  expect(snapshot.credits).toEqual({
+    hasCredits: true,
+    unlimited: false,
+    balance: "62500",
+    sampledAt: "2026-10-02T12:00:00.000Z",
+  });
 });
 
 test("Codex ignores model-scoped buckets and invalid percentages without guessing", () => {
@@ -240,18 +245,19 @@ test("an observed plan_type overrides the rule plan and the windows upload once"
   const item = openState();
   const report = await read(item, root);
   expect(item.account("codex")!.plan).toBe("plus");
-  expect(report.quotas).toBe(2);
+  expect(report.quotas).toBe(3);
   expect(
     item
       .pending<{ accountExternalId: string; window: string }>("quota", 1000)
       .map((entry) => [entry.payload.accountExternalId, entry.payload.window]),
   ).toEqual([
+    ["codex", "credits"],
     ["codex", "five-hour"],
     ["codex", "seven-day"],
   ]);
   // 补送账号信息与额度不消耗待发送的用量计数；重复读取不再入队。
   expect((await read(item, root)).quotas).toBe(0);
-  expect(item.pending("quota", 1000)).toHaveLength(2);
+  expect(item.pending("quota", 1000)).toHaveLength(3);
 });
 
 test("go channel usage routes to the OpenCode Go account without quota or plan changes", async () => {
@@ -441,7 +447,7 @@ test("quota samples newer than the previous observation are the only ones upload
     new Date("2026-10-07T12:10:00Z"),
     new Date("2026-10-07T12:10:00Z"),
   );
-  expect((await read(item, root)).quotas).toBe(2);
+  expect((await read(item, root)).quotas).toBe(3);
 });
 
 test("reattribute and requeueUsage only scan the event table, so channel accounts stay", async () => {
@@ -498,7 +504,7 @@ test("a quota-only session still creates the account, and the plan survives late
   const item = openState();
   await read(item, root);
   expect(item.account("codex")?.plan).toBe("plus");
-  expect(item.pending("quota", 100)).toHaveLength(2);
+  expect(item.pending("quota", 100)).toHaveLength(3);
   // 下一轮只有新用量、没有套餐通知时沿用已观察到的套餐，不退回规则值。
   appendFileSync(file, lines(usage(1)));
   await read(item, root);
@@ -563,7 +569,7 @@ test("a failure while recording quota rolls back the file so the retry restores 
   item.recordQuota = original;
   await read(item, root);
   expect(item.pending("usage", 100)).toHaveLength(1);
-  expect(item.pending("quota", 100)).toHaveLength(2);
+  expect(item.pending("quota", 100)).toHaveLength(3);
 });
 
 test("a compressed file that does not fit the remaining budget waits for the next round", async () => {
@@ -646,4 +652,163 @@ test("a cached ChatGPT plan only applies while the account stays on the openai p
     platform: "commandcode",
     plan: null,
   });
+});
+
+test("Codex credits skip inactive defaults, capture decimal and unlimited balances, and propagate disable transitions", async () => {
+  const root = codexRoot();
+  const makeCreditsEvent = (
+    timestamp: string,
+    credits: Record<string, unknown> | null,
+  ) => ({
+    timestamp,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: null,
+      rate_limits: {
+        limit_id: "codex",
+        plan_type: "prolite",
+        primary: null,
+        secondary: null,
+        credits,
+      },
+    },
+  });
+  const file = join(root, "sessions", "credits.jsonl");
+  // 从未启用 Credits 的账户不额外入队 credits 快照。
+  writeFileSync(
+    file,
+    lines(
+      meta,
+      model,
+      makeCreditsEvent("2026-10-02T10:00:00.000Z", {
+        has_credits: false,
+        unlimited: false,
+        balance: "0",
+      }),
+    ),
+  );
+  const item = openState();
+  expect((await read(item, root)).quotas).toBe(0);
+  expect(item.pending("quota", 100)).toHaveLength(0);
+
+  // 启用 Credits 后记录小数余额，无 5h/7d 窗口时照常上报。
+  appendFileSync(
+    file,
+    lines(
+      makeCreditsEvent("2026-10-02T10:05:00.000Z", {
+        has_credits: true,
+        unlimited: false,
+        balance: "10859.9461050000",
+      }),
+    ),
+  );
+  expect((await read(item, root)).quotas).toBe(1);
+  expect(item.pending("quota", 100).map((entry) => entry.payload)).toEqual([
+    {
+      accountExternalId: "codex",
+      window: "credits",
+      percent: null,
+      sampledAt: "2026-10-02T10:05:00.000Z",
+      resetsAt: null,
+      windowMinutes: null,
+      credits: {
+        hasCredits: true,
+        unlimited: false,
+        balance: "10859.9461050000",
+      },
+    },
+  ]);
+
+  // 不限量账户 balance 统一为 null；之后停用 Credits 时同步下发清除状态。
+  appendFileSync(
+    file,
+    lines(
+      makeCreditsEvent("2026-10-02T10:10:00.000Z", {
+        has_credits: true,
+        unlimited: true,
+        balance: "0",
+      }),
+    ),
+  );
+  await read(item, root);
+  appendFileSync(
+    file,
+    lines(
+      makeCreditsEvent("2026-10-02T10:15:00.000Z", {
+        has_credits: false,
+        unlimited: false,
+        balance: "0",
+      }),
+    ),
+  );
+  await read(item, root);
+  const queued = item
+    .pending<{
+      sampledAt: string;
+      credits?: {
+        hasCredits: boolean;
+        unlimited: boolean;
+        balance: string | null;
+      };
+    }>("quota", 100)
+    .map((entry) => [entry.payload.sampledAt, entry.payload.credits]);
+  expect(queued).toEqual([
+    [
+      "2026-10-02T10:05:00.000Z",
+      { hasCredits: true, unlimited: false, balance: "10859.9461050000" },
+    ],
+    [
+      "2026-10-02T10:10:00.000Z",
+      { hasCredits: true, unlimited: true, balance: null },
+    ],
+    [
+      "2026-10-02T10:15:00.000Z",
+      { hasCredits: false, unlimited: false, balance: "0" },
+    ],
+  ]);
+});
+
+test("upgraded collector backfills latest Codex credits once from unchanged sessions without re-recording usage", async () => {
+  const root = codexRoot();
+  const file = join(root, "sessions", "existing.jsonl");
+  writeFileSync(
+    file,
+    lines(
+      meta,
+      model,
+      usage(1),
+      quotaEvent("2026-10-05T12:00:00.000Z", "prolite", 100),
+    ),
+  );
+  const item = openState();
+  await read(item, root);
+  // 模拟旧版采集器状态：文件已读到末尾、已观测 7d，但尚未记录 credits 也未做过补采。
+  const pendingSeqs = item.pending("quota", 100).map((entry) => entry.seq);
+  item.acknowledge(pendingSeqs);
+  const usageSeqs = item.pending("usage", 100).map((entry) => entry.seq);
+  item.acknowledge(usageSeqs);
+  item.setMeta(
+    "codex_window_sampled",
+    JSON.stringify({ "codex:seven-day": "2026-10-05T12:00:00.000Z" }),
+  );
+  item.deleteMeta("codex_credits_backfilled");
+  item.deleteMeta("last_quota_hash:codex");
+
+  const report = await read(item, root);
+  expect(report.recorded).toBe(0);
+  expect(report.quotas).toBe(1);
+  expect(
+    item.pending<{ window: string; credits?: { balance: string | null } }>(
+      "quota",
+      100,
+    )[0]?.payload,
+  ).toMatchObject({
+    accountExternalId: "codex",
+    window: "credits",
+    sampledAt: "2026-10-05T12:00:00.000Z",
+    credits: { hasCredits: true, unlimited: false, balance: "62500" },
+  });
+  // 再次运行不会重复补采。
+  expect((await read(item, root)).quotas).toBe(0);
 });

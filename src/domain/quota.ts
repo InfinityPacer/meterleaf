@@ -8,6 +8,7 @@ import {
 import type { QuotaFact } from "./connector";
 import type { UsageFact } from "./connector";
 import type { Valuation } from "./pricing";
+import type { AccountCredits } from "../shared/report";
 
 export type QuotaEstimateMethod =
   "segments" | "blended" | "previous-period" | "rough";
@@ -566,4 +567,39 @@ export function quotaView(
         ? "percent-unavailable"
         : "unpriced";
   return result;
+}
+
+/**
+ * 返回账户最新的额外 Credits 余额快照（例如 Codex 订阅额度耗尽后可继续扣减的余额）。
+ * 排序规则与 quotaView 一致；最新采样明确表示无可用余额（hasCredits=false 且非不限量）时返回 null。
+ */
+export function accountCreditsView(
+  history: readonly CollectedQuota[],
+): AccountCredits | null {
+  let latest: {
+    credits: NonNullable<QuotaFact["credits"]>;
+    sampledAt: string | null;
+    order: number;
+  } | null = null;
+  for (const row of history) {
+    if (row.fact.window !== "credits" || !row.fact.credits) continue;
+    const order = Date.parse(row.fact.sampledAt ?? row.collectedAt);
+    if (!Number.isFinite(order)) continue;
+    if (!latest || order >= latest.order) {
+      latest = {
+        credits: row.fact.credits,
+        sampledAt: row.fact.sampledAt,
+        order,
+      };
+    }
+  }
+  if (!latest) return null;
+  const { hasCredits, unlimited, balance } = latest.credits;
+  if (!hasCredits && !unlimited) return null;
+  return {
+    hasCredits,
+    unlimited,
+    balance: unlimited ? null : balance,
+    sampledAt: latest.sampledAt,
+  };
 }

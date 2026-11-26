@@ -291,7 +291,9 @@
       grid-template-columns: minmax(0, 1fr);
       gap: 14px;
     }
-    .account-windows.quota-window-list > .quota-window + .quota-window {
+    .account-windows.quota-window-list
+      > :is(.quota-window, .quota-credits)
+      + :is(.quota-window, .quota-credits) {
       padding-top: 14px;
       border-top: 1px solid var(--line);
     }

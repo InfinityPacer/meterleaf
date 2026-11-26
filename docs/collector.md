@@ -62,7 +62,7 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
 
 采集器默认读取本机 Codex 与 OpenCode 的用量，两者各自维护读取进度；目录或数据库不存在时该来源本轮为空，不报错。`status` 与同步报告按来源列出读取数、入账数和按通道跳过的数量。
 
-- Codex：只读扫描 `$CODEX_HOME`（默认 `~/.codex`）下 `sessions` 与 `archived_sessions` 的会话记录，包括写完已压缩的 `.jsonl.zst` 文件。读会话开头声明的供应商通道、模型和每次请求的 Token 用量，顺便读记录里自带的套餐与 5 小时、7 天额度。不读 `auth.json`，不改配置、不改会话文件、不调用任何接口。历史较多时每轮最多读取约 64 MiB，先读最近修改的会话，其余顺延到后面的轮次。需要停用或修改目录时，在 `config.json` 中配置 `"codex": { "enabled": true, "home": "/绝对路径" }`（路径优先级为 `config.codex.home` > `$CODEX_HOME` > `~/.codex`）。
+- Codex：只读扫描 `$CODEX_HOME`（默认 `~/.codex`）下 `sessions` 与 `archived_sessions` 的会话记录，包括写完已压缩的 `.jsonl.zst` 文件。读会话开头声明的供应商通道、模型和每次请求的 Token 用量，顺便读记录里自带的套餐、5 小时与 7 天额度以及额外的 Credits 余额。不读 `auth.json`，不改配置、不改会话文件、不调用任何接口。历史较多时每轮最多读取约 64 MiB，先读最近修改的会话，其余顺延到后面的轮次。需要停用或修改目录时，在 `config.json` 中配置 `"codex": { "enabled": true, "home": "/绝对路径" }`（路径优先级为 `config.codex.home` > `$CODEX_HOME` > `~/.codex`）。
 - OpenCode：只读打开本地数据库 `~/.local/share/opencode/opencode.db`（数据库是 WAL 模式，OpenCode 运行中也能读），取已完成的助手消息作为一次请求。消息记录与对话内容存在同一个字段里，解析时会一并读入内存，但只提取模型、通道、完成时间和 Token 用量，不保存也不上传对话内容、会话 ID 和路径。需要停用或修改数据库位置时，在 `config.json` 中配置 `"opencode": { "enabled": true, "database": "/绝对路径/opencode.db" }`。
 
 这些来源（含 Antigravity 与 omp）只上传发生时间不早于 `2026-09-20` 的记录，更早的历史在读取时丢弃；这个起点按当前接入的费率与账户推断能力设定，不影响 Claude Code。
@@ -106,7 +106,7 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 
 ### 统计口径
 
-- Codex 按每次请求计量：缓存读取从输入中扣除，推理量保留为输出的子集；旧记录缺失的缓存写字段保持未知。重复的额度通知不作为新请求。额度只取路由到 openai 平台账户的会话；来源未公布 Codex 积分余额的换算，Credits 字段不参与估值。账户套餐取会话中最新的 `plan_type`，没有时保留配置值。
+- Codex 按每次请求计量：缓存读取从输入中扣除，推理量保留为输出的子集；旧记录缺失的缓存写字段保持未知。重复的额度通知不作为新请求。额度与 Credits 余额只取路由到 openai 平台账户的会话；Credits 余额按上游原值单独展示，不参与费用估值。账户套餐取会话中最新的 `plan_type`，没有时保留配置值。
 - OpenCode 的 `tokens.input` 已是未缓存输入，直接计入；`output` 计为可见输出加推理，`reasoning` 是输出的子集；缓存读写取 `tokens.cache` 的值。任一字段缺失时该字段为未知，不补零。OpenCode 自带的 `cost` 不采用，费用由 Meterleaf 按[计价说明](pricing.md)估值。
 - OpenCode 生成会话标题、压缩上下文等内部请求不写进助手消息，本机数据里这类请求只差几千输入 token；这部分不补，也不按当前模型推算计入 Go 账户。
 - OpenCode Go 的额度不需要采集器读：服务端按[部署指南](deployment.md#opencode-go-额度可选)轮询 Go 的用量接口。`go` 通道的 Codex 记录也不上传额度，Go 额度由两处用量共同撑起账户的窗口估算。

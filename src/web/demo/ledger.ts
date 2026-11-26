@@ -288,6 +288,12 @@ export function createDemoLedger(
         sampledAt: asOf,
         fiveHour: window("personal", 28, "2026-09-08T18:40:00+08:00", 5),
         sevenDay: window("personal", 64, "2026-09-11T09:20:00+08:00", 168),
+        credits: {
+          hasCredits: true,
+          unlimited: false,
+          balance: "10859.946105",
+          sampledAt: asOf,
+        },
         lifetime: lifetime("personal"),
       },
       {
