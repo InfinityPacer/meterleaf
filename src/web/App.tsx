@@ -348,6 +348,7 @@ function QuotaBar({
   asOf,
   reset,
   waiting = false,
+  unopened = false,
   platform,
 }: {
   window: AccountWindow | null;
@@ -355,10 +356,15 @@ function QuotaBar({
   asOf: string;
   reset?: React.ReactNode;
   waiting?: boolean;
+  unopened?: boolean;
   platform?: string | null;
 }) {
   const percent = waiting ? null : quotaPercent(window, asOf);
-  const suffix = waiting ? "等待更新" : quotaLabel(window, asOf, platform);
+  const suffix = waiting
+    ? "等待更新"
+    : unopened
+      ? "已用 0% · 未开窗"
+      : quotaLabel(window, asOf, platform);
   return (
     <div className="quota-bar">
       <div>
@@ -2474,7 +2480,7 @@ export function App() {
                 <>
                   <div className="account-detail-windows">
                     {detailWindows.map(
-                      ({ key, label, window, waiting, platform }) => (
+                      ({ key, label, window, waiting, unopened, platform }) => (
                         <QuotaBar
                           key={key}
                           window={window}
@@ -2486,6 +2492,7 @@ export function App() {
                           }
                           asOf={quotaAsOf}
                           waiting={waiting}
+                          unopened={unopened}
                         />
                       ),
                     )}
@@ -2576,8 +2583,8 @@ export function App() {
                     {/* Claude 池与 Gemini 池的行同序：重置、5h 费用、7d 费用与预估。 */}
                     {selectedAccount.sevenDayThirdParty &&
                       detailWindows.some(
-                        ({ key, waiting }) =>
-                          key === "sevenDayThirdParty" && !waiting,
+                        ({ key, waiting, unopened }) =>
+                          key === "sevenDayThirdParty" && !waiting && !unopened,
                       ) && (
                         <>
                           <dt>Claude 7d 重置</dt>
@@ -2598,8 +2605,8 @@ export function App() {
                         </>
                       )}
                     {detailWindows.some(
-                      ({ key, waiting }) =>
-                        key === "fiveHourThirdParty" && !waiting,
+                      ({ key, waiting, unopened }) =>
+                        key === "fiveHourThirdParty" && !waiting && !unopened,
                     ) && (
                       <>
                         <dt>Claude 5h 周期费用</dt>
@@ -2614,8 +2621,8 @@ export function App() {
                     )}
                     {selectedAccount.sevenDayThirdParty &&
                       detailWindows.some(
-                        ({ key, waiting }) =>
-                          key === "sevenDayThirdParty" && !waiting,
+                        ({ key, waiting, unopened }) =>
+                          key === "sevenDayThirdParty" && !waiting && !unopened,
                       ) && (
                         <>
                           <dt>Claude 7d 周期费用</dt>

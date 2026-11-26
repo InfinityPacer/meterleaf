@@ -236,6 +236,41 @@ test("home keeps an unavailable five-hour window as a waiting slot without old v
   expect(card).not.toContain("N/A");
 });
 
+test("home renders unopened third-party quota windows with 0% and unopened label instead of N/A or $0", () => {
+  const unopened = quotaWindow({
+    percent: 0,
+    resetsAt: null,
+    startsAt: null,
+    state: "unknown",
+    periodUsd: null,
+    periodTokens: null,
+    periodRequests: null,
+    estimate: undefined,
+  });
+  const account = accountFixture({
+    id: "agy-borborup3",
+    name: "Antigravity (borborup3)",
+    plan: "Google AI Ultra",
+    platform: "google",
+    fiveHour: quotaWindow({ percent: 3 }),
+    sevenDay: quotaWindow({ percent: 1 }),
+    fiveHourThirdParty: unopened,
+    sevenDayThirdParty: unopened,
+  });
+  const card = accountCard(renderHome(null, [account]));
+
+  expect((card.match(/class="quota-window"/g) ?? []).length).toBe(4);
+  expect(card).toContain('data-quota-count="4"');
+  expect((card.match(/data-unopened="true"/g) ?? []).length).toBe(2);
+  expect(card).toContain("Claude 5h");
+  expect(card).toContain("Claude 7d");
+  expect(card).toContain("已用 0%");
+  expect(card).toContain("未开窗");
+  expect(card).toContain("首次请求后开始计时");
+  expect(card).not.toContain("N/A");
+  expect(card).not.toContain("$0.00");
+});
+
 test("home omits the fraction when a valid seven-day quota has no estimate", () => {
   const account = accountFixture({
     sevenDay: quotaWindow({ estimate: undefined }),
