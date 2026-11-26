@@ -24,7 +24,7 @@ import {
  * 调度延迟或上游故障时两次成功采样仍可能相隔超过 5 分钟，页面会把额度标为过时。
  */
 export const COMMAND_CODE_MIN_INTERVAL_MS = 4 * 60_000;
-/** Key 被拒（401/403）后的冷却；换了凭据也要等冷却结束才会再试。 */
+/** Key 被拒（401/403）后的冷却；绑定凭据摘要，换了新凭据时立即解除冷却重试。 */
 export const COMMAND_CODE_REJECTED_COOLDOWN_MS = 30 * 60_000;
 
 const REFRESH_AT_META = "commandcode_quota_refresh_at";
@@ -271,6 +271,35 @@ export function markCommandCodeStorageError(state: CollectorState) {
   }
 }
 
+interface RejectedCooldownRecord {
+  at: number;
+  keyHash: string | null;
+}
+
+function readRejectedCooldown(
+  raw: string | null,
+): RejectedCooldownRecord | null {
+  if (!raw) return null;
+  const legacyAt = Number(raw);
+  if (Number.isFinite(legacyAt)) return { at: legacyAt, keyHash: null };
+  try {
+    const parsed = JSON.parse(raw) as Partial<RejectedCooldownRecord>;
+    if (typeof parsed.at === "number" && Number.isFinite(parsed.at)) {
+      return {
+        at: parsed.at,
+        keyHash: typeof parsed.keyHash === "string" ? parsed.keyHash : null,
+      };
+    }
+  } catch {
+    // 忽略损坏的冷却记录。
+  }
+  return null;
+}
+
+function credentialKeyHash(apiKey: string): string {
+  return createHash("sha256").update(apiKey).digest("hex");
+}
+
 /**
  * sync 中按需读取 Command Code 额度。停用、没有目标账户或没有凭据时不联网；
  * 成功时在同一事务内写入主体摘要、套餐缓存、账户资料（含主体摘要）与带冻结身份的额度。
@@ -304,18 +333,29 @@ export async function maybeRefreshCommandCodeQuota(
   });
   if (credential.status === "none") return report("no-credential");
   if (credential.status === "expired") return report("expired");
-  const rejectedAt = Number(state.getMeta(REJECTED_AT_META) ?? "");
+  const keyHash = credentialKeyHash(credential.apiKey);
+  const rejected = readRejectedCooldown(state.getMeta(REJECTED_AT_META));
+  const sameRejectedKey =
+    rejected !== null &&
+    (rejected.keyHash === null || rejected.keyHash === keyHash);
   if (
-    Number.isFinite(rejectedAt) &&
-    now - rejectedAt < COMMAND_CODE_REJECTED_COOLDOWN_MS
-  )
+    sameRejectedKey &&
+    now - rejected.at < COMMAND_CODE_REJECTED_COOLDOWN_MS
+  ) {
     return { attempted: false, status: "cooldown", quotas: 0 };
+  }
   const refreshedAt = Number(state.getMeta(REFRESH_AT_META) ?? "");
+  const bypassedCooldownWithNewKey =
+    rejected !== null &&
+    rejected.keyHash !== null &&
+    rejected.keyHash !== keyHash;
   if (
+    !bypassedCooldownWithNewKey &&
     Number.isFinite(refreshedAt) &&
     now - refreshedAt < COMMAND_CODE_MIN_INTERVAL_MS
-  )
+  ) {
     return { attempted: false, status: "cooldown", quotas: 0 };
+  }
   // 请求前记下时间：失败、超时或进程中断也计入间隔。
   state.setMeta(REFRESH_AT_META, String(now));
 
@@ -329,7 +369,10 @@ export async function maybeRefreshCommandCodeQuota(
     result = { status: "error", kind: "network" };
   }
   if (result.status === "rejected") {
-    state.setMeta(REJECTED_AT_META, String(now));
+    state.setMeta(
+      REJECTED_AT_META,
+      JSON.stringify({ at: now, keyHash } satisfies RejectedCooldownRecord),
+    );
     return report("rejected", true);
   }
   if (result.status === "error") return report(result.kind, true);

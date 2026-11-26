@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import {
   agyAllowedQuotaLabels,
   agyInstanceAccounts,
+  hasAgyExpiredQuota,
   inspectExplicitAgyOutOfScope,
   isAgyExplicitScope,
   maybeRefreshAgyQuota,
@@ -691,6 +692,7 @@ export async function readNewSources(
     // 账号，用于 agy 自己的用量，以及默认模式下 omp 请求找不到账号时补上 current-account。
     const agyMissing = (agyReport?.skipped["(缺失账户)"] ?? 0) > 0;
     const agyMissingQuota = (agyReport?.missingQuotaProfiles ?? 0) > 0;
+    const agyExpiredQuota = hasAgyExpiredQuota(state);
     if (ompMissing && !agyExplicit) {
       let dirty: (string | null)[] = [];
       try {
@@ -714,6 +716,7 @@ export async function readNewSources(
       (agyReport?.recorded ?? 0) > 0 ||
       agyMissing ||
       agyMissingQuota ||
+      agyExpiredQuota ||
       (ompMissing && !agyExplicit)
         ? await maybeRefreshAgyQuota(state, agy)
         : null;

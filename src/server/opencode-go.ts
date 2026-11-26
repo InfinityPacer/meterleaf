@@ -68,6 +68,8 @@ export function goQuotaFacts(
 
 /** 读数未变时最多隔这么久写一次，让页面上的采样时间不至于显得过时。 */
 const UNCHANGED_SAVE_MS = 4 * 60_000;
+/** 401/403 密钥被拒后的冷却时长，避免页面打开时反复请求失效密钥。 */
+const REJECTED_COOLDOWN_MS = 30 * 60_000;
 
 export interface GoQuotaOptions {
   key: string;
@@ -78,32 +80,40 @@ export interface GoQuotaOptions {
   now?: () => number;
   /** 两次读取的最小间隔；页面每 15 秒报一次在线，只有间隔已到才再读。 */
   intervalMs?: number;
+  /** 401/403 被拒后的冷却时长，默认 30 分钟。 */
+  rejectedCooldownMs?: number;
 }
 
 /**
  * 只在有页面打开时读取 Go 额度：页面上报在线时，距上次读取超过间隔就读一次，
- * 没有页面时不访问接口。同一时刻只有一个请求，失败也计入间隔，避免反复请求被拒的密钥。
+ * 没有页面时不访问接口。同一时刻只有一个请求，失败也计入间隔，401/403 施加长冷却避免反复请求被拒的密钥。
  */
 export class GoQuotaRefresher {
   private lastAttempt = Number.NEGATIVE_INFINITY;
+  private rejectedUntil = Number.NEGATIVE_INFINITY;
   /** 上次写入的读数与时刻；读数未变时少写快照，减少 NAS 写盘与报表重算。 */
   private lastSaved: { readings: string; at: number } | null = null;
   private running: Promise<void> | null = null;
   private readonly fetch: typeof fetch;
   private readonly now: () => number;
   private readonly intervalMs: number;
+  private readonly rejectedCooldownMs: number;
 
   constructor(private readonly options: GoQuotaOptions) {
     this.fetch = options.fetch ?? fetch;
     this.now = options.now ?? Date.now;
     this.intervalMs = options.intervalMs ?? 120_000;
+    this.rejectedCooldownMs =
+      options.rejectedCooldownMs ?? REJECTED_COOLDOWN_MS;
   }
 
   updatePresence(_id: string, visible: boolean) {
     if (!visible) return;
     if (this.running) return;
-    if (this.now() - this.lastAttempt < this.intervalMs) return;
-    this.lastAttempt = this.now();
+    const now = this.now();
+    if (now < this.rejectedUntil) return;
+    if (now - this.lastAttempt < this.intervalMs) return;
+    this.lastAttempt = now;
     this.running = this.refresh().finally(() => {
       this.running = null;
     });
@@ -125,11 +135,15 @@ export class GoQuotaRefresher {
         signal: AbortSignal.timeout(15_000),
       });
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          this.rejectedUntil = this.now() + this.rejectedCooldownMs;
+        }
         diagnostics.warn("opencode_go.quota_failed", {
           status: response.status,
         });
         return;
       }
+      this.rejectedUntil = Number.NEGATIVE_INFINITY;
       const sampledAt = new Date(this.now()).toISOString();
       const facts = goQuotaFacts(
         await response.json(),
