@@ -743,6 +743,13 @@
     color: var(--desktop-ink);
     font-size: 18px;
   }
+  .app-shell
+    .account-windows
+    .quota-window:is([data-waiting="true"], [data-unopened="true"])
+    .quota-window-foot
+    strong {
+    color: var(--desktop-muted);
+  }
 
   /*
    * 桌面账户行里每个额度窗口占一行，5h、7d、Fable 纵向排列：

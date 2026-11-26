@@ -79,6 +79,8 @@ export interface VisibleQuotaWindow {
   window: AccountWindow;
   /** 上游报过这个窗口，但当前快照已过期或缺值；只占位，不展示旧用量。 */
   waiting?: boolean;
+  /** 上游返回 0% 且无重置时间（尚未发起过请求、未开始计时）；展示为 0% 与未开窗，周期费用不补零。 */
+  unopened?: boolean;
   /**
    * 百分比、重置时间与本地用量分别按各自是否已知展示（Command Code 账户），
    * 缺百分比时仍显示周期内的本地费用；省略时本地用量随百分比一起显示或隐藏。
@@ -89,13 +91,31 @@ export interface VisibleQuotaWindow {
 }
 
 /**
+ * 第三方额度池尚未发起过请求时，上游返回 0% 且没有重置时间（状态为 unknown），
+ * 此时窗口未开始计时但仍可用。过期或缺值（percent 为 null）不在此列。
+ */
+export function isUnopenedQuotaWindow(
+  window: AccountWindow | null | undefined,
+  asOf: string,
+): boolean {
+  return Boolean(
+    window &&
+    quotaState(window, asOf) === "unknown" &&
+    !window.resetsAt &&
+    window.percent === 0,
+  );
+}
+
+/**
  * 紧凑视图优先展示耗尽的周额度；完整视图保留所有有效周期。周额度有效且未用满时，
  * 上游报过的 5h 窗口即使暂时过期或缺值也保留位置，避免它随采样节奏时隐时现。
+ * includeUnopened 为 true 时，同时保留未开窗（0% 且无重置时间）的窗口。
  */
 export function visibleQuotaWindows(
   account: Pick<LedgerAccount, "fiveHour" | "sevenDay">,
   asOf: string,
   prioritizeExhaustedWeek = true,
+  includeUnopened = false,
 ): VisibleQuotaWindow[] {
   const windows: VisibleQuotaWindow[] = [];
   for (const [key, label] of [
@@ -103,20 +123,24 @@ export function visibleQuotaWindows(
     ["sevenDay", "7d"],
   ] as const) {
     const window = account[key];
+    if (!window) continue;
     if (
-      window &&
       quotaState(window, asOf) === "active" &&
       quotaPercent(window, asOf) !== null
     ) {
       windows.push({ key, label, window });
+    } else if (includeUnopened && isUnopenedQuotaWindow(window, asOf)) {
+      windows.push({ key, label, window, unopened: true });
     }
   }
   const exhaustedWeek = windows.find(
-    ({ key, window }) =>
-      key === "sevenDay" && quotaPercent(window, asOf) === 100,
+    ({ key, window, unopened }) =>
+      key === "sevenDay" && !unopened && quotaPercent(window, asOf) === 100,
   );
   if (exhaustedWeek) return prioritizeExhaustedWeek ? [exhaustedWeek] : windows;
-  const week = windows.find(({ key }) => key === "sevenDay");
+  const week = windows.find(
+    ({ key, unopened }) => key === "sevenDay" && !unopened,
+  );
   if (week && account.fiveHour && windows[0] === week)
     return [
       { key: "fiveHour", label: "5h", window: account.fiveHour, waiting: true },
@@ -125,9 +149,9 @@ export function visibleQuotaWindows(
   // 周额度刚重置时，新快照要等这个账户再发出请求才会到；5h 用满时可能要等几个小时。
   // 5h 有效期间保留周额度占位，但上一周期结束超过一周仍无新快照就不再占位。
   if (
-    !week &&
+    !windows.some(({ key }) => key === "sevenDay") &&
     account.sevenDay &&
-    windows.length &&
+    windows.some(({ unopened }) => !unopened) &&
     recentlyEnded(account.sevenDay, asOf)
   )
     return [
@@ -331,6 +355,7 @@ export function accountQuotaWindows(
     thirdPartyPool(account),
     asOf,
     prioritizeExhaustedWeek,
+    true,
   ).map((selection) => ({
     ...selection,
     key:
