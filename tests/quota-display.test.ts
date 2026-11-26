@@ -182,6 +182,124 @@ test("an account with two quota pools lists each pool and is exhausted only when
   ).toEqual(["7d"]);
 });
 
+test("unopened third-party windows (0% with no reset time) are shown without faking missing or expired data", () => {
+  const unopened = {
+    ...window,
+    percent: 0,
+    resetsAt: null,
+    startsAt: null,
+    state: "unknown" as const,
+  };
+  const activeGemini = {
+    fiveHour: { ...window, percent: 3 },
+    sevenDay: { ...window, percent: 1 },
+  };
+
+  // 两个第三方窗口都未开窗时，直接展示为未开窗状态；即使 Gemini 用尽，账户整体也不算用尽。
+  expect(
+    accountQuotaWindows(
+      {
+        ...activeGemini,
+        fiveHourThirdParty: unopened,
+        sevenDayThirdParty: unopened,
+      },
+      now,
+    ).map(({ key, label, unopened: isUnopened, waiting }) => [
+      key,
+      label,
+      isUnopened ?? false,
+      waiting ?? false,
+    ]),
+  ).toEqual([
+    ["fiveHour", "Gemini 5h", false, false],
+    ["sevenDay", "Gemini 7d", false, false],
+    ["fiveHourThirdParty", "Claude 5h", true, false],
+    ["sevenDayThirdParty", "Claude 7d", true, false],
+  ]);
+  expect(
+    accountQuotaExhausted(
+      {
+        fiveHour: window,
+        sevenDay: window,
+        fiveHourThirdParty: unopened,
+        sevenDayThirdParty: unopened,
+      },
+      now,
+    ),
+  ).toBe(false);
+
+  // 5h 未开窗且 7d 已开窗时，5h 保持未开窗而非等待更新；7d 用尽时紧凑视图收起 5h。
+  expect(
+    accountQuotaWindows(
+      {
+        ...activeGemini,
+        fiveHourThirdParty: unopened,
+        sevenDayThirdParty: { ...window, percent: 10 },
+      },
+      now,
+    ).map(({ key, unopened: isUnopened, waiting }) => [
+      key,
+      isUnopened ?? false,
+      waiting ?? false,
+    ]),
+  ).toEqual([
+    ["fiveHour", false, false],
+    ["sevenDay", false, false],
+    ["fiveHourThirdParty", true, false],
+    ["sevenDayThirdParty", false, false],
+  ]);
+  expect(
+    accountQuotaWindows(
+      {
+        ...activeGemini,
+        fiveHourThirdParty: unopened,
+        sevenDayThirdParty: window,
+      },
+      now,
+      true,
+    ).map(({ key }) => key),
+  ).toEqual(["fiveHour", "sevenDay", "sevenDayThirdParty"]);
+  expect(
+    accountQuotaWindows(
+      {
+        ...activeGemini,
+        fiveHourThirdParty: unopened,
+        sevenDayThirdParty: window,
+      },
+      now,
+      false,
+    ).map(({ key, unopened: isUnopened }) => [key, isUnopened ?? false]),
+  ).toEqual([
+    ["fiveHour", false],
+    ["sevenDay", false],
+    ["fiveHourThirdParty", true],
+    ["sevenDayThirdParty", false],
+  ]);
+
+  // 缺值（percent 为 null）、过期或有非零未知百分比的第三方窗口绝不当作未开窗。
+  for (const invalid of [
+    { ...unopened, percent: null },
+    { ...unopened, percent: 15 },
+    { ...window, percent: 0, resetsAt: now },
+  ]) {
+    expect(
+      accountQuotaWindows(
+        {
+          ...activeGemini,
+          fiveHourThirdParty: invalid,
+          sevenDayThirdParty: invalid,
+        },
+        now,
+      ).map(({ key }) => key),
+    ).toEqual(["fiveHour", "sevenDay"]);
+  }
+
+  // 非第三方池的普通账户仍按原有规则不展示 unknown 窗口。
+  expect(
+    accountQuotaWindows({ fiveHour: unopened, sevenDay: unopened }, now),
+  ).toEqual([]);
+});
+
 test("a reported five-hour window keeps its place while waiting for a new sample", () => {
   const week = { ...window, percent: 57 };
   expect(
