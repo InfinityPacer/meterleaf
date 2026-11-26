@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   accessSync,
+  chmodSync,
   closeSync,
   constants,
   copyFileSync,
@@ -1205,6 +1207,86 @@ function hasNonEmptyOAuthTokenFile(appDataDir: string): boolean {
   }
 }
 
+export interface AgyTier {
+  id: string;
+  name: string;
+}
+
+const controlCharsRe = /[\x00-\x1f\x7f]/g;
+
+function sanitizeTierField(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(controlCharsRe, "").trim();
+  return cleaned.length > 0 ? cleaned.slice(0, 128) : null;
+}
+
+/**
+ * 从 `agy acp` `session/new` 的 JSON-RPC 响应中提取官方订阅套餐元数据
+ *（`result._meta.antigravity.tier = { id, name }`）；其它消息或缺失字段返回 null。
+ */
+export function extractAcpSessionTier(message: unknown): AgyTier | null {
+  if (typeof message !== "object" || message === null || Array.isArray(message))
+    return null;
+  const result = (message as { result?: unknown }).result;
+  if (typeof result !== "object" || result === null || Array.isArray(result))
+    return null;
+  const meta = (result as { _meta?: unknown })._meta;
+  if (typeof meta !== "object" || meta === null || Array.isArray(meta))
+    return null;
+  const antigravity = (meta as { antigravity?: unknown }).antigravity;
+  if (
+    typeof antigravity !== "object" ||
+    antigravity === null ||
+    Array.isArray(antigravity)
+  )
+    return null;
+  const tier = (antigravity as { tier?: unknown }).tier;
+  if (typeof tier !== "object" || tier === null || Array.isArray(tier))
+    return null;
+  const id = sanitizeTierField((tier as { id?: unknown }).id);
+  const name = sanitizeTierField((tier as { name?: unknown }).name);
+  if (!id && !name) return null;
+  return { id: id ?? name!, name: name ?? id! };
+}
+
+/** 将官方 AgyTier 归一化为 Meterleaf 的 Google 套餐标识（与 src/web/lib/plan.ts 及 ingest 长度限制对齐）。 */
+export function normalizeAgyTierPlan(
+  tier: AgyTier | null | undefined,
+): string | null {
+  if (!tier) return null;
+  const id = sanitizeTierField(tier.id) ?? "";
+  const name = sanitizeTierField(tier.name) ?? "";
+  const combined = `${id} ${name}`.toLowerCase().trim();
+  if (!combined) return null;
+  if (combined.includes("ultra")) {
+    if (/\b20x\b/.test(combined)) return "ultra-20x";
+    if (/\b5x\b/.test(combined)) return "ultra-5x";
+    return "Google AI Ultra";
+  }
+  if (
+    combined.includes("enterprise") ||
+    combined.includes("business") ||
+    /\bge-(?:standard|plus)\b/.test(combined)
+  ) {
+    if (combined.includes("plus")) return "Gemini Enterprise Plus";
+    return "Gemini Enterprise";
+  }
+  if (/\bpro\b/.test(combined) || combined.includes("g1-pro")) {
+    return "Google AI Pro";
+  }
+  if (/\bplus\b/.test(combined) || combined.includes("g1-plus")) {
+    return "Google AI Plus";
+  }
+  if (
+    combined.includes("free") ||
+    combined.includes("individual") ||
+    combined.includes("legacy-tier")
+  ) {
+    return "free";
+  }
+  return (name || id).slice(0, 64);
+}
+
 /** 上游未上报套餐或只报无倍数的 Google AI Ultra 时回退到配置的默认套餐。 */
 function effectiveAgyPlan(
   observed: string | null,
@@ -1227,6 +1309,8 @@ interface PoolAccountsInspection {
   ok: boolean;
   activeDirs: string[];
   inactiveDirs: string[];
+  /** 账号池条目真实目录（canonicalDir）到池内账户 id 的映射，用于读取同目录 routing-state.json 套餐缓存。 */
+  accountIdByDir: Map<string, string>;
 }
 
 /** 从账号池清单文件（accounts.json）解析启用且就绪与已暂停/移出的非默认实例目录列表。 */
@@ -1238,7 +1322,12 @@ function inspectPoolAccountsFile(
   try {
     parsed = JSON.parse(readFileSync(poolAccountsFile, "utf8"));
   } catch {
-    return { ok: false, activeDirs: [], inactiveDirs: [] };
+    return {
+      ok: false,
+      activeDirs: [],
+      inactiveDirs: [],
+      accountIdByDir: new Map(),
+    };
   }
   const list = Array.isArray(parsed)
     ? parsed
@@ -1247,12 +1336,20 @@ function inspectPoolAccountsFile(
         Array.isArray((parsed as { accounts?: unknown }).accounts)
       ? (parsed as { accounts: unknown[] }).accounts
       : null;
-  if (!list) return { ok: false, activeDirs: [], inactiveDirs: [] };
+  if (!list)
+    return {
+      ok: false,
+      activeDirs: [],
+      inactiveDirs: [],
+      accountIdByDir: new Map(),
+    };
   const activeDirs: string[] = [];
   const inactiveDirs: string[] = [];
+  const accountIdByDir = new Map<string, string>();
   for (const item of list) {
     if (!item || typeof item !== "object") continue;
     const record = item as {
+      id?: unknown;
       kind?: unknown;
       enabled?: unknown;
       status?: unknown;
@@ -1270,6 +1367,9 @@ function inspectPoolAccountsFile(
       : resolve(geminiDir, record.appDataDir);
     // 严格排除默认目录 antigravity-cli，防止误采非池实例。
     if (basename(resolved) === "antigravity-cli") continue;
+    if (typeof record.id === "string" && record.id.trim() !== "") {
+      accountIdByDir.set(canonicalDir(resolved), record.id.trim());
+    }
     if (
       record.enabled === true &&
       record.status === "ready" &&
@@ -1280,7 +1380,55 @@ function inspectPoolAccountsFile(
       inactiveDirs.push(resolved);
     }
   }
-  return { ok: true, activeDirs, inactiveDirs };
+  return { ok: true, activeDirs, inactiveDirs, accountIdByDir };
+}
+
+/** 读取账号池同目录 routing-state.json 中已缓存的套餐元数据（只读，缺失或损坏时静默返回空表）。 */
+function readPoolRoutingTiers(
+  poolAccountsFile: string,
+  accountIdByDir: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const result = new Map<string, string>();
+  if (accountIdByDir.size === 0) return result;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(
+      readFileSync(
+        join(dirname(poolAccountsFile), "routing-state.json"),
+        "utf8",
+      ),
+    );
+  } catch {
+    return result;
+  }
+  const accounts =
+    parsed &&
+    typeof parsed === "object" &&
+    !Array.isArray(parsed) &&
+    typeof (parsed as { accounts?: unknown }).accounts === "object" &&
+    (parsed as { accounts?: unknown }).accounts !== null &&
+    !Array.isArray((parsed as { accounts?: unknown }).accounts)
+      ? (parsed as { accounts: Record<string, unknown> }).accounts
+      : null;
+  if (!accounts) return result;
+  for (const [dir, accountId] of accountIdByDir) {
+    const entry = Object.hasOwn(accounts, accountId)
+      ? accounts[accountId]
+      : null;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const tierObj = (entry as { tier?: unknown }).tier;
+    if (!tierObj || typeof tierObj !== "object" || Array.isArray(tierObj))
+      continue;
+    const id = sanitizeTierField((tierObj as { id?: unknown }).id);
+    const name = sanitizeTierField((tierObj as { name?: unknown }).name);
+    if (!id && !name) continue;
+    const normalized = normalizeAgyTierPlan({
+      id: id ?? name!,
+      name: name ?? id!,
+    });
+    if (normalized) result.set(dir, normalized);
+  }
+  return result;
 }
 
 /** 从账号池清单文件（accounts.json）读取当前启用且就绪的非默认实例目录列表；文件缺失或损坏时返回空数组。 */
@@ -2070,6 +2218,7 @@ function pruneStaleAgyRefreshMeta(
     if (!hasDefault) {
       state.deleteMeta("agy_quota_refresh_at");
       state.deleteMeta("agy_quota_refresh_status");
+      state.deleteMeta("agy_tier_probe_at");
     }
     for (const row of state.metaByPrefix("agy_quota_refresh_at:")) {
       const id = row.key.slice("agy_quota_refresh_at:".length);
@@ -2077,6 +2226,10 @@ function pruneStaleAgyRefreshMeta(
     }
     for (const row of state.metaByPrefix("agy_quota_refresh_status:")) {
       const id = row.key.slice("agy_quota_refresh_status:".length);
+      if (!activeIds.has(id)) state.deleteMeta(row.key);
+    }
+    for (const row of state.metaByPrefix("agy_tier_probe_at:")) {
+      const id = row.key.slice("agy_tier_probe_at:".length);
       if (!activeIds.has(id)) state.deleteMeta(row.key);
     }
   });
@@ -2331,6 +2484,34 @@ export function readAgy(
       instance,
       resolveInstanceLabel(instance, sources.statuslineDir),
     );
+  }
+  // 账号池模式下顺带读取同目录 routing-state.json 中已探测的套餐缓存（零进程开销）。
+  let plansUpdated = false;
+  if (sources.poolAccountsFile) {
+    const defaultGeminiDir = dirname(
+      dirname(resolve(sources.conversationsDir)),
+    );
+    const poolMeta = inspectPoolAccountsFile(
+      sources.poolAccountsFile,
+      defaultGeminiDir,
+    );
+    if (poolMeta.ok) {
+      const cachedTiers = readPoolRoutingTiers(
+        sources.poolAccountsFile,
+        poolMeta.accountIdByDir,
+      );
+      for (const instance of instances) {
+        const label = instanceLabels.get(instance);
+        const tierPlan = cachedTiers.get(canonicalDir(instance.appDataDir));
+        if (label && tierPlan && plans[label] !== tierPlan) {
+          plans[label] = tierPlan;
+          plansUpdated = true;
+        }
+      }
+    }
+  }
+  if (plansUpdated) {
+    state.setMeta("agy_plans", JSON.stringify(plans));
   }
   const allowedQuotaLabels = explicitMode
     ? new Set(
@@ -3409,6 +3590,504 @@ function noteRefreshStatus(
     console.error(`${now.toISOString()} ${name} 额度刷新失败: ${error}`);
   else if (previous.startsWith("error:"))
     console.log(`${now.toISOString()} ${name} 额度刷新已恢复`);
+}
+
+// ---- 通过 agy acp 握手自动探测账号套餐类型 ----
+
+const tierRefreshTtlMs = 24 * 60 * 60_000;
+const tierRetryBackoffMs = 60 * 60_000;
+const tierProbeHardTimeoutMs = 20_000;
+const tierProbeCloseWaitMs = 3_000;
+const tierProbeMaxBufferBytes = 512 * 1024;
+const tierProbeSshMarker = "127.0.0.1 1 127.0.0.1 22";
+const tierStripEnvVars = [
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "XDG_CACHE_HOME",
+  "GEMINI_CLI_HOME",
+  "ANTIGRAVITY_HOME",
+  "ANTIGRAVITY_DATA_DIR",
+  "ANTIGRAVITY_CONFIG_DIR",
+  "ANTIGRAVITY_CLI_HOME",
+  "SSH_CONNECTION",
+  "SSH_CLIENT",
+  "SSH_TTY",
+  "WSL_INTEROP",
+] as const;
+
+export interface AgyTierProbeOptions {
+  agyBin?: string;
+  timeoutMs?: number;
+  profileName?: string | null;
+  geminiDir?: string;
+  appDataDir?: string;
+}
+
+export interface AgyTierProbeResult {
+  attempted: boolean;
+  tier: AgyTier | null;
+  error: string | null;
+}
+
+export interface AgyTierRefreshResult {
+  attempted: number;
+  refreshed: boolean;
+  updatedLabels: string[];
+}
+
+function isProcessGroupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code !== "ESRCH";
+  }
+}
+
+async function waitProcessGroupDead(
+  pgid: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessGroupAlive(pgid)) return true;
+    await Bun.sleep(25);
+  }
+  return !isProcessGroupAlive(pgid);
+}
+
+async function terminateProcessGroup(pgid: number): Promise<boolean> {
+  if (!isProcessGroupAlive(pgid)) return true;
+  try {
+    process.kill(-pgid, "SIGTERM");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return true;
+  }
+  if (await waitProcessGroupDead(pgid, 1_000)) return true;
+  try {
+    process.kill(-pgid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return true;
+  }
+  return waitProcessGroupDead(pgid, 1_000);
+}
+
+/**
+ * 一次性轻量 ACP 握手探测：启动 `agy acp --disable-telemetry`，依次发送 `initialize` → `session/new`
+ * 提取 `result._meta.antigravity.tier`，再礼貌 `session/close` 并按进程组终止。
+ * 非默认实例强制隔离 macOS Keychain（设 `SSH_CONNECTION` + `WSL_INTEROP=1`，要求目录内存在非空令牌文件）。
+ */
+export async function probeAgyTier(
+  options: AgyTierProbeOptions = {},
+): Promise<AgyTierProbeResult> {
+  const result: AgyTierProbeResult = {
+    attempted: false,
+    tier: null,
+    error: null,
+  };
+  const profileName = options.profileName ?? null;
+  const home = process.env.HOME || homedir();
+  const defaultGeminiDir = resolve(join(home, ".gemini"));
+  let effectiveGeminiDir = options.geminiDir
+    ? resolve(options.geminiDir)
+    : null;
+  if (profileName !== null) {
+    const expectedDirName = `antigravity-cli-${profileName}`;
+    if (!effectiveGeminiDir && options.appDataDir) {
+      const absAppDataDir = resolve(options.appDataDir);
+      if (basename(absAppDataDir) !== expectedDirName) {
+        return {
+          ...result,
+          error: "额外实例目录名与 profileName 不一致，已跳过 agy 套餐探测",
+        };
+      }
+      effectiveGeminiDir = dirname(absAppDataDir);
+    }
+    const resolvedAppDataDir = effectiveGeminiDir
+      ? join(effectiveGeminiDir, expectedDirName)
+      : null;
+    if (
+      resolvedAppDataDir &&
+      options.appDataDir &&
+      resolve(options.appDataDir) !== resolve(resolvedAppDataDir)
+    ) {
+      return {
+        ...result,
+        error: "额外实例 appDataDir 与派发目录不一致，已跳过 agy 套餐探测",
+      };
+    }
+    if (!resolvedAppDataDir || !hasNonEmptyOAuthTokenFile(resolvedAppDataDir)) {
+      return {
+        ...result,
+        error:
+          "额外实例缺少有效的 antigravity-oauth-token，已跳过 agy 套餐探测",
+      };
+    }
+  }
+
+  const agyBin = findExecutable("agy", options.agyBin ?? process.env.AGY_BIN);
+  if (!agyBin) return { ...result, error: "找不到 agy 可执行文件" };
+  result.attempted = true;
+
+  let tempDir: string | null = null;
+  try {
+    tempDir = mkdtempSync(join(tmpdir(), "meterleaf-agy-tier-"));
+    chmodSync(tempDir, 0o700);
+    const env = probeEnv();
+    for (const name of tierStripEnvVars) delete env[name];
+    env.HOME = home;
+    env.METERLEAF_AGY_PROBE = "1";
+    env.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
+    env.BROWSER = "/usr/bin/false";
+
+    const args = ["acp", "--disable-telemetry"];
+    if (profileName !== null) {
+      env.SSH_CONNECTION = tierProbeSshMarker;
+      env.WSL_INTEROP = "1";
+      if (effectiveGeminiDir && effectiveGeminiDir !== defaultGeminiDir) {
+        args.push("--gemini-dir", effectiveGeminiDir);
+      }
+      args.push("--app-data-dir", `antigravity-cli-${profileName}`);
+    }
+
+    const child = spawn(agyBin, args, {
+      cwd: tempDir,
+      env,
+      detached: true,
+      stdio: ["pipe", "pipe", "ignore"],
+      shell: false,
+    });
+    const pgid =
+      typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
+    let detected: AgyTier | null = null;
+    let childExited = false;
+    let spawnError: string | null = null;
+    let probeError: string | null = null;
+    let closeTimer: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+    let resolveDone!: () => void;
+    const donePromise = new Promise<void>((res) => {
+      resolveDone = () => {
+        if (settled) return;
+        settled = true;
+        res();
+      };
+    });
+    const childDone = new Promise<void>((res) => {
+      child.once("exit", () => {
+        childExited = true;
+        res();
+        resolveDone();
+      });
+      child.once("error", (err) => {
+        spawnError = err instanceof Error ? err.message : String(err);
+        if (!pgid) childExited = true;
+        res();
+        resolveDone();
+      });
+    });
+
+    const writeJson = (payload: Record<string, unknown>) => {
+      if (!child.stdin || child.stdin.destroyed || child.stdin.writableEnded)
+        return;
+      try {
+        child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8");
+      } catch {
+        // 忽略对端提前关闭管道。
+      }
+    };
+    child.stdin?.on("error", () => undefined);
+    child.stdout?.on("error", () => resolveDone());
+    child.stdout?.setEncoding("utf8");
+
+    let buffer = "";
+    let sessionNewSent = false;
+    let sessionCloseSent = false;
+    const handleLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed || settled) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        return;
+      }
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      )
+        return;
+      const msg = parsed as { id?: unknown; result?: unknown; error?: unknown };
+      const formatRpcError = (err: unknown): string => {
+        if (typeof err === "object" && err !== null && !Array.isArray(err)) {
+          const message = (err as { message?: unknown }).message;
+          if (typeof message === "string" && message.trim())
+            return `agy acp 返回错误: ${message.trim()}`;
+        }
+        return "agy acp 返回错误";
+      };
+      if (msg.id === 1 && !sessionNewSent) {
+        if (msg.error !== undefined) {
+          probeError = formatRpcError(msg.error);
+          resolveDone();
+          return;
+        }
+        sessionNewSent = true;
+        writeJson({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "session/new",
+          params: { cwd: tempDir, mcpServers: [] },
+        });
+        return;
+      }
+      if (msg.id === 2 && !sessionCloseSent) {
+        if (msg.error !== undefined) {
+          probeError = formatRpcError(msg.error);
+          resolveDone();
+          return;
+        }
+        const tier = extractAcpSessionTier(parsed);
+        if (tier) detected = tier;
+        const resultObj =
+          typeof msg.result === "object" &&
+          msg.result !== null &&
+          !Array.isArray(msg.result)
+            ? (msg.result as { sessionId?: unknown })
+            : null;
+        const sessionId =
+          typeof resultObj?.sessionId === "string" ? resultObj.sessionId : null;
+        if (sessionId) {
+          sessionCloseSent = true;
+          writeJson({
+            jsonrpc: "2.0",
+            id: 3,
+            method: "session/close",
+            params: { sessionId },
+          });
+          closeTimer = setTimeout(() => resolveDone(), tierProbeCloseWaitMs);
+          closeTimer.unref?.();
+        } else {
+          resolveDone();
+        }
+        return;
+      }
+      if (msg.id === 3) resolveDone();
+    };
+
+    child.stdout?.on("data", (chunk: string) => {
+      if (settled) return;
+      buffer += chunk;
+      if (buffer.length > tierProbeMaxBufferBytes) {
+        const lastNewline = buffer.lastIndexOf("\n");
+        if (lastNewline === -1) {
+          buffer = "";
+          return;
+        }
+        buffer = buffer.slice(lastNewline + 1);
+      }
+      let idx = buffer.indexOf("\n");
+      while (idx !== -1) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        handleLine(line);
+        idx = buffer.indexOf("\n");
+      }
+    });
+
+    const hardTimer = setTimeout(() => {
+      if (!settled) probeError = "agy acp 探测超时";
+      resolveDone();
+    }, options.timeoutMs ?? tierProbeHardTimeoutMs);
+    hardTimer.unref?.();
+
+    try {
+      writeJson({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: 1, clientCapabilities: {} },
+      });
+      await donePromise;
+    } finally {
+      clearTimeout(hardTimer);
+      if (closeTimer) clearTimeout(closeTimer);
+      try {
+        child.stdin?.end();
+      } catch {
+        // 忽略管道关闭异常。
+      }
+    }
+
+    let exitConfirmed: boolean;
+    if (pgid !== null) {
+      const dead = await terminateProcessGroup(pgid);
+      if (dead && !childExited) {
+        await Promise.race([childDone, Bun.sleep(250)]);
+      }
+      exitConfirmed = dead && !isProcessGroupAlive(pgid);
+    } else {
+      exitConfirmed = childExited || spawnError !== null;
+    }
+
+    return {
+      attempted: true,
+      tier: exitConfirmed ? detected : null,
+      error:
+        spawnError ??
+        probeError ??
+        (exitConfirmed ? null : "agy acp 探测进程未能终止"),
+    };
+  } catch (error) {
+    return {
+      ...result,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (tempDir) {
+      try {
+        rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // 清理临时目录失败不影响本轮同步。
+      }
+    }
+  }
+}
+
+interface TierProbeRecord {
+  at: string;
+  ok: boolean;
+}
+
+function readTierProbeRecord(
+  state: CollectorState,
+  key: string,
+): TierProbeRecord | null {
+  const raw = state.getMeta(key);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<TierProbeRecord>;
+    if (typeof parsed.at === "string") {
+      return { at: parsed.at, ok: parsed.ok === true };
+    }
+  } catch {
+    // 兼容或忽略损坏记录。
+  }
+  return null;
+}
+
+/**
+ * 为已知标签的 Antigravity 实例按需探测套餐类型（仅 sync 调用，scan 不联网）：
+ * - 账号池模式下已在同目录 routing-state.json 中命中的实例跳过进程探测；
+ * - 已有套餐按 24 小时 TTL 复查；首次缺失、探测失败或旧版 CLI 返回 null 时按 1 小时退避，防止死循环；
+ * - 探测成功后写入 agy_plans，并在已有 quota-<label>.tsv 时合并写入 plan 行，仍保留 defaultPlan 细化回退。
+ */
+export async function maybeRefreshAgyTiers(
+  state: CollectorState,
+  sources: AgyReaderSources,
+  now: Date = new Date(),
+  options: Pick<AgyTierProbeOptions, "agyBin" | "timeoutMs"> & {
+    /** 为 true 时只为尚无已知套餐的实例探测，已有套餐的不触发 24h 周期复查。 */
+    onlyMissingPlan?: boolean;
+  } = {},
+): Promise<AgyTierRefreshResult> {
+  const result: AgyTierRefreshResult = {
+    attempted: 0,
+    refreshed: false,
+    updatedLabels: [],
+  };
+  const instances = discoverAgyInstances(sources);
+  if (instances.length === 0) return result;
+  const plans = readPlanMap(state);
+  let poolCachedDirs: ReadonlyMap<string, string> = new Map();
+  if (sources.poolAccountsFile) {
+    const defaultGeminiDir = dirname(
+      dirname(resolve(sources.conversationsDir)),
+    );
+    const poolMeta = inspectPoolAccountsFile(
+      sources.poolAccountsFile,
+      defaultGeminiDir,
+    );
+    if (poolMeta.ok) {
+      poolCachedDirs = readPoolRoutingTiers(
+        sources.poolAccountsFile,
+        poolMeta.accountIdByDir,
+      );
+    }
+  }
+
+  for (const instance of instances) {
+    if (
+      instance.profileName !== null &&
+      !hasNonEmptyOAuthTokenFile(instance.appDataDir)
+    ) {
+      continue;
+    }
+    const label = resolveInstanceLabel(instance, sources.statuslineDir);
+    if (!label) continue;
+    // 池缓存已提供套餐时直接复用，不额外启动 agy acp 进程。
+    if (poolCachedDirs.has(canonicalDir(instance.appDataDir))) continue;
+
+    const probeKey = instance.id
+      ? `agy_tier_probe_at:${instance.id}`
+      : "agy_tier_probe_at";
+    const last = readTierProbeRecord(state, probeKey);
+    const hasPlan = Boolean(plans[label]);
+    if (options.onlyMissingPlan && hasPlan) continue;
+    if (last) {
+      const elapsed = now.getTime() - Date.parse(last.at);
+      const waitMs = hasPlan && last.ok ? tierRefreshTtlMs : tierRetryBackoffMs;
+      if (elapsed >= 0 && elapsed < waitMs) continue;
+    }
+
+    state.setMeta(
+      probeKey,
+      JSON.stringify({
+        at: now.toISOString(),
+        ok: false,
+      } satisfies TierProbeRecord),
+    );
+    const probe = await probeAgyTier({
+      agyBin: options.agyBin,
+      timeoutMs: options.timeoutMs,
+      profileName: instance.profileName,
+      geminiDir: instance.geminiDir,
+      appDataDir: instance.appDataDir,
+    });
+    if (probe.attempted) result.attempted += 1;
+    const normalized = normalizeAgyTierPlan(probe.tier);
+    if (!normalized) continue;
+
+    state.setMeta(
+      probeKey,
+      JSON.stringify({
+        at: now.toISOString(),
+        ok: true,
+      } satisfies TierProbeRecord),
+    );
+    const changed = plans[label] !== normalized;
+    plans[label] = normalized;
+    state.setMeta("agy_plans", JSON.stringify(plans));
+    // 仅在已有额度缓存文件时合并写入 plan 行，避免在首次刷额度前制造空壳 TSV 掩盖 missingQuotaProfiles。
+    const quotaPath = join(sources.statuslineDir, agyQuotaFileName(label));
+    if (existsSync(quotaPath)) {
+      try {
+        mergeQuotaFile(
+          quotaPath,
+          new Map([["plan", `plan\t${normalized}\t-`]]),
+        );
+      } catch {
+        // 状态栏缓存不可写时仍保留 agy_plans 持久化结果。
+      }
+    }
+    if (changed) {
+      result.refreshed = true;
+      result.updatedLabels.push(label);
+    }
+  }
+  return result;
 }
 
 // ---- 经 omp 刷新所有已登录 Google 账号的额度 ----
