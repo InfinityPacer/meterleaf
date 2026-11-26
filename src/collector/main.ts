@@ -9,6 +9,7 @@ import {
   inspectExplicitAgyOutOfScope,
   isAgyExplicitScope,
   maybeRefreshAgyQuota,
+  maybeRefreshAgyTiers,
   maybeRefreshOmpAgyQuota,
   readAgy,
   type AgyReaderReport,
@@ -730,7 +731,19 @@ export async function readNewSources(
             allowedLabels ? { allowedLabels } : {},
           )
         : null;
-    if (agyRefresh?.refreshed || ompRefresh?.refreshed) {
+    const shouldProbeTier =
+      (agyReport?.recorded ?? 0) > 0 ||
+      agyMissing ||
+      agyMissingQuota ||
+      agyExplicit;
+    const tierRefresh = shouldProbeTier
+      ? await maybeRefreshAgyTiers(state, agy)
+      : null;
+    if (
+      agyRefresh?.refreshed ||
+      ompRefresh?.refreshed ||
+      tierRefresh?.refreshed
+    ) {
       const again = readAgy(state, agy);
       const ompAgain = omp ? await readOmp(state, omp) : null;
       agyReport = settleAgy(agyReport!, again);
