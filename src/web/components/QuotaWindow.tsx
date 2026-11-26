@@ -1,7 +1,10 @@
+import type { AccountCredits } from "../../shared/report";
 import { amount, compact, numericAmount } from "../lib/report";
 import {
+  creditsBalanceExact,
   estimateAmount,
   estimateDescription,
+  formatCreditsBalance,
   quotaFillStyle,
   quotaLabel,
   quotaPercent,
@@ -184,6 +187,30 @@ export function QuotaWindow({
           {local ? formatRequests(window.periodRequests) : "N/A"} 次
         </span>
       </span>
+    </span>
+  );
+}
+
+/** 上游账户额外 Credits 余额行（例如 Codex 订阅额度耗尽后可继续扣减的余额），与额度窗口共用列表与桌面列宽。 */
+export function AccountCreditsRow({ credits }: { credits: AccountCredits }) {
+  const text = formatCreditsBalance(credits);
+  const exact = creditsBalanceExact(credits);
+  const title = credits.unlimited
+    ? "上游账户 Credits 不限量"
+    : exact
+      ? `上游账户 Credits 剩余余额：${exact}`
+      : "上游账户 Credits 剩余余额";
+  return (
+    <span className="quota-credits" title={title}>
+      <span className="quota-credits-head">
+        <strong className="quota-credits-label">Credits</strong>
+        <span className="quota-credits-status">
+          {credits.unlimited ? "无上限" : "剩余余额"}
+        </span>
+      </span>
+      <strong className="quota-credits-balance" aria-label={`Credits ${text}`}>
+        {text}
+      </strong>
     </span>
   );
 }

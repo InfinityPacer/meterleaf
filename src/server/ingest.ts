@@ -7,6 +7,7 @@ import {
   INGEST_KEY_PREFIX,
   ingestBatchSchema,
   type IngestBatch,
+  type IngestManagedScope,
   type IngestResult,
 } from "../shared/ingest";
 import type { OtelRequestAccount } from "../shared/otel";
@@ -24,6 +25,7 @@ export interface IngestTarget {
       accounts: SourceAccount[];
       usage: UsageFact[];
       quotas: QuotaFact[];
+      managedScopes?: IngestManagedScope[];
     },
   ): void;
   /** OTEL 日志只补充请求归属；未提供时仍接收，但不会改变用量。 */
@@ -58,6 +60,9 @@ export function ingestToDomain(sourceId: string, batch: IngestBatch) {
       externalId: `${quota.accountExternalId}:${quota.window}`,
       ...quota,
     })),
+    ...(batch.managedScopes?.length
+      ? { managedScopes: batch.managedScopes }
+      : {}),
   };
 }
 

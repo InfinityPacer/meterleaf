@@ -346,6 +346,7 @@ describe("推送 OTEL 请求归属", () => {
       account: 0,
       quota: 0,
       otel: 0,
+      scope: 0,
     });
   });
 

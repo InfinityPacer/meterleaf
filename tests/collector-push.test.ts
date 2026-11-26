@@ -123,6 +123,7 @@ describe("推送", () => {
       account: 0,
       quota: 0,
       otel: 0,
+      scope: 0,
     });
     const batch = server.batches[0]!;
     expect(batch.collector.name).toBe("meterleaf-collector");
@@ -374,6 +375,7 @@ describe("刚落盘未归属 Claude 用量暂扣", () => {
       account: 0,
       quota: 0,
       otel: 0,
+      scope: 0,
     });
     state.close();
   });

@@ -62,7 +62,7 @@ Claude Code 也可以通过兼容接口使用别家的模型，例如经 OpenCod
 
 采集器默认读取本机 Codex 与 OpenCode 的用量，两者各自维护读取进度；目录或数据库不存在时该来源本轮为空，不报错。`status` 与同步报告按来源列出读取数、入账数和按通道跳过的数量。
 
-- Codex：只读扫描 `$CODEX_HOME`（默认 `~/.codex`）下 `sessions` 与 `archived_sessions` 的会话记录，包括写完已压缩的 `.jsonl.zst` 文件。读会话开头声明的供应商通道、模型和每次请求的 Token 用量，顺便读记录里自带的套餐与 5 小时、7 天额度。不读 `auth.json`，不改配置、不改会话文件、不调用任何接口。历史较多时每轮最多读取约 64 MiB，先读最近修改的会话，其余顺延到后面的轮次。需要停用或修改目录时，在 `config.json` 中配置 `"codex": { "enabled": true, "home": "/绝对路径" }`（路径优先级为 `config.codex.home` > `$CODEX_HOME` > `~/.codex`）。
+- Codex：只读扫描 `$CODEX_HOME`（默认 `~/.codex`）下 `sessions` 与 `archived_sessions` 的会话记录，包括写完已压缩的 `.jsonl.zst` 文件。读会话开头声明的供应商通道、模型和每次请求的 Token 用量，顺便读记录里自带的套餐、5 小时与 7 天额度以及额外的 Credits 余额。不读 `auth.json`，不改配置、不改会话文件、不调用任何接口。历史较多时每轮最多读取约 64 MiB，先读最近修改的会话，其余顺延到后面的轮次。需要停用或修改目录时，在 `config.json` 中配置 `"codex": { "enabled": true, "home": "/绝对路径" }`（路径优先级为 `config.codex.home` > `$CODEX_HOME` > `~/.codex`）。
 - OpenCode：只读打开本地数据库 `~/.local/share/opencode/opencode.db`（数据库是 WAL 模式，OpenCode 运行中也能读），取已完成的助手消息作为一次请求。消息记录与对话内容存在同一个字段里，解析时会一并读入内存，但只提取模型、通道、完成时间和 Token 用量，不保存也不上传对话内容、会话 ID 和路径。需要停用或修改数据库位置时，在 `config.json` 中配置 `"opencode": { "enabled": true, "database": "/绝对路径/opencode.db" }`。
 
 这些来源（含 Antigravity 与 omp）只上传发生时间不早于 `2026-09-20` 的记录，更早的历史在读取时丢弃；这个起点按当前接入的费率与账户推断能力设定，不影响 Claude Code。
@@ -106,7 +106,7 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 
 ### 统计口径
 
-- Codex 按每次请求计量：缓存读取从输入中扣除，推理量保留为输出的子集；旧记录缺失的缓存写字段保持未知。重复的额度通知不作为新请求。额度只取路由到 openai 平台账户的会话；来源未公布 Codex 积分余额的换算，Credits 字段不参与估值。账户套餐取会话中最新的 `plan_type`，没有时保留配置值。
+- Codex 按每次请求计量：缓存读取从输入中扣除，推理量保留为输出的子集；旧记录缺失的缓存写字段保持未知。重复的额度通知不作为新请求。额度与 Credits 余额只取路由到 openai 平台账户的会话；Credits 余额按上游原值单独展示，不参与费用估值。账户套餐取会话中最新的 `plan_type`，没有时保留配置值。
 - OpenCode 的 `tokens.input` 已是未缓存输入，直接计入；`output` 计为可见输出加推理，`reasoning` 是输出的子集；缓存读写取 `tokens.cache` 的值。任一字段缺失时该字段为未知，不补零。OpenCode 自带的 `cost` 不采用，费用由 Meterleaf 按[计价说明](pricing.md)估值。
 - OpenCode 生成会话标题、压缩上下文等内部请求不写进助手消息，本机数据里这类请求只差几千输入 token；这部分不补，也不按当前模型推算计入 Go 账户。
 - OpenCode Go 的额度不需要采集器读：服务端按[部署指南](deployment.md#opencode-go-额度可选)轮询 Go 的用量接口。`go` 通道的 Codex 记录也不上传额度，Go 额度由两处用量共同撑起账户的窗口估算。
@@ -119,6 +119,7 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 - 每个 Google 账号在 Antigravity 中有两套独立额度池，采集器为每个 `<label>` 建立一个订阅账户 `Antigravity (<label>)`（标识 `agy-<label>`）。`gemini_5h` 与 `gemini_weekly` 上报为 `five-hour` 与 `seven-day` 窗口，`3p_5h` 与 `3p_weekly` 上报为 `five-hour-3p` 与 `seven-day-3p` 窗口，服务端按窗口计算各池的本期花费，Gemini 窗口只计 `gemini-` 开头的模型，另两个窗口只计其他模型。旧版采集器按池分别建立的 `agy-<label>-gemini` 与 `agy-<label>-3p` 两个账户仍随每轮同步上报，并指向新账户，它们名下的历史用量与额度在报表里归入新账户。原来在旧账户上手动设置的套餐不会自动带过来，需要在新账户上再选一次。当某个窗口的重置时间不晚于采样时间或当前时间时，该窗口按已过期处理，旧百分比不会带入新周期。百分比或重置时间为 `-` 时保留未知，不补零。
 - 无界面运行（例如经 Paseo 或 omp 调用）时，状态栏脚本不会执行，额度缓存会一直停在上次交互使用时，所以 `sync` 在同一轮按需刷新，新额度随这一批用量一起上传，不必等下一轮。刷新只合并这次读到的窗口，原有的 `plan` 行和没读到的窗口行原样保留。
   - `agy` 会话库里有新用量时，按产生用量的实例运行本机的 `agy -p /usage`（所有实例均清除 `SSH_CONNECTION` 等变量并禁用浏览器弹出与自动更新；额外实例额外传入 `--app_data_dir antigravity-cli-<name>`、`--gemini_dir` 与 `WSL_INTEROP=1`，缺失非空普通文件 `antigravity-oauth-token` 的额外目录直接跳过，避免弹出浏览器登录页）。账号标签取自登录日志或实例令牌文件里邮箱的本地部分，并写回该实例对应的 `current-account`（或 `current-account-<name>`）。
+  - 套餐类型自动探测：`agy -p /usage` 不返回订阅套餐，采集器会在账号池模式下直接只读复用 `poolAccountsFile` 同目录 `routing-state.json` 中已缓存的套餐，并在缺少缓存或超过 24 小时 TTL 时通过一次性轻量的 `agy acp --disable-telemetry` 握手（`initialize` → `session/new` 读取 `result._meta.antigravity.tier` → `session/close`）自动探测官方套餐（如 `Google AI Ultra`、`Google AI Pro`、`Free`、`Gemini Enterprise`），写入本地状态并合并进已有 `quota-<label>.tsv` 的 `plan` 行；探测失败或旧版 CLI 未返回时按 1 小时退避，且非默认实例强制隔离 macOS Keychain（仅读该目录的 `antigravity-oauth-token`）。若只报出无倍数的 `Google AI Ultra`，仍可由 `agy.defaultPlan` 或页面「设置套餐」细化为 `Ultra 5x` / `Ultra 20x`。
   - omp 里有新入账的 Antigravity 请求时运行一次 `omp usage --json`，一次读回 omp 登录的所有 Google 账号，各自写进自己的 `quota-<label>.tsv`，不改 `current-account`。omp 会把额度缓存几分钟，平时直接用它的缓存。
   - 额度用完后上游拒绝请求，不再产生用量，只靠新用量触发会让读数停在用满前。所以 omp 记录里出现额度用完（429）的响应时，采集器先执行 `omp usage invalidate` 丢弃缓存，再读一次实时额度。
   - omp 请求找不到账号时（账号库读不到，也还没有 `current-account`），两种刷新都会运行，由 `agy` 确定账号并补记之前暂缓的请求。
@@ -126,7 +127,8 @@ Codex 的 `bo` 等其他通道属于网关后面的账户，读取时跳过并�
 - Token 用量来自 `~/.gemini/antigravity-cli/conversations/*.db` 以及同级 `~/.gemini/antigravity-cli-<name>/conversations/*.db`。额外实例仅在默认 `conversationsDir` 下、跳过含 `backup`/`bak` 段名的目录且存在非空普通文件 `antigravity-oauth-token` 时自动发现，每个实例优先从自身的令牌或日志识别所属账号。若多实例通过软链接共享同一 `conversations/` 目录，采集器按真实路径去重扫描，并增量缓存各实例日志中的发送记录，将跨账号切换的会话按轮次归属到实际调用账号（以单会话顺序写入为前提，两账号同时向同一会话并发写入时无法仅凭日志拆账）。`agy` 运行中会锁住会话库，采集器对无 WAL 的库以只读不可变模式打开，对存在 `.db-wal` 的库先把 `.db` 与 `.db-wal` 复制到系统临时目录再只读打开，不在 `~/.gemini` 下写入、加锁或创建附属文件。
 - 需要显式限定采集范围时，可在 `config.json` 的 `agy` 下配置可选字段 `appDataDirs` 或 `poolAccountsFile`（两者均未配置时保持上述默认自动发现行为）：
   - `appDataDirs`：显式指定要采集的实例 `appDataDir` 绝对路径数组（最多 50 项；每个目录名必须为 `antigravity-cli-<名称>` 且仅含字母、数字、`_` 或 `-`，设为 `[]` 表示显式不采集任何实例）。
-  - `poolAccountsFile`：指向账号池清单文件（`accounts.json`，支持顶层数组或 `{ "accounts": [...] }`）的绝对路径，动态筛选其中 `kind !== "default"`、`enabled === true`、`status === "ready"` 且未标记 `removedAt` 的非默认 `antigravity-cli-<名称>` 实例目录（相对路径按默认目录所在的 `.gemini` 目录解析）。
+  - `poolAccountsFile`：指向账号池清单文件（`accounts.json`，支持顶层数组或 `{ "accounts": [...] }`）的绝对路径，动态筛选其中 `kind !== "default"`、`enabled === true`、`status === "ready"` 且未标记 `removedAt` 的非默认 `antigravity-cli-<名称>` 实例目录（相对路径按默认目录所在的 `.gemini` 目录解析）。每次成功完整解析池清单后，采集器会自动上报当前在池与暂停/移出成员，Meterleaf 服务端据此自动归档暂停或移出的池账号（保留历史账单），并在账号重新启用或重新入池时自动解除归档或隐藏；清单缺失、损坏或存在未识别标签时保守跳过，避免误归档，且不影响 `agy-router` 等非池账号。
+  - `defaultPlan`：可选（`plus`、`pro`、`ultra-5x` 或 `ultra-20x`）。当上游未报出套餐或只报无倍数的 `Google AI Ultra` 时自动回退到该默认值；在页面里手动设置过的套餐优先级更高，不会被覆盖。
   - 配置任一项后即进入显式/池模式：不再扫描默认 `antigravity-cli` 目录（含指向默认目录的软链接别名）及其他同级目录，并按真实路径去重；仅采集范围内已登录（存在非空普通文件 `antigravity-oauth-token`）的实例会话与对应 `quota-<label>.tsv` 额度缓存，由 `omp` 触发的 Antigravity 额度刷新也同样仅处理范围内账号标签；已移出范围实例的跟踪记录、共享日志缓存与额度刷新状态自动清理；清单文件缺失或损坏时视为无可用实例。
   - 显式/池模式下按单个 `.db` 真实路径判定共享关系：凡可被范围外实例访问到的会话库（含共用 `conversations/` 目录、单文件正向或反向 `.db` 软链接，以及指向非范围内会话目录的单文件 `.db` 软链接）均整库跳过，并在同步摘要与 `status` 中显示跳过计数，不做跨范围拆账；如需采集，请将共享方一并纳入范围。仅范围内多个实例共享的库沿用既有日志时间轴归属，同目录下未共享的独立库不受牵连。范围外实例在默认 `.gemini` 与各范围内实例所在父目录下按 `antigravity-cli` / `antigravity-cli-*`（及默认 `conversationsDir`）识别；位于其他未声明路径下的未知实例与范围内实例通过软链共享不在自动识别保证范围内。若合同涵盖的父目录或实例的 `conversations/` 因权限等原因不可读，采集器将保守暂缓范围内会话库入账并在同步报告与 `status` 中提示原因。
 - 采集器解码 `gen_metadata` 表中的 `CortexStepGeneratorMetadata` protobuf，提取每次生成的未缓存输入、缓存读取、缓存写入、输出、属于输出子集的思考 Tokens 以及请求耗时，并关联 `steps` 表中的完成时间。由于 proto3 省略值为 0 的标量字段，输入字段存在时省略的缓存读写按 0 计，输入或输出字段本身缺失时保留未知、不补零。模型名与思考档位从上游响应模型、显示名和模型枚举归一化得到，同一账号的 Gemini、Claude 与 GPT-OSS 模型都记在这个账号的账户下。早于 `2026-09-20` 的记录在读取时丢弃，已读取记录按会话、步骤与执行标识幂等去重。
@@ -198,7 +200,7 @@ meterleaf-collector claude-profiles \
 }
 ```
 
-配置后，采集器只动态扫描 `profilesDir` 下非软链接且含普通文件 `.claude.json` 的直接子目录（忽略隐藏项与含 `bak` / `backup` 的备份目录），按子目录名自动匹配 `<statuslineCacheDir>/<目录名>.tsv` 状态栏缓存，并扫描这些目录各自的 `projects`（软链接到同一目录时按真实路径去重）。默认 `~/.claude` / `~/.claude.json` 及目录外的其他账户不再采集，目录成功完整枚举后会自动清理已移出目录的遗留状态，目录暂时不可读时保留既有状态避免误删。
+配置后，采集器只动态扫描 `profilesDir` 下非软链接且含普通文件 `.claude.json` 的直接子目录（忽略隐藏项与含 `bak` / `backup` 的备份目录），按子目录名自动匹配 `<statuslineCacheDir>/<目录名>.tsv` 状态栏缓存，并扫描这些目录各自的 `projects`（软链接到同一目录时按真实路径去重）。默认 `~/.claude` / `~/.claude.json` 及目录外的其他账户不再采集，目录成功完整枚举后会自动清理已移出目录的遗留状态，并向服务端同步当前受管账户集合（移出的目录自动归档、重新放回的目录自动恢复显示，不删除历史账单）；目录暂时不可读时保留既有状态避免误删或误归档。
 
 ### 开启 OTEL 导出
 

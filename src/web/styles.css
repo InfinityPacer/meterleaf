@@ -2386,7 +2386,9 @@ button[data-size="icon-sm"],
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 16px 28px;
 }
-.account-windows.quota-window-list > .quota-window + .quota-window {
+.account-windows.quota-window-list
+  > :is(.quota-window, .quota-credits)
+  + :is(.quota-window, .quota-credits) {
   padding-top: 0;
   border-top: 0;
 }

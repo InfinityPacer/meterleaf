@@ -61,11 +61,33 @@ export interface CodexQuotaSample {
   windowMinutes: number;
 }
 
+export interface CodexCreditsSample {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance: string | null;
+  sampledAt: string;
+}
+
+const creditsDecimalPattern = /^-?\d+(?:\.\d{1,18})?$/;
+
+function parseCreditsBalance(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return creditsDecimalPattern.test(trimmed) ? trimmed : null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const text = String(value);
+    return creditsDecimalPattern.test(text) ? text : null;
+  }
+  return null;
+}
+
 /** Quota notifications are independent of token usage, including info:null and repeated totals. */
 export function codexSnapshot(raw: unknown): {
   sampledAt: string;
   plan: string | null;
   quotas: CodexQuotaSample[];
+  credits: CodexCreditsSample | null;
 } | null {
   const event = object(raw);
   const payload = object(event?.payload);
@@ -121,7 +143,25 @@ export function codexSnapshot(raw: unknown): {
       windowMinutes: minutes,
     });
   }
-  return plan || quotas.length ? { sampledAt, plan, quotas } : null;
+  const rawCredits = object(limits.credits);
+  let credits: CodexCreditsSample | null = null;
+  if (
+    rawCredits &&
+    (typeof rawCredits.has_credits === "boolean" ||
+      typeof rawCredits.unlimited === "boolean")
+  ) {
+    const unlimited = rawCredits.unlimited === true;
+    const hasCredits = rawCredits.has_credits === true || unlimited;
+    credits = {
+      hasCredits,
+      unlimited,
+      balance: unlimited ? null : parseCreditsBalance(rawCredits.balance),
+      sampledAt,
+    };
+  }
+  return plan || quotas.length || credits
+    ? { sampledAt, plan, quotas, credits }
+    : null;
 }
 
 /** Only inspect session identity, provider, model context and token events, never message bodies. */
@@ -505,6 +545,35 @@ export async function readCodex(
               sampledAt: bucket.sampledAt,
             });
         }
+        if (snapshot.credits && snapshot.credits.sampledAt >= startIso) {
+          const key = `${routed.id}:credits`;
+          const active =
+            snapshot.credits.hasCredits || snapshot.credits.unlimited;
+          // 从未启用 Credits 的账户不额外上报空快照；此前上报过余额的账户在关闭或清零时同步最新状态。
+          if (active || observed[key] !== undefined || sinks.windows.has(key)) {
+            const ahead = sinks.windows.get(key);
+            if (!ahead || ahead.sampledAt < snapshot.credits.sampledAt) {
+              const parsed = ingestQuotaSchema.safeParse({
+                accountExternalId: routed.id,
+                window: "credits",
+                percent: null,
+                sampledAt: snapshot.credits.sampledAt,
+                resetsAt: null,
+                windowMinutes: null,
+                credits: {
+                  hasCredits: snapshot.credits.hasCredits,
+                  unlimited: snapshot.credits.unlimited,
+                  balance: snapshot.credits.balance,
+                },
+              });
+              if (parsed.success)
+                sinks.windows.set(key, {
+                  quota: parsed.data,
+                  sampledAt: snapshot.credits.sampledAt,
+                });
+            }
+          }
+        }
       }
     }
     let usage: Omit<IngestUsage, "accountExternalId"> | null;
@@ -701,6 +770,116 @@ export async function readCodex(
       closeSync(fd);
     }
   };
+
+  // 升级自旧版本采集器时，近期未变化的会话已跳过正文读取；这里做一次轻量补采，
+  // 只取最近若干会话里最新的 Credits 余额，不重算用量。
+  const needsCreditsBackfill =
+    state.getMeta("codex_credits_backfilled") !== "1" &&
+    Object.keys(observed).some((key) => !key.endsWith(":credits")) &&
+    !Object.keys(observed).some((key) => key.endsWith(":credits"));
+  if (needsCreditsBackfill) {
+    const backfillSinks: FileSinks = { windows: new Map(), plans: new Map() };
+    const backfillAccounts = new Map<string, ChannelAccount>();
+    let scanned = 0;
+    for (const { path, modified } of paths) {
+      if (modified < startMs || !path.endsWith(".jsonl")) continue;
+      if (scanned >= 20) break;
+      const saved = state.codexFile(path);
+      if (!saved) continue;
+      let stats;
+      try {
+        stats = statSync(path);
+      } catch {
+        continue;
+      }
+      if (
+        saved.inode !== String(stats.ino) ||
+        saved.size !== stats.size ||
+        saved.modified !== stats.mtimeMs ||
+        saved.offset !== stats.size
+      ) {
+        continue;
+      }
+      scanned++;
+      let text: string;
+      try {
+        text = readFileSync(path, "utf8");
+      } catch {
+        continue;
+      }
+      const restored = restoreContext(saved.context);
+      let provider = restored.provider;
+      const lines = text.split("\n");
+      if (!provider) {
+        for (const line of lines) {
+          if (!line.includes('"session_meta"')) continue;
+          try {
+            const event = object(JSON.parse(line));
+            const payload = object(event?.payload);
+            if (
+              event?.type === "session_meta" &&
+              typeof payload?.model_provider === "string"
+            ) {
+              provider = payload.model_provider;
+              break;
+            }
+          } catch {
+            // 跳过损坏行。
+          }
+        }
+      }
+      const routed = routeChannel("codex", provider, rules);
+      if (!routed || routed.platform !== "openai") continue;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i]!;
+        if (!line.includes('"token_count"') || !line.includes('"credits"'))
+          continue;
+        let raw: unknown;
+        try {
+          raw = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const snapshot = codexSnapshot(raw);
+        if (!snapshot?.credits || snapshot.credits.sampledAt < startIso)
+          continue;
+        if (!snapshot.credits.hasCredits && !snapshot.credits.unlimited)
+          continue;
+        const key = `${routed.id}:credits`;
+        const ahead = backfillSinks.windows.get(key);
+        if (!ahead || ahead.sampledAt < snapshot.credits.sampledAt) {
+          const parsed = ingestQuotaSchema.safeParse({
+            accountExternalId: routed.id,
+            window: "credits",
+            percent: null,
+            sampledAt: snapshot.credits.sampledAt,
+            resetsAt: null,
+            windowMinutes: null,
+            credits: {
+              hasCredits: snapshot.credits.hasCredits,
+              unlimited: snapshot.credits.unlimited,
+              balance: snapshot.credits.balance,
+            },
+          });
+          if (parsed.success) {
+            backfillAccounts.set(routed.id, routed);
+            backfillSinks.windows.set(key, {
+              quota: parsed.data,
+              sampledAt: snapshot.credits.sampledAt,
+            });
+          }
+        }
+        break;
+      }
+    }
+    state.write(() => {
+      if (backfillSinks.windows.size > 0)
+        commitObservations(backfillSinks, backfillAccounts);
+      state.setMeta("codex_credits_backfilled", "1");
+    });
+  } else if (state.getMeta("codex_credits_backfilled") !== "1") {
+    state.setMeta("codex_credits_backfilled", "1");
+  }
 
   // 上一轮顺延的文件本轮排在最前，作为首个文件不受剩余预算限制，避免持续活跃
   // 或无法推进的较新文件每轮占满预算、让它永远轮不到。

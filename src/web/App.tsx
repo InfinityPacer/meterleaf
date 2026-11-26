@@ -69,8 +69,11 @@ import { ThemeControl } from "./components/ThemeControl";
 import { AccountHeadingActions } from "./components/AccountHeadingActions";
 import {
   accountQuotaExhausted,
+  creditsBalanceExact,
   estimateAmount,
   estimateDescription,
+  formatCreditsBalance,
+  hasAccountCredits,
   quotaFillStyle,
   quotaLabel,
   quotaPercent,
@@ -143,7 +146,7 @@ import { allTimeRange } from "../shared/date-range";
 import { ReportTable } from "./components/ReportTable";
 import { ModelDistribution } from "./components/ModelDistribution";
 import { MobileFilters } from "./components/MobileFilters";
-import { QuotaWindow } from "./components/QuotaWindow";
+import { AccountCreditsRow, QuotaWindow } from "./components/QuotaWindow";
 import { MobileHome } from "./components/MobileHome";
 import { AboutPage } from "./components/AboutPage";
 import {
@@ -395,6 +398,7 @@ function AccountRow({
   usage?: AccountLifetime;
 }) {
   const accountUsage = account.lifetime ?? usage;
+  const hasCredits = !archived && hasAccountCredits(account);
   const hasQuota =
     !archived &&
     Boolean(
@@ -402,9 +406,11 @@ function AccountRow({
       account.sevenDay ||
       account.sevenDayFable ||
       account.monthly ||
-      hasThirdPartyPool(account),
+      hasThirdPartyPool(account) ||
+      hasCredits,
     );
   const windows = accountQuotaWindows(account, asOf, compactUsage);
+  const quotaItems = windows.length + (hasCredits ? 1 : 0);
   const exhausted = accountQuotaExhausted(account, asOf);
   const status = archived ? "已归档" : exhausted ? null : "使用中";
   const plan = account.kind === "api" ? null : planBadge(account);
@@ -418,7 +424,7 @@ function AccountRow({
     <button
       className="account-row"
       data-has-quota={hasQuota}
-      data-quota-count={windows.length}
+      data-quota-count={quotaItems}
       data-quota-exhausted={exhausted}
       data-has-estimate={
         !compactUsage || showQuotaEstimate(account.sevenDay, asOf)
@@ -470,7 +476,10 @@ function AccountRow({
                 estimate={compactUsage}
               />
             ))}
-            {!windows.length && (
+            {hasCredits && account.credits && (
+              <AccountCreditsRow credits={account.credits} />
+            )}
+            {!quotaItems && (
               <span className="account-window-unavailable">
                 {account.sampledAt
                   ? `${quotaUnavailableNote(account)}，收到新数据后自动恢复。`
@@ -2480,9 +2489,10 @@ export function App() {
                         />
                       ),
                     )}
-                    {!detailWindows.length && (
-                      <span className="muted">额度 N/A</span>
-                    )}
+                    {!detailWindows.length &&
+                      !hasAccountCredits(selectedAccount) && (
+                        <span className="muted">额度 N/A</span>
+                      )}
                   </div>
                   <dl className="details-list">
                     <dt>额度更新于</dt>
@@ -2493,6 +2503,20 @@ export function App() {
                         hour12: false,
                       })}
                     </dd>
+                    {hasAccountCredits(selectedAccount) &&
+                      selectedAccount.credits && (
+                        <>
+                          <dt>Credits 余额</dt>
+                          <dd
+                            title={
+                              creditsBalanceExact(selectedAccount.credits) ??
+                              undefined
+                            }
+                          >
+                            {formatCreditsBalance(selectedAccount.credits)}
+                          </dd>
+                        </>
+                      )}
                     <dt>{detailPool}7d 重置</dt>
                     <dd>
                       {!selectedAccount.sevenDay

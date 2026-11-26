@@ -939,6 +939,17 @@ export function collect(
           : undefined,
       }),
     );
+  // 独占多账户目录完整枚举无错误时上报当前活跃账户集合，供服务端自动归档移出账号、恢复重新加入的账号。
+  if (
+    exclusive &&
+    report.profilesRootReadable &&
+    report.profilesDiscoveryComplete
+  ) {
+    const activeUuids = report.profiles
+      .map((profile) => profile.accountUuid)
+      .filter((uuid): uuid is string => Boolean(uuid));
+    state.recordManagedScope("claude-profiles", activeUuids);
+  }
   return report;
 }
 
