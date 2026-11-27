@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "bun:test";
-import type { CollectorConfig } from "../src/collector/config";
+import { loadConfig, type CollectorConfig } from "../src/collector/config";
 import {
   agyReaderConfig,
   codexReaderConfig,
@@ -30,6 +33,7 @@ test("sources default to enabled with home and database locations", () => {
   );
   expect(agy.statuslineDir.endsWith("agy-statusline")).toBe(true);
   expect(agy.start).toBe(codex.start);
+  expect(agy.quotaRefresh).toBe(false);
 });
 
 test("either source can be disabled or pointed elsewhere in config.json", () => {
@@ -50,6 +54,7 @@ test("either source can be disabled or pointed elsewhere in config.json", () => 
       config({
         agy: {
           enabled: false,
+          quotaRefresh: false,
           conversationsDir: "/tmp/agy-convos",
           statuslineDir: "/tmp/agy-statusline",
         },
@@ -60,6 +65,7 @@ test("either source can be disabled or pointed elsewhere in config.json", () => 
     config({
       agy: {
         enabled: true,
+        quotaRefresh: false,
         conversationsDir: "/tmp/agy-convos",
         statuslineDir: "/tmp/agy-statusline",
       },
@@ -68,6 +74,53 @@ test("either source can be disabled or pointed elsewhere in config.json", () => 
   expect(agy.conversationsDir).toBe("/tmp/agy-convos");
   expect(agy.statuslineDir).toBe("/tmp/agy-statusline");
   expect(agy.start).toBe("2026-09-20T00:00:00.000Z");
+  expect(agy.quotaRefresh).toBe(false);
+
+  const agyRefreshEnabled = agyReaderConfig(
+    config({
+      agy: {
+        enabled: true,
+        quotaRefresh: true,
+      },
+    }),
+  )!;
+  expect(agyRefreshEnabled.quotaRefresh).toBe(true);
+});
+
+test("loadConfig defaults agy.quotaRefresh to false and preserves explicit true", () => {
+  const dir = mkdtempSync(join(tmpdir(), "meterleaf-agy-config-"));
+  try {
+    const file = join(dir, "config.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        server: "https://meterleaf.example.com",
+        sourceId: "claude-code-mac",
+        key: "mlk_test",
+        createdAt: "2026-11-27T00:00:00Z",
+        agy: {},
+      }),
+    );
+    const defaultParsed = loadConfig(file);
+    expect(defaultParsed?.agy?.quotaRefresh).toBeUndefined();
+    expect(agyReaderConfig(defaultParsed)?.quotaRefresh).toBe(false);
+
+    writeFileSync(
+      file,
+      JSON.stringify({
+        server: "https://meterleaf.example.com",
+        sourceId: "claude-code-mac",
+        key: "mlk_test",
+        createdAt: "2026-11-27T00:00:00Z",
+        agy: { quotaRefresh: true },
+      }),
+    );
+    const enabledParsed = loadConfig(file);
+    expect(enabledParsed?.agy?.quotaRefresh).toBe(true);
+    expect(agyReaderConfig(enabledParsed)?.quotaRefresh).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("omp reads its session directory by default, follows config.json, and shares the Antigravity cache directory", () => {
@@ -85,7 +138,11 @@ test("omp reads its session directory by default, follows config.json, and share
   const moved = ompReaderConfig(
     config({
       omp: { enabled: true, sessionsDir: "/tmp/omp-sessions" },
-      agy: { enabled: true, statuslineDir: "/tmp/agy-statusline" },
+      agy: {
+        enabled: true,
+        quotaRefresh: false,
+        statuslineDir: "/tmp/agy-statusline",
+      },
     }),
   )!;
   expect(moved.sessionsDir).toBe("/tmp/omp-sessions");

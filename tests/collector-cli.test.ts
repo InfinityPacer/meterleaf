@@ -468,7 +468,7 @@ describe("采集器命令行", () => {
     expect(statSync(`${log}.1`).size).toBe(1024 * 1024 + 1);
   });
 
-  test("status 展示默认与额外 Antigravity 实例及 omp 额度刷新状态", () => {
+  test("status 默认显示 Antigravity 额度刷新已关闭，开启后展示默认与额外实例及 omp 刷新状态", () => {
     const { env, dataDir } = setup();
     const server = fakeServer();
     expect(run(env, "init", "--server", server.url).code).toBe(0);
@@ -483,8 +483,22 @@ describe("采集器命令行", () => {
     } finally {
       state.close();
     }
+    const defaultStatus = run(env, "status");
+    expect(defaultStatus.code).toBe(0);
+    expect(defaultStatus.stdout).toContain("Antigravity 额度刷新: 已关闭");
+    expect(defaultStatus.stdout).not.toContain(
+      "最近尝试 2026-11-24T05:00:00.000Z",
+    );
+    expect(defaultStatus.stdout).not.toContain("omp Antigravity 额度刷新");
+
+    const configPath = join(dataDir, "config.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.agy = { quotaRefresh: true };
+    writeFileSync(configPath, JSON.stringify(config));
+
     const status = run(env, "status");
     expect(status.code).toBe(0);
+    expect(status.stdout).toContain("Antigravity 额度刷新: 已启用");
     expect(status.stdout).toContain(
       "Antigravity 额度刷新: 最近尝试 2026-11-24T05:00:00.000Z（成功）",
     );

@@ -927,6 +927,8 @@ export interface AgyReaderSources {
   conversationsDir: string;
   statuslineDir: string;
   start: string;
+  /** 可选：是否允许 sync 按需运行 agy -p /usage（或 omp usage）刷新额度缓存；默认 false。 */
+  quotaRefresh?: boolean;
   /** 可选：显式指定要采集的 Antigravity 实例 appDataDir 绝对路径列表；设置后不再自动发现默认目录或同级目录。 */
   appDataDirs?: readonly string[];
   /** 可选：动态读取账号池清单文件（accounts.json）中启用且就绪的非默认实例目录。 */
