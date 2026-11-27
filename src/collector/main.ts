@@ -143,9 +143,11 @@ const help = `Meterleaf Collector ${COLLECTOR_VERSION}
     ~/.local/share/opencode/opencode.db、Antigravity 默认与额外实例会话库
     ~/.gemini/antigravity-cli*/conversations/*.db 以及 omp 会话记录
     ~/.omp/agent/sessions 与账号库 ~/.omp/agent/agent.db。不修改这些原文件。
-  - 唯一的例外在 sync：发现新的 Antigravity 用量、缺少本地额度缓存或 omp 出现 429 时，
-    按冷却间隔按需运行本机 agy -p /usage 或 omp usage --json（429 时先清理 omp 缓存）
-    刷新状态栏额度缓存 ~/.cache/agy-statusline（由 agy/omp 自己联网读取额度）。
+  - Antigravity 额度刷新与套餐探测默认关闭，采集器只读取本地会话库与状态栏额度缓存。
+    在 config.json 设 "agy": { "quotaRefresh": true } 后，sync 才会在发现新的
+    Antigravity 用量、缺少本地额度缓存、窗口过期或 omp 出现 429 时，按冷却间隔按需运行
+    本机 agy -p /usage、agy acp 或 omp usage --json（429 时先清理 omp 缓存）刷新
+    ~/.cache/agy-statusline（由 agy/omp 自己联网读取额度与套餐）。
     除下文的 Command Code 额度外，采集器本身不调用任何上游接口，scan 绝不触发。
   - 只上传计量数字、模型、推理档位、时间与套餐；会话标识、消息内容、路径与
     凭据不读取、不上传。
@@ -651,6 +653,7 @@ export function agyReaderConfig(
     ),
     statuslineDir: agyStatuslineDir(config),
     start: SOURCE_START,
+    quotaRefresh: config?.agy?.quotaRefresh === true,
     defaultGeminiDir,
     ...(config?.agy?.appDataDirs
       ? { appDataDirs: config.agy.appDataDirs }
@@ -667,9 +670,9 @@ export function agyReaderConfig(
 /**
  * 一轮同步里的新来源读取；来源停用或入口缺失时为空。
  *
- * sync 发现新的 Antigravity 用量（来自 agy 会话库或 omp）时，在同一轮按需刷新额度缓存，
- * 刷新成功后重读一次，让新额度和因缺少账号而暂缓的 omp 请求随这一批一起上传。
- * scan 承诺只读且不联网，不触发刷新。
+ * 仅当配置显式开启 agy.quotaRefresh 且允许刷新（sync）时，发现新的 Antigravity 用量
+ * （来自 agy 会话库或 omp）才在同一轮按需刷新额度缓存，刷新成功后重读一次，让新额度和
+ * 因缺少账号而暂缓的 omp 请求随这一批一起上传。默认关闭，scan 承诺只读且绝不触发刷新。
  */
 export async function readNewSources(
   state: CollectorState,
@@ -684,7 +687,7 @@ export async function readNewSources(
   const omp = ompReaderConfig(config);
   let agyReport = agy ? readAgy(state, agy) : null;
   let ompReport = omp ? await readOmp(state, omp) : null;
-  if (options.allowQuotaRefresh && agy) {
+  if (options.allowQuotaRefresh && agy?.quotaRefresh) {
     const agyExplicit = isAgyExplicitScope(agy);
     const ompMissing = (ompReport?.agyMissingAccount ?? 0) > 0;
     const exhausted = (ompReport?.agyExhausted ?? 0) > 0;
@@ -1592,6 +1595,13 @@ function runStatus(paths: CollectorPaths) {
         codex ? `Codex（${codex.home}）` : "Codex 已停用"
       }，${opencode ? `OpenCode（${opencode.database}）` : "OpenCode 已停用"}，${agyDesc}，${omp ? `omp（${omp.sessionsDir}）` : "omp 已停用"}`,
     );
+    if (agy) {
+      console.log(
+        agy.quotaRefresh
+          ? "Antigravity 额度刷新: 已启用（sync 按需运行 agy -p /usage 或 omp usage）"
+          : "Antigravity 额度刷新: 已关闭（仅读取本地状态栏缓存，可在 config.json 设 agy.quotaRefresh 为 true 启用）",
+      );
+    }
     console.log(
       config.commandcode?.enabled === false
         ? "Command Code 额度: 已停用"
@@ -1670,8 +1680,10 @@ function runStatus(paths: CollectorPaths) {
     const formatRefreshStatus = (status: string) =>
       status.startsWith("error:") ? `失败，${status.slice(6)}` : "成功";
     const agyForRefresh = agyReaderConfig(config);
-    for (const line of formatAgyRefreshLines(state, agyForRefresh)) {
-      console.log(line);
+    if (agyForRefresh?.quotaRefresh) {
+      for (const line of formatAgyRefreshLines(state, agyForRefresh)) {
+        console.log(line);
+      }
     }
     if (config?.commandcode?.enabled !== false) {
       const commandCodeStatus = commandCodeStatusText(
@@ -1689,12 +1701,15 @@ function runStatus(paths: CollectorPaths) {
           }`,
         );
     }
-    const ompRefreshAt = state.getMeta("omp_agy_quota_refresh_at");
-    if (ompRefreshAt) {
-      const refreshStatus = state.getMeta("omp_agy_quota_refresh_status") ?? "";
-      console.log(
-        `omp Antigravity 额度刷新: 最近尝试 ${ompRefreshAt}（${formatRefreshStatus(refreshStatus)}）`,
-      );
+    if (agyForRefresh?.quotaRefresh) {
+      const ompRefreshAt = state.getMeta("omp_agy_quota_refresh_at");
+      if (ompRefreshAt) {
+        const refreshStatus =
+          state.getMeta("omp_agy_quota_refresh_status") ?? "";
+        console.log(
+          `omp Antigravity 额度刷新: 最近尝试 ${ompRefreshAt}（${formatRefreshStatus(refreshStatus)}）`,
+        );
+      }
     }
     for (const segment of state.segments()) {
       console.log(

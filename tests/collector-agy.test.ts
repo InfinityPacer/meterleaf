@@ -1220,7 +1220,11 @@ function ompSession(dir: string, id: string) {
   return sessionsDir;
 }
 
-function syncConfig(w: ReturnType<typeof refreshWorkspace>, omp: string) {
+function syncConfig(
+  w: ReturnType<typeof refreshWorkspace>,
+  omp: string,
+  quotaRefresh = true,
+) {
   return {
     server: "https://meterleaf.example.com",
     sourceId: "claude-code-mac",
@@ -1230,12 +1234,77 @@ function syncConfig(w: ReturnType<typeof refreshWorkspace>, omp: string) {
     opencode: { enabled: false },
     agy: {
       enabled: true,
+      quotaRefresh,
       conversationsDir: w.sources.conversationsDir,
       statuslineDir: w.statuslineDir,
     },
     omp: { enabled: true, sessionsDir: omp },
   } as CollectorConfig;
 }
+
+test("sync skips agy and omp quota refresh by default unless agy.quotaRefresh is enabled", async () => {
+  const w = refreshWorkspace();
+  const state = new CollectorState(":memory:");
+  try {
+    writeFileSync(w.quota, staleQuota + "\n");
+    writeFileSync(join(w.statuslineDir, "current-account"), "alice\n");
+    utimesSync(w.quota, longAgo, longAgo);
+
+    // 写入一条新的 agy 会话用量，确保同时满足 agy 与 omp 原本的刷新触发条件。
+    mkdirSync(w.sources.conversationsDir, { recursive: true });
+    const db = new Database(
+      join(w.sources.conversationsDir, "conv-default.db"),
+    );
+    db.exec(
+      "CREATE TABLE steps (idx INTEGER PRIMARY KEY, type TEXT, status TEXT, metadata TEXT);" +
+        "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, execution_id TEXT, data TEXT);",
+    );
+    const tSec = Math.floor(Date.parse("2026-11-27T02:00:00.000Z") / 1000);
+    db.query(
+      "INSERT INTO gen_metadata (idx, execution_id, data) VALUES (1, 'exec-off-1', ?1)",
+    ).run(
+      buildGenMetadataFixture({
+        responseModel: "gemini-4-neon",
+        inputTokens: 1_000,
+        outputTokens: 100,
+        createdAtSeconds: tSec,
+        executionId: "exec-off-1",
+      }),
+    );
+    db.close();
+
+    const agy = fakeAgy(w.dir, { output: usageJson({ "gemini-5h": 0.9 }) });
+    const omp = fakeOmp(
+      w.dir,
+      JSON.stringify({
+        reports: [ompReport("alice@example.com", { "gemini-5h": 0.5 })],
+      }),
+    );
+    process.env.AGY_BIN = agy.script;
+    process.env.OMP_BIN = omp.script;
+
+    const config = syncConfig(w, ompSession(w.dir, "m1"), false);
+    const reports = await readNewSources(state, config, {
+      allowQuotaRefresh: true,
+    });
+    expect(agy.calls()).toBe(0);
+    expect(omp.calls()).toEqual([]);
+    const agyReport = reports.find((item) => item.source === "agy") as
+      AgyReaderReport | undefined;
+    expect(agyReport).toMatchObject({
+      recorded: 1,
+      quotaRefreshed: false,
+      quotaRefreshError: null,
+    });
+    expect(state.sourcePendingCounts().agy).toBe(1);
+    expect(state.sourcePendingCounts().omp).toBe(1);
+  } finally {
+    delete process.env.AGY_BIN;
+    delete process.env.OMP_BIN;
+    state.close();
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});
 
 test("sync refreshes quota through omp when omp brings new Antigravity usage, uploads both together, and scan never does", async () => {
   const w = refreshWorkspace();
@@ -4352,6 +4421,7 @@ test("readNewSources recomputes allowedLabels after agy probe writes current-acc
       opencode: { enabled: false },
       agy: {
         enabled: true,
+        quotaRefresh: true,
         conversationsDir: join(defaultDir, "conversations"),
         statuslineDir: statusDir,
         appDataDirs: [workDir],

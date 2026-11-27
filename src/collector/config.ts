@@ -49,6 +49,8 @@ const opencodeSourceSchema = z
 const agySourceSchema = z
   .object({
     enabled: z.boolean().default(true),
+    /** 是否允许 sync 按需运行 agy -p /usage（或 omp usage）刷新 Antigravity 额度缓存；省略或为 false 时关闭。 */
+    quotaRefresh: z.boolean().optional(),
     conversationsDir: z.string().startsWith("/").optional(),
     statuslineDir: z.string().startsWith("/").optional(),
     /** 显式指定要采集的 Antigravity 实例目录（appDataDir）列表；配置后不再自动发现默认目录或其他同级目录。 */
